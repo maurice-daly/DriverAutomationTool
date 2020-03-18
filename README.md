@@ -1,3 +1,5 @@
+![Image description](https://i1.wp.com/www.scconfigmgr.com/wp-content/uploads/2019/12/img_5de59253bea43.png?resize=1024%2C641&ssl=1)
+
 # Driver Automation Tool
 
 Welcome to the new home of the **SCConfigMgr Driver Automation Tool**.
