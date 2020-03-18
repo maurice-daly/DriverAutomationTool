@@ -1,0 +1,4 @@
+Make,Model,Baseboard,Platform,Operating System,Architecture,Version,Source Directory
+Viglen,VIG850G,MDQ17AI-SI,ConfigMgr,Windows 10,x64,3,E:\Viglen\Vig850G\Windows10x64
+Fujitsu,Celsius H730,FJNB274,ConfigMgr,Windows 10,x64,2,E:\Fujitsu\CELSIUS H730 vPro_win10x64
+Toshiba,PORTEGE Z10T-A,PT141E,ConfigMgr,Windows 10,x64,1,E:\Toshiba\Portege Z10T-A\Win1064
