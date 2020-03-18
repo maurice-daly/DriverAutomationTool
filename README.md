@@ -1,12 +1,13 @@
 # Driver Automation Tool
 
-Welcome to the new home of the SCConfigMgr Driver Automation Tool.
+Welcome to the new home of the **SCConfigMgr Driver Automation Tool**.
+If you would like to donate to the development of this tool, then please use the sponsor link.
 
-FAQ
+**FAQ**
 
-Q Can you please add model x to the list
+**Q** Can you please add model x to the list
 
-A The manufacturer provides the model listings for Dell, Lenovo and HP. For Microsoft I am manually adding them, so in that instance yes.
+**A** *The manufacturer provides the model listings for Dell, Lenovo and HP. For Microsoft I am manually adding them, so in that instance yes.*
 
 All source code and installers will be maintained here from 11-March-2020. 
 
@@ -86,4 +87,4 @@ All source code and installers will be maintained here from 11-March-2020.
 							Updated link within the tool to GitHub as Technet is being retired
 							Updated custom package creation to include Windows 10 1909		
 
-If you would like to donate to the development of this tool, then please use the sponsor link.
+
