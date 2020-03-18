@@ -2,6 +2,10 @@
 
 Welcome to the new home of the SCConfigMgr Driver Automation Tool.
 
+FAQ
+Q Can you please add model x to the list
+A The manufacturer provides the model listings for Dell, Lenovo and HP. For Microsoft I am manually adding them, so in that instance yes.
+
 All source code and installers will be maintained here from 11-March-2020. 
 
     Version history:
