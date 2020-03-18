@@ -11,6 +11,8 @@ If you would like to donate to the development of this tool, then please use the
 
 **A** *The manufacturer provides the model listings for Dell, Lenovo and HP. For Microsoft I am manually adding them, so in that instance yes.*
 
+**Scripts, MSIs and downloads contained within are provided with no warranty or liabilities. They are provided as is**
+
 Implemenation guides for modern driver management and modern bios management can be found here;
 
 [https://www.scconfigmgr.com/modern-driver-management/](https://www.scconfigmgr.com/modern-driver-management/)
