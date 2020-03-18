@@ -12,8 +12,10 @@ If you would like to donate to the development of this tool, then please use the
 **A** *The manufacturer provides the model listings for Dell, Lenovo and HP. For Microsoft I am manually adding them, so in that instance yes.*
 
 Implemenation guides for modern driver management and modern bios management can be found here;
-(https://www.scconfigmgr.com/modern-driver-management/)
-(https://www.scconfigmgr.com/modern-bios-management/)
+
+[https://www.scconfigmgr.com/modern-driver-management/](https://www.scconfigmgr.com/modern-driver-management/)
+
+[https://www.scconfigmgr.com/modern-bios-management/](https://www.scconfigmgr.com/modern-bios-management/)
 
 All source code and installers will be maintained here from 11-March-2020. 
 
