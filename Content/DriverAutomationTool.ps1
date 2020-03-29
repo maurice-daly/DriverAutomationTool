@@ -15373,7 +15373,7 @@ THIS SCRIPT MUST NOT BE EDITED AND REDISTRIBUTED WITHOUT EXPRESS PERMISSION OF T
 			$global:BitsProxyOptions = @{
 				'RetryInterval'	      = "60";
 				'RetryTimeout'	      = "180";
-				'ProxyList'		      = $global:ProxyServer;
+				'ProxyList'		      = ($global:ProxyServer | Select-Object -ExpandProperty Address);
 				'ProxyAuthentication' = "Negotiate";
 				'ProxyCredential'	  = $global:ProxyCredentials;
 				'ProxyUsage'		  = "Override";
