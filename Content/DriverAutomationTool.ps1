@@ -848,7 +848,7 @@ function Show-MainForm_psf
 		$SelectionTabs.SelectedTab = $LogTab
 		global:Write-LogEntry -Value "Info: Validating all required selections have been made" -Severity 1
 		if ($UseProxyServerCheckbox.Checked -eq $true) {
-			Validate-ProxyAccess -ProxyServer $ProxyServerInput.Text -UserName $ProxyUserInput.Text -Password $ProxyPswdInput.Text -URL $URL
+			Validate-ProxyAccess -ProxyServer $ProxyServerInput.Text -UserName $ProxyUserInput.Text -Password $ProxyPswdInput.Text -URL "https://www.scconfigmgr.com"
 		}
 		Validate-Settings
 		if ($global:Validation -eq $true) {
