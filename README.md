@@ -3,6 +3,7 @@
 # Driver Automation Tool
 
 Welcome to the new home of the **SCConfigMgr Driver Automation Tool**.
+
 If you would like to donate to the development of this tool, then please use the sponsor button at the top of the page.
 
 **FAQ**
