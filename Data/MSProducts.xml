@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-16"?>
+<Drivers>
+    <Model SystemSKU="Surface_3" ProductName="Surface3/WiFi" DisplayName="Surface 3 Wifi"></Model>
+    <Model SystemSKU="Surface_3_US1" ProductName="Surface3/ATT" DisplayName="Surface 3 ATT"></Model>
+    <Model SystemSKU="Surface_3_US2" ProductName="Surface3/Verizon" DisplayName="Surface 3 Verizon"></Model>
+    <Model SystemSKU="Surface_3_NAG" ProductName="Surface3/NAG" DisplayName="Surface 3 NAG"></Model>
+    <Model SystemSKU="Surface_3_ROW" ProductName="Surface3/ROW" DisplayName="Surface 3 ROW"></Model>
+    <Model SystemSKU="Surface_Pro_3" ProductName="SurfacePro3" DisplayName="Surface Pro 3"></Model>
+    <Model SystemSKU="Surface_Pro_4" ProductName="SurfacePro4" DisplayName="Surface Pro 4"></Model>
+    <Model SystemSKU="Surface_Pro_1796, Surface_Pro_1807" ProductName="SurfacePro5" DisplayName="Surface Pro 5"></Model>
+    <Model SystemSKU="Surface_Pro_6_1796_Consumer, Surface_Pro_6_1796_Commercial" ProductName="SurfacePro6" DisplayName="Surface Pro 6"></Model>
+	<Model SystemSKU="Surface_Pro_7_1866" ProductName="SurfacePro7" DisplayName="Surface Pro 7"></Model>
+	<Model SystemSKU="Surface_Pro_X_1876" ProductName="SurfaceProX" DisplayName="Surface Pro X"></Model>
+    <Model SystemSKU="Surface_Book_2_1832, Surface_Book_2_1793" ProductName="SurfaceBook" DisplayName="Surface Book"></Model>
+    <Model SystemSKU="Surface_Laptop" ProductName="SurfaceBook2" DisplayName="Surface Book 2"></Model>	
+	<Model SystemSKU="Surface_Laptop_2_1769_Commercial, Surface_Laptop_2_1769_Consumer" ProductName="SurfaceLaptop" DisplayName="Surface Laptop"></Model>
+	<Model SystemSKU="Surface_Laptop_3_1867:1868" ProductName="SurfaceLaptop3" DisplayName="Surface Laptop 3 - Intel 13"></Model>
+	<Model SystemSKU="Surface_Laptop_3_1872" ProductName="SurfaceLaptop3" DisplayName="Surface Laptop 3 - Intel 15"></Model>
+	<Model SystemSKU="Surface_Laptop_3_1873" ProductName="SurfaceLaptop3" DisplayName="Surface Laptop 3 - AMD 13"></Model>
+    <Model SystemSKU="Surface_Go_1824_Consumer, Surface_Go_1824_Commercial" ProductName="SurfaceLaptop2" DisplayName="Surface Laptop 2"></Model>
+    <Model SystemSKU="Surface_Pro_6_1796_Consumer, Surface_Pro_6_1796_Commercial" ProductName="SurfaceGo" DisplayName="Surface Go"></Model>
+    <Model SystemSKU="Surface_Go_1825_Consumer, Surface_Go_1825_Commercial" ProductName="SurfaceGoLTE" DisplayName="Surface Go LTE"></Model>
+    <Model SystemSKU="Surface_Studio" ProductName="SurfaceStudio" DisplayName="Surface Studio"></Model>	
+    <Model SystemSKU="Surface_Studio_2_1707_Consumer, Surface_Studio_2_1707_Commercial" ProductName="SurfaceStudio2" DisplayName="Surface Studio 2"></Model>		
+</Drivers>
