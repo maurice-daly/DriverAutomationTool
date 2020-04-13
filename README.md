@@ -1,4 +1,4 @@
-![SCConfigMgr Driver Auatomation Tool](https://i1.wp.com/www.scconfigmgr.com/wp-content/uploads/2019/12/img_5de59253bea43.png?resize=1024%2C641&ssl=1)
+![SCConfigMgr Driver Auatomation Tool](https://i1.wp.com/msendpointmgr.com/wp-content/uploads/2020/04/MSEndpoingMgrDat.jpg?resize=1024%2C641&ssl=1)
 
 # Driver Automation Tool
 
