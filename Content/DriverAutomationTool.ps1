@@ -12291,7 +12291,7 @@ THIS SCRIPT MUST NOT BE EDITED AND REDISTRIBUTED WITHOUT EXPRESS PERMISSION OF T
 					if (-not ([string]::IsNullOrEmpty($OSVersion))) {
 						# Attempt to find Windows 10 version specific download
 						$Win10VersionLink = $MatchingLink | Where-Object {
-							$_ -match $OSVersion
+							$_ -match "_"+$($OSVersion)+"_"
 						} | Select-Object -Last 1
 						# Return Windows 10 version specific download file URL
 						if (-not ([string]::IsNullOrEmpty($Win10VersionLink))) {
