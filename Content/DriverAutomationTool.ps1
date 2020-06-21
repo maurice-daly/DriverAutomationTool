@@ -11849,7 +11849,7 @@ THIS SCRIPT MUST NOT BE EDITED AND REDISTRIBUTED WITHOUT EXPRESS PERMISSION OF T
 			if ($QueryKnownModels -eq $true) {
 				if (-not ([string]::IsNullOrEmpty($SiteServer))) {
 					$HPKnownModels = ($HPKnownModels = Get-WmiObject -ComputerName $SiteServer -Namespace "root\SMS\site_$SiteCode" -Class SMS_G_System_COMPUTER_SYSTEM | Select-Object -Property Manufacturer, Model | Where-Object {
-							(($_.Manufacturer -match "HP") -or ($_.Manufacturer -match "Hewlett-Packard")) -and ($_.Model -notmatch "Proliant")
+							(($_.Manufacturer -match "HP") -or ($_.Manufacturer -match "Hewlett-Packard")) -and ($_.Model -notmatch "Proliant") -and ($_.Model.Trim() -ne "") 
 						}).Model | Sort-Object | Get-Unique -AsString
 				}
 				# Add model to ArrayList if not present
