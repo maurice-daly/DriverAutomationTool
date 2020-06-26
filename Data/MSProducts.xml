@@ -22,6 +22,6 @@
     <Model SystemSKU="Surface_Go_1825_Consumer, Surface_Go_1825_Commercial" ProductName="SurfaceGoLTE" DisplayName="Surface Go LTE"></Model>
     <Model SystemSKU="Surface_Studio" ProductName="SurfaceStudio" DisplayName="Surface Studio"></Model>	
     <Model SystemSKU="Surface_Studio_2_1707_Consumer, Surface_Studio_2_1707_Commercial" ProductName="SurfaceStudio2" DisplayName="Surface Studio 2"></Model>		
-	<Model SystemSKU="Surface_Book_1793" ProductName="SurfaceBook215" DisplayName="Surface Book 2 15"></Model>		
-	<Model SystemSKU="Surface_Book_1832" ProductName="SurfaceBook213" DisplayName="Surface Book 2 13"></Model>		
+	<Model SystemSKU="Surface_Book_1793" ProductName="SurfaceBook2" DisplayName="Surface Book 2 15"></Model>		
+	<Model SystemSKU="Surface_Book_1832" ProductName="SurfaceBook2" DisplayName="Surface Book 2 13"></Model>		
 </Drivers>
