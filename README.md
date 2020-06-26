@@ -104,6 +104,11 @@ DriverAutomationTool.exe - 6E751D29C504DBCBEAE3DE7F6B2A8753
 	6.4.6 - (2020-18-03)	Fixed Lenovo download link logic and added further output
 							Updated package creation for all packages just to include the SKU/BaseBoard values
 							Updated link within the tool to GitHub as Technet is being retired
-							Updated custom package creation to include Windows 10 1909		
+							Updated custom package creation to include Windows 10 1909	
+	6.4.6 - (2020-18-03)	Added Windows 10 2004 Support
+							Added HP SoftPaq creation
+							Added 7Zip Support
+							Added XML Logic Package Support
+							Faster UI	
 
 
