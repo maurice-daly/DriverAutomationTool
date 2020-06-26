@@ -3,6 +3,14 @@ Release Notes
 IMPORTANT
 - DAT Downloads have been moved to GitHub - https://github.com/maurice-daly/DriverAutomationTool
 
+Version 6.4.8
+**BLOG POST TO FOLLOW ON MONDAY**
+Added - HP SoftPaq package creation
+Added - Windows 10 2004 support
+Added - 7Zip support
+Added - XML Logic Package support
+Updated UI look and performance
+
 Version 6.4.6
 Fixed Lenovo download link logic and added further output
 Updated package creation for all packages just to include the SKU/BaseBoard values
