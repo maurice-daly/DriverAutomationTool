@@ -24,8 +24,8 @@ All source code and installers will be maintained here from 11-March-2020.
 
 **MD5 Hash Values for build 6.4.8**
 
-DriverAutomationToolSetup.msi - AFA0949C8C607E7F3EF77E1C33BE11DE
-DriverAutomationTool.exe - 1AB75E0552000A4AC29B4C3D22A4FAE6
+DriverAutomationToolSetup.msi - A51EA2AECD615BF65E7FD622780F8873
+DriverAutomationTool.exe - 9FD774415D47131C0D3AB04F6B2525B7
 
     Version history:
 	6.0.0 - (2018-03-29)	New verison. Graphical redesign, improved layout, HP individual driver downloads
@@ -102,10 +102,12 @@ DriverAutomationTool.exe - 1AB75E0552000A4AC29B4C3D22A4FAE6
 							Updated package creation for all packages just to include the SKU/BaseBoard values
 							Updated link within the tool to GitHub as Technet is being retired
 							Updated custom package creation to include Windows 10 1909	
-	6.4.6 - (2020-18-03)	Added Windows 10 2004 Support
-							Added HP SoftPaq creation
-							Added 7Zip Support
-							Added XML Logic Package Support
-							Faster UI	
+	6.4.6 - (2020-28-06)	Added support for Windwos 10 2004
+							Added support for HP SoftPaq creation and updated UI to select available SoftPaqs per models	
+							Added support for creation of 7zip driver packages
+							Added support for XML based modern driver and BIOS management solutions
+							Faster UI and XML handling
+							Updated Lenovo XML source
+							
 
 
