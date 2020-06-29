@@ -1049,11 +1049,6 @@ Process {
 			}
 		}
 		
-					# Testing purposes (insert model details below)
-			$ComputerDetails.Manufacturer = "Hewlett-Packard"
-			$ComputerDetails.Model = "Elite Dragonfly Notebook PC"
-			$ComputerDetails.SystemSKU = "861f"
-		
 		# Handle overriding computer details if debug mode and additional parameters was specified
 		if ($Script:PSCmdlet.ParameterSetName -like "Debug") {
 			if (-not([string]::IsNullOrEmpty($Manufacturer))) {
@@ -1090,7 +1085,7 @@ Process {
 
     function Get-ComputerSystemType {
         $ComputerSystemType = Get-WmiObject -Class "Win32_ComputerSystem" | Select-Object -ExpandProperty "Model"
-        <#if ($ComputerSystemType -notin @("Virtual Machine", "VMware Virtual Platform", "VirtualBox", "HVM domU", "KVM", "VMWare7,1")) {
+        if ($ComputerSystemType -notin @("Virtual Machine", "VMware Virtual Platform", "VirtualBox", "HVM domU", "KVM", "VMWare7,1")) {
             Write-CMLogEntry -Value " - Supported computer platform detected, script execution allowed to continue" -Severity 1
         }
         else {
@@ -1105,7 +1100,6 @@ Process {
 				$PSCmdlet.ThrowTerminatingError($ErrorRecord)
 			}
         }
-		#>
 	}
 	
 	function Get-OperatingSystemVersion {
