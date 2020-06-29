@@ -287,7 +287,7 @@ param (
 	
 	[parameter(Mandatory = $false, ParameterSetName = "XMLPackage", HelpMessage = "Specify the operation mode for XML based deployments.")]
 	[ValidateNotNullOrEmpty()]
-	[ValidateSet("BareMetal", "OSUpdate", "PreCache")]
+	[ValidateSet("BareMetal", "OSUpdate", "DriverUpdate", "PreCache")]
 	[string]$XMLMode = "BareMetal"
 
 )
