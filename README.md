@@ -102,7 +102,7 @@ DriverAutomationTool.exe - 9FD774415D47131C0D3AB04F6B2525B7
 							Updated package creation for all packages just to include the SKU/BaseBoard values
 							Updated link within the tool to GitHub as Technet is being retired
 							Updated custom package creation to include Windows 10 1909	
-	6.4.6 - (2020-28-06)	Added support for Windwos 10 2004
+	6.4.8 - (2020-28-06)	Added support for Windwos 10 2004
 							Added support for HP SoftPaq creation and updated UI to select available SoftPaqs per models	
 							Added support for creation of 7zip driver packages
 							Added support for XML based modern driver and BIOS management solutions
