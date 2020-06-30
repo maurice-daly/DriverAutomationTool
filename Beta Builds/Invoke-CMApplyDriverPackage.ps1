@@ -285,7 +285,7 @@ param (
 	[parameter(Mandatory = $false, ParameterSetName = "Debug")]
 	[switch]$OSVersionFallback,
 	
-	[parameter(Mandatory = $false, ParameterSetName = "XMLPackage", HelpMessage = "Specify the operation mode for XML based deployments.")]
+	[parameter(Mandatory = $true, ParameterSetName = "XMLPackage", HelpMessage = "Specify the operation mode for XML based deployments.")]
 	[ValidateNotNullOrEmpty()]
 	[ValidateSet("BareMetal", "OSUpdate", "DriverUpdate", "PreCache")]
 	[string]$XMLMode = "BareMetal"
@@ -309,7 +309,8 @@ Process {
 			$LogsDirectory = Join-Path -Path $env:SystemRoot -ChildPath "Temp"
 		}
 		default {
-			$LogsDirectory = $Script:TSEnvironment.Value("_SMSTSLogPath")
+			$LogsDirectory = Join-Path -Path $env:SystemRoot -ChildPath "Temp"
+			#$LogsDirectory = $Script:TSEnvironment.Value("_SMSTSLogPath")
 		}
 	}
 	
@@ -838,7 +839,15 @@ Process {
 	}
 
     function Get-OSImageDetails {
-		switch ($Script:PSCmdlet.ParameterSetName) {
+		
+		# Set switch matching value based on AdminService or XML deployments
+		if ($Script:PSCmdlet.ParameterSetName -eq "XMLPackage"){
+			$DeploymentMode = $Script:XMLMode
+		}else{
+			$DeploymentMode = $Script:PSCmdlet.ParameterSetName
+		}
+	
+		switch ($DeploymentMode) {
 			"DriverUpdate" {
 				$OSImageDetails = [PSCustomObject]@{
 					Architecture = Get-OSArchitecture -InputObject (Get-WmiObject -Class Win32_OperatingSystem | Select-Object -ExpandProperty OSArchitecture)
@@ -948,7 +957,6 @@ Process {
                 "Production" {
 					if ($Script:PSBoundParameters["XMLPackage"]){
 					Write-CMLogEntry -Value " - Reading logic file" -Severity 1
-				
 						$Packages = (([xml]$XMLContent = (Get-Content -Path $XMLLogicFile -Raw)).ArrayOfCMPackage).CMPackage | Where-Object { $_.Name -notmatch "Pilot" -and $_.Name -notmatch "Legacy" -and $_.Name -match $Filter }	
 					}
 					else{
@@ -1049,6 +1057,11 @@ Process {
 			}
 		}
 		
+					# Testing purposes (insert model details below)
+			$ComputerDetails.Manufacturer = "Hewlett-Packard"
+			$ComputerDetails.Model = "Elite Dragonfly Notebook PC"
+			$ComputerDetails.SystemSKU = "861f"
+		
 		# Handle overriding computer details if debug mode and additional parameters was specified
 		if ($Script:PSCmdlet.ParameterSetName -like "Debug") {
 			if (-not([string]::IsNullOrEmpty($Manufacturer))) {
@@ -1085,7 +1098,7 @@ Process {
 
     function Get-ComputerSystemType {
         $ComputerSystemType = Get-WmiObject -Class "Win32_ComputerSystem" | Select-Object -ExpandProperty "Model"
-        if ($ComputerSystemType -notin @("Virtual Machine", "VMware Virtual Platform", "VirtualBox", "HVM domU", "KVM", "VMWare7,1")) {
+        <#if ($ComputerSystemType -notin @("Virtual Machine", "VMware Virtual Platform", "VirtualBox", "HVM domU", "KVM", "VMWare7,1")) {
             Write-CMLogEntry -Value " - Supported computer platform detected, script execution allowed to continue" -Severity 1
         }
         else {
@@ -1100,6 +1113,7 @@ Process {
 				$PSCmdlet.ThrowTerminatingError($ErrorRecord)
 			}
         }
+		#>
 	}
 	
 	function Get-OperatingSystemVersion {
@@ -1204,7 +1218,8 @@ Process {
 			PackageName = $DriverPackageItem.Name
 			PackageID = $DriverPackageItem.PackageID
 			PackageVersion = $DriverPackageItem.Version
-			DateCreated = [datetime]::Parse($DriverPackageItem.SourceDate)
+			#DateCreated = [datetime]::Parse($DriverPackageItem.SourceDate)
+			DateCreated = $DriverPackageItem.SourceDate
 			Manufacturer = $DriverPackageItem.Manufacturer
 			Model = $null
 			SystemSKU = $DriverPackageItem.Description.Split(":").Replace("(", "").Replace(")", "")[1]
@@ -1281,7 +1296,6 @@ Process {
 						# Increase detection counter since OS architecture detection was successful
 						$DetectionCounter++
 						Write-CMLogEntry -Value "[DriverPackage:$($DriverPackageItem.PackageID)]: OS Version is $($DriverPackageDetails.OSVersion)" -Severity 1
-						Write-CMLogEntry -Value "[DriverPackage:$($DriverPackageItem.PackageID)]: OS Image data is $OSImageData" -Severity 1
 							
 						if ($DriverPackageDetails.OSVersion -ne $null) {
 							# Handle if OS version should check for fallback versions or match with data from OSImageData variable
@@ -1984,9 +1998,8 @@ Process {
 				[string]$PhaseDescrption = "XML Logic"
 				Write-CMLogEntry -Value "[$PhaseType]: Reading $PhaseDescrption file " -Severity 1
 			
-				# Read in driver package details from XML logic packages
-				$DriverPackages = Get-DriverPackages -XMLLogicFile (Join-Path -Path $TSEnvironment.Value("XMLLogicPackage01") -ChildPath "DriverPackages.xml")
-
+				# Set XML logic file location
+				$XMLLogicFile = (Join-Path -Path $TSEnvironment.Value("XMLLogicPackage01") -ChildPath "DriverPackages.xml")
 			}
 			"Default" {
 				[string]$PhaseType = "AdminService"
@@ -2078,6 +2091,7 @@ Process {
 		}
     }
     catch [System.Exception] {
+		Write-CMLogEntry -Value "[ApplyDriverPackage]: Error - $($_.Exception.Message)" -Severity 3
 		Write-CMLogEntry -Value "[ApplyDriverPackage]: Apply Driver Package process failed, please refer to previous error or warning messages" -Severity 3
 		
 		# Main try-catch block was triggered, this should cause the script to fail with exit code 1
