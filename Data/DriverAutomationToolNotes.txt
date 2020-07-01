@@ -4,7 +4,7 @@ IMPORTANT
 - DAT Downloads have been moved to GitHub - https://github.com/maurice-daly/DriverAutomationTool
 
 Version 6.4.8
-**BLOG POST TO FOLLOW ON MONDAY**
+**BLOG POST TO FOLLOW ON July 1st**
 Added - HP SoftPaq package creation
 Added - Windows 10 2004 support
 Added - 7Zip support
