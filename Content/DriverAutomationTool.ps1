@@ -14596,6 +14596,7 @@ AABJRU5ErkJgggs='))
 					"Lenovo" {
 						global:Write-LogEntry -Value "Info: Setting Lenovo variables" -Severity 1
 						Find-LenovoModelType -Model $Model -OS $OS
+						$global:SkuValue = ($global:LenovoModelDrivers | Where-Object{$_.name -eq "$Model"}).Types | Select-Object -ExpandProperty Type | Sort-Object | Get-Unique
 						global:Write-LogEntry -Value "Info: $Make $Model matching model type: $global:LenovoModelType" -Severity 1 -SkipGuiLog $false
 						
 						try {
