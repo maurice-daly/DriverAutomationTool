@@ -24,8 +24,8 @@ All source code and installers will be maintained here from 11-March-2020.
 
 **MD5 Hash Values for build 6.4.8**
 
-DriverAutomationToolSetup.msi - A51EA2AECD615BF65E7FD622780F8873
-DriverAutomationTool.exe - 9FD774415D47131C0D3AB04F6B2525B7
+DriverAutomationToolSetup.msi - 3B7ACCC4C1F2CC7B8DEB480C01981E35
+DriverAutomationTool.exe - 9690600D29EB566EB840631F1CD53361
 
     Version history:
 	6.0.0 - (2018-03-29)	New verison. Graphical redesign, improved layout, HP individual driver downloads
