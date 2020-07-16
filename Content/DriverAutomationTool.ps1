@@ -888,7 +888,7 @@ function Show-MainForm_psf
 	    Invoke-RunningLog
 		global:Write-LogEntry -Value "Info: Validating all required selections have been made" -Severity 1
 		if ($UseProxyServerCheckbox.Checked -eq $true) {
-			Confirm-ProxyAccess -ProxyServer $ProxyServerInput.Text -UserName $ProxyUserInput.Text -Password $ProxyPswdInput.Text -URL $URL
+			Confirm-ProxyAccess -ProxyServer $ProxyServerInput.Text -UserName $ProxyUserInput.Text -Password $ProxyPswdInput.Text -URL "https://www.MSEndpointMgr.com"
 		}
 		Confirm-Settings
 		if ($global:Validation -eq $true) {
@@ -12650,10 +12650,11 @@ AABJRU5ErkJgggs='))
 			[String]$URL
 		)
 		
-		$Request = [System.Net.WebRequest]::Create($URL)
-		$Request.AllowAutoRedirect = $false
-		$Request.Timeout = 3000
-		$Response = $Request.GetResponse()
+		if ($global:ProxySettingsSet -eq $true) {
+			$Response = (Invoke-WebRequest -Uri $URL @global:InvokeProxyOptions -MaximumRedirection 0 -TimeoutSec 3 -ErrorAction SilentlyContinue) | Select-Object -ExpandProperty BaseResponse
+		} else {
+			$Response = (Invoke-WebRequest -Uri $URL -MaximumRedirection 0 -TimeoutSec 3 -ErrorAction SilentlyContinue) | Select-Object -ExpandProperty BaseResponse
+		}
 		if ($Response.ResponseUri) {
 			[string]$ReturnedURL = $Response.GetResponseHeader("Location")
 		}
@@ -15795,13 +15796,13 @@ AABJRU5ErkJgggs='))
 			$Content = $WebClient.DownloadString("http://" + $($URL.Host))
 			global:Write-LogEntry -Value "Proxy: Connected to $URL successfully" -Severity 1
 			$global:InvokeProxyOptions = @{
-				'Proxy' = "$global:ProxyServer";
-				'ProxyUseDefaultCredentials' = $true
+				'Proxy' = ($global:ProxyServer | Select-Object -ExpandProperty Address);
+                'ProxyCredential' = $global:ProxyCredentials
 			}
 			$global:BitsProxyOptions = @{
 				'RetryInterval' = "60";
 				'RetryTimeout' = "180";
-				'ProxyList' = $global:ProxyServer;
+				'ProxyList' = ($global:ProxyServer | Select-Object -ExpandProperty Address);
 				'ProxyAuthentication' = "Negotiate";
 				'ProxyCredential' = $global:ProxyCredentials;
 				'ProxyUsage' = "Override";
