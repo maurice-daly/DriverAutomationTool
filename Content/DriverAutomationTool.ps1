@@ -12486,7 +12486,7 @@ AABJRU5ErkJgggs='))
 						foreach ($LenovoKnownModel in $LenovoKnownModels.Model) {
 							$LenovoKnownModel = $(Find-LenovoModelType -ModelType $($LenovoKnownModel.Substring(0, 4)))
 							If (-not ([string]::IsNullOrEmpty($LenovoKnownModel))) {
-								$LenovoKnownModel.Trimend()
+								$LenovoKnownModel = $LenovoKnownModel.Name.Trimend()
 							}
 							if (($LenovoKnownProducts -notcontains $LenovoKnownModel) -and (([string]::IsNullOrEmpty($LenovoKnownModel)) -ne $true)) {
 								$LenovoKnownProducts.Add($LenovoKnownModel) | Out-Null
@@ -13165,12 +13165,18 @@ AABJRU5ErkJgggs='))
 					($_.Types | Select-Object -ExpandProperty Type) -match $ModelType
 				}).Version | Select-Object -first 1
 		}#>
-		
-		
-		$global:LenovoModelType = ($global:LenovoModelDrivers | Where-Object {
+		if ($Model.Length -gt 0) {
+			$global:LenovoModelType = ($global:LenovoModelDrivers | Where-Object {
 				$_.name -eq $Model
 			}).Types.Type
-		Return $global:LenovoModelType
+			Return $global:LenovoModelType
+		}
+		if ($ModelType.Length -gt 0) {
+			$global:LenovoModelType = ($global:LenovoModelDrivers | Where-Object { 
+				$_.Types.Type -eq $ModelType 
+			})
+			Return $global:LenovoModelType
+		}
 	}
 	
 	function Find-LenovoBios {
