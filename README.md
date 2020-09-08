@@ -31,7 +31,7 @@ DriverAutomationTool.exe - 596D2722A097C70A4B17CA730F7DF37C
 **BETA BUILD**
 Version 6.4.9 is available as a BETA build. Includes improved WMI query logic, updates to Lenovo and HP package / model detection, WIM support and more. The download is in the beta builds folder
 
-DriverAutomationToo.exe - DA6886EDF8FF105EB67B679F9477E50F
+DriverAutomationToo.exe - 635DC5F0726F2DC7FD9F831F7F219E48
 
     Version history:
 	6.0.0 - (2018-03-29)	New verison. Graphical redesign, improved layout, HP individual driver downloads
