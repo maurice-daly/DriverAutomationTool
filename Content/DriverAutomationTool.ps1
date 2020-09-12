@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
     Driver Automation GUI Tool for Dell,HP,Lenovo and Microsoft systems
 .DESCRIPTION
@@ -13191,9 +13191,48 @@ AABJRU5ErkJgggs='))
 			}
 			global:Write-LogEntry -Value "Lenovo Base - $LenovoBiosBase, Lenovo Model Type $ModelType" -Severity 1
 			global:Write-LogEntry -Value "Info: Quering XML $($LenovoBiosBase + $ModelType + "_Win$OS.xml") for BIOS download links " -Severity 1
+            $newLenovoBiosVersionFormat = $false
+            $lenovoModelBiosList = @()
+            $lenovoModelBiosList = $lenovomodeldrivers | where-object{$_.name -match $modeltype}
+                foreach($biosItem in $lenovomodelbioslist.bios.version)
+                {
+                    if($biosItem -like "*/*")
+                    {
+                        $lenovobiosVersionNumber,$lenovoControllerNumber = $biositem.split("/")
+                        if($lenovobiosVersionNumber -gt $lenovoControllerNumber)
+                        {
+                            $newLenovoBiosVersionFormat = $true
+                        }
+                    }
+                }
+            if($newLenovoBiosVersionFormat)
+            {
+                $LenovoModelBIOSDownloads = ((Select-Xml -path ($global:TempDirectory + "\" + $ModelType + "_Win$OS.xml") -XPath "/").Node.Packages.Package | Where-Object {
+					$_.Category -match "BIOS"
+				})
+                $tempversion = $null
+                $returningLocation = $null
+                foreach($potentialItem in $LenovoModelBIOSDownloads.location)
+                {
+                    $doc = New-Object System.Xml.XmlDocument
+                    $doc.load($potentialitem)
+                    if(-not($doc.package.name -like "*_ECP"))
+                    {
+                        if($tempversion -lt $doc.package.version)
+                        {
+                            $tempversion = $doc.package.version
+                            $returningLocation = $potentialitem
+                        }
+                    }
+                }
+                $selectedLenovoBios = $LenovoModelBIOSDownloads | where-object{$_.location -eq $returningLocation}
+                return $selectedLenovoBios
+            }
+            else{
 			$LenovoModelBIOSDownloads = ((Select-Xml -path ($global:TempDirectory + "\" + $ModelType + "_Win$OS.xml") -XPath "/").Node.Packages.Package | Where-Object {
 					$_.Category -match "BIOS"
 				}) | Sort-Object Location -Descending | Select-Object -First 1
+            }
 			Return $LenovoModelBIOSDownloads
 		} catch {
 			global:Write-ErrorOutput -Message "Error: $($_.Exception.Message)" -Severity 3
