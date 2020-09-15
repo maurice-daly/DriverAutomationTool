@@ -22,7 +22,7 @@ Implemenation guides for modern driver management and modern bios management can
 
 All source code and installers will be maintained here from 11-March-2020. 
 
-**MD5 Hash Values for build 6.4.8**
+**MD5 Hash Values for build 6.4.9**
 
 DriverAutomationToolSetup.msi - 2F0D8B7959C7A109E154DA8875581EBF
 
@@ -115,6 +115,10 @@ DriverAutomationToo.exe - E10DE3BAF287FCB8A609B9466484F9C6
 							Faster UI and XML handling
 							Updated Lenovo XML source
 							Dell Flash 64w handling updated
+	6.4.9 - (2020-15-09)	Added WIM Support
+							Updated model and distribution point WMI queries for better performance
+							Updated XML logic file creation function
+							Updated Dell XML handling
 							
 
 
