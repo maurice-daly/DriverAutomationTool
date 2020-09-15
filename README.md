@@ -26,7 +26,7 @@ All source code and installers will be maintained here from 11-March-2020.
 
 DriverAutomationToolSetup.msi - 2F0D8B7959C7A109E154DA8875581EBF
 
-DriverAutomationTool.exe - 2DA930D18B77192ADED8550F663F9176
+DriverAutomationTool.exe - E596D744F1D32D0D74A15BB4C10EBD2A
 
     Version history:
 	6.0.0 - (2018-03-29)	New verison. Graphical redesign, improved layout, HP individual driver downloads
