@@ -12736,7 +12736,7 @@ AABJRU5ErkJgggs='))
 	function Get-DPOptions {
 		global:Write-LogEntry -Value "======== Querying ConfigMgr Distribution Options ========" -Severity 1
 		Set-Location -Path ($SiteCode + ":")
-		$DistributionPoints = Get-WmiObject -ComputerName $SiteServer -Namespace "Root\SMS\Site_$SiteCode" -Class SMS_SystemResourceList | Select-Object -ExpandProperty ServerName -Unique | Sort-Object
+		$DistributionPoints = Get-WmiObject -ComputerName $SiteServer -Namespace "Root\SMS\Site_$SiteCode" -Class SMS_SystemResourceList | Where-Object {$_.RoleName -match "Distribution"} | Select-Object -ExpandProperty ServerName -Unique | Sort-Object
 		$DistributionPointGroups = Get-WmiObject -ComputerName $SiteServer -Namespace "Root\SMS\Site_$SiteCode" -Query "SELECT Distinct Name FROM SMS_DistributionPointGroup" | Select-Object -ExpandProperty Name
 		# Populate Distribution Point List Box
 		$DPGridView.Rows.Clear()
@@ -15460,18 +15460,17 @@ AABJRU5ErkJgggs='))
 					# Standard package logic
 					switch -wildcard ($PlatformComboBox.Text) {
 						*Pilot* {
-							$ModelDriverPacks = Get-CMPackage -name "*Pilot*$Model -*$WindowsVersion*$Architecture*" -Fast | Select-Object Name, PackageID, SourceDate | Sort-Object SourceDate -Descending
+							$ModelDriverPacks = Get-CMPackage -name "*Pilot*$Model -*$WindowsVersion*$Architecture*" -Fast | Select-Object Name, PackageID, SourceDate, Version | Sort-Object SourceDate -Descending
 							
 						}
 						default {
-							$ModelDriverPacks = Get-CMPackage -name "*$Model -*$WindowsVersion*$Architecture*" -Fast | Select-Object Name, PackageID, SourceDate | Sort-Object SourceDate -Descending
+							$ModelDriverPacks = Get-CMPackage -name "*$Model -*$WindowsVersion*$Architecture*" -Fast | Select-Object Name, PackageID, SourceDate, Version | Sort-Object SourceDate -Descending
 							
 						}
 					}
-					$ModelDriverPackages = Get-CMPackage -Name "Drivers -*$Model*$WindowsVersion*$Architecture*" -Fast | Select-Object Name, PackageID, Version, SourceDate | Sort-Object SourceDate -Descending
-					$LatestDriverPackage = $ModelDriverPackages | Sort-Object SourceDate -Descending | Select-Object -First 1
-					if ($ModelDriverPackages.Count -gt "1") {
-						foreach ($DriverPackage in $ModelDriverPackages) {
+					$LatestDriverPackage = $ModelDriverPacks | Sort-Object SourceDate -Descending | Select-Object -First 1
+					if ($ModelDriverPacks.Count -gt "1") {
+						foreach ($DriverPackage in $ModelDriverPacks) {
 							if ($DriverPackage.PackageID -ne $LatestDriverPackage.PackageID) {
 								global:Write-LogEntry -Value "$($Product): Removing $($DriverPackage.Name) / Package ID $($DriverPackage.PackageID)" -Severity 1
 								Remove-CMPackage -id $DriverPackage.PackageID -Force
@@ -15479,6 +15478,7 @@ AABJRU5ErkJgggs='))
 						}
 					}
 					Set-Location -Path $global:TempDirectory
+					}
 				}
 				
 				# Remove legacy BIOS packages
