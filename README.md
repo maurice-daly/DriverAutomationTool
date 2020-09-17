@@ -24,7 +24,7 @@ All source code and installers will be maintained here from 11-March-2020.
 
 **MD5 Hash Values for build 6.4.9**
 
-DriverAutomationToolSetup.msi - 03F574A888FA3B0E2DFAEDF6B270A020
+DriverAutomationToolSetup.msi - 02534EDDB7F285A06EADBE6CA771DC3D
 
 DriverAutomationTool.exe - F2D134C8F39C470049C6D2F228CC8DA1
 
