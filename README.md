@@ -114,6 +114,7 @@ DriverAutomationTool.exe - F82582CE8892E4323905BAE48CF41E46
 							Updated model and distribution point WMI queries for better performance
 							Updated XML logic file creation function
 							Updated Dell XML handling
-							
+	6.4.9 Hotfix - (2020-21-10)	Lenovo XML hotfix
+						
 
 
