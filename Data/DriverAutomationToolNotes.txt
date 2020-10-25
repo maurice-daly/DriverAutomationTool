@@ -16,7 +16,6 @@ Version 6.4.8 - Hotfix
 Fixed Lenovo SKU values missing from packages
 
 Version 6.4.8
-**BLOG POST TO FOLLOW *
 Added - HP SoftPaq package creation
 Added - Windows 10 2004 support
 Added - 7Zip support
