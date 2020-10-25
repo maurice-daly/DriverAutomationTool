@@ -1,4 +1,4 @@
-<xml version="1.0" encoding="utf-16">
+<xml version="1.0" encoding="utf-8">
 <Drivers>
     <Model SystemSKU="Surface_3" ProductName="Surface3/WiFi" DisplayName="Surface 3 Wifi"></Model>
     <Model SystemSKU="Surface_3_US1" ProductName="Surface3/ATT" DisplayName="Surface 3 ATT"></Model>
