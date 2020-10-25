@@ -2,6 +2,7 @@ Release Notes
 -----------------------------------
 IMPORTANT
 - DAT Downloads have been moved to GitHub - https://github.com/maurice-daly/DriverAutomationTool
+- Latest EXE available from - https://github.com/maurice-daly/DriverAutomationTool/blob/master/Content/DriverAutomationTool.exe
 
 Version 6.4.9 Hotfix 1 - (2020-21-10)	Lenovo XML hotfix
 
