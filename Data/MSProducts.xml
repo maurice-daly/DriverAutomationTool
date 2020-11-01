@@ -13,7 +13,7 @@
 	<Model SystemSKU="Surface_Book_2_1793" ProductName="SurfaceBook" DisplayName="Surface Book 2 15" SupportedBuilds="1809,1903,1909,2004"></Model>
 	<Model SystemSKU="Surface_Book_3_1900" ProductName="SurfaceBook" DisplayName="Surface Book 3 13" SupportedBuilds="1809,1903,1909,2004"></Model>
 	<Model SystemSKU="Surface_Book_3_1899" ProductName="SurfaceBook" DisplayName="Surface Book 3 15" SupportedBuilds="1809,1903,1909,2004"></Model>
-	<Model SystemSKU="Surface_Go_1825_Commercial" ProductName="SurfaceGoLTE" DisplayName="Surface Go LTE Commercial"SupportedBuilds="1809,1903,1909,2004"></Model>
+	<Model SystemSKU="Surface_Go_1825_Commercial" ProductName="SurfaceGoLTE" DisplayName="Surface Go LTE Commercial" SupportedBuilds="1809,1903,1909,2004"></Model>
     <Model SystemSKU="Surface_Go_1824_Consumer" ProductName="SurfaceGo" DisplayName="Surface Go Consumer" SupportedBuilds="1809,1903,1909,2004"></Model>
     <Model SystemSKU="Surface_Go_1824_Commercial" ProductName="SurfaceGo" DisplayName="Surface Go Commercial" SupportedBuilds="1809,1903,1909,2004"></Model>	
 	<Model SystemSKU="Surface_Go_2_1927" ProductName="SurfaceGo2" DisplayName="Surface Go 2" SupportedBuilds="1809,1903,1909,2004"></Model>	
