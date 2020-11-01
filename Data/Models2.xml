@@ -1,5 +1,4 @@
-<xml version="1.0">
-<xml-stylesheet type='text/xsl' href='style.xsl'>
+<?xml version="1.0" encoding="UTF-8"?>
 <!--Settings used with MSEndpointMgr Driver Automation Tool-->
 <Drivers>
 	<Model SystemSKU="Surface_3" ProductName="Surface3/WiFi" DisplayName="Surface 3 Wifi" SupportedBuilds="1809,1903,1909,2004"></Model>
