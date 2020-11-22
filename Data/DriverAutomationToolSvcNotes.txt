@@ -1,0 +1,7 @@
+Release Notes
+-----------------------------------
+Version 1.0.1
+Microsoft Surface update for matching WMI
+
+Version 1.0.0
+Initial Release

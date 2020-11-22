@@ -1,0 +1,253 @@
+<?xml version="1.0" encoding="utf-16"?>
+<Drivers>
+    <Model name="Surface_3">
+        <OSSupport name="Win81">
+                <DownloadURL>https://download.microsoft.com/download/C/5/C/C5C75DC4-0807-44A8-BCC1-6064CFD150F2/Surface3_Win8x_160850_0.msi</DownloadURL>
+        </OSSupport>
+        <OSSupport name="Win10">
+                <Win10Build name="RS2">
+                    <DownloadURL>https://download.microsoft.com/download/C/5/C/C5C75DC4-0807-44A8-BCC1-6064CFD150F2/Surface3_WiFi_Win10_15063_1801703_0.msi</DownloadURL>
+                </Win10Build>
+                <Win10Build name="RS3">
+                    <DownloadURL>https://download.microsoft.com/download/C/5/C/C5C75DC4-0807-44A8-BCC1-6064CFD150F2/Surface3_WiFi_Win10_15063_1801703_0.msi</DownloadURL>
+                </Win10Build>
+                <Win10Build name="RS4">
+                    <DownloadURL>https://download.microsoft.com/download/C/5/C/C5C75DC4-0807-44A8-BCC1-6064CFD150F2/Surface3_WiFi_Win10_17134_1801703_3.msi</DownloadURL>
+                </Win10Build>
+        </OSSupport>
+    </Model>
+	<Model name="Surface_3_NAG">
+		<OSSupport name="Win81">
+                <DownloadURL>https://download.microsoft.com/download/7/5/7/757B0C6E-0C22-400B-90EA-D8AFBD64CC16/Surface3_4GLTE-NorthAmericaUnlocked_Win8x_161250_0.msi</DownloadURL>
+		</OSSupport>
+        <OSSupport name="Win10">
+                <Win10Build name="RS2">
+                    <DownloadURL>https://download.microsoft.com/download/7/5/7/757B0C6E-0C22-400B-90EA-D8AFBD64CC16/Surface3_4GLTE-NorthAmericaUnlocked_Win10_15063_1801703_0.msi</DownloadURL>
+                </Win10Build>
+                <Win10Build name="RS3">
+                    <DownloadURL>https://download.microsoft.com/download/7/5/7/757B0C6E-0C22-400B-90EA-D8AFBD64CC16/Surface3_4GLTE-NorthAmericaUnlocked_Win10_15063_1801703_0.msi</DownloadURL>
+                </Win10Build>
+                <Win10Build name="RS4">
+                    <DownloadURL>https://download.microsoft.com/download/7/5/7/757B0C6E-0C22-400B-90EA-D8AFBD64CC16/Surface3_4GLTE-NorthAmericaUnlocked_Win10_17134_1801703_3.msi</DownloadURL>
+                </Win10Build>
+		 </OSSupport>			
+	</Model>
+	<Model name="Surface_3_USA2">
+		<OSSupport name="Win81">
+
+                <DownloadURL>https://download.microsoft.com/download/0/E/B/0EB6A7D2-DDE0-4B85-97DE-D4330371634C/Surface3_4GLTE-VZ_Win8x_161250_0.msi</DownloadURL>
+
+		</OSSupport>
+		<OSSupport name="Win10">
+                <Win10Build name="RS2">
+                    <DownloadURL>https://download.microsoft.com/download/0/E/B/0EB6A7D2-DDE0-4B85-97DE-D4330371634C/Surface3_4GLTE-VZ_Win10_15063_1801703_0.msi</DownloadURL>
+                </Win10Build>
+                <Win10Build name="RS3">
+                    <DownloadURL>https://download.microsoft.com/download/0/E/B/0EB6A7D2-DDE0-4B85-97DE-D4330371634C/Surface3_4GLTE-VZ_Win10_15063_1801703_0.msi</DownloadURL>
+                </Win10Build>
+                <Win10Build name="RS4">
+                    <DownloadURL>https://download.microsoft.com/download/0/E/B/0EB6A7D2-DDE0-4B85-97DE-D4330371634C/Surface3_4GLTE-VZ_Win10_17134_1801703_3.msi</DownloadURL>
+                </Win10Build>
+
+		</OSSupport>
+	</Model>
+	<Model name="Surface_3_US1">
+		<OSSupport name="Win81">
+
+                <DownloadURL>https://download.microsoft.com/download/9/7/2/9728FCD1-A108-4EE6-ADFD-FB33C2320CCF/Surface3_4GLTE-ATT_Win8x_161250_0.msi</DownloadURL>
+
+		</OSSupport>
+		<OSSupport name="Win10">
+
+                <Win10Build name="RS2">
+                    <DownloadURL>https://download.microsoft.com/download/9/7/2/9728FCD1-A108-4EE6-ADFD-FB33C2320CCF/Surface3_4GLTE-ATT_Win10_15063_1801703_0.msi</DownloadURL>
+                </Win10Build>
+                <Win10Build name="RS3">
+                    <DownloadURL>https://download.microsoft.com/download/9/7/2/9728FCD1-A108-4EE6-ADFD-FB33C2320CCF/Surface3_4GLTE-ATT_Win10_15063_1801703_0.msi</DownloadURL>
+                </Win10Build>
+                <Win10Build name="RS4">
+                    <DownloadURL>https://download.microsoft.com/download/9/7/2/9728FCD1-A108-4EE6-ADFD-FB33C2320CCF/Surface3_4GLTE-ATT_Win10_17134_1801703_3.msi</DownloadURL>
+                </Win10Build>
+
+		</OSSupport>
+	</Model>
+	<Model name="Surface_3_ROW">
+		<OSSupport name="Win81">
+		            <ModelType name="ROW">
+                <DownloadURL>https://download.microsoft.com/download/D/B/9/DB9AC338-1F7A-4CFE-97E1-B089DED46831/Surface3_4GLTE-RestOfTheWorld_Win8x_161250_0.msi</DownloadURL>
+            </ModelType>
+		</OSSupport>
+		<OSSupport name="Win10">
+		            <ModelType name="ROW">
+                <Win10Build name="RS2">
+                    <DownloadURL>https://download.microsoft.com/download/D/B/9/DB9AC338-1F7A-4CFE-97E1-B089DED46831/Surface3_4GLTE-RestOfTheWorld_Win10_15063_1801703_0.msi</DownloadURL>
+                </Win10Build>
+                <Win10Build name="RS3">
+                    <DownloadURL>https://download.microsoft.com/download/D/B/9/DB9AC338-1F7A-4CFE-97E1-B089DED46831/Surface3_4GLTE-RestOfTheWorld_Win10_15063_1801703_0.msi</DownloadURL>
+                </Win10Build>
+                <Win10Build name="RS4">
+                    <DownloadURL>https://download.microsoft.com/download/D/B/9/DB9AC338-1F7A-4CFE-97E1-B089DED46831/Surface3_4GLTE-RestOfTheWorld_Win10_17134_1801703_3.msi</DownloadURL>
+                </Win10Build>
+            </ModelType>
+		</OSSupport>
+	</Model>
+    <Model name="Surface Pro 3">
+        <OSSupport name="Win81">
+            <DownloadURL>https://download.microsoft.com/download/2/0/7/2073C22F-2F31-4F4A-8059-E54C91C564A9/SurfacePro3_Win8x_9600_1702002_0.msi</DownloadURL>
+        </OSSupport>
+        <OSSupport name="Win10">
+            <Win10Build name="RS2">
+                <DownloadURL>https://download.microsoft.com/download/2/0/7/2073C22F-2F31-4F4A-8059-E54C91C564A9/SurfacePro3_Win10_15063_1802002_0.msi</DownloadURL>
+            </Win10Build>
+            <Win10Build name="RS3">
+                <DownloadURL>https://download.microsoft.com/download/2/0/7/2073C22F-2F31-4F4A-8059-E54C91C564A9/SurfacePro3_Win10_16299_1803002_0.msi</DownloadURL>
+            </Win10Build>
+            <Win10Build name="RS4">
+                <DownloadURL>https://download.microsoft.com/download/2/0/7/2073C22F-2F31-4F4A-8059-E54C91C564A9/SurfacePro3_Win10_16299_1803002_0.msi</DownloadURL>
+            </Win10Build>
+        </OSSupport>
+    </Model>
+    <Model name="Surface Pro 4">
+        <OSSupport name="Win10">
+            <Win10Build name="RS2">
+                <DownloadURL>https://download.microsoft.com/download/6/A/C/6ACB37C4-E4C1-4E0E-BBAE-AC7A0C303593/SurfacePro4_Win10_15063_1802801_0.msi</DownloadURL>
+            </Win10Build>
+            <Win10Build name="RS3">
+                <DownloadURL>https://download.microsoft.com/download/6/A/C/6ACB37C4-E4C1-4E0E-BBAE-AC7A0C303593/SurfacePro4_Win10_16299_1803301_1.msi</DownloadURL>
+            </Win10Build>
+            <Win10Build name="RS4">
+                <DownloadURL>https://download.microsoft.com/download/6/A/C/6ACB37C4-E4C1-4E0E-BBAE-AC7A0C303593/SurfacePro4_Win10_16299_1803301_1.msi</DownloadURL>
+            </Win10Build>
+        </OSSupport>
+    </Model>
+    <Model name="Surface Pro 5">
+        <OSSupport name="Win10">
+            <Win10Build name="RS2">
+                <DownloadURL>https://download.microsoft.com/download/4/C/7/4C7DA85D-03DE-4B89-B8E0-386437331C46/SurfacePro_WIFI_Win10_15063_1804907_1.msi</DownloadURL>
+            </Win10Build>
+            <Win10Build name="RS3">
+                <DownloadURL>https://download.microsoft.com/download/4/C/7/4C7DA85D-03DE-4B89-B8E0-386437331C46/SurfacePro_Win10_16299_1806007_3.msi</DownloadURL>
+            </Win10Build>
+            <Win10Build name="RS4">
+                <DownloadURL>https://download.microsoft.com/download/4/C/7/4C7DA85D-03DE-4B89-B8E0-386437331C46/SurfacePro_Win10_16299_1806007_3.msi</DownloadURL>
+            </Win10Build>
+			<Win10Build name="RS5">
+                <DownloadURL>https://download.microsoft.com/download/4/C/7/4C7DA85D-03DE-4B89-B8E0-386437331C46/SurfacePro_Win10_17763_1807007_1.msi</DownloadURL>
+            </Win10Build>
+        </OSSupport>
+    </Model>
+    <Model name="Surface Pro 5 LTE">
+        <OSSupport name="Win10">
+            <Win10Build name="RS2">
+                <DownloadURL>https://download.microsoft.com/download/4/1/6/416D7D4F-64D9-4633-A5CC-922A941854FD/SurfacePro_LTE_Win10_15063_1804807_0.msi</DownloadURL>
+            </Win10Build>
+            <Win10Build name="RS3">
+                <DownloadURL>https://download.microsoft.com/download/4/C/7/4C7DA85D-03DE-4B89-B8E0-386437331C46/SurfacePro_Win10_16299_1806007_3.msi</DownloadURL>
+            </Win10Build>
+            <Win10Build name="RS4">
+                <DownloadURL>https://download.microsoft.com/download/4/C/7/4C7DA85D-03DE-4B89-B8E0-386437331C46/SurfacePro_Win10_16299_1806007_3.msi</DownloadURL>
+            </Win10Build>
+			<Win10Build name="RS5">
+                <DownloadURL>https://download.microsoft.com/download/4/C/7/4C7DA85D-03DE-4B89-B8E0-386437331C46/SurfacePro_Win10_17763_1807007_1.msi</DownloadURL>
+            </Win10Build>
+        </OSSupport>
+    </Model>
+	    <Model name="Surface Pro 6">
+        <OSSupport name="Win10">
+            <Win10Build name="RS4">
+                <DownloadURL>https://download.microsoft.com/download/8/9/8/8986DE75-9E21-478A-B002-A7E92BA0F053/SurfacePro6_Win10_17134_1808507_3.msi</DownloadURL>
+            </Win10Build>
+			<Win10Build name="RS5">
+                <DownloadURL>https://download.microsoft.com/download/8/9/8/8986DE75-9E21-478A-B002-A7E92BA0F053/SurfacePro6_Win10_17763_1808707_3.msi</DownloadURL>
+            </Win10Build>
+        </OSSupport>
+    </Model>
+    <Model name="Surface Laptop">
+        <OSSupport name="Win10">
+            <Win10Build name="RS2">
+                <DownloadURL>https://download.microsoft.com/download/4/3/C/43C2BEA2-3C14-4DC1-B984-7556B389AC2E/SurfaceLaptop_Win10_15063_1803308_0.msi</DownloadURL>
+            </Win10Build>
+            <Win10Build name="RS3">
+                <DownloadURL>https://download.microsoft.com/download/4/3/C/43C2BEA2-3C14-4DC1-B984-7556B389AC2E/SurfaceLaptop_Win10_16299_1803508_1.msi</DownloadURL>
+            </Win10Build>
+            <Win10Build name="RS4">
+                <DownloadURL>https://download.microsoft.com/download/4/3/C/43C2BEA2-3C14-4DC1-B984-7556B389AC2E/SurfaceLaptop_Win10_16299_1803508_1.msi</DownloadURL>
+            </Win10Build>
+        </OSSupport>
+    </Model>
+    <Model name="Surface Book">
+        <OSSupport name="Win10">
+            <Win10Build name="RS2">
+                <DownloadURL>https://download.microsoft.com/download/D/8/B/D8BB7912-5DB3-4AFF-8554-8F2E0B4CAB41/SurfaceBook_Win10_15063_1802100_0.msi</DownloadURL>
+            </Win10Build>
+            <Win10Build name="RS3">
+                <DownloadURL>https://download.microsoft.com/download/D/8/B/D8BB7912-5DB3-4AFF-8554-8F2E0B4CAB41/SurfaceBook_Win10_16299_1805000_4.msi</DownloadURL>
+            </Win10Build>
+            <Win10Build name="RS4">
+                <DownloadURL>https://download.microsoft.com/download/D/8/B/D8BB7912-5DB3-4AFF-8554-8F2E0B4CAB41/SurfaceBook_Win10_17134_1805100_3.msi</DownloadURL>
+            </Win10Build>
+        </OSSupport>
+    </Model>
+    <Model name="Surface Book 2 13">
+        <OSSupport name="Win10">
+            <Win10Build name="RS2">
+                <DownloadURL>https://download.microsoft.com/download/9/4/F/94F7AED2-D3ED-4A60-AB94-A0D078FE6DF6/SurfaceBook2_Win10_15063_1802509_3.msi</DownloadURL>
+            </Win10Build>
+            <Win10Build name="RS3">
+                <DownloadURL>https://download.microsoft.com/download/9/4/F/94F7AED2-D3ED-4A60-AB94-A0D078FE6DF6/SurfaceBook2_Win10_15063_1802509_3.msi</DownloadURL>
+            </Win10Build>
+            <Win10Build name="RS4">
+                <DownloadURL>https://download.microsoft.com/download/9/4/F/94F7AED2-D3ED-4A60-AB94-A0D078FE6DF6/SurfaceBook2_Win10_15063_1802509_3.msi</DownloadURL>
+            </Win10Build>
+        </OSSupport>
+    </Model>
+    <Model name="Surface Book 2 15">
+        <OSSupport name="Win10">
+            <Win10Build name="RS2">
+                <DownloadURL>https://download.microsoft.com/download/9/4/F/94F7AED2-D3ED-4A60-AB94-A0D078FE6DF6/SurfaceBook2_Win10_15063_1802509_3.msi</DownloadURL>
+            </Win10Build>
+            <Win10Build name="RS3">
+                <DownloadURL>https://download.microsoft.com/download/9/4/F/94F7AED2-D3ED-4A60-AB94-A0D078FE6DF6/SurfaceBook2_Win10_15063_1802509_3.msi</DownloadURL>
+            </Win10Build>
+            <Win10Build name="RS4">
+                <DownloadURL>https://download.microsoft.com/download/9/4/F/94F7AED2-D3ED-4A60-AB94-A0D078FE6DF6/SurfaceBook2_15in_Win10_16299_1802909_2.msi</DownloadURL>
+            </Win10Build>
+        </OSSupport>
+    </Model>
+    <Model name="Surface Studio">
+        <OSSupport name="Win10">
+            <Win10Build name="RS2">
+                <DownloadURL>https://download.microsoft.com/download/4/5/2/452A1A18-1584-423C-A2D0-D76249EA989A/SurfaceStudio_Win10_15063_1801006_4.msi</DownloadURL>
+            </Win10Build>
+            <Win10Build name="RS3">
+                <DownloadURL>https://download.microsoft.com/download/4/5/2/452A1A18-1584-423C-A2D0-D76249EA989A/SurfaceStudio_Win10_16299_1802406_4.msi</DownloadURL>
+            </Win10Build>
+            <Win10Build name="RS4">
+                <DownloadURL>https://download.microsoft.com/download/4/5/2/452A1A18-1584-423C-A2D0-D76249EA989A/SurfaceStudio_Win10_17134_1802406_4.msi</DownloadURL>
+            </Win10Build>
+			<Win10Build name="RS5">
+                <DownloadURL>https://download.microsoft.com/download/4/5/2/452A1A18-1584-423C-A2D0-D76249EA989A/SurfaceStudio_Win10_17763_1805006_0.msi</DownloadURL>
+            </Win10Build>
+        </OSSupport>
+    </Model>
+	    <Model name="Surface Studio 2">
+        <OSSupport name="Win10">
+            <Win10Build name="RS4">
+                <DownloadURL>https://download.microsoft.com/download/2/E/A/2EA15C93-3AEE-4627-A6B9-B2906A1AD192/SurfaceStudio2_Win10_17134_1801510_1.msi</DownloadURL>
+            </Win10Build>
+			<Win10Build name="RS5">
+                <DownloadURL>https://download.microsoft.com/download/2/E/A/2EA15C93-3AEE-4627-A6B9-B2906A1AD192/SurfaceStudio2_Win10_17763_1801710_0.msi</DownloadURL>
+            </Win10Build>
+        </OSSupport>
+    </Model>
+    <Model name="Surface Go">
+        <OSSupport name="Win10">
+		    <Win10Build name="RS3">
+                <DownloadURL>https://download.microsoft.com/download/1/9/2/19206AF7-09CE-4AA6-8966-051D2E79E62B/SurfaceGo_Win10_16299_1803010_WiFi_0.msi</DownloadURL>
+            </Win10Build>
+            <Win10Build name="RS4">
+                <DownloadURL>https://download.microsoft.com/download/1/9/2/19206AF7-09CE-4AA6-8966-051D2E79E62B/SurfaceGo_Win10_17134_1803010_WiFi_0.msi</DownloadURL>
+            </Win10Build>
+        </OSSupport>
+    </Model>
+</Drivers>

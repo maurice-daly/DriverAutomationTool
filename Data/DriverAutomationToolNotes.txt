@@ -1,0 +1,342 @@
+Release Notes
+-----------------------------------
+IMPORTANT
+- DAT Downloads have been moved to GitHub - https://github.com/maurice-daly/DriverAutomationTool
+- Latest EXE available from - https://github.com/maurice-daly/DriverAutomationTool/blob/master/Content/DriverAutomationTool.exe
+
+Version 6.4.9 Hotfix 1 - (2020-21-10)	Lenovo XML hotfix
+
+Version 6.4.9 
+Added WIM Support
+Updated model and distribution point WMI queries for better performance
+Updated XML logic file creation function
+Updated Dell XML handling
+
+Version 6.4.8 - Hotfix
+Fixed Lenovo SKU values missing from packages
+
+Version 6.4.8
+Added - HP SoftPaq package creation
+Added - Windows 10 2004 support
+Added - 7Zip support
+Added - XML Logic Package support
+Updated UI look and performance
+
+Version 6.4.6
+Fixed Lenovo download link logic and added further output
+Updated package creation for all packages just to include the SKU/BaseBoard values
+Updated link within the tool to GitHub as Technet is being retired
+Updated custom package creation to include Windows 10 1909	
+
+Version 6.4.5
+Updated Dell Flash64w download location in order to download latest available build
+Fixed UI elements not disabling in the admin control
+Fixed OS selection on initial load not disabling Dell if the previous OS selection was a Windows 10 build specific selection
+Updated Find Model button to find but not select, and addded Find + Select button
+
+Version 6.4.4
+Fix: Lenovo driver packages not extracting / creating correctly. This was due to a change in switches with Lenovo's packaging tool. 
+Fix: Native driver package imports
+New Feature: Support for zip compression of standard driver packages. To be used with an upcoming update to the SCConfigMgr MDM apply script.
+
+NOTE
+Over the past few days it has been reported that the tool was being picked up as a virus. I have recompiled the installer as an MSI and uploaded. MD5 hashes are included.
+
+Version 6.4.3
+Fix : OOB update release to cater for changes in HP extraction switches. Driver package creation times reduced. Reduced code base. 
+Note: Intune functionality disabled in this release, to follow in 6.5.0
+
+Version 6.4.1
+Fix: intermittent issues with Lenovo HTML / JavaScript parsing causing driver matching failures
+Fix: Issues for Lenovo devices with long SKU listings with description change
+Fix: Issues with custom package creation not displaying the SKU value correctly
+Update: Tweak to MS model matching logic
+
+Version 6.4.0
+New: Added UI tweaks with more feedback and driver search text bar now searching on enter key
+New: Windows 10 1909 support
+Fix: Dell 2-in-1 version numbers in packages
+Fix: Content source clean up issues
+Fix: Surface driver packages not creating successfully. Due to change in internal folder structure
+Remvoed: Microsoft Surface firmware only packages
+
+Version 6.3.1
+Fix: isseus with SKU values impacting on downloads and packaging
+
+Version 6.3.0
+New: Added support for Surface firmware packages
+New: Updated Surface download logic
+Fix: Various UI bug fixes
+
+Version 6.2.0
+New: Installer based deployment. Updates and fixes. Windows 10 1903 support
+
+Version 6.1.7
+Fix: Condition whereby not all selected models are saved within the XML settings file	
+
+Version 6.1.6
+Fix: Reset tool form issues resolved
+Fix: Logging timezone issues resolved
+Fix: Source package clean up issues resolved
+Additional checking for MDT and ConfigMgr platforms
+Removal of legacy code
+
+Version 6.1.5 
+HP BIOS download fix
+Added move to Windows 10 1809 build in package management
+Manufacturer correction for Microsoft custom packages
+
+Version 6.1.4
+Improved GUI response for make and OS selections
+Fix for some Dell models not finding the BIOS download link URL
+Additional MDT driver path options
+
+DRIVERS AS A SERVICE
+Using standalone machines or Intune managed machines? Then check out Drivers As A Service - http://www.scconfigmgr.com/2018/11/22/drivers-as-a-service-version-1-0-0-released/
+
+Version 6.1.3
+Resolved issue with Bits-Transfer module not loading in Windows Server 2012 R2. TLS now defaults to 1.2 for HTTPS downloads
+
+Version 6.1.2
+Improved full compiled exe
+Added support for Windows 10 1809 when manufactures support downloads
+Microsoft Surface Windows 10 build support
+Minor GUI improvements
+Improved supersedence of drivers
+Added supersedence of BIOS packages
+
+Version 6.1.1
+Fix for Lenovo driver downloads.
+Fix for custom package creation issue and minor GUI updates for resizing.
+
+Version 6.1.0
+Updated GUI. Model list can now be expanded
+Support for Lenovo Windows 10 version driver packages
+Added support for third party WinPE imaging through XML based machine for MDM
+Added admin controls to hide tabs
+Updated driver package name formatting to use Windows 10 version instead of build
+Added conversion for Windows 10 packages with version numbeers to build numbers
+All download links now use HTTPS
+Updated URL for Dell Flash64W utility and changed download matching
+Added model count indicator on search page
+Added additional GUI feedback during model source downloads 
+
+Version 6.0.9-HF
+Hotfix for HP BIOS downloads
+
+Version 6.0.9
+Lenovo model lookup failure fix. Lenovo Windows 10 download matching workaround. Current download will use latest Windows 10 build download link until build numbers are available in the XML. Data grid updates for both Models and Package Management sections to clearer highlight selected values 
+
+Version 6.0.8
+HP SoftPaq packaging code changes. Fix for HP 1803 downloads and catalogue XML issuess. SCCM custom folder code optimisation. Bits enabled by default, can be disabled by setting the option manually and then closing the GUI to commit the save. Additional error handling.
+
+Version 6.0.7
+Fix for HP catalogue XML extract. 
+Added OS build number to custom packages where HP is the make. 
+Removed OS info from BIOS packages
+
+Version 6.0.6
+Windows 10 build 1803 support added (HP)
+
+Version 6.0.5
+HP matching logic updated. 
+Custom SCCM console root logic updated
+
+Version 6.0.4
+Fix for Dell system links not being found for some models when downloading BIOS or driver packages
+DP & DPG\'s datagrid will now clear on each detection
+Added the ability to provide a custom packages root folder structure or drop all packages into the root folder
+
+Version 6.0.3
+A couple more code tweaks and fixes
+
+Version 6.0.2
+Package storage destination browse button fix
+Duplicate DP/DPG fix
+
+Version 6.0.1
+Known model matching fix
+
+Version 6.0.0
+New Graphical Layout
+HP Softpaq Driver Catalog Support
+Storage Changes
+Find Model / Driver Feature
+
+Version 5.2.1
+Updated Dell multiple model package matching.
+Updated BITS job reporting / handling
+
+Version 5.2.0
+Code changes and optimisation throughout the script
+Update for Dell XML\'s containing duplicate model matches with different SKU values
+Bits jobs download file sizes will now be compared for driver downloads
+Additional checks for BIOS download completion
+
+Version 5.1.8
+Code update and MDT import fix
+
+Version 5.1.7
+Fix for Lenovo BIOS extracts resulting in empty packages
+
+Version 5.1.6
+Changes:  Update for Lenovo Windows 8.1 driver matches
+
+Version 5.1.5
+Changes: Updates to the code that deals with BIOS downloads. Updates to the HP BIOS download parsing code due to XML formatting changes
+
+Version 5.1.4
+Changes: Lenovo Update - Important: Package name will no longer include the SKU value in the package name. 
+Processing updates and minor tweaks. 
+
+Version 5.1.3
+Changes: Updated to use new GetCWVersion method for 1.5.0 and later of the ConfigMgr web service
+
+Version 5.1.2
+Changes : Changed existing package method detection for standard and driver packages
+Fixes: Typo Corrected
+
+Version 5.1.1
+New Features:
+Added MDM/MBM diagnostics tab for testing connectivity to the ConfigMgr WebService
+
+Version 5.1.0
+Fixes : Fixed issue with scheduled task button not running function
+
+Version 5.0.9
+Fixes : Fixed issue with moving packages between deployment states
+Fix for Lenovo file security warnings
+
+Version 5.0.8
+Added WMI known models for HP
+Added additional check for known models so they now display only where the OS selected is supported.
+
+Version 5.0.7
+Fixes: Added sleep commands for binary dif replication and distribution to allow for slow package creation.
+
+Version 5.0.6
+Fixes : Fix for Lenovo driver package creation where the destination directory and contents	already exist from a deleted package
+Update: Added pre-req check for the package directory
+
+Version 5.0.5
+Updates: Driver fallback switch added
+
+Version 5.0.4
+New Features:
+Improved code performance
+Fixes : Microsoft Surface download fixes
+
+Version 5.0.3
+New Features:
+Added Driver Fallback Package options 
+Fixes: Updated source location for HP BIOS downloads
+ 
+Version 5.0.2
+New Features:
+Added option to opt in or opt out of WMI model imports when using the tool with Dell & Lenovo hardware and ConfigMgr. 
+Added additional verbose output and exception catches
+Added boot image check on driver removal
+
+Version 5.0.1
+New Features:
+Added custom package creation tab. Allows both manual and CSV imports for creating packages in both MDT and ConfigMgr for use with MDM.
+Fixes:
+Minor bug fixes
+
+Version 5.0.0
+New Features:
+Redesigned user interface. 						  ConfigMgr
+- Added pilot option for new packages. 							  - Added driver state management for production, pilot & retirement
+- Move packages between each state within the tool
+MDT
+- Added ability to specify alternative MDT PS module location
+- Added ability to select one or mode MDT deployment shares
+
+Version 4.2.3
+Bug fix for HP HTTPS inclusion in their XML feed
+
+Version 4.2.2
+Bug fix for Dell Flash Utility.
+
+Version 4.2.1
+Acer support has been deprecated. 
+Updates: Added additional output for downloads and conditional checks for downloads. BIOS packages will now include the system model details in the description for use with Modern BIOS Management.
+
+Version 4.2.0
+Updated GUI 
+Improved proxy server validation. 
+Proxy server settings apply to all web retrieval methods.						 Fixed Acer link bug. Minor code clean up.
+
+Version 4.1.3
+Added HP BIOS download/packaging support
+Added SystemSKU details in the package descriptions for updates to Modern Driver / BIOS Management
+
+Version 4.1.2
+Bug fix for Dell 32 bit models 
+
+Version 4.1.1
+Added checks for MDT environment and allowed for non domain accounts to set the scheduled task where this is detected. 
+Added Microsoft Surface WMI entries in the package description.
+
+Version 4.1.0
+Updates / Improvements
+Added the option to run silently / scheduled with the Run-DriverAutomationToolSVC.ps1 script. Updated Microsoft Surface extraction process to only copy the Driver and Firmware folders.
+
+Version 4.0.9
+Updates/Improvements
+Added full Lenovo model type listing into the BIOS description and the release date. This will be used to more accurately match BIOS updates using the SCConfigMgr web service.
+
+Version 4.0.8
+Updates/Improvements:
+Lenovo related updates including models now showing the full model name i.e. ThinkCentre M800z. Lenovo model WMI query from ConfigMgr will now match against the model lists by comparing the model code against the model name in the XML, then populate known models in the selected models list box.
+
+Version 4.0.6
+Bug Fixes
+- Dell BIOS download bug fix. Updates to the XML now have models sharing the bios listed with / separators. Added a condition to check that and also to report if no matching bios was found.
+
+Version 4.0.5
+Bug Fixes
+- HP XML changes resulted in duplicate models being displayed and multiple matching URLs for downloads. These issues have now been resolved.
+- Lenovo FindDriver function re-written to use raw content and regex to find the driver, this appears to be more stable than the previous Lenovo supplied function.
+
+Version 4.0.4
+Bug Fixes 
+- MDT Import Bug Fix. When importing drivers into MDT as a background process we have observed instances whereby drivers are silently skipped. This does not occur when the Import-MDTDriver process runs in the foreground, so I have moved this process to the foreground and added an entry to the log window.
+
+Version 4.0.3
+Bug Fixes
+- Dell BIOS download bug. Revised model matching based on the base number and then cross referencing the supported models for each match for improved model matching.
+
+Version 4.0.2 
+New Features
+- Added manufacturer selection export/import settings. 
+The tool will now connect to the ConfigMgr environment automatically if the site code is present in the DATSettings.XML
+
+Version 4.0.1
+Bug Fixes
+- Bug corrected for Dell models with AIO variants resulting in the base model picking up the AIO BIOS package.
+
+Version 4.0.0
+New Features
+-Added functions to allow the tool to remember previously set values. The values are stored in a DATSettings.xml file after the initial first time use.
+
+Version 3.9 
+Script XML use optimisations. Lenovo BIOS extract and packaging. Minor bug fixes.
+
+Version 3.8 
+Reduced HP extracted paths by only copying the driver folders and not the HP folder structure
+
+Version 3.7 
+Dell BIOS discovery and download links now catered for via the Dell Driver catalog XML
+Added Binary Differential option for distribution points
+
+Version 3.6 
+
+- Added support for Lenovo BIOS downloads. The file is downloaded but not packaged as Lenovo BIOS updates are non uniform in their application
+- Fixed issue with downloads selected to \"All\" attempting BIOS downloads for manufacturers which are not currently supported by the BIOS download process
+- Changed clean up process. The script will no longer clean up the EXE/CAB files unless selected in the clean up tab
+
+Version 3.5
+- Added check for HP driver extraction due to issues with some softpaqs not obeying the silent extract directory path
+- Changed network path text boxes to modern folder browse boxes
+- MIF revision settings added
