@@ -22,11 +22,6 @@ Implemenation guides for modern driver management and modern bios management can
 
 All source code and installers will be maintained here from 11-March-2020. 
 
-**MD5 Hash Values for build 6.4.6**
-DriverAutomationToolSetup.msi - 09C78BB04B88A99176A685B70D23C6C9
-DriverAutomationTool-Verbose.exe - 64611A06AFF647D2D07B7674FF055573
-DriverAutomationTool.exe - 6E751D29C504DBCBEAE3DE7F6B2A8753
-
     Version history:
 	6.0.0 - (2018-03-29)	New verison. Graphical redesign, improved layout, HP individual driver downloads
 	6.0.1 - (2018-03-30)	Model matching fix
