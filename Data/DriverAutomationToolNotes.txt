@@ -2,6 +2,25 @@ Release Notes
 -----------------------------------
 IMPORTANT
 - DAT Downloads have been moved to GitHub - https://github.com/maurice-daly/DriverAutomationTool
+- Latest EXE available from - https://github.com/maurice-daly/DriverAutomationTool/blob/master/Content/DriverAutomationTool.exe
+
+Version 6.4.9 Hotfix 1 - (2020-21-10)	Lenovo XML hotfix
+
+Version 6.4.9 
+Added WIM Support
+Updated model and distribution point WMI queries for better performance
+Updated XML logic file creation function
+Updated Dell XML handling
+
+Version 6.4.8 - Hotfix
+Fixed Lenovo SKU values missing from packages
+
+Version 6.4.8
+Added - HP SoftPaq package creation
+Added - Windows 10 2004 support
+Added - 7Zip support
+Added - XML Logic Package support
+Updated UI look and performance
 
 Version 6.4.6
 Fixed Lenovo download link logic and added further output
