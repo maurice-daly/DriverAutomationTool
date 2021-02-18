@@ -11,3 +11,10 @@ Replace the DriverAutomationTool.exe
 Replace the Invoke-CMApplyDriverPackage.ps1
 
 You can now test 7-zip compressed driver packages.
+
+Version Updates 
+6.5.2 - Windows 10 20H2 Support
+		Minor bug fixes and updates for XML content parsing
+		Notes: Please ensure you are capturing the baseboard values in your HW discovery for known model matching
+		
+		MD5 Hash - 29CABBB471756A2C8431AAA691FD060D
