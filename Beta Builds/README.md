@@ -17,4 +17,4 @@ Version Updates
 		Minor bug fixes and updates for XML content parsing
 		Notes: Please ensure you are capturing the baseboard values in your HW discovery for known model matching
 		
-		MD5 Hash - 29CABBB471756A2C8431AAA691FD060D
+		MD5 Hash - 5B3729E1DAC02D757128AC61E3413DB2
