@@ -2,7 +2,12 @@ Release Notes
 -----------------------------------
 IMPORTANT
 - DAT Downloads have been moved to GitHub - https://github.com/maurice-daly/DriverAutomationTool
-- Latest EXE available from - https://github.com/maurice-daly/DriverAutomationTool/blob/master/Content/DriverAutomationTool.exe
+- Latest EXE available from - https://github.com/maurice-daly/DriverAutomationTool/blob/master/Beta%20Builds/6.5.2/DriverAutomationTool.exe
+
+
+Version 6.5.2 
+Windows 20H2 Support
+Available here - https://github.com/maurice-daly/DriverAutomationTool/blob/master/Beta%20Builds/6.5.0/DriverAutomationTool.exe
 
 Version 6.5.0 Pre-Release / BETA
 Updated Suface download logic
