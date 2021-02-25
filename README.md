@@ -1,10 +1,10 @@
-![SCConfigMgr Driver Auatomation Tool](https://i1.wp.com/msendpointmgr.com/wp-content/uploads/2020/04/MSEndpoingMgrDat.jpg?resize=1024%2C641&ssl=1)
+![SCConfigMgr Driver Auatomation Tool](https://i1.wp.com/www.scconfigmgr.com/wp-content/uploads/2019/12/img_5de59253bea43.png?resize=1024%2C641&ssl=1)
 
 # Driver Automation Tool
 
-Welcome to the new home of the **MSEndpointMgr Driver Automation Tool**.
+Welcome to the new home of the **SCConfigMgr Driver Automation Tool**.
 
-**If you would like to donate to the development of this tool, then please use the sponsor button at the top of the page.**
+If you would like to donate to the development of this tool, then please use the sponsor button at the top of the page.
 
 **FAQ**
 
@@ -16,17 +16,16 @@ Welcome to the new home of the **MSEndpointMgr Driver Automation Tool**.
 
 Implemenation guides for modern driver management and modern bios management can be found here;
 
-[https://www.msendpointmgr.com/modern-driver-management/](https://www.msendpointmgr.com/modern-driver-management/)
+[https://www.scconfigmgr.com/modern-driver-management/](https://www.scconfigmgr.com/modern-driver-management/)
 
-[https://www.msendpointmgr.com/modern-bios-management/](https://www.msendpointmgr.com/modern-bios-management/)
+[https://www.scconfigmgr.com/modern-bios-management/](https://www.scconfigmgr.com/modern-bios-management/)
 
 All source code and installers will be maintained here from 11-March-2020. 
 
-**MD5 Hash Values for build 6.4.9**
-
-DriverAutomationToolSetup.msi - 02534EDDB7F285A06EADBE6CA771DC3D
-
-DriverAutomationTool.exe - BDFBED02386B33090FD96E19C7FACDAC
+**MD5 Hash Values for build 6.4.6**
+DriverAutomationToolSetup.msi - 09C78BB04B88A99176A685B70D23C6C9
+DriverAutomationTool-Verbose.exe - 64611A06AFF647D2D07B7674FF055573
+DriverAutomationTool.exe - 6E751D29C504DBCBEAE3DE7F6B2A8753
 
     Version history:
 	6.0.0 - (2018-03-29)	New verison. Graphical redesign, improved layout, HP individual driver downloads
@@ -102,19 +101,6 @@ DriverAutomationTool.exe - BDFBED02386B33090FD96E19C7FACDAC
 	6.4.6 - (2020-18-03)	Fixed Lenovo download link logic and added further output
 							Updated package creation for all packages just to include the SKU/BaseBoard values
 							Updated link within the tool to GitHub as Technet is being retired
-							Updated custom package creation to include Windows 10 1909	
-	6.4.8 - (2020-15-07)	Added support for Windwos 10 2004
-							Added support for HP SoftPaq creation and updated UI to select available SoftPaqs per models	
-							Added support for creation of 7zip driver packages
-							Added support for XML based modern driver and BIOS management solutions
-							Faster UI and XML handling
-							Updated Lenovo XML source
-							Dell Flash 64w handling updated
-	6.4.9 - (2020-15-09)	Added WIM Support
-							Updated model and distribution point WMI queries for better performance
-							Updated XML logic file creation function
-							Updated Dell XML handling
-	6.4.9 Hotfix - (2020-21-10)	Lenovo XML hotfix
-						
+							Updated custom package creation to include Windows 10 1909		
 
 
