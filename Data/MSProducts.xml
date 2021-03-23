@@ -27,6 +27,6 @@
 	<Model SystemSKU="Surface_Laptop_3_1873" ProductName="SurfaceLaptop3" DisplayName="Surface Laptop 3 - AMD 13" SupportedBuilds="1809,1903,1909,2004,2009" ></Model>
 	<Model SystemSKU="Surface_Laptop_Go_1943" ProductName="SurfaceLaptopGo" DisplayName="Surface Laptop Go" SupportedBuilds="1909,2004,2009"></Model>
 	<Model SystemSKU="Surface_Studio" ProductName="SurfaceStudio" DisplayName="Surface Studio" SupportedBuilds="1809,1903,1909,2004,2009"></Model>
-	<Model SystemSKU="Surface_Pro_7+_1960" ProductName="SurfacePro7+" DisplayName="Surface Pro 7+" SupportedBuilds="2009"></Model>
-	<Model SystemSKU="Surface_Pro_7+_with_LTE_Advanced_1961" ProductName="SurfacePro7+LTE" DisplayName="Surface Pro 7+ LTE" SupportedBuilds="2009"></Model>
+	<Model SystemSKU="Surface_Pro_7+_1960" ProductName="SurfacePro7+" DisplayName="Surface Pro 7+" SupportedBuilds="1903,1909,2004,2009"></Model>
+	<Model SystemSKU="Surface_Pro_7+_with_LTE_Advanced_1961" ProductName="SurfacePro7Plus" DisplayName="Surface Pro 7+ LTE" SupportedBuilds="1909,2004,2009"></Model>
 </Drivers>
