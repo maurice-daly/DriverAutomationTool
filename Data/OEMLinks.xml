@@ -15,7 +15,7 @@
 		<Link Type="XMLCabinetSource" URL="https://ftp.hp.com/pub/caps-softpaq/cmit/HPClientDriverPackCatalog.cab"></Link>
 		<Link Type="SoftPaqSource" URL="https://ftp.hp.com/pub/softpaq/"></Link>
 		<Link Type="PlatFormList" URL="https://ftp.hp.com/pub/caps-softpaq/cmit/imagepal/ref/platformList.cab"></Link>
-		<Link Type="SoftPaqCab" URL="https://ftp.hp.com/pub/softlib/software/sms_catalog/HpCatalogForSms.latest.cab"></Link>
+		<Link Type="SoftPaqCab" URL="https://hpia.hpcloud.hp.com/downloads/sccmcatalog/HpCatalogForSms.latest.cab"></Link>
 	</Manufacturer>
 	<Manufacturer Name="Lenovo" >
 		<Link Type="XMLSource" URL="https://download.lenovo.com/cdrt/td/catalogv2.xml"></Link>
