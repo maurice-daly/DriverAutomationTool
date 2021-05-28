@@ -4,6 +4,10 @@ IMPORTANT
 - DAT Downloads have been moved to GitHub - https://github.com/maurice-daly/DriverAutomationTool
 - Latest EXE available from - https://github.com/maurice-daly/DriverAutomationTool/blob/master/Beta%20Builds/6.5.2/DriverAutomationTool.exe
 
+Version 6.5.5
+Windows 21H1 Support
+OEM links are now provided dynamically through an external XML
+Auto-Updating feature with new additional EXE's
 
 Version 6.5.2 
 Windows 20H2 Support
