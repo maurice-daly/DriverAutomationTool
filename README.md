@@ -90,31 +90,31 @@ DriverAutomationTool.exe - BDFBED02386B33090FD96E19C7FACDAC
 							Fixed issues for Lenovo devices with long SKU listings with description change
 							Fixed issues with custom package creation not displaying the SKU value correctly
 							Tweak to MS model matching logic
-	6.4.3 - (2020-31-01)	OOB release to fix changes in HP driver extraction
-	6.4.4 - (2020-22-02)	Fixed issues with Lenovo driver extraction caused back packager change
+	6.4.3 - (2020-01-31)	OOB release to fix changes in HP driver extraction
+	6.4.4 - (2020-02-22)	Fixed issues with Lenovo driver extraction caused back packager change
 							Fixed issues with driver imports using native driver packages
 							Added support for zipped driver packages
-	6.4.5 - (2020-09-03)	Updated Dell Flash64w download location in order to download latest available build
+	6.4.5 - (2020-03-09)	Updated Dell Flash64w download location in order to download latest available build
 							Fixed UI elements not disabling in the admin control
 							Fixed OS selection on initial load not disabling Dell if the previous OS selection was a Windows 10 
 							build specific selection
 							Updated Find Model button to find but not select, and addded Find + Select button
-	6.4.6 - (2020-18-03)	Fixed Lenovo download link logic and added further output
+	6.4.6 - (2020-03-18)	Fixed Lenovo download link logic and added further output
 							Updated package creation for all packages just to include the SKU/BaseBoard values
 							Updated link within the tool to GitHub as Technet is being retired
 							Updated custom package creation to include Windows 10 1909	
-	6.4.8 - (2020-15-07)	Added support for Windwos 10 2004
+	6.4.8 - (2020-07-15)	Added support for Windwos 10 2004
 							Added support for HP SoftPaq creation and updated UI to select available SoftPaqs per models	
 							Added support for creation of 7zip driver packages
 							Added support for XML based modern driver and BIOS management solutions
 							Faster UI and XML handling
 							Updated Lenovo XML source
 							Dell Flash 64w handling updated
-	6.4.9 - (2020-15-09)	Added WIM Support
+	6.4.9 - (2020-09-15)	Added WIM Support
 							Updated model and distribution point WMI queries for better performance
 							Updated XML logic file creation function
 							Updated Dell XML handling
-	6.4.9 Hotfix - (2020-21-10)	Lenovo XML hotfix
+	6.4.9 Hotfix - (2020-10-21)	Lenovo XML hotfix
 						
 
 
