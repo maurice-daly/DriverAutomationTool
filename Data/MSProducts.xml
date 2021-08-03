@@ -1,30 +1,41 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--Settings used with MSEndpointMgr Driver Automation Tool-->
 <Drivers>
-	<Model SystemSKU="Surface_3" ProductName="Surface3/WiFi" DisplayName="Surface 3 Wifi" SupportedBuilds="1809,1903,1909,2004,2009"></Model>
-	<Model SystemSKU="Surface_3_US1" ProductName="Surface3/ATT" DisplayName="Surface 3 ATT" SupportedBuilds="1809,1903,1909,2004,2009"></Model>
-	<Model SystemSKU="Surface_3_US2" ProductName="Surface3/Verizon" DisplayName="Surface 3 Verizon" SupportedBuilds="1809,1903,1909,2004,2009"></Model>
-	<Model SystemSKU="Surface_3_NAG" ProductName="Surface3/NAG" DisplayName="Surface 3 NAG" SupportedBuilds="1809,1903,1909,2004,2009"></Model>
-	<Model SystemSKU="Surface_3_ROW" ProductName="Surface3/ROW" DisplayName="Surface 3 ROW" SupportedBuilds="1809,1903,1909,2004,2009"></Model>
-	<Model SystemSKU="Surface_Pro_1796" ProductName="SurfacePro" DisplayName="Surface Pro" SupportedBuilds="1809,1903,1909,2004,2009"></Model>
-	<Model SystemSKU="Surface_Pro_1807" ProductName="SurfacePro" DisplayName="Surface Pro with LTE Advanced" SupportedBuilds="1703,1709,1803,1809,1903,1909,2004,2009"></Model>
-	<Model SystemSKU="Surface_Book_2_1832" ProductName="SurfaceBook" DisplayName="Surface Book 2 13" SupportedBuilds="1809,1903,1909,2004,2009"></Model>
-	<Model SystemSKU="Surface_Book_2_1793" ProductName="SurfaceBook" DisplayName="Surface Book 2 15" SupportedBuilds="1809,1903,1909,2004,2009"></Model>
-	<Model SystemSKU="Surface_Book_3_1900" ProductName="SurfaceBook" DisplayName="Surface Book 3 13" SupportedBuilds="1809,1903,1909,2004,2009"></Model>
-	<Model SystemSKU="Surface_Book_3_1899" ProductName="SurfaceBook" DisplayName="Surface Book 3 15" SupportedBuilds="1809,1903,1909,2004,2009"></Model>
-	<Model SystemSKU="Surface_Go_1825_Commercial" ProductName="SurfaceGoLTE" DisplayName="Surface Go LTE Commercial" SupportedBuilds="1809,1903,1909,2004,2009"></Model>
-	<Model SystemSKU="Surface_Go_1824_Consumer" ProductName="SurfaceGo" DisplayName="Surface Go Consumer" SupportedBuilds="1809,1903,1909,2004,2009"></Model>
-	<Model SystemSKU="Surface_Go_1824_Commercial" ProductName="SurfaceGo" DisplayName="Surface Go Commercial" SupportedBuilds="1809,1903,1909,2004,2009"></Model>
-	<Model SystemSKU="Surface_Go_2_1927" ProductName="SurfaceGo2" DisplayName="Surface Go 2" SupportedBuilds="1809,1903,1909,2004,2009"></Model>
-	<Model SystemSKU="Surface_Pro_6_1796_Consumer" ProductName="SurfacePro6" DisplayName="Surface Pro 6 Consumer" SupportedBuilds="1809,1903,1909,2004,2009"></Model>
-	<Model SystemSKU="Surface_Pro_6_1796_Commercial" ProductName="SurfacePro6" DisplayName="Surface Pro 6 Commercial" SupportedBuilds="1809,1903,1909,2004,2009"></Model>
-	<Model SystemSKU="Surface_Laptop" ProductName="SurfaceLaptop" DisplayName="Surface Laptop" SupportedBuilds="1703,1709,1803,1809,1903,1909,2004,2009"></Model>
-	<Model SystemSKU="Surface_Laptop_2_1769_Commercial" ProductName="SurfaceLaptop2" DisplayName="Surface Laptop 2 Consumer" SupportedBuilds="1809,1903,1909,2004,2009"></Model>
-	<Model SystemSKU="Surface_Laptop_2_1769_Consumer" ProductName="SurfaceLaptop2" DisplayName="Surface Laptop 2 Commercial" SupportedBuilds="1809,1903,1909,2004,2009"></Model>
-	<Model SystemSKU="Surface_Pro_7_1866" ProductName="SurfacePro7" DisplayName="Surface Pro 7" SupportedBuilds="1703,1709,1803,1809,1903,1909,2004,2009"></Model>
-	<Model SystemSKU="Surface_Laptop_3_1867:1868" ProductName="SurfaceLaptop3" DisplayName="Surface Laptop 3 - Intel 13" SupportedBuilds="1809,1903,1909,2004,2009"></Model>
-	<Model SystemSKU="Surface_Laptop_3_1872" ProductName="SurfaceLaptop3" DisplayName="Surface Laptop 3 - Intel 15" SupportedBuilds="1809,1903,1909,2004,2009"></Model>
-	<Model SystemSKU="Surface_Laptop_3_1873" ProductName="SurfaceLaptop3" DisplayName="Surface Laptop 3 - AMD 13" SupportedBuilds="1809,1903,1909,2004,2009" ></Model>
-	<Model SystemSKU="Surface_Laptop_Go_1943" ProductName="SurfaceLaptopGo" DisplayName="Surface Laptop Go" SupportedBuilds="1909,2004,2009"></Model>
-	<Model SystemSKU="Surface_Studio" ProductName="SurfaceStudio" DisplayName="Surface Studio" SupportedBuilds="1809,1903,1909,2004,2009"></Model>
+  <Model SystemSKU="Surface_3_US1" ProductName="Surface3" DisplayName="Surface 3 LTE ATT" SupportedBuilds="1809,1903,1909,2004,2009"></Model>
+  <Model SystemSKU="Surface_3_NAG" ProductName="Surface3" DisplayName="Surface 3 LTE North America" SupportedBuilds="1809,1903,1909,2004,2009"></Model>
+  <Model SystemSKU="Surface_3_ROW" ProductName="Surface3" DisplayName="Surface 3 LTE outside of North America and Y!mobile in Japan" SupportedBuilds="1809,1903,1909,2004,2009"></Model>
+  <Model SystemSKU="Surface_3_US2" ProductName="Surface3" DisplayName="Surface 3 LTE Verizon" SupportedBuilds="1809,1903,1909,2004,2009"></Model>
+  <Model SystemSKU="Surface_3" ProductName="Surface3" DisplayName="Surface 3 WiFI" SupportedBuilds="1809,1903,1909,2004,2009"></Model>
+  <Model SystemSKU="Surface_Book_1832" ProductName="SurfaceBook2" DisplayName="Surface Book 2 13" SupportedBuilds="1809,1903,1909,2004,2009"></Model>
+  <Model SystemSKU="Surface_Book_1793" ProductName="SurfaceBook2" DisplayName="Surface Book 2 15" SupportedBuilds="1809,1903,1909,2004,2009"></Model>
+  <Model SystemSKU="Surface_Book_3_1900" ProductName="SurfaceBook3" DisplayName="Surface Book 3 13" SupportedBuilds="1809,1903,1909,2004,2009"></Model>
+  <Model SystemSKU="Surface_Book_3_1899" ProductName="SurfaceBook3" DisplayName="Surface Book 3 15" SupportedBuilds="1809,1903,1909,2004,2009"></Model>
+  <Model SystemSKU="Surface_Go_2_1927" ProductName="SurfaceGo2" DisplayName="Surface Go 2" SupportedBuilds="1809,1903,1909,2004,2009"></Model>
+  <Model SystemSKU="Surface_Go_1824_Commercial" ProductName="SurfaceGo" DisplayName="Surface Go Commercial" SupportedBuilds="1809,1903,1909,2004,2009"></Model>
+  <Model SystemSKU="Surface_Go_1824_Consumer" ProductName="SurfaceGo" DisplayName="Surface Go Consumer" SupportedBuilds="1809,1903,1909,2004,2009"></Model>
+  <Model SystemSKU="Surface_Go_1825_Commercial" ProductName="SurfaceGoLTE" DisplayName="Surface Go LTE Commercial" SupportedBuilds="1809,1903,1909,2004,2009"></Model>
+  <Model SystemSKU="Surface Hub 2S" ProductName="SurfaceHub2" DisplayName="Surface Hub 2S 50" SupportedBuilds="1809,1903,1909,2004,2009"></Model>
+  <Model SystemSKU="Surface Hub 2S 85" ProductName="SurfaceHub2" DisplayName="Surface Hub 2S 85" SupportedBuilds="1809,1903,1909,2004,2009"></Model>
+  <Model SystemSKU="Surface_Laptop" ProductName="SurfaceLaptop" DisplayName="Surface Laptop" SupportedBuilds="1809,1903,1909,2004,2009"></Model>
+  <Model SystemSKU="Surface_Laptop_2_1769_Commercial" ProductName="SurfaceLaptop2" DisplayName="Surface Laptop 2 Commercial" SupportedBuilds="1809,1903,1909,2004,2009"></Model>
+  <Model SystemSKU="Surface_Laptop_2_1769_Consumer" ProductName="SurfaceLaptop2" DisplayName="Surface Laptop 2 Consumer" SupportedBuilds="1809,1903,1909,2004,2009"></Model>
+  <Model SystemSKU="Surface_Laptop_3_1867:1868" ProductName="SurfaceLaptop3/Intel" DisplayName="Surface Laptop 3 13 Intel" SupportedBuilds="1809,1903,1909,2004,2009"></Model>
+  <Model SystemSKU="Surface_Laptop_3_1873" ProductName="SurfaceLaptop3/AMD" DisplayName="Surface Laptop 3 15 AMD" SupportedBuilds="1809,1903,1909,2004,2009"></Model>
+  <Model SystemSKU="Surface_Laptop_3_1872" ProductName="SurfaceLaptop3/Intel" DisplayName="Surface Laptop 3 15 Intel" SupportedBuilds="1809,1903,1909,2004,2009"></Model>
+  <Model SystemSKU="Surface_Laptop_4_1958:1959" ProductName="SurfaceLaptop4/AMD" DisplayName="Surface Laptop 4 13 AMD" SupportedBuilds="1809,1903,1909,2004,2009"></Model>
+  <Model SystemSKU="Surface_Laptop_4_1950:1951" ProductName="SurfaceLaptop4/Intel" DisplayName="Surface Laptop 4 13 Intel" SupportedBuilds="1809,1903,1909,2004,2009"></Model>
+  <Model SystemSKU="Surface_Laptop_4_1952:1953" ProductName="SurfaceLaptop4/AMD" DisplayName="Surface Laptop 4 15 AMD" SupportedBuilds="1809,1903,1909,2004,2009"></Model>
+  <Model SystemSKU="Surface_Laptop_4_1978:1979" ProductName="SurfaceLaptop4/Intel" DisplayName="Surface Laptop 4 15 Intel" SupportedBuilds="1809,1903,1909,2004,2009"></Model>
+  <Model SystemSKU="Surface_Laptop_Go_1943" ProductName="SurfaceLaptopGo" DisplayName="Surface Laptop Go" SupportedBuilds="1809,1903,1909,2004,2009"></Model>
+  <Model SystemSKU="Surface_Pro_1796" ProductName="SurfacePro5" DisplayName="Surface Pro" SupportedBuilds="1809,1903,1909,2004,2009"></Model>
+  <Model SystemSKU="Surface_Pro_6_1796_Commercial" ProductName="SurfacePro6" DisplayName="Surface Pro 6 Commercial" SupportedBuilds="1809,1903,1909,2004,2009"></Model>
+  <Model SystemSKU="Surface_Pro_6_1796_Consumer" ProductName="SurfacePro6" DisplayName="Surface Pro 6 Consumer" SupportedBuilds="1809,1903,1909,2004,2009"></Model>
+  <Model SystemSKU="Surface_Pro_7_1866" ProductName="SurfacePro7" DisplayName="Surface Pro 7" SupportedBuilds="1809,1903,1909,2004,2009"></Model>
+  <Model SystemSKU="Surface_Pro_7+_1960" ProductName="SurfacePro7Plus" DisplayName="Surface Pro 7+" SupportedBuilds="1809,1903,1909,2004,2009"></Model>
+  <Model SystemSKU="Surface_Pro_7+_with_LTE_Advanced_1961" ProductName="SurfacePro7Plus" DisplayName="Surface Pro 7+ LTE" SupportedBuilds="1809,1903,1909,2004,2009"></Model>
+  <Model SystemSKU="Surface_Pro_1807" ProductName="SurfacePro5" DisplayName="Surface Pro with LTE Advanced" SupportedBuilds="1809,1903,1909,2004,2009"></Model>
+  <Model SystemSKU="Surface_Pro_X_1876" ProductName="SurfaceProX" DisplayName="Surface Pro X" SupportedBuilds="1809,1903,1909,2004,2009"></Model>
+  <Model SystemSKU="Surface_Pro_X_H_1876" ProductName="SurfaceProX" DisplayName="Surface Pro X with SQ2 processor" SupportedBuilds="1809,1903,1909,2004,2009"></Model>
+  <Model SystemSKU="Surface_Studio" ProductName="SurfaceStudio" DisplayName="Surface Studio" SupportedBuilds="1809,1903,1909,2004,2009"></Model>
+  <Model SystemSKU="Surface_Studio_2_1707_Commercial" ProductName="SurfaceStudio2" DisplayName="Surface Studio 2" SupportedBuilds="1809,1903,1909,2004,2009"></Model>
 </Drivers>
