@@ -6,6 +6,7 @@
   <Model SystemSKU="Surface_3_ROW" ProductName="Surface3" DisplayName="Surface 3 LTE outside of North America and Y!mobile in Japan" SupportedBuilds="1809,1903,1909,2004,2009"></Model>
   <Model SystemSKU="Surface_3_US2" ProductName="Surface3" DisplayName="Surface 3 LTE Verizon" SupportedBuilds="1809,1903,1909,2004,2009"></Model>
   <Model SystemSKU="Surface_3" ProductName="Surface3" DisplayName="Surface 3 WiFI" SupportedBuilds="1809,1903,1909,2004,2009"></Model>
+  <Model SystemSKU="Surface_Book" ProductName="SurfaceBook" DisplayName="Surface Book" SupportedBuilds="1809,1903,1909,2004,2009"></Model>
   <Model SystemSKU="Surface_Book_1832" ProductName="SurfaceBook2" DisplayName="Surface Book 2 13" SupportedBuilds="1809,1903,1909,2004,2009"></Model>
   <Model SystemSKU="Surface_Book_1793" ProductName="SurfaceBook2" DisplayName="Surface Book 2 15" SupportedBuilds="1809,1903,1909,2004,2009"></Model>
   <Model SystemSKU="Surface_Book_3_1900" ProductName="SurfaceBook3" DisplayName="Surface Book 3 13" SupportedBuilds="1809,1903,1909,2004,2009"></Model>
