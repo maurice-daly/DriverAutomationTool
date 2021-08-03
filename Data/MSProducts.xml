@@ -27,6 +27,8 @@
   <Model SystemSKU="Surface_Laptop_4_1952:1953" ProductName="SurfaceLaptop4/AMD" DisplayName="Surface Laptop 4 15 AMD" SupportedBuilds="1809,1903,1909,2004,2009"></Model>
   <Model SystemSKU="Surface_Laptop_4_1978:1979" ProductName="SurfaceLaptop4/Intel" DisplayName="Surface Laptop 4 15 Intel" SupportedBuilds="1809,1903,1909,2004,2009"></Model>
   <Model SystemSKU="Surface_Laptop_Go_1943" ProductName="SurfaceLaptopGo" DisplayName="Surface Laptop Go" SupportedBuilds="1809,1903,1909,2004,2009"></Model>
+  <Model SystemSKU="Surface_Pro_3" ProductName="SurfacePro3" DisplayName="Surface Pro 3" SupportedBuilds="1809,1903,1909,2004,2009"></Model>
+  <Model SystemSKU="Surface_Pro_4" ProductName="SurfacePro4" DisplayName="Surface Pro 4" SupportedBuilds="1809,1903,1909,2004,2009"></Model>
   <Model SystemSKU="Surface_Pro_1796" ProductName="SurfacePro5" DisplayName="Surface Pro" SupportedBuilds="1809,1903,1909,2004,2009"></Model>
   <Model SystemSKU="Surface_Pro_6_1796_Commercial" ProductName="SurfacePro6" DisplayName="Surface Pro 6 Commercial" SupportedBuilds="1809,1903,1909,2004,2009"></Model>
   <Model SystemSKU="Surface_Pro_6_1796_Consumer" ProductName="SurfacePro6" DisplayName="Surface Pro 6 Consumer" SupportedBuilds="1809,1903,1909,2004,2009"></Model>
