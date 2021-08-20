@@ -22,11 +22,10 @@ Implemenation guides for modern driver management and modern bios management can
 
 All source code and installers will be maintained here from 11-March-2020. 
 
-**MD5 Hash Values for build 6.4.9**
+**SHA256 Hash Values for build 6.5.6**
 
-DriverAutomationToolSetup.msi - 02534EDDB7F285A06EADBE6CA771DC3D
+Driver Automation Tool.msi - 1d2f547628fed9bd9e671c2bbe8c85897dd064ad624b2409f445d080dd03c263
 
-DriverAutomationTool.exe - BDFBED02386B33090FD96E19C7FACDAC
 
     Version history:
 	6.0.0 - (2018-03-29)	New verison. Graphical redesign, improved layout, HP individual driver downloads
@@ -115,6 +114,9 @@ DriverAutomationTool.exe - BDFBED02386B33090FD96E19C7FACDAC
 							Updated XML logic file creation function
 							Updated Dell XML handling
 	6.4.9 Hotfix - (2020-21-10)	Lenovo XML hotfix
+	6.5.6 - (2021-20-08)	Updated manufacturer sources, with feeds from GitHub repo for imporoved maintenance and additions for Microsoft Surface devices
+				Fix for Microsoft Surface model detection on download
+				Fixes for other bugs and typos
 						
 
 
