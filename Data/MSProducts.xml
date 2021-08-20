@@ -31,4 +31,7 @@
 	<Model SystemSKU="Surface_Laptop_4_1978:1979" ProductName="SurfaceLaptop4/Intel" DisplayName="Surface Laptop 4 - Intel 15" SupportedBuilds="1809,1903,1909,2004,2009"></Model>
 	<Model SystemSKU="Surface_Laptop_4_1958:1959" ProductName="SurfaceLaptop4/AMD" DisplayName="Surface Laptop 4 - AMD 13" SupportedBuilds="1809,1903,1909,2004,2009"></Model>
 	<Model SystemSKU="Surface_Laptop_4_1952:1953" ProductName="SurfaceLaptop4/AMD" DisplayName="Surface Laptop 4 - AMD 15" SupportedBuilds="1809,1903,1909,2004,2009"></Model>
+	<Model SystemSKU="Surface_Studio_2_1707_Commercial" ProductName="SurfaceStudio2" DisplayName="Surface Studio 2" SupportedBuilds="1809,1903,1909,2004,2009"></Model>
+	<Model SystemSKU="Surface Hub 2S" ProductName="SurfaceHub2" DisplayName="Surface Hub 2S 50" SupportedBuilds="1809,1903,1909,2004,2009"></Model>
+	<Model SystemSKU="Surface Hub 2S 85" ProductName="SurfaceHub2" DisplayName="Surface Hub 2S 85" SupportedBuilds="1809,1903,1909,2004,2009"></Model>
 </Drivers>
