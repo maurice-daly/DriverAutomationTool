@@ -4,6 +4,13 @@ IMPORTANT
 - DAT Downloads have been moved to GitHub - https://github.com/maurice-daly/DriverAutomationTool
 - Latest EXE available from - https://github.com/maurice-daly/DriverAutomationTool/blob/master/Beta%20Builds/6.5.2/DriverAutomationTool.exe
 
+Version 7.0.1
+Bug Fixes
+
+Version 7.0.0
+Support for Windows 11 and Windows 10 21H2
+Intune BIOS Control XML support
+
 Version 6.5.6
 Updates for Microsoft Surface devices and other bug fixes
 
