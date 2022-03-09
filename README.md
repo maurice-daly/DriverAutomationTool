@@ -114,6 +114,10 @@ All source code and installers will be maintained here from 11-March-2020.
 							Fixes for other bugs and typos
 	7.0.0 - (2021-19-11)	Support for Windows 11 and Windows 10 21H2
 							Intune BIOS Control XML support
+	7.0.4 - (2022-03-09)	Fix: HP SKU value issue causing description lenght exception
+				Fix: Dell BIOS download previously selecting old version where multiple downloads are found
+				New: WINRM over HTTPS option
+				
 						
 
 
