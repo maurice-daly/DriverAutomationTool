@@ -4,6 +4,11 @@ IMPORTANT
 - DAT Downloads have been moved to GitHub - https://github.com/maurice-daly/DriverAutomationTool
 - Latest EXE available from - https://github.com/maurice-daly/DriverAutomationTool/blob/master/Beta%20Builds/6.5.2/DriverAutomationTool.exe
 
+Version 7.0.4
+Fix: HP SKU value issue causing description lenght exception
+Fix: Dell BIOS download previously selecting old version where multiple downloads are found
+New: WINRM over HTTPS option
+
 Version 7.0.1
 Bug Fixes
 
