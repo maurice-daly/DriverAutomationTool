@@ -4,7 +4,7 @@
 <OEM Version="1.3">
 	<Manufacturer Name="Dell" >
 		<Link Type="DownloadList" URL="https://downloads.dell.com/published/Pages/index.html"></Link>
-		<Link Type="DownloadBase" URL="https://downloads.dell.com"></Link>
+		<Link Type="DownloadBase" URL="https://dl.dell.com"></Link>
 		<Link Type="DriversList" URL="https://en.community.dell.com/techcenter/enterprise-client/w/wiki/2065.dell-command-deploy-driver-packs-for-enterprise-client-os-deployment"></Link>
 		<Link Type="BaseURL" URL="https://en.community.dell.com"></Link>
 		<Link Type="BIOSUtility" URL="https://dl.dell.com/FOLDER07078356M/7/Flash_Ver3.3.11_ZPE.exe"></Link>
