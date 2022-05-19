@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--Settings used with MSEndpointMgr Driver Automation Tool-->
 <!--URL's are maintained externally - USE AT YOUR OWN RISK. NO SUPPORT PROVIDED -->
-<OEM Version="1.3">
+<OEM Version="1.4">
 	<Manufacturer Name="Dell" >
 		<Link Type="DownloadList" URL="https://downloads.dell.com/published/Pages/index.html"></Link>
 		<Link Type="DownloadBase" URL="https://dl.dell.com"></Link>
