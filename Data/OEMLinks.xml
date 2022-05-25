@@ -1,13 +1,13 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--Settings used with MSEndpointMgr Driver Automation Tool-->
 <!--URL's are maintained externally - USE AT YOUR OWN RISK. NO SUPPORT PROVIDED -->
-<OEM Version="1.4">
+<OEM Version="1.5">
 	<Manufacturer Name="Dell" >
 		<Link Type="DownloadList" URL="https://downloads.dell.com/published/Pages/index.html"></Link>
 		<Link Type="DownloadBase" URL="https://dl.dell.com"></Link>
 		<Link Type="DriversList" URL="https://en.community.dell.com/techcenter/enterprise-client/w/wiki/2065.dell-command-deploy-driver-packs-for-enterprise-client-os-deployment"></Link>
 		<Link Type="BaseURL" URL="https://en.community.dell.com"></Link>
-		<Link Type="BIOSUtility" URL="https://dl.dell.com/FOLDER07078356M/7/Flash_Ver3.3.11_ZPE.exe"></Link>
+		<Link Type="BIOSUtility" URL="https://dl.dell.com/FOLDER08405216M/1/Ver3.3.16.zip"></Link>
 		<Link Type="XMLCabinetSource" URL="https://downloads.dell.com/catalog/DriverPackCatalog.cab"></Link>
 		<Link Type="CatalogSource" URL="https://downloads.dell.com/catalog/CatalogPC.cab"></Link>
 	</Manufacturer>
