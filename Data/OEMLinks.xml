@@ -18,7 +18,7 @@
 		<Link Type="SoftPaqCab" URL="https://hpia.hpcloud.hp.com/downloads/sccmcatalog/HpCatalogForSms.latest.cab"></Link>
 	</Manufacturer>
 	<Manufacturer Name="Lenovo" >
-		<Link Type="XMLSource" URL="https://download.lenovo.com/cdrt/td/test/catalogv2.xml"></Link>
+		<Link Type="XMLSource" URL="https://download.lenovo.com/cdrt/td/catalogv2.xml"></Link>
 		<Link Type="BIOSBase" URL="https://download.lenovo.com/catalog/"></Link>
 	</Manufacturer>
 		<Manufacturer Name="Microsoft" >
