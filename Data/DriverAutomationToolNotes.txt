@@ -2,7 +2,12 @@ Release Notes
 -----------------------------------
 IMPORTANT
 - DAT Downloads have been moved to GitHub - https://github.com/maurice-daly/DriverAutomationTool
-- Latest EXE available from - https://github.com/maurice-daly/DriverAutomationTool/blob/master/Beta%20Builds/6.5.2/DriverAutomationTool.exe
+- Latest build EXEs available from - https://github.com/maurice-daly/DriverAutomationTool/tree/master/Current%20Branch
+
+Version 7.1.4
+Fix: Lenovo downloads for Windows 10 & 11 and other misc fixes
+New: Driver patchage patching
+Update: Azure XML integration switch no longer required
 
 Version 7.0.4
 Fix: HP SKU value issue causing description lenght exception
