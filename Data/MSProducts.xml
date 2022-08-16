@@ -18,6 +18,8 @@
 	<Model SystemSKU="Surface_Go_2_1927" ProductName="SurfaceGo2" DisplayName="Surface Go 2" SupportedBuilds="1809,1903,1909,2004,2009"></Model>
 	<Model SystemSKU="Surface_Pro_6_1796_Consumer" ProductName="SurfacePro6" DisplayName="Surface Pro 6 Consumer" SupportedBuilds="1809,1903,1909,2004,2009"></Model>
 	<Model SystemSKU="Surface_Pro_6_1796_Commercial" ProductName="SurfacePro6" DisplayName="Surface Pro 6 Commercial" SupportedBuilds="1809,1903,1909,2004,2009"></Model>
+	<Model SystemSKU="Surface_Pro_8_for_Business_with_LTE_Advanced_1982" ProductName="SurfacePro8" DisplayName="Surface Pro 8" SupportedBuilds="2009"></Model>
+	<Model SystemSKU="Surface_Pro_8_for_Business_1983" ProductName="SurfacePro8" DisplayName="Surface Pro 8" SupportedBuilds="2009"></Model>
 	<Model SystemSKU="Surface_Laptop" ProductName="SurfaceLaptop" DisplayName="Surface Laptop" SupportedBuilds="1703,1709,1803,1809,1903,1909,2004,2009"></Model>
 	<Model SystemSKU="Surface_Laptop_2_1769_Commercial" ProductName="SurfaceLaptop2" DisplayName="Surface Laptop 2 Consumer" SupportedBuilds="1809,1903,1909,2004,2009"></Model>
 	<Model SystemSKU="Surface_Laptop_2_1769_Consumer" ProductName="SurfaceLaptop2" DisplayName="Surface Laptop 2 Commercial" SupportedBuilds="1809,1903,1909,2004,2009"></Model>
