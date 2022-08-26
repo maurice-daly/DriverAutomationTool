@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--Settings used with MSEndpointMgr Driver Automation Tool-->
 <!--URL's are maintained externally - USE AT YOUR OWN RISK. NO SUPPORT PROVIDED -->
-<OEM Version="1.8">
+<OEM Version="2.0">
 	<Manufacturer Name="Dell" >
 		<Link Type="DownloadList" URL="https://dl.dell.com/published/Pages/index.html"></Link>
 		<Link Type="DownloadBase" URL="https://dl.dell.com"></Link>
@@ -23,6 +23,7 @@
 	</Manufacturer>
 		<Manufacturer Name="Microsoft" >
 		<Link Type="XMLSource" URL="https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/MSProducts.xml"></Link>
+		<Link Type="JSONSource" URL="https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/OSDCatalogMicrosoftDriverPack.xml"></Link>
 		<Link Type="BaseURL" URL="https://aka.ms/"></Link>
 		<Link Type="SurfaceDriverSupportURL" URL="https://support.microsoft.com/tr-tr/surface/download-drivers-and-firmware-for-surface-09bb2e09-2a4b-cb69-0951-078a7739e120"></Link>
 	</Manufacturer>
