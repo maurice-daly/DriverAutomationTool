@@ -4,6 +4,13 @@ IMPORTANT
 - DAT Downloads have been moved to GitHub - https://github.com/maurice-daly/DriverAutomationTool
 - Latest build EXEs available from - https://github.com/maurice-daly/DriverAutomationTool/tree/master/Current%20Branch
 
+Version 7.1.7
+New: Custom BIOS package creation
+Fix: Windows 10/11 build numbers not being replaced correctly when moving to another build
+
+Version(s) 7.1.5 - 7.1.6
+DEV Only
+
 Version 7.1.4
 Fix: Lenovo downloads for Windows 10 & 11 and other misc fixes
 New: Driver patchage patching
