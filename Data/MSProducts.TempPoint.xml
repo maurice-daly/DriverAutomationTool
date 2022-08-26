@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--Settings used with MSEndpointMgr Driver Automation Tool-->
 <Drivers>
-	<Model SystemSKU="Surface_3" ProductName="Surface3/WiFi" DisplayName="Surface 3 Wifi" SupportedBuilds="1809,1903,1909,2004,2009,21H1"></Model>
+	<Model SystemSKU="Surface_3" ProductName="Surface3/WiFi" DisplayName="Surface 3 Wifi" SupportedBuilds="1809,1903,1909,2004,2009"></Model>
 	<Model SystemSKU="Surface_3_US1" ProductName="Surface3/ATT" DisplayName="Surface 3 ATT" SupportedBuilds="1809,1903,1909,2004,2009"></Model>
 	<Model SystemSKU="Surface_3_US2" ProductName="Surface3/Verizon" DisplayName="Surface 3 Verizon" SupportedBuilds="1809,1903,1909,2004,2009"></Model>
 	<Model SystemSKU="Surface_3_NAG" ProductName="Surface3/NAG" DisplayName="Surface 3 NAG" SupportedBuilds="1809,1903,1909,2004,2009"></Model>
@@ -34,10 +34,4 @@
 	<Model SystemSKU="Surface_Studio_2_1707_Commercial" ProductName="SurfaceStudio2" DisplayName="Surface Studio 2" SupportedBuilds="1809,1903,1909,2004,2009"></Model>
 	<Model SystemSKU="Surface Hub 2S" ProductName="SurfaceHub2" DisplayName="Surface Hub 2S 50" SupportedBuilds="1809,1903,1909,2004,2009"></Model>
 	<Model SystemSKU="Surface Hub 2S 85" ProductName="SurfaceHub2" DisplayName="Surface Hub 2S 85" SupportedBuilds="1809,1903,1909,2004,2009"></Model>
-	<Model SystemSKU="Surface_Pro_8_for_Business_1983" ProductName="SurfacePro8" DisplayName="Sufrace Pro 8" SupportedBuilds="1809,1903,1909,2004,2009"></Model>
-	<Model SystemSKU="Surface_Pro_8_for_Business_with_LTE_Advanced_1982" ProductName="SurfacePro8LTE" DisplayName="Sufrace Pro 8 LTE" SupportedBuilds="1809,1903,1909,2004,2009"></Model>
-	<Model SystemSKU="Surface_Pro_X_1876" ProductName="SurfaceProX" DisplayName="Sufrace Pro X with SQ1" SupportedBuilds="1809,1903,1909,2004,2009"></Model>
-	<Model SystemSKU="Surface_Pro_X_H_1876" ProductName="SurfaceProX" DisplayName="Sufrace Pro X with SQ2" SupportedBuilds="1809,1903,1909,2004,2009"></Model>
-	<Model SystemSKU="Surface_Studio" ProductName="SurfaceStudio" DisplayName="Surface Studio" SupportedBuilds="1809,1903,1909,2004,2009"></Model>
-	<Model SystemSKU="Surface_Studio_2_1707_Commercial" ProductName="Surface Studio 2" DisplayName="Surface Studio 2" SupportedBuilds="1809,1903,1909,2004,2009"></Model>
 </Drivers>
