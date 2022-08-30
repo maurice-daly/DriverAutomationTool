@@ -4,6 +4,11 @@ IMPORTANT
 - DAT Downloads have been moved to GitHub - https://github.com/maurice-daly/DriverAutomationTool
 - Latest build EXEs available from - https://github.com/maurice-daly/DriverAutomationTool/tree/master/Current%20Branch
 
+Version 7.1.8
+Update: Updated Microsoft Surface model support. Thanks to David Segura @SeguraOSD
+for the automated feed
+Various bug fixes
+
 Version 7.1.7
 New: Custom BIOS package creation
 Fix: Windows 10/11 build numbers not being replaced correctly when moving to another build
