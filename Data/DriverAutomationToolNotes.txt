@@ -4,6 +4,9 @@ IMPORTANT
 - DAT Downloads have been moved to GitHub - https://github.com/maurice-daly/DriverAutomationTool
 - Latest build EXEs available from - https://github.com/maurice-daly/DriverAutomationTool/tree/master/Current%20Branch
 
+Version 7.1.9
+New: Added support for Windows 11 22H2
+
 Version 7.1.8 - Hotfix
 Fix for Microsoft models with ":" in the model name, and models not appearing for older 190x builds is available here - https://github.com/maurice-daly/DriverAutomationTool/blob/master/Current%20Branch/7.1.8/DriverAutomationTool.exe
 

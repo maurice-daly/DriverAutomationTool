@@ -118,6 +118,7 @@ All source code and installers will be maintained here from 11-March-2020.
 				Fix: Dell BIOS download previously selecting old version where multiple downloads are found
 				New: WINRM over HTTPS option
 	7.1.8 - (2022-01-09)	Microsoft Surface model download fixes.
+	7.1.9 - (2022-22-09)	Added support for Windows 11 22H2
 	
 	
 				
