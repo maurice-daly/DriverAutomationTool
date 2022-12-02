@@ -4,6 +4,10 @@ IMPORTANT
 - DAT Downloads have been moved to GitHub - https://github.com/maurice-daly/DriverAutomationTool
 - Latest build EXEs available from - https://github.com/maurice-daly/DriverAutomationTool/tree/master/Current%20Branch
 
+Version 7.2.0
+New: Windows 10 22H2 support
+Bug fixes
+
 Version 7.1.9
 New: Added support for Windows 11 22H2
 
