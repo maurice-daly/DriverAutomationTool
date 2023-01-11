@@ -1,0 +1,532 @@
+﻿**********************
+Windows PowerShell transcript start
+Start time: 20230108192142
+Username: OSDCODE\david
+RunAs User: OSDCODE\david
+Configuration Name: 
+Machine: OSDCODE (Microsoft Windows NT 10.0.22621.0)
+Host Application: C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -noexit -command try { . "c:\Program Files\Microsoft VS Code\resources\app\out\vs\workbench\contrib\terminal\browser\media\shellIntegration.ps1" } catch {}
+Process ID: 8428
+PSVersion: 5.1.22621.963
+PSEdition: Desktop
+PSCompatibleVersions: 1.0, 2.0, 3.0, 4.0, 5.0, 5.1.22621.963
+BuildVersion: 10.0.22621.963
+CLRVersion: 4.0.30319.42000
+WSManStackVersion: 3.0
+PSRemotingProtocolVersion: 2.3
+SerializationVersion: 1.1.0.1
+**********************
+Transcript started, output file is C:\Users\david\OneDrive\GitHub\MyModules\OSD\Catalogs\OSDCatalog\OSDCatalogMicrosoftDriverPack.log
+PS C:\Users\david\OneDrive\GitHub\MyModules\OSD> $MasterDriverPacks = @()
+PS C:\Users\david\OneDrive\GitHub\MyModules\OSD> $null = Get-OSDCatalogMicrosoftDriverPack -Force -Verbose
+VERBOSE: Test-WebConnection OK: https://support.microsoft.com/en-us/surface/download-drivers-and-firmware-for-surface-09bb2e09-2a4b-cb69-0951-078a7739e120
+VERBOSE: HEAD with 0-byte payload
+VERBOSE: received 0-byte response of content type text/html; charset=utf-8
+VERBOSE: Processing Surface 3 WiFi
+VERBOSE: GET with 0-byte payload
+VERBOSE: received -1-byte response of content type text/html
+VERBOSE: Testing Download File at https://download.microsoft.com/download/C/5/C/C5C75DC4-0807-44A8-BCC1-6064CFD150F2/Surface3_WiFi_Win10_18362_1902003_0.msi
+VERBOSE: HEAD with 0-byte payload
+VERBOSE: received 191369216-byte response of content type application/octet-stream
+VERBOSE: Processing Surface 3 LTE ATT
+VERBOSE: GET with 0-byte payload
+VERBOSE: received -1-byte response of content type text/html
+VERBOSE: Testing Download File at https://download.microsoft.com/download/9/7/2/9728FCD1-A108-4EE6-ADFD-FB33C2320CCF/Surface3_4GLTE-ATT_Win10_18362_1902003_0.msi
+VERBOSE: HEAD with 0-byte payload
+VERBOSE: received 207015936-byte response of content type application/octet-stream
+VERBOSE: Processing Surface 3 LTE Verizon
+VERBOSE: GET with 0-byte payload
+VERBOSE: received -1-byte response of content type text/html
+VERBOSE: Testing Download File at https://download.microsoft.com/download/7/5/7/757B0C6E-0C22-400B-90EA-D8AFBD64CC16/Surface3_4GLTE-NorthAmericaUnlocked_Win10_18362_1902003_0.msi
+VERBOSE: HEAD with 0-byte payload
+VERBOSE: received 207032320-byte response of content type application/octet-stream
+VERBOSE: Processing Surface 3 LTE North America
+VERBOSE: GET with 0-byte payload
+VERBOSE: received -1-byte response of content type text/html
+VERBOSE: Testing Download File at https://download.microsoft.com/download/7/5/7/757B0C6E-0C22-400B-90EA-D8AFBD64CC16/Surface3_4GLTE-NorthAmericaUnlocked_Win10_18362_1902003_0.msi
+VERBOSE: HEAD with 0-byte payload
+VERBOSE: received 207032320-byte response of content type application/octet-stream
+VERBOSE: Processing Surface 3 LTE Rest of World
+VERBOSE: GET with 0-byte payload
+>> TerminatingError(Invoke-WebRequest): "Error 404 - Not Found/**/Warning: This site requires the use of scripts, which your browser does not currently allow.See how to enable scriptsSkip to main contentMicrosoftDownload CenterDownload Center
+                            Download Center
+                         Home WindowsOfficeWeb browsersDeveloper toolsXboxWindows PhoneMoreAll MicrosoftGlobalMicrosoft 365TeamsWindowsSurfaceXboxDealsSmall BusinessSupportSoftwareSoftwareWindows AppsOneDriveOutlookSkypeOneNoteMicrosoft TeamsMicrosoft EdgePCs &amp; Devices  PCs &amp; Devices  ComputersShop XboxAccessoriesVR &amp; mixed realityPhonesEntertainmentEntertainmentXbox Game Pass UltimatePC Game PassXbox gamesPC gamesWindows digital gamesMovies &amp; TVBusinessBusinessMicrosoft CloudMicrosoft SecurityDynamics 365Microsoft 365 for businessMicrosoft Power PlatformWindows 365Microsoft IndustrySmall BusinessDeveloper &amp; IT  Developer &amp; IT  AzureDeveloper CenterDocumentationMicrosoft LearnMicrosoft Tech CommunityAzure MarketplaceAppSourceVisual StudioOtherOtherMicrosoft Rewards Free downloads &amp; securityEducationVirtual workshops and trainingGift cardsStudents and parents dealsLicensingMicrosoft Experience CenterView SitemapSearchSearch Microsoft.comNo resultsCancel0Cart0 items in shopping cartSign in
+            /**//*<![CDATA[*/function MscomLoadOptions(){var t="",n=document.createElement("meta"),i;n.name="ms.auth";n.content=isUserSignedIn;document.head&&document.head.appendChild(n);i={meControlOptions:{rpData:{msaInfo:{signInUrl:mscomSignInUrl,signOutUrl:mscomSignOutUrl},aadInfo:{signInUrl:mscomSignInUrl,signOutUrl:mscomSignOutUrl}},userData:{idp:authenticationType==="RPS"?window.msCommonShell.SupportedAuthIdp.MSA:window.msCommonShell.SupportedAuthIdp.AAD,firstName:typeof aFirstName=="undefined"?"":aFirstName,lastName:typeof aLastName=="undefined"?"":aLastName,memberName:typeof aMemberName=="undefined"?"":aMemberName,cid:typeof aCid=="undefined"?"":aCid,authenticatedState:typeof aAuthenticatedState=="undefined"?window.msCommonShell.AuthState.NotSignedIn:aAuthenticatedState}},events:{onSearch:function(){},onEventLog:function(n){if(typeof ms!="undefined")switch(n){case"MeControl_SignIn":if(t!==""){var i="//microsoftwindows.112.2o7.net/b/ss/msstores1-cmstest-prod/1/H.24.4/",e=((1+Math.random())*65536|0).toString(16).substring(1),u=encodeURIComponent(window.location.pathname.toLowerCase()),o=e+"?ns=microsoftwindows%26pageName=sitemuse%26v1=sitemuse%26events=event2%26c2=ToReplacepth1%26v2=ToReplacepth2%26pe=lnk_o%26pev2=click_sitemuse%26c3=signInClick%26v3=signInClick%26c4=no%26v4=no",s=new Image(0,0);i=i+decodeURIComponent(o);i=i.replace("ToReplacepth1",u);i=i.replace("ToReplacepth2",u);s.src=i}break;case"MeControl_SignOutAll":if(t!==""){var r="//microsoftwindows.112.2o7.net/b/ss/msstores1-cmstest-prod/1/H.24.4/",h=((1+Math.random())*65536|0).toString(16).substring(1),f=encodeURIComponent(window.location.pathname.toLowerCase()),c=h+"?ns=microsoftwindows%26pageName=sitemuse%26v1=sitemuse%26events=event2%26c2=ToReplacepth1%26v2=ToReplacepth2%26pe=lnk_o%26pev2=click_sitemuse%26c3=signOutClick%26v3=signOutClick%26c4=no%26v4=no",l=new Image(0,0);r=r+decodeURIComponent(c);r=r.replace("ToReplacepth1",f);r=r.replace("ToReplacepth2",f);l.src=i}break;case"MeControl_DropdownReady":console.log($(".msame_Header_chev").text());$(".msame_Header_chev").length&&($(".msame_Header_chev""
+Invoke-WebRequest : Error 404 - Not Found/**/Warning: This site requires the use of scripts, which your browser does 
+not currently allow.See how to enable scriptsSkip to main contentMicrosoftDownload CenterDownload Center
+                            Download Center
+                         Home WindowsOfficeWeb browsersDeveloper toolsXboxWindows PhoneMoreAll MicrosoftGlobalMicrosoft 
+365TeamsWindowsSurfaceXboxDealsSmall BusinessSupportSoftwareSoftwareWindows AppsOneDriveOutlookSkypeOneNoteMicrosoft 
+TeamsMicrosoft EdgePCs &amp; Devices  PCs &amp; Devices  ComputersShop XboxAccessoriesVR &amp; mixed 
+realityPhonesEntertainmentEntertainmentXbox Game Pass UltimatePC Game PassXbox gamesPC gamesWindows digital gamesMovies 
+&amp; TVBusinessBusinessMicrosoft CloudMicrosoft SecurityDynamics 365Microsoft 365 for businessMicrosoft Power 
+PlatformWindows 365Microsoft IndustrySmall BusinessDeveloper &amp; IT  Developer &amp; IT  AzureDeveloper 
+CenterDocumentationMicrosoft LearnMicrosoft Tech CommunityAzure MarketplaceAppSourceVisual StudioOtherOtherMicrosoft 
+Rewards Free downloads &amp; securityEducationVirtual workshops and trainingGift cardsStudents and parents 
+dealsLicensingMicrosoft Experience CenterView SitemapSearchSearch Microsoft.comNo resultsCancel0Cart0 items in shopping 
+cartSign in
+            /**//*<![CDATA[*/function MscomLoadOptions(){var t="",n=document.createElement("meta"),i;n.name="ms.auth";n.
+content=isUserSignedIn;document.head&&document.head.appendChild(n);i={meControlOptions:{rpData:{msaInfo:{signInUrl:mscom
+SignInUrl,signOutUrl:mscomSignOutUrl},aadInfo:{signInUrl:mscomSignInUrl,signOutUrl:mscomSignOutUrl}},userData:{idp:authe
+nticationType==="RPS"?window.msCommonShell.SupportedAuthIdp.MSA:window.msCommonShell.SupportedAuthIdp.AAD,firstName:type
+of aFirstName=="undefined"?"":aFirstName,lastName:typeof aLastName=="undefined"?"":aLastName,memberName:typeof 
+aMemberName=="undefined"?"":aMemberName,cid:typeof aCid=="undefined"?"":aCid,authenticatedState:typeof aAuthenticatedSta
+te=="undefined"?window.msCommonShell.AuthState.NotSignedIn:aAuthenticatedState}},events:{onSearch:function(){},onEventLo
+g:function(n){if(typeof ms!="undefined")switch(n){case"MeControl_SignIn":if(t!==""){var i="//microsoftwindows.112.2o7.ne
+t/b/ss/msstores1-cmstest-prod/1/H.24.4/",e=((1+Math.random())*65536|0).toString(16).substring(1),u=encodeURIComponent(wi
+ndow.location.pathname.toLowerCase()),o=e+"?ns=microsoftwindows%26pageName=sitemuse%26v1=sitemuse%26events=event2%26c2=T
+oReplacepth1%26v2=ToReplacepth2%26pe=lnk_o%26pev2=click_sitemuse%26c3=signInClick%26v3=signInClick%26c4=no%26v4=no",s=ne
+w Image(0,0);i=i+decodeURIComponent(o);i=i.replace("ToReplacepth1",u);i=i.replace("ToReplacepth2",u);s.src=i}break;case"
+MeControl_SignOutAll":if(t!==""){var r="//microsoftwindows.112.2o7.net/b/ss/msstores1-cmstest-prod/1/H.24.4/",h=((1+Math
+.random())*65536|0).toString(16).substring(1),f=encodeURIComponent(window.location.pathname.toLowerCase()),c=h+"?ns=micr
+osoftwindows%26pageName=sitemuse%26v1=sitemuse%26events=event2%26c2=ToReplacepth1%26v2=ToReplacepth2%26pe=lnk_o%26pev2=c
+lick_sitemuse%26c3=signOutClick%26v3=signOutClick%26c4=no%26v4=no",l=new Image(0,0);r=r+decodeURIComponent(c);r=r.replac
+e("ToReplacepth1",f);r=r.replace("ToReplacepth2",f);l.src=i}break;case"MeControl_DropdownReady":console.log($(".msame_He
+ader_chev").text());$(".msame_Header_chev").length&&($(".msame_Header_chev"
+At C:\Users\david\OneDrive\GitHub\MyModules\OSD\Public\Functions\Catalog\Get-OSDCatalogMicrosoftDriverPack.ps1:451 
+char:27
++ ... ownloads = (Invoke-WebRequest -Uri $DriverPage -UseBasicParsing).Link ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : InvalidOperation: (System.Net.HttpWebRequest:HttpWebRequest) [Invoke-WebRequest], 
+WebException
+    + FullyQualifiedErrorId : WebCmdletWebResponseException,Microsoft.PowerShell.Commands.InvokeWebRequestCommand
+Invoke-WebRequest : Error 404 - Not Found/**/Warning: This site requires the use of scripts, which your browser does not currently allow.See how to enable scriptsSkip to main
+contentMicrosoftDownload CenterDownload Center
+                            Download Center
+                         Home WindowsOfficeWeb browsersDeveloper toolsXboxWindows PhoneMoreAll MicrosoftGlobalMicrosoft 365TeamsWindowsSurfaceXboxDealsSmall
+BusinessSupportSoftwareSoftwareWindows AppsOneDriveOutlookSkypeOneNoteMicrosoft TeamsMicrosoft EdgePCs &amp; Devices  PCs &amp; Devices  ComputersShop XboxAccessoriesVR &amp; mixed
+realityPhonesEntertainmentEntertainmentXbox Game Pass UltimatePC Game PassXbox gamesPC gamesWindows digital gamesMovies &amp; TVBusinessBusinessMicrosoft CloudMicrosoft SecurityDynamics
+365Microsoft 365 for businessMicrosoft Power PlatformWindows 365Microsoft IndustrySmall BusinessDeveloper &amp; IT  Developer &amp; IT  AzureDeveloper CenterDocumentationMicrosoft
+LearnMicrosoft Tech CommunityAzure MarketplaceAppSourceVisual StudioOtherOtherMicrosoft Rewards Free downloads &amp; securityEducationVirtual workshops and trainingGift cardsStudents
+and parents dealsLicensingMicrosoft Experience CenterView SitemapSearchSearch Microsoft.comNo resultsCancel0Cart0 items in shopping cartSign in
+            /**//*<![CDATA[*/function MscomLoadOptions(){var t="",n=document.createElement("meta"),i;n.name="ms.auth";n.content=isUserSignedIn;document.head&&document.head.appendChild(n)
+;i={meControlOptions:{rpData:{msaInfo:{signInUrl:mscomSignInUrl,signOutUrl:mscomSignOutUrl},aadInfo:{signInUrl:mscomSignInUrl,signOutUrl:mscomSignOutUrl}},userData:{idp:authenticationTyp
+e==="RPS"?window.msCommonShell.SupportedAuthIdp.MSA:window.msCommonShell.SupportedAuthIdp.AAD,firstName:typeof aFirstName=="undefined"?"":aFirstName,lastName:typeof
+aLastName=="undefined"?"":aLastName,memberName:typeof aMemberName=="undefined"?"":aMemberName,cid:typeof aCid=="undefined"?"":aCid,authenticatedState:typeof
+aAuthenticatedState=="undefined"?window.msCommonShell.AuthState.NotSignedIn:aAuthenticatedState}},events:{onSearch:function(){},onEventLog:function(n){if(typeof
+ms!="undefined")switch(n){case"MeControl_SignIn":if(t!==""){var i="//microsoftwindows.112.2o7.net/b/ss/msstores1-cmstest-prod/1/H.24.4/",e=((1+Math.random())*65536|0).toString(16).substr
+ing(1),u=encodeURIComponent(window.location.pathname.toLowerCase()),o=e+"?ns=microsoftwindows%26pageName=sitemuse%26v1=sitemuse%26events=event2%26c2=ToReplacepth1%26v2=ToReplacepth2%26pe
+=lnk_o%26pev2=click_sitemuse%26c3=signInClick%26v3=signInClick%26c4=no%26v4=no",s=new
+Image(0,0);i=i+decodeURIComponent(o);i=i.replace("ToReplacepth1",u);i=i.replace("ToReplacepth2",u);s.src=i}break;case"MeControl_SignOutAll":if(t!==""){var r="//microsoftwindows.112.2o7.n
+et/b/ss/msstores1-cmstest-prod/1/H.24.4/",h=((1+Math.random())*65536|0).toString(16).substring(1),f=encodeURIComponent(window.location.pathname.toLowerCase()),c=h+"?ns=microsoftwindows%2
+6pageName=sitemuse%26v1=sitemuse%26events=event2%26c2=ToReplacepth1%26v2=ToReplacepth2%26pe=lnk_o%26pev2=click_sitemuse%26c3=signOutClick%26v3=signOutClick%26c4=no%26v4=no",l=new Image(0
+,0);r=r+decodeURIComponent(c);r=r.replace("ToReplacepth1",f);r=r.replace("ToReplacepth2",f);l.src=i}break;case"MeControl_DropdownReady":console.log($(".msame_Header_chev").text());$(".ms
+ame_Header_chev").length&&($(".msame_Header_chev"
+At C:\Users\david\OneDrive\GitHub\MyModules\OSD\Public\Functions\Catalog\Get-OSDCatalogMicrosoftDriverPack.ps1:451 char:27
++ ... ownloads = (Invoke-WebRequest -Uri $DriverPage -UseBasicParsing).Link ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : InvalidOperation: (System.Net.HttpWebRequest:HttpWebRequest) [Invoke-WebRequest], WebException
+    + FullyQualifiedErrorId : WebCmdletWebResponseException,Microsoft.PowerShell.Commands.InvokeWebRequestCommand
+VERBOSE: Testing Download File at https://download.microsoft.com/download/7/5/7/757B0C6E-0C22-400B-90EA-D8AFBD64CC16/Surface3_4GLTE-NorthAmericaUnlocked_Win10_18362_1902003_0.msi
+VERBOSE: HEAD with 0-byte payload
+VERBOSE: received 207032320-byte response of content type application/octet-stream
+VERBOSE: Processing Surface Book
+VERBOSE: GET with 0-byte payload
+VERBOSE: received -1-byte response of content type text/html
+VERBOSE: Testing Download File at https://download.microsoft.com/download/D/8/B/D8BB7912-5DB3-4AFF-8554-8F2E0B4CAB41/SurfaceBook_Win10_18362_21.062.17202.0.msi
+VERBOSE: HEAD with 0-byte payload
+VERBOSE: received 1341702144-byte response of content type application/octet-stream
+VERBOSE: Processing Surface Book 2 13
+VERBOSE: GET with 0-byte payload
+VERBOSE: received -1-byte response of content type text/html
+VERBOSE: Testing Download File at https://download.microsoft.com/download/9/4/F/94F7AED2-D3ED-4A60-AB94-A0D078FE6DF6/SurfaceBook2_Win10_19041_22.080.2839.0.msi
+VERBOSE: HEAD with 0-byte payload
+VERBOSE: received 1624727552-byte response of content type application/octet-stream
+VERBOSE: Processing Surface Book 2 15
+VERBOSE: GET with 0-byte payload
+VERBOSE: received -1-byte response of content type text/html
+VERBOSE: Testing Download File at https://download.microsoft.com/download/9/4/F/94F7AED2-D3ED-4A60-AB94-A0D078FE6DF6/SurfaceBook2_Win10_19041_22.080.2839.0.msi
+VERBOSE: HEAD with 0-byte payload
+VERBOSE: received 1624727552-byte response of content type application/octet-stream
+VERBOSE: Processing Surface Book 3 13
+VERBOSE: GET with 0-byte payload
+VERBOSE: received -1-byte response of content type text/html
+VERBOSE: Testing Download File at https://download.microsoft.com/download/6/1/3/6139ef9d-d467-4fc4-94f2-8ebbf705110c/SurfaceBook3_Win10_19041_22.100.5729.0.msi
+VERBOSE: HEAD with 0-byte payload
+VERBOSE: received 1859616768-byte response of content type application/octet-stream
+VERBOSE: Testing Download File at https://download.microsoft.com/download/6/1/3/6139ef9d-d467-4fc4-94f2-8ebbf705110c/SurfaceBook3_Win11_22000_22.100.5730.0.msi
+VERBOSE: HEAD with 0-byte payload
+VERBOSE: received 1859706880-byte response of content type application/octet-stream
+VERBOSE: Processing Surface Book 3 15
+VERBOSE: GET with 0-byte payload
+VERBOSE: received -1-byte response of content type text/html
+VERBOSE: Testing Download File at https://download.microsoft.com/download/6/1/3/6139ef9d-d467-4fc4-94f2-8ebbf705110c/SurfaceBook3_Win10_19041_22.100.5729.0.msi
+VERBOSE: HEAD with 0-byte payload
+VERBOSE: received 1859616768-byte response of content type application/octet-stream
+VERBOSE: Testing Download File at https://download.microsoft.com/download/6/1/3/6139ef9d-d467-4fc4-94f2-8ebbf705110c/SurfaceBook3_Win11_22000_22.100.5730.0.msi
+VERBOSE: HEAD with 0-byte payload
+VERBOSE: received 1859706880-byte response of content type application/octet-stream
+VERBOSE: Processing Surface Go Commercial
+VERBOSE: GET with 0-byte payload
+VERBOSE: received -1-byte response of content type text/html
+VERBOSE: Testing Download File at https://download.microsoft.com/download/1/9/2/19206AF7-09CE-4AA6-8966-051D2E79E62B/SurfaceGo_Win10_19042_22.104.24060_WiFi_0.msi
+VERBOSE: HEAD with 0-byte payload
+VERBOSE: received 376455168-byte response of content type application/octet-stream
+VERBOSE: Processing Surface Go Consumer
+VERBOSE: GET with 0-byte payload
+VERBOSE: received -1-byte response of content type text/html
+VERBOSE: Testing Download File at https://download.microsoft.com/download/1/9/2/19206AF7-09CE-4AA6-8966-051D2E79E62B/SurfaceGo_Win10_19042_22.104.24060_WiFi_0.msi
+VERBOSE: HEAD with 0-byte payload
+VERBOSE: received 376455168-byte response of content type application/octet-stream
+VERBOSE: Processing Surface Go LTE Commercial
+VERBOSE: GET with 0-byte payload
+VERBOSE: received -1-byte response of content type text/html
+VERBOSE: Testing Download File at https://download.microsoft.com/download/B/0/C/B0CD6C8E-5AE4-4072-BD43-B981209606E5/SurfaceGo_Win10_19042_22.104.24060_LTE_0.msi
+VERBOSE: HEAD with 0-byte payload
+VERBOSE: received 377819136-byte response of content type application/octet-stream
+VERBOSE: Processing Surface Go 2 Commercial
+VERBOSE: GET with 0-byte payload
+VERBOSE: received -1-byte response of content type text/html
+VERBOSE: Testing Download File at https://download.microsoft.com/download/d/7/1/d71163b8-03a8-40c7-8a9f-fc2006c6bccb/SurfaceGo2_Win10_19042_22.104.24090_0.msi
+VERBOSE: HEAD with 0-byte payload
+VERBOSE: received 411967488-byte response of content type application/octet-stream
+VERBOSE: Processing Surface Go 2 Consumer
+VERBOSE: GET with 0-byte payload
+VERBOSE: received -1-byte response of content type text/html
+VERBOSE: Testing Download File at https://download.microsoft.com/download/d/7/1/d71163b8-03a8-40c7-8a9f-fc2006c6bccb/SurfaceGo2_Win10_19042_22.104.24090_0.msi
+VERBOSE: HEAD with 0-byte payload
+VERBOSE: received 411967488-byte response of content type application/octet-stream
+VERBOSE: Processing Surface Go 2 LTE
+VERBOSE: GET with 0-byte payload
+VERBOSE: received -1-byte response of content type text/html
+VERBOSE: Testing Download File at https://download.microsoft.com/download/d/7/1/d71163b8-03a8-40c7-8a9f-fc2006c6bccb/SurfaceGo2_Win10_19042_22.104.24090_0.msi
+VERBOSE: HEAD with 0-byte payload
+VERBOSE: received 411967488-byte response of content type application/octet-stream
+VERBOSE: Processing Surface Go 3 Commercial
+VERBOSE: GET with 0-byte payload
+VERBOSE: received -1-byte response of content type text/html
+VERBOSE: Testing Download File at https://download.microsoft.com/download/e/8/2/e82f3029-e587-4c28-8ab4-ae1bf1e2c209/SurfaceGo3_Win10_19042_22.111.14054.0.msi
+VERBOSE: HEAD with 0-byte payload
+VERBOSE: received 549322752-byte response of content type application/octet-stream
+VERBOSE: Processing Surface Go 3 Consumer
+VERBOSE: GET with 0-byte payload
+VERBOSE: received -1-byte response of content type text/html
+VERBOSE: Testing Download File at https://download.microsoft.com/download/e/8/2/e82f3029-e587-4c28-8ab4-ae1bf1e2c209/SurfaceGo3_Win10_19042_22.111.14054.0.msi
+VERBOSE: HEAD with 0-byte payload
+VERBOSE: received 549322752-byte response of content type application/octet-stream
+VERBOSE: Processing Surface Go 3 LTE
+VERBOSE: GET with 0-byte payload
+VERBOSE: received -1-byte response of content type text/html
+VERBOSE: Testing Download File at https://download.microsoft.com/download/e/8/2/e82f3029-e587-4c28-8ab4-ae1bf1e2c209/SurfaceGo3_Win10_19042_22.111.14054.0.msi
+VERBOSE: HEAD with 0-byte payload
+VERBOSE: received 549322752-byte response of content type application/octet-stream
+VERBOSE: Processing Surface Hub 2
+VERBOSE: GET with 0-byte payload
+VERBOSE: received -1-byte response of content type text/html
+VERBOSE: Testing Download File at https://download.microsoft.com/download/C/5/D/C5D16DE9-19E3-4A02-9483-B045EDC63A1E/SurfaceHub2S_Win10_19042_22.092.24417.0.msi
+VERBOSE: HEAD with 0-byte payload
+VERBOSE: received 475119616-byte response of content type application/octet-stream
+VERBOSE: Processing Surface Hub 2S 50
+VERBOSE: GET with 0-byte payload
+VERBOSE: received -1-byte response of content type text/html
+VERBOSE: Testing Download File at https://download.microsoft.com/download/C/5/D/C5D16DE9-19E3-4A02-9483-B045EDC63A1E/SurfaceHub2S_Win10_19042_22.092.24417.0.msi
+VERBOSE: HEAD with 0-byte payload
+VERBOSE: received 475119616-byte response of content type application/octet-stream
+VERBOSE: Processing Surface Hub 2S 85
+VERBOSE: GET with 0-byte payload
+VERBOSE: received -1-byte response of content type text/html
+VERBOSE: Testing Download File at https://download.microsoft.com/download/C/5/D/C5D16DE9-19E3-4A02-9483-B045EDC63A1E/SurfaceHub2S_Win10_19042_22.092.24417.0.msi
+VERBOSE: HEAD with 0-byte payload
+VERBOSE: received 475119616-byte response of content type application/octet-stream
+VERBOSE: Processing Surface Laptop
+VERBOSE: GET with 0-byte payload
+VERBOSE: received -1-byte response of content type text/html
+VERBOSE: Testing Download File at https://download.microsoft.com/download/4/3/C/43C2BEA2-3C14-4DC1-B984-7556B389AC2E/SurfaceLaptop_Win10_18362_21.101.11476.0.msi
+VERBOSE: HEAD with 0-byte payload
+VERBOSE: received 437915648-byte response of content type application/octet-stream
+VERBOSE: Processing Surface Laptop 2 Commercial
+VERBOSE: GET with 0-byte payload
+VERBOSE: received -1-byte response of content type text/html
+VERBOSE: Testing Download File at https://download.microsoft.com/download/E/7/5/E75E02DD-0ACF-4953-9F42-8408F96E0702/SurfaceLaptop2_Win10_19041_22.080.1424.0.msi
+VERBOSE: HEAD with 0-byte payload
+VERBOSE: received 568692736-byte response of content type application/octet-stream
+VERBOSE: Processing Surface Laptop 2 Consumer
+VERBOSE: GET with 0-byte payload
+VERBOSE: received -1-byte response of content type text/html
+VERBOSE: Testing Download File at https://download.microsoft.com/download/E/7/5/E75E02DD-0ACF-4953-9F42-8408F96E0702/SurfaceLaptop2_Win10_19041_22.080.1424.0.msi
+VERBOSE: HEAD with 0-byte payload
+VERBOSE: received 568692736-byte response of content type application/octet-stream
+VERBOSE: Processing Surface Laptop 3 13 Intel
+VERBOSE: GET with 0-byte payload
+VERBOSE: received -1-byte response of content type text/html
+VERBOSE: Testing Download File at https://download.microsoft.com/download/3/f/4/3f4f5dff-b6a9-4006-87aa-142a8e6f77cb/SurfaceLaptop3_Win10_19041_22.081.11638.0.msi
+VERBOSE: HEAD with 0-byte payload
+VERBOSE: received 648351744-byte response of content type application/octet-stream
+VERBOSE: Testing Download File at https://download.microsoft.com/download/3/f/4/3f4f5dff-b6a9-4006-87aa-142a8e6f77cb/SurfaceLaptop3_Win11_22000_22.081.11638.0.msi
+VERBOSE: HEAD with 0-byte payload
+VERBOSE: received 648482816-byte response of content type application/octet-stream
+VERBOSE: Processing Surface Laptop 3 13 AMD
+VERBOSE: GET with 0-byte payload
+VERBOSE: received -1-byte response of content type text/html
+VERBOSE: Testing Download File at https://download.microsoft.com/download/6/f/e/6fe2a0c9-7218-4e17-8628-229b89a8b650/SurfaceLaptop3_Win10_19042_22.020.5647.0.msi
+VERBOSE: HEAD with 0-byte payload
+VERBOSE: received 377167872-byte response of content type application/octet-stream
+VERBOSE: Testing Download File at https://download.microsoft.com/download/6/f/e/6fe2a0c9-7218-4e17-8628-229b89a8b650/SurfaceLaptop3_Win11_22000_22.020.5648.0.msi
+VERBOSE: HEAD with 0-byte payload
+VERBOSE: received 377004032-byte response of content type application/octet-stream
+VERBOSE: Processing Surface Laptop 3 15 Intel
+VERBOSE: GET with 0-byte payload
+VERBOSE: received -1-byte response of content type text/html
+VERBOSE: Testing Download File at https://download.microsoft.com/download/3/f/4/3f4f5dff-b6a9-4006-87aa-142a8e6f77cb/SurfaceLaptop3_Win10_19041_22.081.11638.0.msi
+VERBOSE: HEAD with 0-byte payload
+VERBOSE: received 648351744-byte response of content type application/octet-stream
+VERBOSE: Testing Download File at https://download.microsoft.com/download/3/f/4/3f4f5dff-b6a9-4006-87aa-142a8e6f77cb/SurfaceLaptop3_Win11_22000_22.081.11638.0.msi
+VERBOSE: HEAD with 0-byte payload
+VERBOSE: received 648482816-byte response of content type application/octet-stream
+VERBOSE: Processing Surface Laptop 4 13 AMD
+VERBOSE: GET with 0-byte payload
+VERBOSE: received -1-byte response of content type text/html
+VERBOSE: Testing Download File at https://download.microsoft.com/download/c/2/8/c2840704-6c0e-4457-82ca-68502b1803b5/SurfaceLaptop4_Win10_19042_22.093.29929.0.msi
+VERBOSE: HEAD with 0-byte payload
+VERBOSE: received 469536768-byte response of content type application/octet-stream
+VERBOSE: Testing Download File at https://download.microsoft.com/download/c/2/8/c2840704-6c0e-4457-82ca-68502b1803b5/SurfaceLaptop4_Win11_22000_22.093.29929.0.msi
+VERBOSE: HEAD with 0-byte payload
+VERBOSE: received 469577728-byte response of content type application/octet-stream
+VERBOSE: Processing Surface Laptop 4 13 Intel
+VERBOSE: GET with 0-byte payload
+VERBOSE: received -1-byte response of content type text/html
+VERBOSE: Testing Download File at https://download.microsoft.com/download/f/7/0/f70b3d0a-59b1-4842-9130-0c152bb738ba/SurfaceLaptop4_Win10_19041_22.093.37381.0.msi
+VERBOSE: HEAD with 0-byte payload
+VERBOSE: received 650469376-byte response of content type application/octet-stream
+VERBOSE: Testing Download File at https://download.microsoft.com/download/f/7/0/f70b3d0a-59b1-4842-9130-0c152bb738ba/SurfaceLaptop4_Win11_22000_22.093.37381.0.msi
+VERBOSE: HEAD with 0-byte payload
+VERBOSE: received 650514432-byte response of content type application/octet-stream
+VERBOSE: Processing Surface Laptop 4 15 AMD
+VERBOSE: GET with 0-byte payload
+VERBOSE: received -1-byte response of content type text/html
+VERBOSE: Testing Download File at https://download.microsoft.com/download/c/2/8/c2840704-6c0e-4457-82ca-68502b1803b5/SurfaceLaptop4_Win10_19042_22.093.29929.0.msi
+VERBOSE: HEAD with 0-byte payload
+VERBOSE: received 469536768-byte response of content type application/octet-stream
+VERBOSE: Testing Download File at https://download.microsoft.com/download/c/2/8/c2840704-6c0e-4457-82ca-68502b1803b5/SurfaceLaptop4_Win11_22000_22.093.29929.0.msi
+VERBOSE: HEAD with 0-byte payload
+VERBOSE: received 469577728-byte response of content type application/octet-stream
+VERBOSE: Processing Surface Laptop 4 15 Intel
+VERBOSE: GET with 0-byte payload
+VERBOSE: received -1-byte response of content type text/html
+VERBOSE: Testing Download File at https://download.microsoft.com/download/f/7/0/f70b3d0a-59b1-4842-9130-0c152bb738ba/SurfaceLaptop4_Win10_19041_22.093.37381.0.msi
+VERBOSE: HEAD with 0-byte payload
+VERBOSE: received 650469376-byte response of content type application/octet-stream
+VERBOSE: Testing Download File at https://download.microsoft.com/download/f/7/0/f70b3d0a-59b1-4842-9130-0c152bb738ba/SurfaceLaptop4_Win11_22000_22.093.37381.0.msi
+VERBOSE: HEAD with 0-byte payload
+VERBOSE: received 650514432-byte response of content type application/octet-stream
+VERBOSE: Processing Surface Laptop 5 13 Consumer
+VERBOSE: GET with 0-byte payload
+VERBOSE: received -1-byte response of content type text/html
+VERBOSE: Testing Download File at https://download.microsoft.com/download/d/2/6/d26c7d69-ec2f-4dd6-95ab-7e1d2b5ee7ae/SurfaceLaptop5_Win10_19044_22.102.17126.0.msi
+VERBOSE: HEAD with 0-byte payload
+VERBOSE: received 670584832-byte response of content type application/octet-stream
+VERBOSE: Testing Download File at https://download.microsoft.com/download/d/2/6/d26c7d69-ec2f-4dd6-95ab-7e1d2b5ee7ae/SurfaceLaptop5_Win11_22621_22.102.17243.0.msi
+VERBOSE: HEAD with 0-byte payload
+VERBOSE: received 670584832-byte response of content type application/octet-stream
+VERBOSE: Processing Surface Laptop 5 13 Commercial
+VERBOSE: GET with 0-byte payload
+VERBOSE: received -1-byte response of content type text/html
+VERBOSE: Testing Download File at https://download.microsoft.com/download/d/2/6/d26c7d69-ec2f-4dd6-95ab-7e1d2b5ee7ae/SurfaceLaptop5_Win10_19044_22.102.17126.0.msi
+VERBOSE: HEAD with 0-byte payload
+VERBOSE: received 670584832-byte response of content type application/octet-stream
+VERBOSE: Testing Download File at https://download.microsoft.com/download/d/2/6/d26c7d69-ec2f-4dd6-95ab-7e1d2b5ee7ae/SurfaceLaptop5_Win11_22621_22.102.17243.0.msi
+VERBOSE: HEAD with 0-byte payload
+VERBOSE: received 670584832-byte response of content type application/octet-stream
+VERBOSE: Processing Surface Laptop 5 15 Consumer
+VERBOSE: GET with 0-byte payload
+VERBOSE: received -1-byte response of content type text/html
+VERBOSE: Testing Download File at https://download.microsoft.com/download/d/2/6/d26c7d69-ec2f-4dd6-95ab-7e1d2b5ee7ae/SurfaceLaptop5_Win10_19044_22.102.17126.0.msi
+VERBOSE: HEAD with 0-byte payload
+VERBOSE: received 670584832-byte response of content type application/octet-stream
+VERBOSE: Testing Download File at https://download.microsoft.com/download/d/2/6/d26c7d69-ec2f-4dd6-95ab-7e1d2b5ee7ae/SurfaceLaptop5_Win11_22621_22.102.17243.0.msi
+VERBOSE: HEAD with 0-byte payload
+VERBOSE: received 670584832-byte response of content type application/octet-stream
+VERBOSE: Processing Surface Laptop 5 15 Commercial
+VERBOSE: GET with 0-byte payload
+VERBOSE: received -1-byte response of content type text/html
+VERBOSE: Testing Download File at https://download.microsoft.com/download/d/2/6/d26c7d69-ec2f-4dd6-95ab-7e1d2b5ee7ae/SurfaceLaptop5_Win10_19044_22.102.17126.0.msi
+VERBOSE: HEAD with 0-byte payload
+VERBOSE: received 670584832-byte response of content type application/octet-stream
+VERBOSE: Testing Download File at https://download.microsoft.com/download/d/2/6/d26c7d69-ec2f-4dd6-95ab-7e1d2b5ee7ae/SurfaceLaptop5_Win11_22621_22.102.17243.0.msi
+VERBOSE: HEAD with 0-byte payload
+VERBOSE: received 670584832-byte response of content type application/octet-stream
+VERBOSE: Processing Surface Laptop Go
+VERBOSE: GET with 0-byte payload
+VERBOSE: received -1-byte response of content type text/html
+VERBOSE: Testing Download File at https://download.microsoft.com/download/5/9/4/594604a4-26c0-405c-ac04-b385d824c30c/SurfaceLaptopGo_Win10_19041_22.021.14345.0.msi
+VERBOSE: HEAD with 0-byte payload
+VERBOSE: received 639029248-byte response of content type application/octet-stream
+VERBOSE: Testing Download File at https://download.microsoft.com/download/5/9/4/594604a4-26c0-405c-ac04-b385d824c30c/SurfaceLaptopGo_Win11_22000_22.021.14347.0.msi
+VERBOSE: HEAD with 0-byte payload
+VERBOSE: received 639029248-byte response of content type application/octet-stream
+VERBOSE: Processing Surface Laptop Go 2
+VERBOSE: GET with 0-byte payload
+VERBOSE: received -1-byte response of content type text/html
+VERBOSE: Testing Download File at https://download.microsoft.com/download/c/7/d/c7d06901-77f2-44aa-9a58-293d069d19c6/SurfaceLaptopGo2_Win10_19044_22.074.40379.0.msi
+VERBOSE: HEAD with 0-byte payload
+VERBOSE: received 478113792-byte response of content type application/octet-stream
+VERBOSE: Processing Surface Laptop Studio
+VERBOSE: GET with 0-byte payload
+VERBOSE: received -1-byte response of content type text/html
+VERBOSE: Testing Download File at https://download.microsoft.com/download/b/3/0/b30ecc34-3bab-4c68-a5b3-0d258d73e747/SurfaceLaptopStudio_Win10_19042_22.114.42840.0.msi
+VERBOSE: HEAD with 0-byte payload
+VERBOSE: received 1733165056-byte response of content type application/octet-stream
+VERBOSE: Testing Download File at https://download.microsoft.com/download/b/3/0/b30ecc34-3bab-4c68-a5b3-0d258d73e747/SurfaceLaptopStudio_Win11_22000_22.114.42841.0.msi
+VERBOSE: HEAD with 0-byte payload
+VERBOSE: received 1733165056-byte response of content type application/octet-stream
+VERBOSE: Processing Surface Pro
+VERBOSE: GET with 0-byte payload
+VERBOSE: received -1-byte response of content type text/html
+VERBOSE: Testing Download File at https://download.microsoft.com/download/B/D/A/BDA70A48-7447-463C-BD91-1DF6C6E5BF50/Surface Pro/SurfacePro_Win10_150723_0.zip
+VERBOSE: HEAD with 0-byte payload
+VERBOSE: received 156853921-byte response of content type application/octet-stream
+VERBOSE: Processing Surface Pro 2
+VERBOSE: GET with 0-byte payload
+VERBOSE: received -1-byte response of content type text/html
+VERBOSE: Testing Download File at https://download.microsoft.com/download/A/D/F/ADF87383-7E81-4157-A1C3-D2CCE3446D7B/SurfacePro2_Win10_160501_2.zip
+VERBOSE: HEAD with 0-byte payload
+VERBOSE: received 219583326-byte response of content type application/octet-stream
+VERBOSE: Processing Surface Pro 3
+VERBOSE: GET with 0-byte payload
+VERBOSE: received -1-byte response of content type text/html
+VERBOSE: Testing Download File at https://download.microsoft.com/download/2/0/7/2073C22F-2F31-4F4A-8059-E54C91C564A9/SurfacePro3_Win10_18362_1902002_0.msi
+VERBOSE: HEAD with 0-byte payload
+VERBOSE: received 191889408-byte response of content type application/octet-stream
+VERBOSE: Processing Surface Pro 4
+VERBOSE: GET with 0-byte payload
+VERBOSE: received -1-byte response of content type text/html
+VERBOSE: Testing Download File at https://download.microsoft.com/download/6/A/C/6ACB37C4-E4C1-4E0E-BBAE-AC7A0C303593/SurfacePro4_Win10_18362_21.061.12819.0.msi
+VERBOSE: HEAD with 0-byte payload
+VERBOSE: received 366424064-byte response of content type application/octet-stream
+VERBOSE: Processing Surface Pro (5th Gen)
+VERBOSE: GET with 0-byte payload
+VERBOSE: received -1-byte response of content type text/html
+VERBOSE: Testing Download File at https://download.microsoft.com/download/4/C/7/4C7DA85D-03DE-4B89-B8E0-386437331C46/SurfacePro_Win10_19041_22.074.40280.0.msi
+VERBOSE: HEAD with 0-byte payload
+VERBOSE: received 578031616-byte response of content type application/octet-stream
+VERBOSE: Processing Surface Pro with LTE Advanced
+VERBOSE: GET with 0-byte payload
+VERBOSE: received -1-byte response of content type text/html
+VERBOSE: Testing Download File at https://download.microsoft.com/download/4/1/6/416D7D4F-64D9-4633-A5CC-922A941854FD/SurfacePro_Win10_19041_22.074.40280.0.msi
+VERBOSE: HEAD with 0-byte payload
+VERBOSE: received 578031616-byte response of content type application/octet-stream
+VERBOSE: Processing Surface Pro 6 Commercial
+VERBOSE: GET with 0-byte payload
+VERBOSE: received -1-byte response of content type text/html
+VERBOSE: Testing Download File at https://download.microsoft.com/download/8/9/8/8986DE75-9E21-478A-B002-A7E92BA0F053/SurfacePro6_Win10_19041_22.074.41199.0.msi
+VERBOSE: HEAD with 0-byte payload
+VERBOSE: received 400912384-byte response of content type application/octet-stream
+VERBOSE: Processing Surface Pro 6 Consumer
+VERBOSE: GET with 0-byte payload
+VERBOSE: received -1-byte response of content type text/html
+VERBOSE: Testing Download File at https://download.microsoft.com/download/8/9/8/8986DE75-9E21-478A-B002-A7E92BA0F053/SurfacePro6_Win10_19041_22.074.41199.0.msi
+VERBOSE: HEAD with 0-byte payload
+VERBOSE: received 400912384-byte response of content type application/octet-stream
+VERBOSE: Processing Surface Pro 7
+VERBOSE: GET with 0-byte payload
+VERBOSE: received -1-byte response of content type text/html
+VERBOSE: Testing Download File at https://download.microsoft.com/download/0/8/b/08b0f0ba-1571-41c0-9b8a-9af8a43681ae/SurfacePro7_Win10_19041_22.094.40075.0.msi
+VERBOSE: HEAD with 0-byte payload
+VERBOSE: received 705781760-byte response of content type application/octet-stream
+VERBOSE: Testing Download File at https://download.microsoft.com/download/0/8/b/08b0f0ba-1571-41c0-9b8a-9af8a43681ae/SurfacePro7_Win11_22000_22.094.40075.0.msi
+VERBOSE: HEAD with 0-byte payload
+VERBOSE: received 705888256-byte response of content type application/octet-stream
+VERBOSE: Processing Surface Pro 7+
+VERBOSE: GET with 0-byte payload
+VERBOSE: received -1-byte response of content type text/html
+VERBOSE: Testing Download File at https://download.microsoft.com/download/1/b/4/1b4bdd09-a704-4bf5-bed6-6693a0ac848a/SurfacePro7+_Win10_19041_22.093.32677.0.msi
+VERBOSE: HEAD with 0-byte payload
+VERBOSE: received 1107267584-byte response of content type application/octet-stream
+VERBOSE: Testing Download File at https://download.microsoft.com/download/1/b/4/1b4bdd09-a704-4bf5-bed6-6693a0ac848a/SurfacePro7+_Win11_22000_22.093.33213.0.msi
+VERBOSE: HEAD with 0-byte payload
+VERBOSE: received 1107324928-byte response of content type application/octet-stream
+VERBOSE: Processing Surface Pro 7+ LTE
+VERBOSE: GET with 0-byte payload
+VERBOSE: received -1-byte response of content type text/html
+VERBOSE: Testing Download File at https://download.microsoft.com/download/1/b/4/1b4bdd09-a704-4bf5-bed6-6693a0ac848a/SurfacePro7+_Win10_19041_22.093.32677.0.msi
+VERBOSE: HEAD with 0-byte payload
+VERBOSE: received 1107267584-byte response of content type application/octet-stream
+VERBOSE: Testing Download File at https://download.microsoft.com/download/1/b/4/1b4bdd09-a704-4bf5-bed6-6693a0ac848a/SurfacePro7+_Win11_22000_22.093.33213.0.msi
+VERBOSE: HEAD with 0-byte payload
+VERBOSE: received 1107324928-byte response of content type application/octet-stream
+VERBOSE: Processing Surface Pro 8
+VERBOSE: GET with 0-byte payload
+VERBOSE: received -1-byte response of content type text/html
+VERBOSE: Testing Download File at https://download.microsoft.com/download/9/1/3/9133dbd3-799a-4766-bb9e-f67697159c02/SurfacePro8_Win10_19042_22.113.31418.0.msi
+VERBOSE: HEAD with 0-byte payload
+VERBOSE: received 644505600-byte response of content type application/octet-stream
+VERBOSE: Testing Download File at https://download.microsoft.com/download/9/1/3/9133dbd3-799a-4766-bb9e-f67697159c02/SurfacePro8_Win11_22000_22.113.31419.0.msi
+VERBOSE: HEAD with 0-byte payload
+VERBOSE: received 644505600-byte response of content type application/octet-stream
+VERBOSE: Processing Surface Pro 8 Consumer
+VERBOSE: GET with 0-byte payload
+VERBOSE: received -1-byte response of content type text/html
+VERBOSE: Testing Download File at https://download.microsoft.com/download/9/1/3/9133dbd3-799a-4766-bb9e-f67697159c02/SurfacePro8_Win10_19042_22.113.31418.0.msi
+VERBOSE: HEAD with 0-byte payload
+VERBOSE: received 644505600-byte response of content type application/octet-stream
+VERBOSE: Testing Download File at https://download.microsoft.com/download/9/1/3/9133dbd3-799a-4766-bb9e-f67697159c02/SurfacePro8_Win11_22000_22.113.31419.0.msi
+VERBOSE: HEAD with 0-byte payload
+VERBOSE: received 644505600-byte response of content type application/octet-stream
+VERBOSE: Processing Surface Pro 8 LTE
+VERBOSE: GET with 0-byte payload
+VERBOSE: received -1-byte response of content type text/html
+VERBOSE: Testing Download File at https://download.microsoft.com/download/9/1/3/9133dbd3-799a-4766-bb9e-f67697159c02/SurfacePro8_Win10_19042_22.113.31418.0.msi
+VERBOSE: HEAD with 0-byte payload
+VERBOSE: received 644505600-byte response of content type application/octet-stream
+VERBOSE: Testing Download File at https://download.microsoft.com/download/9/1/3/9133dbd3-799a-4766-bb9e-f67697159c02/SurfacePro8_Win11_22000_22.113.31419.0.msi
+VERBOSE: HEAD with 0-byte payload
+VERBOSE: received 644505600-byte response of content type application/octet-stream
+VERBOSE: Processing Surface Pro 9 Consumer
+VERBOSE: GET with 0-byte payload
+VERBOSE: received -1-byte response of content type text/html
+VERBOSE: Testing Download File at https://download.microsoft.com/download/e/9/a/e9a35d1b-7b4c-48d4-8619-5301d4c09f65/SurfacePro9_Win10_19044_22.101.15507.0.msi
+VERBOSE: HEAD with 0-byte payload
+VERBOSE: received 753610752-byte response of content type application/octet-stream
+VERBOSE: Testing Download File at https://download.microsoft.com/download/e/9/a/e9a35d1b-7b4c-48d4-8619-5301d4c09f65/SurfacePro9_Win11_22621_22.101.15506.0.msi
+VERBOSE: HEAD with 0-byte payload
+VERBOSE: received 753610752-byte response of content type application/octet-stream
+VERBOSE: Processing Surface Pro 9 Commercial
+VERBOSE: GET with 0-byte payload
+VERBOSE: received -1-byte response of content type text/html
+VERBOSE: Testing Download File at https://download.microsoft.com/download/e/9/a/e9a35d1b-7b4c-48d4-8619-5301d4c09f65/SurfacePro9_Win10_19044_22.101.15507.0.msi
+VERBOSE: HEAD with 0-byte payload
+VERBOSE: received 753610752-byte response of content type application/octet-stream
+VERBOSE: Testing Download File at https://download.microsoft.com/download/e/9/a/e9a35d1b-7b4c-48d4-8619-5301d4c09f65/SurfacePro9_Win11_22621_22.101.15506.0.msi
+VERBOSE: HEAD with 0-byte payload
+VERBOSE: received 753610752-byte response of content type application/octet-stream
+VERBOSE: Processing Surface Pro 9 5G US
+VERBOSE: GET with 0-byte payload
+VERBOSE: received -1-byte response of content type text/html
+VERBOSE: Testing Download File at https://download.microsoft.com/download/e/9/a/e9a35d1b-7b4c-48d4-8619-5301d4c09f65/SurfacePro9_Win10_19044_22.101.15507.0.msi
+VERBOSE: HEAD with 0-byte payload
+VERBOSE: received 753610752-byte response of content type application/octet-stream
+VERBOSE: Testing Download File at https://download.microsoft.com/download/e/9/a/e9a35d1b-7b4c-48d4-8619-5301d4c09f65/SurfacePro9_Win11_22621_22.101.15506.0.msi
+VERBOSE: HEAD with 0-byte payload
+VERBOSE: received 753610752-byte response of content type application/octet-stream
+VERBOSE: Processing Surface Pro 9 5G ROW
+VERBOSE: GET with 0-byte payload
+VERBOSE: received -1-byte response of content type text/html
+VERBOSE: Testing Download File at https://download.microsoft.com/download/e/9/a/e9a35d1b-7b4c-48d4-8619-5301d4c09f65/SurfacePro9_Win10_19044_22.101.15507.0.msi
+VERBOSE: HEAD with 0-byte payload
+VERBOSE: received 753610752-byte response of content type application/octet-stream
+VERBOSE: Testing Download File at https://download.microsoft.com/download/e/9/a/e9a35d1b-7b4c-48d4-8619-5301d4c09f65/SurfacePro9_Win11_22621_22.101.15506.0.msi
+VERBOSE: HEAD with 0-byte payload
+VERBOSE: received 753610752-byte response of content type application/octet-stream
+VERBOSE: Processing Surface Studio
+VERBOSE: GET with 0-byte payload
+VERBOSE: received -1-byte response of content type text/html
+VERBOSE: Testing Download File at https://download.microsoft.com/download/4/5/2/452A1A18-1584-423C-A2D0-D76249EA989A/SurfaceStudio_Win10_19041_21.093.33210.0.msi
+VERBOSE: HEAD with 0-byte payload
+VERBOSE: received 729686016-byte response of content type application/octet-stream
+VERBOSE: Processing Surface Studio 2
+VERBOSE: GET with 0-byte payload
+VERBOSE: received -1-byte response of content type text/html
+VERBOSE: Testing Download File at https://download.microsoft.com/download/2/E/A/2EA15C93-3AEE-4627-A6B9-B2906A1AD192/SurfaceStudio2_Win10_19041_22.020.2939.0.msi
+VERBOSE: HEAD with 0-byte payload
+VERBOSE: received 656039936-byte response of content type application/octet-stream
+VERBOSE: Importing the Build Catalog at C:\Users\david\AppData\Local\Temp\OSD\OSDCatalogMicrosoftDriverPack.json
+PS C:\Users\david\OneDrive\GitHub\MyModules\OSD> $Source = Join-Path $env:TEMP (Join-Path 'OSD' 'OSDCatalogMicrosoftDriverPack.json')
+PS C:\Users\david\OneDrive\GitHub\MyModules\OSD> $Destination = Join-Path (Get-Module -Name OSD -ListAvailable | Sort-Object Version -Descending | Select-Object -First 1).ModuleBase "Catalogs\OSDCatalog\OSDCatalogMicrosoftDriverPack.json"
+PS C:\Users\david\OneDrive\GitHub\MyModules\OSD> if (Test-Path $Source) {
+    Copy-Item $Source $Destination -Force
+}
+PS C:\Users\david\OneDrive\GitHub\MyModules\OSD> Stop-Transcript
+**********************
+Windows PowerShell transcript end
+End time: 20230108193147
+**********************
