@@ -15282,7 +15282,7 @@ AABJRU5ErkJgggs='))
 				} else {
 					global:Write-LogEntry -Value "- BitsTransfer: Download issues detected. Cancelling download process" -Severity 2
 					Get-BitsTransfer | Where-Object {
-						$_.DisplayName -eq "$Model-DriverDownload"
+						$_.DisplayName -eq "$BitsJobName"
 					} | Remove-BitsTransfer
 				}
 			}
@@ -15306,6 +15306,13 @@ AABJRU5ErkJgggs='))
 					Start-Sleep -Seconds 1
 				}
 			}
+
+            if (($BitsJob).JobState -eq "Error") {
+                global:Write-LogEntry -Value "- BitsTransfer: Download issues detected. Cancelling download process" -Severity 2
+					Get-BitsTransfer | Where-Object {
+						$_.DisplayName -eq "$BitsJobName"
+					} | Remove-BitsTransfer
+            }
 		} catch {
 			global:Write-ErrorOutput -Message "[Error] - $($_.Exception.Message)" -Severity 3
 		}
