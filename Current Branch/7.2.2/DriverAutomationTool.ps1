@@ -14190,12 +14190,11 @@ AABJRU5ErkJgggs='))
 					))
 
 					foreach($driveredit in ($xmledit.driverpackmanifest.driverpackage | where {$_.SupportedSystems.Brand.Model.name -eq "Optiplex 7010"})){
-					foreach($modeledit in $driveredit.SupportedSystems.Brand.Model){
-					    if($modeledit.systemID -in $7010Sku){
-						$modeledit.name = "$($modeledit.name) ReleaseID $($driveredit.releaseID)"
-					    }
-					}
-
+						foreach($modeledit in $driveredit.SupportedSystems.Brand.Model){
+						    if($modeledit.systemID -in $7010Sku){
+							$modeledit.name = "$($modeledit.name) ReleaseID $($driveredit.releaseID)"
+						    }
+						}
 					}
 					$xmledit.Save((Join-Path -Path $global:TempDirectory -ChildPath $DellXMLFile))
 					global:Write-LogEntry -Value "- Reading driver pack XML file - $global:TempDirectory\$DellXMLFile" -Severity 1
