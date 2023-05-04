@@ -14172,6 +14172,32 @@ AABJRU5ErkJgggs='))
 				}
 				if ($global:DellModelXML -eq $null) {
 					# Read XML File
+					[xml]$xmledit = Get-Content -Path (Join-Path -Path $global:TempDirectory -ChildPath $DellXMLFile) -Raw
+					$7010Sku = New-Object -TypeName System.Collections.ArrayList
+					$7010Sku.AddRange(@(
+						"0BCC"
+						"0BCD"
+						"0BCE"
+						"0BCF"
+						"0BE3"
+						"0BE4"
+						"0BE5"
+						"0BE6"
+						"0BD0"
+						"0BD1"
+						"0BD2"
+						"0BD3"
+					))
+
+					foreach($driveredit in ($xmledit.driverpackmanifest.driverpackage | where {$_.SupportedSystems.Brand.Model.name -eq "Optiplex 7010"})){
+					foreach($modeledit in $driveredit.SupportedSystems.Brand.Model){
+					    if($modeledit.systemID -in $7010Sku){
+						$modeledit.name = "$($modeledit.name) ReleaseID $($driveredit.releaseID)"
+					    }
+					}
+
+					}
+					$xmledit.Save((Join-Path -Path $global:TempDirectory -ChildPath $DellXMLFile))
 					global:Write-LogEntry -Value "- Reading driver pack XML file - $global:TempDirectory\$DellXMLFile" -Severity 1
 					[xml]$global:DellModelXML = Get-Content -Path (Join-Path -Path $global:TempDirectory -ChildPath $DellXMLFile) -Raw
 					# Set XML Object
