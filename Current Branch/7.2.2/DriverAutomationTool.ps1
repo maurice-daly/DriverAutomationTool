@@ -12,7 +12,10 @@ param (
 	[ValidateSet($false, $true)]
 	[string]$IntuneOnly = $false,
 	[parameter(Position = 0, ParameterSetName = "AzureProvisioning", HelpMessage = "Option to configure Azure tenant information for Intune native management")]
-	[switch]$AzureProvisioning
+	[switch]$AzureProvisioning,
+	[parameter(Position = 0, HelpMessage = "Defines http or https for communication")]
+	[ValidateSet("http", "https")]
+	[string]$UrlPrefix = "https"
 )
 #region Source: Startup.pss
 #----------------------------------------------
@@ -14807,7 +14810,7 @@ AABJRU5ErkJgggs='))
 		param (
 			[string]$Model,
 			[string]$OSBuild ,
-			[string]$OSVersion,
+			[string]$DisplayVersion,
 			[string]$Architecture,
 			[string]$SKUValue
 		)
@@ -14836,12 +14839,12 @@ AABJRU5ErkJgggs='))
 		global:Write-LogEntry -Value "- Reading HP XML from $(Join-Path -Path $global:TempDirectory -ChildPath ($HPPlatformXMLFile | Split-Path -Leaf))" -Severity 1
 		$global:HPPlatformXML = (Select-Xml (Join-Path -Path $global:TempDirectory -ChildPath ($HPPlatformXMLFile | Split-Path -Leaf)) -XPath "/ImagePal").Node.Platform
 		if ($global:HPPlatformXML -ne $null) {
-			global:Write-LogEntry -Value "- OS pre build strip is $OSVersion" -Severity 1
+			global:Write-LogEntry -Value "- OS pre build strip is $DisplayVersion" -Severity 1
 			global:Write-LogEntry -Value "- Model is $Model" -Severity 1
 			if ($global:SkuValue -ne $null) {
 				# Windows Build Driver Switch
-				switch -Wildcard ($OSVersion) {
-					"*21H2"	{
+				switch -Wildcard ($DisplayVersion) {
+					"*22H2"	{
 						$OSVersion = "10.0.2009"
 					}
 					"*21H1"	{
@@ -14886,8 +14889,13 @@ AABJRU5ErkJgggs='))
 				}
 				global:Write-LogEntry -Value "- SystemID is $SKUValue" -Severity 1
 				global:Write-LogEntry -Value "- OS is $OSVersion" -Severity 1
+				global:Write-LogEntry -Value "- OS Build is $OSBuild" -Severity 1
 				global:Write-LogEntry -Value "- Architecture is $Architecture" -Severity 1
-				$HPXMLCabinetSource = "http://ftp.hp.com/pub/caps-softpaq/cmit/imagepal/ref/" + $($($SKUValue.Split(",") | Select-Object -First 1) + "/" + $($SKUValue.Split(",") | Select-Object -First 1) + "_" + $($Architecture.TrimStart("x")) + "_" + [regex]::match($OSBuild,[regex]("^\d+\.\d+")).Value + "." + $OSVersion.ToLower() + ".cab")
+				if($DisplayVersion -ne "22h2"){
+					$HPXMLCabinetSource = "$($UrlPrefix)://ftp.hp.com/pub/caps-softpaq/cmit/imagepal/ref/" + $($($SKUValue.Split(",") | Select-Object -First 1) + "/" + $($SKUValue.Split(",") | Select-Object -First 1) + "_" + $($Architecture.TrimStart("x")) + "_" + $OSVersion.ToLower() + ".cab")
+				} else {
+					$HPXMLCabinetSource = "$($UrlPrefix)://ftp.hp.com/pub/caps-softpaq/cmit/imagepal/ref/" + $($($SKUValue.Split(",") | Select-Object -First 1) + "/" + $($SKUValue.Split(",") | Select-Object -First 1) + "_" + $($Architecture.TrimStart("x")) + "_" + [regex]::match($OSBuild,[regex]("^\d+\.\d+")).Value + "." + $DisplayVersion.ToLower() + ".cab")
+				}
 				global:Write-LogEntry -Value "- URL is $HPXMLCabinetSource" -Severity 1
 				# Try both credential and default methods
 				try {
@@ -17202,7 +17210,7 @@ AABJRU5ErkJgggs='))
 							# ================= HP BIOS Upgrade Download ==================
 							global:Write-LogEntry -Value "- Attempting to find HP BIOS download" -Severity 1
 							if ($Product -ne "Intune") {
-								$HPBIOSDownload = Find-HPBIOS -Model $Model -OSBuild $OSBuild -OSVersion $OSVersion -Architecture $Architecture -SKUValue $(($global:SkuValue).Split(",") | Select-Object -First 1)
+								$HPBIOSDownload = Find-HPBIOS -Model $Model -OSBuild $OSBuild -DisplayVersion $OSVersion -Architecture $Architecture -SKUValue $(($global:SkuValue).Split(",") | Select-Object -First 1)
 								if ($HPBIOSDownload.URL -ne $null) {
 									$BIOSDownload = "https://" + $($HPBIOSDownload.URL)
 									$BIOSVer = $HPBIOSDownload.Version.Trim()
