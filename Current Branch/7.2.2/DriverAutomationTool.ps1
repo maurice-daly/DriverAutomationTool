@@ -14973,6 +14973,8 @@ AABJRU5ErkJgggs='))
 					Start-Sleep -Seconds 10
 				}
 				$HPBIOSExtract = Join-Path $HPBIOSTemp -ChildPath "Extract"
+				# Reset folder permissions
+				Enable-AclInheritance -path $HPBIOSExtract
 				# Set HP extracted folder
 				[int]$HPFileCount = (Get-ChildItem -Path $HPBIOSExtract -Recurse -File).Count
 				if ($HPFileCount -eq 0) {
@@ -20379,6 +20381,21 @@ AABJRU5ErkJgggs='))
 			
 		} catch [System.Exception] {
 			global:Write-LogEntry -Value "[Error] - $($_.Exception.Message)" -Severity 2
+		}
+	}
+	
+	function Enable-AclInheritance {
+		param (
+			[parameter(Mandatory = $true)]
+			[String[]][ValidateNotNullOrEmpty()]
+			[String]$path
+		)
+		try {
+			$Permission = Get-Acl -Path $path
+			$Permission.SetAccessRuleProtection($False,$true)
+			Set-Acl -Path $path -AclObject $Permission
+		} catch [System.Exception] {
+			Write-Warning -Message "[Error] - $($_.Exception.Message)"
 		}
 	}
 	
