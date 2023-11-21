@@ -132,6 +132,7 @@ param (
 	7.2.0 - (2022-02-12)	Mostly bug fixes and Windows 10 22H2 support
 	7.2.1 - (2022-20-12)	Added fix for Dell BIOS packages not showing in the CSV summary output
 	7.2.2 - (2023-10-01)	Bug fixes
+	7.2.3 - (2023-10-01)	Added support for Windows 11 23H2
 	#>
 
 
@@ -7384,6 +7385,7 @@ AABJRU5ErkJgggs='))
 	$OSComboBox.Font = [System.Drawing.Font]::new('Segoe UI', '10')
 	$OSComboBox.ForeColor = [System.Drawing.Color]::Black 
 	$OSComboBox.FormattingEnabled = $True
+	[void]$OSComboBox.Items.Add('Windows 11 23H2')
 	[void]$OSComboBox.Items.Add('Windows 11 22H2')
 	[void]$OSComboBox.Items.Add('Windows 11 21H2')
 	[void]$OSComboBox.Items.Add('Windows 11')
@@ -10020,6 +10022,7 @@ aHlkaHlkaHlkaHlkaHlkaHlkaHlkaHlkaFnms68WxfyoJ3KVKAAAAABJRU5ErkJgggs='))
 	[void]$ConfigMgrPkgActionCombo.Items.Add('Move to Production')
 	[void]$ConfigMgrPkgActionCombo.Items.Add('Move to Pilot')
 	[void]$ConfigMgrPkgActionCombo.Items.Add('Mark as Retired')
+	[void]$ConfigMgrPkgActionCombo.Items.Add('Move to Windows 11 23H2')
 	[void]$ConfigMgrPkgActionCombo.Items.Add('Move to Windows 11 22H2')
 	[void]$ConfigMgrPkgActionCombo.Items.Add('Move to Windows 11')
 	[void]$ConfigMgrPkgActionCombo.Items.Add('Move to Windows 10 22H2')
@@ -13174,6 +13177,7 @@ AABJRU5ErkJgggs='))
 	$OperatingSystem.DefaultCellStyle = $System_Windows_Forms_DataGridViewCellStyle_25
 	$OperatingSystem.DisplayStyle = 'ComboBox'
 	$OperatingSystem.HeaderText = 'Operating System'
+	[void]$OperatingSystem.Items.Add('Windows 11 23H2')
 	[void]$OperatingSystem.Items.Add('Windows 11 22H2')
 	[void]$OperatingSystem.Items.Add('Windows 11 21H2')
 	[void]$OperatingSystem.Items.Add('Windows 10 22H2')
@@ -13375,6 +13379,7 @@ AABJRU5ErkJgggs='))
 	
 	# Windows Version Hash Table
 	$WindowsBuildHashTable = @{
+		'Win11-23H2' = "10.0.22631"
 		'Win11-22H2' = "10.0.22621"
 		'Win11-21H2' = "10.0.22000"
 		'22H2'	     = "10.0.19045.1"
@@ -18393,6 +18398,9 @@ AABJRU5ErkJgggs='))
 				"*Retired*" {
 					$PackagePrefix = "$PackageType Retired "
 					$State = "retired"
+				}
+				"*Windows 11 23H2*"{
+					$Win11Version = "23H2"
 				}
 				"*Windows 11 22H2*"{
 					$Win11Version = "22H2"
