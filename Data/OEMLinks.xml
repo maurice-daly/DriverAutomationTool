@@ -12,7 +12,7 @@
 		<Link Type="CatalogSource" URL="https://downloads.dell.com/catalog/CatalogPC.cab"></Link>
 	</Manufacturer>
 	<Manufacturer Name="HP" >
-		<Link Type="XMLCabinetSource" URL="https://ftp.hp.com/pub/caps-softpaq/cmit/HPClientDriverPackCatalog.cab"></Link>
+		<Link Type="XMLCabinetSource" URL="https://hpia.hpcloud.hp.com/downloads/driverpackcatalog/HPClientDriverPackCatalog.cab"></Link>
 		<Link Type="SoftPaqSource" URL="https://ftp.hp.com/pub/softpaq/"></Link>
 		<Link Type="PlatFormList" URL="https://ftp.hp.com/pub/caps-softpaq/cmit/imagepal/ref/platformList.cab"></Link>
 		<Link Type="SoftPaqCab" URL="https://hpia.hpcloud.hp.com/downloads/sccmcatalog/HpCatalogForSms.latest.cab"></Link>

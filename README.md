@@ -122,6 +122,8 @@ All source code and installers will be maintained here from 11-March-2020.
 	7.2.0 - (2022-02-12)	Mostly bug fixes and Windows 10 22H2 support
 	7.2.1 - (2022-20-12)	Added fix for Dell BIOS packages not showing in the CSV summary output
 	7.2.2 - (2023-10-01)	Bug fixes
+	7.2.3 - (2024-25-02)	Added support for Windows 11 23H2. Please note that Microsoft Surface links for 23H2 will follow in the next update
+				Minor bug fixes
 					
 	
 	
