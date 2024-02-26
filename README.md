@@ -124,6 +124,7 @@ All source code and installers will be maintained here from 11-March-2020.
 	7.2.2 - (2023-10-01)	Bug fixes
 	7.2.3 - (2024-25-02)	Added support for Windows 11 23H2. Please note that Microsoft Surface links for 23H2 will follow in the next update
 				Minor bug fixes
+				Compile order issue bugs resolved in hotfix with SHA 256 6b3e8a777bbc567b4be33be593d563109ce9ec205ba9a5864f90d6e4ad986b1b
 					
 	
 	
