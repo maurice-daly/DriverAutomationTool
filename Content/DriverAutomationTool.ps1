@@ -16599,6 +16599,17 @@ AABJRU5ErkJgggs='))
 		} catch {
 			$WebServiceError = $_.Exception
 		}
+
+		# Reset the WebService query results and data grid to prevent confusion with subsequent tests
+		$BIOSPackageCount.Text = '- - -'
+		$DriverPackageCount.Text = '- - -'
+		$WebServiceVersion.Text = '- - -'
+		$WebServiceStatusCode.Text = '- - -'
+		$WebServiceStatusDescription.Text = '- - -'
+		$WebServiceResponseTime.Text = ''
+		$WebServiceDataGrid.Rows.Clear()
+		$WebServiceDataGrid.DataSource = $null
+		
 		# Update ConfigMgr WebService information
 		$WebServiceResponse = Measure-Command -Expression {
 			Invoke-WebRequest -uri $URL -UseBasicParsing
