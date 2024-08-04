@@ -17639,8 +17639,28 @@ AABJRU5ErkJgggs='))
 									global:Write-LogEntry -Value "- $($Product): Expanding driver CAB source file: $DriverCab" -Severity 1
 									global:Write-LogEntry -Value "- $($Product): Driver CAB destination directory: $DriverExtractDest" -Severity 1
 									if ($Make -eq "Dell") {
-										global:Write-LogEntry -Value "- $($Product): Extracting $Make Drivers to $DriverExtractDest" -Severity 1
-										Expand "$DriverSourceCab" -F:* "$DriverExtractDest" -R | Out-Null
+										global:Write-LogEntry -Value "- $($Product): Extracting $Make drivers to $DriverExtractDest" -Severity 1
+										if ($DriverCab -match ".CAB") {
+											global:Write-LogEntry -Value "- $($Product): Dell CAB format detected" -Severity 1
+											Start-Job -Name "$Make $Model driver extract" -ScriptBlock $DriverExtractJob -ArgumentList $DriverSourceCab, $DriverExtractDest
+											While ((Get-Job -Name "$Make $Model driver extract").State -eq "Running") {
+												global:Write-LogEntry -Value "- $($Product): Waiting for extract process to complete..  Next check in 30 seconds" -Severity 1
+												Start-Sleep -Seconds 30
+											}
+										} else {
+											global:Write-LogEntry -Value "- $($Product): Dell EXE format detected" -Severity 1
+											$DellSilentSwitches = "/s /e=" + '"' + $DriverExtractDest + '"'
+											global:Write-LogEntry -Value "- $($Product): Using $Make silent switches: $DellSilentSwitches" -Severity 1
+											global:Write-LogEntry -Value "- $($Product): Extracting $Make drivers to $DriverExtractDest" -Severity 1
+											Unblock-File -Path $($DownloadRoot + $Model + '\Driver Cab\' + $DriverCab)
+											Start-Process -FilePath "$($DownloadRoot + $Model + '\Driver Cab\' + $DriverCab)" -ArgumentList $DellSilentSwitches -Verb RunAs
+											$DriverProcess = ($DriverCab).Substring(0, $DriverCab.length - 4)
+											# Wait for Driver Process To Finish
+											While ((Get-Process).name -contains $DriverProcess) {
+												global:Write-LogEntry -Value "- $($Product): Waiting for extract process (Process: $DriverProcess) to complete..  Next check in 30 seconds" -Severity 1
+												Start-Sleep -seconds 30
+											}
+										}
 									}
 									if ($Make -eq "HP") {
 										Invoke-HPSoftPaqExpand -SoftPaqType Drivers
