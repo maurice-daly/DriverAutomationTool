@@ -27,4 +27,7 @@
 		<Link Type="BaseURL" URL="https://aka.ms/"></Link>
 		<Link Type="SurfaceDriverSupportURL" URL="https://support.microsoft.com/tr-tr/surface/download-drivers-and-firmware-for-surface-09bb2e09-2a4b-cb69-0951-078a7739e120"></Link>
 	</Manufacturer>
+	<Manufacturer Name="Lenovo" >
+		<Link Type="XMLSource" URL="https://global-download.acer.com/supportfiles/files/support/sourcefile/msepm/AcerCatalog.xml"></Link>
+	</Manufacturer>
 </OEM>
