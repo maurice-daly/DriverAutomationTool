@@ -12,7 +12,10 @@ param (
 	[ValidateSet($false, $true)]
 	[string]$IntuneOnly = $false,
 	[parameter(Position = 0, ParameterSetName = "AzureProvisioning", HelpMessage = "Option to configure Azure tenant information for Intune native management")]
-	[switch]$AzureProvisioning
+	[switch]$AzureProvisioning,
+	[parameter(Position = 0, HelpMessage = "Defines http or https for communication")]
+	[ValidateSet("http", "https")]
+	[string]$UrlPrefix = "https"
 )
 #region Source: Startup.pss
 #----------------------------------------------
@@ -129,6 +132,7 @@ param (
 	7.2.0 - (2022-02-12)	Mostly bug fixes and Windows 10 22H2 support
 	7.2.1 - (2022-20-12)	Added fix for Dell BIOS packages not showing in the CSV summary output
 	7.2.2 - (2023-10-01)	Bug fixes
+	7.2.3 - (2023-10-01)	Added support for Windows 11 23H2
 	#>
 
 
@@ -7381,6 +7385,7 @@ AABJRU5ErkJgggs='))
 	$OSComboBox.Font = [System.Drawing.Font]::new('Segoe UI', '10')
 	$OSComboBox.ForeColor = [System.Drawing.Color]::Black 
 	$OSComboBox.FormattingEnabled = $True
+	[void]$OSComboBox.Items.Add('Windows 11 23H2')
 	[void]$OSComboBox.Items.Add('Windows 11 22H2')
 	[void]$OSComboBox.Items.Add('Windows 11 21H2')
 	[void]$OSComboBox.Items.Add('Windows 11')
@@ -10017,6 +10022,7 @@ aHlkaHlkaHlkaHlkaHlkaHlkaHlkaHlkaFnms68WxfyoJ3KVKAAAAABJRU5ErkJgggs='))
 	[void]$ConfigMgrPkgActionCombo.Items.Add('Move to Production')
 	[void]$ConfigMgrPkgActionCombo.Items.Add('Move to Pilot')
 	[void]$ConfigMgrPkgActionCombo.Items.Add('Mark as Retired')
+	[void]$ConfigMgrPkgActionCombo.Items.Add('Move to Windows 11 23H2')
 	[void]$ConfigMgrPkgActionCombo.Items.Add('Move to Windows 11 22H2')
 	[void]$ConfigMgrPkgActionCombo.Items.Add('Move to Windows 11')
 	[void]$ConfigMgrPkgActionCombo.Items.Add('Move to Windows 10 22H2')
@@ -13171,6 +13177,7 @@ AABJRU5ErkJgggs='))
 	$OperatingSystem.DefaultCellStyle = $System_Windows_Forms_DataGridViewCellStyle_25
 	$OperatingSystem.DisplayStyle = 'ComboBox'
 	$OperatingSystem.HeaderText = 'Operating System'
+	[void]$OperatingSystem.Items.Add('Windows 11 23H2')
 	[void]$OperatingSystem.Items.Add('Windows 11 22H2')
 	[void]$OperatingSystem.Items.Add('Windows 11 21H2')
 	[void]$OperatingSystem.Items.Add('Windows 10 22H2')
@@ -13372,7 +13379,8 @@ AABJRU5ErkJgggs='))
 	
 	# Windows Version Hash Table
 	$WindowsBuildHashTable = @{
-		'Win11-22H2' = "10.0.21621"
+		'Win11-23H2' = "10.0.22631"
+		'Win11-22H2' = "10.0.22621"
 		'Win11-21H2' = "10.0.22000"
 		'22H2'	     = "10.0.19045.1"
 		'21H2'	     = "10.0.19044.1"
@@ -14806,7 +14814,8 @@ AABJRU5ErkJgggs='))
 	function Find-HPBIOS {
 		param (
 			[string]$Model,
-			[string]$OS,
+			[string]$OSBuild ,
+			[string]$DisplayVersion,
 			[string]$Architecture,
 			[string]$SKUValue
 		)
@@ -14835,58 +14844,63 @@ AABJRU5ErkJgggs='))
 		global:Write-LogEntry -Value "- Reading HP XML from $(Join-Path -Path $global:TempDirectory -ChildPath ($HPPlatformXMLFile | Split-Path -Leaf))" -Severity 1
 		$global:HPPlatformXML = (Select-Xml (Join-Path -Path $global:TempDirectory -ChildPath ($HPPlatformXMLFile | Split-Path -Leaf)) -XPath "/ImagePal").Node.Platform
 		if ($global:HPPlatformXML -ne $null) {
-			global:Write-LogEntry -Value "- OS pre build strip is $OS" -Severity 1
+			global:Write-LogEntry -Value "- OS pre build strip is $DisplayVersion" -Severity 1
 			global:Write-LogEntry -Value "- Model is $Model" -Severity 1
 			if ($global:SkuValue -ne $null) {
 				# Windows Build Driver Switch
-				switch -Wildcard ($OS) {
-					"*21H2"	{
-						$OS = "10.0.2009"
+				switch -Wildcard ($DisplayVersion) {
+					"*22H2"	{
+						$OSVersion = "10.0.2009"
 					}
 					"*21H1"	{
-						$OS = "10.0.2009"
+						$OSVersion = "10.0.2009"
 					}
 					"*20H2"	{
-						$OS = "10.0.2009"
+						$OSVersion = "10.0.2009"
 					}
 					"*2004"	{
-						$OS = "10.0.2004"
+						$OSVersion = "10.0.2004"
 					}
 					"*1909"	{
-						$OS = "10.0.1909"
+						$OSVersion = "10.0.1909"
 					}
 					"*1903"	{
-						$OS = "10.0.1903"
+						$OSVersion = "10.0.1903"
 					}
 					"*1809"	{
-						$OS = "10.0.1809"
+						$OSVersion = "10.0.1809"
 					}
 					"*1803"	{
-						$OS = "10.0.1803"
+						$OSVersion = "10.0.1803"
 					}
 					"*1709"	{
-						$OS = "10.0.1709"
+						$OSVersion = "10.0.1709"
 					}
 					"*1703" {
-						$OS = "10.0.1703"
+						$OSVersion = "10.0.1703"
 					}
 					"*1607" {
-						$OS = "10.0.1607"
+						$OSVersion = "10.0.1607"
 					}
 					"*10" {
-						$OS = "10.0.1511"
+						$OSVersion = "10.0.1511"
 					}
 					"8.1" {
-						$OS = "6.3"
+						$OSVersion = "6.3"
 					}
 					"*7" {
-						$OS = "6.1"
+						$OSVersion = "6.1"
 					}
 				}
 				global:Write-LogEntry -Value "- SystemID is $SKUValue" -Severity 1
-				global:Write-LogEntry -Value "- OS is $OS" -Severity 1
+				global:Write-LogEntry -Value "- OS is $OSVersion" -Severity 1
+				global:Write-LogEntry -Value "- OS Build is $OSBuild" -Severity 1
 				global:Write-LogEntry -Value "- Architecture is $Architecture" -Severity 1
-				$HPXMLCabinetSource = "http://ftp.hp.com/pub/caps-softpaq/cmit/imagepal/ref/" + $($($SKUValue.Split(",") | Select-Object -First 1) + "/" + $($SKUValue.Split(",") | Select-Object -First 1) + "_" + $($Architecture.TrimStart("x")) + "_" + $OS + ".cab")
+				if($DisplayVersion -ne "22h2"){
+					$HPXMLCabinetSource = "$($UrlPrefix)://ftp.hp.com/pub/caps-softpaq/cmit/imagepal/ref/" + $($($SKUValue.Split(",") | Select-Object -First 1) + "/" + $($SKUValue.Split(",") | Select-Object -First 1) + "_" + $($Architecture.TrimStart("x")) + "_" + $OSVersion.ToLower() + ".cab")
+				} else {
+					$HPXMLCabinetSource = "$($UrlPrefix)://ftp.hp.com/pub/caps-softpaq/cmit/imagepal/ref/" + $($($SKUValue.Split(",") | Select-Object -First 1) + "/" + $($SKUValue.Split(",") | Select-Object -First 1) + "_" + $($Architecture.TrimStart("x")) + "_" + [regex]::match($OSBuild,[regex]("^\d+\.\d+")).Value + "." + $DisplayVersion.ToLower() + ".cab")
+				}
 				global:Write-LogEntry -Value "- URL is $HPXMLCabinetSource" -Severity 1
 				# Try both credential and default methods
 				try {
@@ -14964,6 +14978,8 @@ AABJRU5ErkJgggs='))
 					Start-Sleep -Seconds 10
 				}
 				$HPBIOSExtract = Join-Path $HPBIOSTemp -ChildPath "Extract"
+				# Reset folder permissions
+				Enable-AclInheritance -path $HPBIOSExtract
 				# Set HP extracted folder
 				[int]$HPFileCount = (Get-ChildItem -Path $HPBIOSExtract -Recurse -File).Count
 				if ($HPFileCount -eq 0) {
@@ -17201,9 +17217,9 @@ AABJRU5ErkJgggs='))
 							# ================= HP BIOS Upgrade Download ==================
 							global:Write-LogEntry -Value "- Attempting to find HP BIOS download" -Severity 1
 							if ($Product -ne "Intune") {
-								$HPBIOSDownload = Find-HPBIOS -Model $Model -OS $OSVersion -Architecture $Architecture -SKUValue $(($global:SkuValue).Split(",") | Select-Object -First 1)
+								$HPBIOSDownload = Find-HPBIOS -Model $Model -OSBuild $OSBuild -DisplayVersion $OSVersion -Architecture $Architecture -SKUValue $(($global:SkuValue).Split(",") | Select-Object -First 1)
 								if ($HPBIOSDownload.URL -ne $null) {
-									$BIOSDownload = "http://" + $($HPBIOSDownload.URL)
+									$BIOSDownload = "https://" + $($HPBIOSDownload.URL)
 									$BIOSVer = $HPBIOSDownload.Version.Trim()
 									$BIOSVerDir = $BIOSVer -replace '\.', '-'
 									global:Write-LogEntry -Value "- Latest available BIOS version is $BIOSVer" -Severity 1
@@ -18382,6 +18398,9 @@ AABJRU5ErkJgggs='))
 				"*Retired*" {
 					$PackagePrefix = "$PackageType Retired "
 					$State = "retired"
+				}
+				"*Windows 11 23H2*"{
+					$Win11Version = "23H2"
 				}
 				"*Windows 11 22H2*"{
 					$Win11Version = "22H2"
@@ -20370,6 +20389,21 @@ AABJRU5ErkJgggs='))
 			
 		} catch [System.Exception] {
 			global:Write-LogEntry -Value "[Error] - $($_.Exception.Message)" -Severity 2
+		}
+	}
+	
+	function Enable-AclInheritance {
+		param (
+			[parameter(Mandatory = $true)]
+			[String[]][ValidateNotNullOrEmpty()]
+			[String]$path
+		)
+		try {
+			$Permission = Get-Acl -Path $path
+			$Permission.SetAccessRuleProtection($False,$true)
+			Set-Acl -Path $path -AclObject $Permission
+		} catch [System.Exception] {
+			Write-Warning -Message "[Error] - $($_.Exception.Message)"
 		}
 	}
 	
