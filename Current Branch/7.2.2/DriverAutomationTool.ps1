@@ -15,7 +15,14 @@ param (
 	[switch]$AzureProvisioning,
 	[parameter(Position = 0, HelpMessage = "Defines http or https for communication")]
 	[ValidateSet("http", "https")]
-	[string]$UrlPrefix = "https"
+	[string]$UrlPrefix = "https",
+	[parameter(Position = 0, HelpMessage = "Checks for new version on app start")]
+	[ValidateSet($false, $true)]
+	[bool]$UpdateCheck = $false,
+	[parameter(Position = 0, HelpMessage = "Defines if same version can exists once as pilot and once a prod")]
+	[ValidateSet($false, $true)]
+	[bool]$AllowProdPilotBeside = $false
+	
 )
 #region Source: Startup.pss
 #----------------------------------------------
@@ -133,6 +140,11 @@ param (
 	7.2.1 - (2022-20-12)	Added fix for Dell BIOS packages not showing in the CSV summary output
 	7.2.2 - (2023-10-01)	Bug fixes
 	7.2.3 - (2023-10-01)	Added support for Windows 11 23H2
+	7.2.3 - (2024-11-21)	Added support for Windows 11 24H2
+							Added UrlPrefix to define if downloads are done via http oder https
+							Added UpdateCheck to check if on github exists a new version
+							Added AllowProdPilotBeside to check if same version may already exist in pilot and prod
+							Changed Find-HPBIOS to HP Get-SoftpaqList
 	#>
 
 
@@ -265,7 +277,7 @@ foreach ($Folder in $RequiredFolders) {
 
 
 # Import Intune PS module
-$RequiredModules = "Az.Accounts", "Az.Storage", "Az.Resources", "HP.ClientManagement", "BitsTransfer"
+$RequiredModules = "Az.Accounts", "Az.Storage", "Az.Resources", "HP.ClientManagement", "BitsTransfer", "HP.Softpaq"
 Write-LogEntry -Value "- Checking for preinstalled PS modules" -Severity 1 -WriteOutput
 $AvailableModules = Get-Module -ListAvailable
 foreach ($Module in $RequiredModules) {
@@ -1120,7 +1132,7 @@ function Show-MainForm_psf
 				global:Write-LogEntry -Value "Mode: Silent running switch enabled" -Severity 2 -SkipGuiLog $true
 				$ErrorActionPreference = "Stop"
 				Write-Host "=== MSEndpointMgr Download Automation Tool - Silent Running ==="
-				If (($ScriptRelease -ne $null) -and ($ScriptRelease -lt $NewRelease)) {
+				If (($ScriptRelease -ne $null) -and ($ScriptRelease -lt $NewRelease) -and $UpdateCheck) {
 					global:Write-LogEntry -Value "Update Alert: Newer Version Available - $NewRelease" -Severity 2 -SkipGuiLog $true
 				}
 				$MainForm.WindowState = 'Minimized'
@@ -1132,12 +1144,14 @@ function Show-MainForm_psf
 				$MainForm.Close()
 			} else {
 				$MainForm.WindowState = 'Normal'
-				$ReleaseNotesText.Text = (Invoke-WebRequest -Uri $ReleaseNotesURL -UseBasicParsing).Content
-				If (($ScriptRelease -ne $null) -and ($ScriptRelease -lt $NewRelease)) {
-					global:Write-LogEntry -Value "Update Alert: Newer Version Available - $NewRelease" -Severity 2 -SkipGuiLog $true
-					global:Write-LogEntry -Value "Update Alert: Opening New Version Form" -Severity 2 -SkipGuiLog $true
-					Set-UpdateNotice
-					$SelectionTabs.SelectedTab = $AboutTab
+				If ($UpdateCheck){
+					$ReleaseNotesText.Text = (Invoke-WebRequest -Uri $ReleaseNotesURL -UseBasicParsing).Content
+					If (($ScriptRelease -ne $null) -and ($ScriptRelease -lt $NewRelease)) {
+						global:Write-LogEntry -Value "Update Alert: Newer Version Available - $NewRelease" -Severity 2 -SkipGuiLog $true
+						global:Write-LogEntry -Value "Update Alert: Opening New Version Form" -Severity 2 -SkipGuiLog $true
+						Set-UpdateNotice
+						$SelectionTabs.SelectedTab = $AboutTab
+					}
 				}
 				Update-ModeList $SiteServerInput.Text $SiteCodeText.Text
 			}
@@ -7385,6 +7399,7 @@ AABJRU5ErkJgggs='))
 	$OSComboBox.Font = [System.Drawing.Font]::new('Segoe UI', '10')
 	$OSComboBox.ForeColor = [System.Drawing.Color]::Black 
 	$OSComboBox.FormattingEnabled = $True
+	[void]$OSComboBox.Items.Add('Windows 11 24H2')
 	[void]$OSComboBox.Items.Add('Windows 11 23H2')
 	[void]$OSComboBox.Items.Add('Windows 11 22H2')
 	[void]$OSComboBox.Items.Add('Windows 11 21H2')
@@ -10022,6 +10037,7 @@ aHlkaHlkaHlkaHlkaHlkaHlkaHlkaHlkaFnms68WxfyoJ3KVKAAAAABJRU5ErkJgggs='))
 	[void]$ConfigMgrPkgActionCombo.Items.Add('Move to Production')
 	[void]$ConfigMgrPkgActionCombo.Items.Add('Move to Pilot')
 	[void]$ConfigMgrPkgActionCombo.Items.Add('Mark as Retired')
+	[void]$ConfigMgrPkgActionCombo.Items.Add('Move to Windows 11 24H2')
 	[void]$ConfigMgrPkgActionCombo.Items.Add('Move to Windows 11 23H2')
 	[void]$ConfigMgrPkgActionCombo.Items.Add('Move to Windows 11 22H2')
 	[void]$ConfigMgrPkgActionCombo.Items.Add('Move to Windows 11')
@@ -13177,6 +13193,7 @@ AABJRU5ErkJgggs='))
 	$OperatingSystem.DefaultCellStyle = $System_Windows_Forms_DataGridViewCellStyle_25
 	$OperatingSystem.DisplayStyle = 'ComboBox'
 	$OperatingSystem.HeaderText = 'Operating System'
+	[void]$OperatingSystem.Items.Add('Windows 11 24H2')
 	[void]$OperatingSystem.Items.Add('Windows 11 23H2')
 	[void]$OperatingSystem.Items.Add('Windows 11 22H2')
 	[void]$OperatingSystem.Items.Add('Windows 11 21H2')
@@ -13355,10 +13372,11 @@ AABJRU5ErkJgggs='))
 	# Script Build Numbers
 	[version]$ScriptRelease = "7.2.2"
 	$ScriptBuildDate = "2022-12-31"
-	[version]$NewRelease = (Invoke-WebRequest -Uri "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data//DriverAutomationToolRev.txt" -UseBasicParsing).Content
-	$ReleaseNotesURL = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/DriverAutomationToolNotes.txt"
-	$OEMLinksURL = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/OEMLinks.xml"
-	
+	if($UpdateCheck){
+		[version]$NewRelease = (Invoke-WebRequest -Uri "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data//DriverAutomationToolRev.txt" -UseBasicParsing).Content
+		$ReleaseNotesURL = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/DriverAutomationToolNotes.txt"
+		$OEMLinksURL = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/OEMLinks.xml"
+	}
 	# Proxy Validation Initial State
 	$global:ProxySettingsSet = $false
 	$global:BitsOptions = @{
@@ -13379,6 +13397,7 @@ AABJRU5ErkJgggs='))
 	
 	# Windows Version Hash Table
 	$WindowsBuildHashTable = @{
+		'Win11-24H2' = "10.0.26100"
 		'Win11-23H2' = "10.0.22631"
 		'Win11-22H2' = "10.0.22621"
 		'Win11-21H2' = "10.0.22000"
@@ -16599,6 +16618,7 @@ AABJRU5ErkJgggs='))
 					
 					# Get Windows Build Number From Version Hash Table
 					$OSBuild = $WindowsBuildHashTable.Item("$OSVersion")
+					$OSNameShort = "win10"
 					if ([string]::IsNullOrEmpty($OSBuild)) {
 						global:Write-LogEntry -Value "- Windows 10 identified for driver match" -Severity 1
 					} else {
@@ -16612,6 +16632,7 @@ AABJRU5ErkJgggs='))
 					
 					# Get Windows Build Number From Version Hash Table
 					$OSBuild = $WindowsBuildHashTable.Item("Win11-$OSVersion")
+					$OSNameShort = "Win11"
 					if ([string]::IsNullOrEmpty($OSBuild)) {
 						global:Write-LogEntry -Value "- Windows 11 identified for driver match" -Severity 1
 					} else {
@@ -17217,10 +17238,13 @@ AABJRU5ErkJgggs='))
 							# ================= HP BIOS Upgrade Download ==================
 							global:Write-LogEntry -Value "- Attempting to find HP BIOS download" -Severity 1
 							if ($Product -ne "Intune") {
-								$HPBIOSDownload = Find-HPBIOS -Model $Model -OSBuild $OSBuild -DisplayVersion $OSVersion -Architecture $Architecture -SKUValue $(($global:SkuValue).Split(",") | Select-Object -First 1)
+								#$HPBIOSDownload = Find-HPBIOS -Model $Model -OSBuild $OSBuild -DisplayVersion $OSVersion -Architecture $Architecture -SKUValue $(($global:SkuValue).Split(",") | Select-Object -First 1)
+								global:Write-LogEntry -Value "- Using Get-SoftpaqList for SKU: $(($global:SkuValue).Split(",") | Select-Object -First 1) - OS: $OSNameShort - Build: $OSVersion" -Severity 1
+								$HPBIOSDownload = Get-SoftpaqList -Category BIOS -Platform $(($global:SkuValue).Split(",") | Select-Object -First 1) -Os $OSNameShort -OsVer $OSVersion | Sort-Object Version -Descending | Select-Object
 								if ($HPBIOSDownload.URL -ne $null) {
-									$BIOSDownload = "https://" + $($HPBIOSDownload.URL)
-									$BIOSVer = $HPBIOSDownload.Version.Trim()
+									$BIOSDownload = $UrlPrefix + "://" + $($HPBIOSDownload.URL)
+									#$BIOSVer = $HPBIOSDownload.Version.Trim()
+									$BIOSVer = (($HPBIOSDownload.Version.Trim() -split '\.') | ForEach-Object { $_.PadLeft(2, '0') }) -join '.'
 									$BIOSVerDir = $BIOSVer -replace '\.', '-'
 									global:Write-LogEntry -Value "- Latest available BIOS version is $BIOSVer" -Severity 1
 									if ($ImportInto -match "Download|Intune") {
@@ -17240,7 +17264,11 @@ AABJRU5ErkJgggs='))
 									} elseif ($Product -eq "ConfigMgr") {
 										Set-Location -Path ($SiteCode + ":")
 										global:Write-LogEntry -Value "- Checking ConfigMgr for existing BIOS release - $BIOSVer" -Severity 1
-										$CurrentBIOSPackage = Get-CMPackage -Name "$BIOSUpdatePackage" -Fast | Select-Object SourceDate, Version, PackageID | Sort-Object SourceDate -Descending | Select-Object -First 1
+										if ($AllowProdPilotBeside){
+											$CurrentBIOSPackage = Get-CMPackage -Name "$BIOSUpdatePackage" -Fast | Select-Object SourceDate, Version, PackageID | Sort-Object SourceDate -Descending | Select-Object -First 1
+										} else {
+											$CurrentBIOSPackage = Get-CMPackage -Name ("$BIOSUpdatePackage" -replace " Pilot ", "" -replace "-", "*") -Fast | Select-Object SourceDate, Version, PackageID | Sort-Object SourceDate -Descending | Select-Object -First 1
+										}
 										if (![string]::IsNullOrEmpty($CurrentBIOSPackage.Version)) {
 											global:Write-LogEntry -Value "- Comparing BIOS versions" -Severity 1
 											if ($BIOSVer -notmatch $CurrentBIOSPackage.Version) {
@@ -18399,6 +18427,9 @@ AABJRU5ErkJgggs='))
 					$PackagePrefix = "$PackageType Retired "
 					$State = "retired"
 				}
+				"*Windows 11 24H2*"{
+					$Win11Version = "24H2"
+				}
 				"*Windows 11 23H2*"{
 					$Win11Version = "23H2"
 				}
@@ -18823,13 +18854,13 @@ AABJRU5ErkJgggs='))
 		switch ($OperatingSystem) {
 			"*Windows 10*" {
 				$OSVersion = ($OperatingSystem).Split(" ") | Select-Object -Last 1
-				
+				$OSNameShort = "win10"
 				# Lookup Windows build number information
 				$OSBuild = $WindowsBuildHashTable.Item("$OSVersion")
 			}
 			"*Windows 11*" {
 				$OSVersion = ($OperatingSystem).Split(" ") | Select-Object -Last 1
-				
+				$OSNameShort = "win11"
 				# Lookup Windows build number information
 				$OSBuild = $WindowsBuildHashTable.Item("Win11-$OSVersion")
 			}
