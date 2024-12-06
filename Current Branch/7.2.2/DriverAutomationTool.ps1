@@ -17464,8 +17464,13 @@ AABJRU5ErkJgggs='))
 									
 									global:Write-LogEntry -Value "- $($Product): Checking ConfigMgr for driver packages matching - $CMPackage" -Severity 1
 									# Allow for test/pilot driver packages
-									if ($ImportInto -match "Pilot") {
-										$CMPackage = $CMPackage.Replace("Drivers -", "Drivers Pilot -")
+									if ($AllowProdPilotBeside){
+										if ($ImportInto -match "Pilot") {
+											$CMPackage = $CMPackage.Replace("Drivers -", "Drivers Pilot -")
+										}
+									} else {
+										#$CMPackage = $CMPackage.Replace("Drivers -", "Drivers Pilot -")
+										$CMPackage = $CMPackage -replace " Pilot ", "" -replace "-", "*"
 									}
 									$ExistingPackageID = (Get-CMPackage -Name $CMPackage.Trim() -Fast | Select-Object Name, PackageID, Description, Version, SourceDate | Where-Object {
 											$_.Version -eq $DriverRevision
