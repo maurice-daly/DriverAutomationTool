@@ -14978,8 +14978,15 @@ AABJRU5ErkJgggs='))
 		)
 		
 		# HP Temp directory
-		$HPTemp = $global:TempDirectory + "\" + $Model + "\Win" + $WindowsVersion + $Architecture
+		#$HPTemp = $global:TempDirectory + "\" + $Model + "\Win" + $WindowsVersion + $Architecture
+		if((Test-Path -Path "$DownloadRoot\Tmp") -eq $false){
+			New-Item -ItemType Directory -Force -Path "$DownloadRoot\Tmp"
+		}
+		$HPTemp = "$DownloadRoot\Tmp\" + $Model + "\Win" + $WindowsVersion + $Architecture
 		$HPTemp = $HPTemp -replace '/', '-'
+		$HPTemp = $HPTemp -replace 'windows', 'win'
+		$HPTemp = $HPTemp -replace ' ', ''
+		$HPTemp = $HPTemp -replace 'Notebook', ''
 		
 		switch ($SoftPaqType) {
 			"BIOS" {
@@ -17464,17 +17471,18 @@ AABJRU5ErkJgggs='))
 									
 									global:Write-LogEntry -Value "- $($Product): Checking ConfigMgr for driver packages matching - $CMPackage" -Severity 1
 									# Allow for test/pilot driver packages
-									if ($AllowProdPilotBeside){
-										if ($ImportInto -match "Pilot") {
-											$CMPackage = $CMPackage.Replace("Drivers -", "Drivers Pilot -")
-										}
-									} else {
-										#$CMPackage = $CMPackage.Replace("Drivers -", "Drivers Pilot -")
-										$CMPackage = $CMPackage -replace " Pilot ", "" -replace "-", "*"
+									if ($ImportInto -match "Pilot") {
+										$CMPackage = $CMPackage.Replace("Drivers -", "Drivers Pilot -")
 									}
-									$ExistingPackageID = (Get-CMPackage -Name $CMPackage.Trim() -Fast | Select-Object Name, PackageID, Description, Version, SourceDate | Where-Object {
+									if ($AllowProdPilotBeside){
+										$ExistingPackageID = (Get-CMPackage -Name $CMPackage.Trim() -Fast | Select-Object Name, PackageID, Description, Version, SourceDate | Where-Object {
 											$_.Version -eq $DriverRevision
 										})
+									} else {
+										$ExistingPackageID = (Get-CMPackage -Name ($CMPackage.Trim() -replace " Pilot ", "" -replace "-", "*") -Fast | Select-Object Name, PackageID, Description, Version, SourceDate | Where-Object {
+											$_.Version -eq $DriverRevision
+										})
+									}
 								} elseif ($ImportInto -like "*Driver*") {
 									if ([string]::IsNullOrEmpty($OSBuild)) {
 										$CMDriverPackage = ("$Make " + $Model + " - " + $OperatingSystem + " " + $Architecture)
