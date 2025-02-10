@@ -4,6 +4,9 @@ IMPORTANT
 - DAT Downloads have been moved to GitHub - https://github.com/maurice-daly/DriverAutomationTool
 - Latest build EXEs available from - https://github.com/maurice-daly/DriverAutomationTool/tree/master/Current%20Branch
 
+Version 7.2.5
+Added support for Windows 11 24H2 - Stop gap while 8.0 release is due
+
 Version 7.2.3
 New: Added support for Windows 11 23H2. Microsoft Surface download links for 23H2 to follow. Lenovo and HP supported at present, Dell retains Windows 11 only driver packages
 
