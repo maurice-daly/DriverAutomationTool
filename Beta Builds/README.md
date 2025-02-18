@@ -35,7 +35,11 @@ The new Driver Automation Tool has a redesigned UI which is designed to be easie
 
 
 ### New UI
-Elemeents have been moved to an application style layout, with previously contained tab elements migrated;
+Elemeents have been moved to an application style layout, with previously contained tab elements migrated. The UI now supported both "Light" and "Dark"modes;
+
+
+<img src="https://github.com/user-attachments/assets/dfd465c3-7ac3-4d0c-9b4a-be26674b7ccd" height="300" />
+
 
 Configuration Manager Environment:
 
