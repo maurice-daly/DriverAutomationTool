@@ -69,8 +69,7 @@ Elemeents have been moved to an application style layout, with previously contai
 
 <br>Shared Configuration Settings:
 
-
-<img src="https://github.com/user-attachments/assets/36fce782-0bf7-41fa-bd16-fde9361130c8" height="300" />
+<img src="https://github.com/user-attachments/assets/5f088d4a-3b7e-456d-9578-a9ef7e40b862" height="300" />
 
 
 <br>
