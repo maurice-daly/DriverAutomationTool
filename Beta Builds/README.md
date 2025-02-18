@@ -32,30 +32,37 @@ Configuration Manager Environment:
 <img src="https://github.com/user-attachments/assets/1ba85731-6a47-4b14-8942-16b3f5cd8365" height="300" />
 
 
+
 Configuration Manager Distribtion Point Configuration:
 
 <img src="https://github.com/user-attachments/assets/c95bf097-ce65-4a70-9ead-eafcc518da80" height="300" />
+
 
 Configuration Manager Package Management:
 
 <img src="https://github.com/user-attachments/assets/110b948e-1a77-40e5-8f32-ee1aacf2561d" height="300" />
 
+
 Configuration Manager Package Settings:
 
 <img src="https://github.com/user-attachments/assets/709638f8-5e58-4d04-9908-62d1fcbeefe3" height="300" />
 
+
 Shared Configuration Settings:
 
 <img src="https://github.com/user-attachments/assets/36fce782-0bf7-41fa-bd16-fde9361130c8" height="300" />
+
 
 ### Registry Storage
 The Driver Automation Tool now uses the registry to store all of your configuration settings, and critical information about the package build process;
 
 <img src="https://github.com/user-attachments/assets/b3977d45-1492-4636-bf1d-236a4160af8d" height="300" />
 
+
 Configuration can now be exported and imported from the UI, using registry exports;
 
 <img src="https://github.com/user-attachments/assets/4b7eddbd-002c-4597-a4b6-4d8ae01562e0" height="300" />
+
 
 ### Download Utility
 To provide additional feedback and control downloads better, CURL is used by the new release. This is packaged within the MSI.
