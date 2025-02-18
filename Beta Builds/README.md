@@ -28,8 +28,8 @@ New UI
 Elemeents have been moved to an application style layout, with previously contained tab elements migrated;
 
 Configuration Manager Environment:
+<img src="[http://....jpg](https://github.com/user-attachments/assets/1ba85731-6a47-4b14-8942-16b3f5cd8365)" height="150" />
 
-![image](https://github.com/user-attachments/assets/1ba85731-6a47-4b14-8942-16b3f5cd8365){height=150}
 
 Configuration Manager Distribtion Point Configuration:
 
