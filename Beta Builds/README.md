@@ -29,29 +29,34 @@ Elemeents have been moved to an application style layout, with previously contai
 
 Configuration Manager Environment:
 
+
 <img src="https://github.com/user-attachments/assets/1ba85731-6a47-4b14-8942-16b3f5cd8365" height="300" />
 
-<p></p>
+
 Configuration Manager Distribtion Point Configuration:
+
 
 <img src="https://github.com/user-attachments/assets/c95bf097-ce65-4a70-9ead-eafcc518da80" height="300" />
 
-<p></p>
+
 Configuration Manager Package Management:
+
 
 <img src="https://github.com/user-attachments/assets/110b948e-1a77-40e5-8f32-ee1aacf2561d" height="300" />
 
-<p></p>
+
 Configuration Manager Package Settings:
+
 
 <img src="https://github.com/user-attachments/assets/709638f8-5e58-4d04-9908-62d1fcbeefe3" height="300" />
 
-<p></p>
+
 Shared Configuration Settings:
+
 
 <img src="https://github.com/user-attachments/assets/36fce782-0bf7-41fa-bd16-fde9361130c8" height="300" />
 
-<p></p>
+
 ### Registry Storage
 The Driver Automation Tool now uses the registry to store all of your configuration settings, and critical information about the package build process;
 
