@@ -29,38 +29,45 @@ Elemeents have been moved to an application style layout, with previously contai
 
 Configuration Manager Environment:
 
-![image](https://github.com/user-attachments/assets/1ba85731-6a47-4b14-8942-16b3f5cd8365)
+![image](https://github.com/user-attachments/assets/1ba85731-6a47-4b14-8942-16b3f5cd8365){height=150}
 
 Configuration Manager Distribtion Point Configuration:
 
-![image](https://github.com/user-attachments/assets/c95bf097-ce65-4a70-9ead-eafcc518da80)
+![image](https://github.com/user-attachments/assets/c95bf097-ce65-4a70-9ead-eafcc518da80){height=150}
 
 Configuration Manager Package Management:
 
-![image](https://github.com/user-attachments/assets/110b948e-1a77-40e5-8f32-ee1aacf2561d)
+![image](https://github.com/user-attachments/assets/110b948e-1a77-40e5-8f32-ee1aacf2561d){height=150}
 
 Configuration Manager Package Settings:
 
-![image](https://github.com/user-attachments/assets/709638f8-5e58-4d04-9908-62d1fcbeefe3)
+![image](https://github.com/user-attachments/assets/709638f8-5e58-4d04-9908-62d1fcbeefe3){height=150}
 
 Shared Configuration Settings:
 
-![image](https://github.com/user-attachments/assets/36fce782-0bf7-41fa-bd16-fde9361130c8)
+![image](https://github.com/user-attachments/assets/36fce782-0bf7-41fa-bd16-fde9361130c8){height=150}
 
 Registry Storage
 The Driver Automation Tool now uses the registry to store all of your configuration settings, and critical information about the package build process;
 
-![image](https://github.com/user-attachments/assets/b3977d45-1492-4636-bf1d-236a4160af8d)
+![image](https://github.com/user-attachments/assets/b3977d45-1492-4636-bf1d-236a4160af8d){height=150}
 
 
 Configuration can now be exported and imported from the UI, using registry exports;
 
-![image](https://github.com/user-attachments/assets/4b7eddbd-002c-4597-a4b6-4d8ae01562e0)
+![image](https://github.com/user-attachments/assets/4b7eddbd-002c-4597-a4b6-4d8ae01562e0){height=150}
 
 Download Utility
 To provide additional feedback and control downloads better, CURL is used by the new release. This is packaged within the MSI.
 
-![image](https://github.com/user-attachments/assets/dd487337-d489-45fd-9b54-a039e29e8fbf)
+![image](https://github.com/user-attachments/assets/dd487337-d489-45fd-9b54-a039e29e8fbf){height=150}
+
+Fully Responsive UI
+
+The Driver Automation Tool now uses background jobs to undertake the majority of actions, and this results in a fully responsive UI, something that I had taken as feedback from previous builds. With this includes the addition to lauch the log file (in CMTrace format) and abort the build process;
+
+![image](https://github.com/user-attachments/assets/6c31e337-159e-42fa-b689-ff2abb834079){height=150}
+
 
 
 
