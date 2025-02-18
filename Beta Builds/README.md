@@ -47,6 +47,27 @@ Shared Configuration Settings:
 
 ![image](https://github.com/user-attachments/assets/36fce782-0bf7-41fa-bd16-fde9361130c8)
 
+Registry Storage
+The Driver Automation Tool now uses the registry to store all of your configuration settings, and critical information about the package build process;
+
+![image](https://github.com/user-attachments/assets/b3977d45-1492-4636-bf1d-236a4160af8d)
+
+
+Configuration can now be exported and imported from the UI, using registry exports;
+
+![image](https://github.com/user-attachments/assets/4b7eddbd-002c-4597-a4b6-4d8ae01562e0)
+
+Download Utility
+To provide additional feedback and control downloads better, CURL is used by the new release. This is packaged within the MSI.
+
+![image](https://github.com/user-attachments/assets/dd487337-d489-45fd-9b54-a039e29e8fbf)
+
+
+
+
+
+
+
 
 
 
