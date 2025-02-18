@@ -11,18 +11,28 @@ The new Driver Automation Tool has a redesigned UI which is designed to be easie
 
 ### Current functionality
 ✅ Current OEM Support: Acer, Dell
+
 ✅ Package Type Support: Drivers
+
 ✅ Supported Operating Systems: Windows 10, Windows 11
+
 ✅ Supported Architectures : x64, x86
 
 ### In Progress Functionality
 🚧 Additional OEM Support - HP/Lenovo/Microsoft (Expected by 20/02/2025)
+
 🚧 Add Microsoft support 
+
 🚧 Previous version removal 
+
 🚧 Intune Support
+
 🚧 Deployment Rings
+
 🚧 New UI for driver additions to existing packages
+
 🚧 Custom driver package UI
+
 
 ### New UI
 Elemeents have been moved to an application style layout, with previously contained tab elements migrated;
