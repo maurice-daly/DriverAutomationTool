@@ -95,7 +95,9 @@ To provide additional feedback and control downloads better, CURL is used by the
 <img src="https://github.com/user-attachments/assets/dd487337-d489-45fd-9b54-a039e29e8fbf" height="300" />
 
 
-<br>### Fully Responsive UI
+<br>
+
+### Fully Responsive UI
 
 The Driver Automation Tool now uses background jobs to undertake the majority of actions, and this results in a fully responsive UI, something that I had taken as feedback from previous builds. With this includes the addition to lauch the log file (in CMTrace format) and abort the build process;
 
