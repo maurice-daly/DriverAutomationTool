@@ -41,7 +41,7 @@ Elemeents have been moved to an application style layout, with previously contai
 <img src="https://github.com/user-attachments/assets/dfd465c3-7ac3-4d0c-9b4a-be26674b7ccd" height="300" />
 
 
-<brConfiguration Manager Environment:
+<br>Configuration Manager Environment:
 
 
 <img src="https://github.com/user-attachments/assets/1ba85731-6a47-4b14-8942-16b3f5cd8365" height="300" />
