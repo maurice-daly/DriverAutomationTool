@@ -33,7 +33,8 @@ Configuration Manager Environment:
 
 Configuration Manager Distribtion Point Configuration:
 
-![image](https://github.com/user-attachments/assets/c95bf097-ce65-4a70-9ead-eafcc518da80){height=150}
+![image](https://github.com/user-attachments/assets/c95bf097-ce65-4a70-9ead-eafcc518da80){height=450}
+
 
 Configuration Manager Package Management:
 
