@@ -34,7 +34,8 @@ The new Driver Automation Tool has a redesigned UI which is designed to be easie
 🚧 Custom driver package UI
 
 
-<br>### New UI
+<br>
+### New UI
 Elemeents have been moved to an application style layout, with previously contained tab elements migrated. The UI now supported both "Light" and "Dark"modes;
 
 
@@ -71,7 +72,8 @@ Elemeents have been moved to an application style layout, with previously contai
 <img src="https://github.com/user-attachments/assets/36fce782-0bf7-41fa-bd16-fde9361130c8" height="300" />
 
 
-<br>### Registry Storage
+<br>
+### Registry Storage
 The Driver Automation Tool now uses the registry to store all of your configuration settings, and critical information about the package build process;
 
 <img src="https://github.com/user-attachments/assets/b3977d45-1492-4636-bf1d-236a4160af8d" height="300" />
@@ -83,7 +85,8 @@ The Driver Automation Tool now uses the registry to store all of your configurat
 <img src="https://github.com/user-attachments/assets/1ff53e1e-a648-475b-ba7e-ac4a5291656a" height="300" />
 
 
-<br>### Download Utility
+<br>
+### Download Utility
 To provide additional feedback and control downloads better, CURL is used by the new release. This is packaged within the MSI.
 
 <img src="https://github.com/user-attachments/assets/dd487337-d489-45fd-9b54-a039e29e8fbf" height="300" />
