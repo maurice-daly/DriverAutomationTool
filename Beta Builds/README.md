@@ -1,4 +1,4 @@
-![SCConfigMgr Driver Auatomation Tool](https://i1.wp.com/msendpointmgr.com/wp-content/uploads/2020/04/MSEndpoingMgrDat.jpg?resize=1024%2C641&ssl=1)
+![MSEndpointMgr Driver Auatomation Tool - BETA Channel]([https://i1.wp.com/msendpointmgr.com/wp-content/uploads/2020/04/MSEndpoingMgrDat.jpg?resize=1024%2C641&ssl=1](https://msendpointmgr.com/wp-content/uploads/DAT/DAT1.jpg?_t=1739874144))
 
 # Driver Automation Tool
 
