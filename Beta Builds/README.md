@@ -21,10 +21,33 @@ In Progress Functionality
 - Previous version removal 
 - Intune Support
 - Deployment Rings
+- New UI for driver additions to existing packages
+- Custom driver package UI
 
 New UI
 Elemeents have been moved to an application style layout, with previously contained tab elements migrated;
 
 Configuration Manager Environment:
+
 ![image](https://github.com/user-attachments/assets/1ba85731-6a47-4b14-8942-16b3f5cd8365)
+
+Configuration Manager Distribtion Point Configuration:
+
+![image](https://github.com/user-attachments/assets/c95bf097-ce65-4a70-9ead-eafcc518da80)
+
+Configuration Manager Package Management:
+
+![image](https://github.com/user-attachments/assets/110b948e-1a77-40e5-8f32-ee1aacf2561d)
+
+Configuration Manager Package Settings:
+
+![image](https://github.com/user-attachments/assets/709638f8-5e58-4d04-9908-62d1fcbeefe3)
+
+Shared Configuration Settings:
+
+![image](https://github.com/user-attachments/assets/36fce782-0bf7-41fa-bd16-fde9361130c8)
+
+
+
+
 
