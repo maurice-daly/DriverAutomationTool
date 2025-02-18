@@ -65,7 +65,8 @@ The Driver Automation Tool now uses the registry to store all of your configurat
 
 Configuration can now be exported and imported from the UI, using registry exports;
 
-<img src="https://github.com/user-attachments/assets/4b7eddbd-002c-4597-a4b6-4d8ae01562e0" height="300" />
+
+<img src="https://github.com/user-attachments/assets/1ff53e1e-a648-475b-ba7e-ac4a5291656a" height="300" />
 
 
 ### Download Utility
