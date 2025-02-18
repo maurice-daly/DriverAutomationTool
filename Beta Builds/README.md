@@ -35,6 +35,7 @@ The new Driver Automation Tool has a redesigned UI which is designed to be easie
 
 
 <br>
+
 ### New UI
 Elemeents have been moved to an application style layout, with previously contained tab elements migrated. The UI now supported both "Light" and "Dark"modes;
 
@@ -73,6 +74,7 @@ Elemeents have been moved to an application style layout, with previously contai
 
 
 <br>
+
 ### Registry Storage
 The Driver Automation Tool now uses the registry to store all of your configuration settings, and critical information about the package build process;
 
@@ -86,6 +88,7 @@ The Driver Automation Tool now uses the registry to store all of your configurat
 
 
 <br>
+
 ### Download Utility
 To provide additional feedback and control downloads better, CURL is used by the new release. This is packaged within the MSI.
 
