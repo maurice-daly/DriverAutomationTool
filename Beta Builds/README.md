@@ -47,7 +47,7 @@ Configuration Manager Environment:
 <img src="https://github.com/user-attachments/assets/1ba85731-6a47-4b14-8942-16b3f5cd8365" height="300" />
 
 
-Configuration Manager Distribtion Point Configuration:
+<br>Configuration Manager Distribtion Point Configuration:
 
 
 <img src="https://github.com/user-attachments/assets/c95bf097-ce65-4a70-9ead-eafcc518da80" height="300" />
