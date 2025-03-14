@@ -6,6 +6,15 @@ Welcome to the BETA channel for the Driver Automation Tool.
 
 The binaries contained within this channel will updated with additional functions, and should be used for testing. Feedback should be provided in the GitHub PR's and please make note of the in-work items before posting comments, as the item you are looking for could be in development.
 
+## HP Support Added - 14/03/2024
+✅ Current OEM Support: Acer, Dell, HP
+
+✅ Package Type Support: Drivers
+
+✅ Supported Operating Systems: Windows 10, Windows 11
+
+✅ Supported Architectures : x64, x86
+
 ## Initial BETA Release - 16/02/2024
 The new Driver Automation Tool has a redesigned UI which is designed to be easier to use and allow for more expansion. The initial release is for Configuration Manager ONLY, Intune support will follow in the upcoming BETA release updates. 
 
