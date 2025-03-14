@@ -13080,7 +13080,7 @@ AABJRU5ErkJgggs='))
 						global:Write-LogEntry -Value "Info: Reading model XML $HPXMLFile" -Severity 1
 						[xml]$HPSoftPaqDetails = Get-Content -Path $(Join-Path -Path $global:TempDirectory -ChildPath $HPXMLFile) -Raw
 						$HPBIOSDetails = ($HPSoftPaqDetails.ImagePal.Solutions.UpdateInfo | Where-Object {
-								($_.Category -eq "BIOS") -and ($_.Name -notmatch "Utilities")
+								($_.Category -match "BIOS") -and ($_.Name -notmatch "Utilities")
 							} | Sort-Object Version | Select-Object -First 1)
 						global:Write-LogEntry -Value "Info: BIOS download URL is $($HPBIOSDetails.URL)" -Severity 1
 						Return $HPBIOSDetails
