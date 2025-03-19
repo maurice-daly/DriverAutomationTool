@@ -14582,26 +14582,20 @@ AABJRU5ErkJgggs='))
 							$DellSingleSKU = $global:SkuValue | Select-Object -First 1
 							$global:SkuValue = [string]($global:SkuValue -join ";")
 							global:Write-LogEntry -Value "Info: Using SKU : $DellSingleSKU" -Severity 1
-							$ModelURL = $DellDownloadBase + "/" + ($global:DellModelCabFiles | Where-Object {
-									((($_.SupportedOperatingSystems).OperatingSystem).osCode -match $WindowsVersion) -and ($_.SupportedSystems.Brand.Model.SystemID -match $DellSingleSKU)
-								}).delta
-							$DriverDownload = $DellDownloadBase + "/" + ($global:DellModelCabFiles | Where-Object {
-									((($_.SupportedOperatingSystems).OperatingSystem).osCode -match $WindowsVersion) -and ($_.SupportedSystems.Brand.Model.SystemID -match $DellSingleSKU)
-								}).path
-							$DriverCab = (($global:DellModelCabFiles | Where-Object {
-										((($_.SupportedOperatingSystems).OperatingSystem).osCode -match $WindowsVersion) -and ($_.SupportedSystems.Brand.Model.SystemID -match $DellSingleSKU)
-									}).path).Split("/") | Select-Object -Last 1
+							$temp = ($global:DellModelCabFiles | Where-Object {
+								((($_.SupportedOperatingSystems).OperatingSystem).osCode -match $WindowsVersion) -and ($_.SupportedSystems.Brand.Model.SystemID -match $DellSingleSKU)
+							}) | Sort-Object -Property DateTime | Select-Object -Last 1
+							$ModelURL = $DellDownloadBase + "/" + $temp.delta
+							$DriverDownload = $DellDownloadBase + "/" + $temp.path
+							$DriverCab = $($temp.path).Split("/") | Select-Object -Last 1
 							
 						} else {
-							$ModelURL = $DellDownloadBase + "/" + ($global:DellModelCabFiles | Where-Object {
-									((($_.SupportedOperatingSystems).OperatingSystem).osCode -match $WindowsVersion) -and ($_.SupportedSystems.Brand.Model.SystemID -match $global:SkuValue)
-								}).delta
-							$DriverDownload = $DellDownloadBase + "/" + ($global:DellModelCabFiles | Where-Object {
-									((($_.SupportedOperatingSystems).OperatingSystem).osCode -match $WindowsVersion) -and ($_.SupportedSystems.Brand.Model.SystemID -match $global:SkuValue)
-								}).path
-							$DriverCab = (($global:DellModelCabFiles | Where-Object {
-										((($_.SupportedOperatingSystems).OperatingSystem).osCode -match $WindowsVersion) -and ($_.SupportedSystems.Brand.Model.SystemID -match $global:SkuValue)
-									}).path).Split("/") | Select-Object -Last 1
+							$temp = ($global:DellModelCabFiles | Where-Object {
+								((($_.SupportedOperatingSystems).OperatingSystem).osCode -match $WindowsVersion) -and ($_.SupportedSystems.Brand.Model.SystemID -match $global:SkuValue)
+							}) | Sort-Object -Property DateTime | Select-Object -Last 1
+							$ModelURL = $temp.delta
+							$DriverDownload = $DellDownloadBase + "/" + $temp.path
+							$DriverCab = $($temp.path).Split("/") | Select-Object -Last 1
 						}
 						
 						$ModelURL = $ModelURL.Replace("\", "/")
@@ -15725,7 +15719,6 @@ AABJRU5ErkJgggs='))
 			global:Write-LogEntry -Value "======== Validation Error(s) ========" -Severity 3
 			global:Write-LogEntry -Value "$($ValidationErrors) validation errors have occurred. Please review the log located at $global:LogFilePath." -Severity 3
 		}
-	}
 	
 	# Used to create scheduled task jobs
 	function Schedule-Downloads {
