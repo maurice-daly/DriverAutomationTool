@@ -1,4 +1,4 @@
-![MSEndpointMgr Driver Auatomation Tool - Production Channel](https://msendpointmgr.com/wp-content/uploads/DAT/DAT1.jpg)
+![MSEndpointMgr Driver Auatomation Tool - Production Channel](https://msendpointmgr.com/wp-content/uploads/DAT/DAT8.png)
 
 ## Driver Automation Tool 8.0.0
 Welcome to the production channel for the Driver Automation Tool.
