@@ -26,7 +26,7 @@ Manual installation instructions (MSI to come)
 
 1. Copy the DriverAutomationCore module to C:\Program Files\WindowsPowerShell\Modules
 2. Create a folder and copy the DriverAutomationTool.exe to that folder, suggestion is C:\Program Files\MSEndpointMgr\Driver Automation Tool, as this will be used for temp, log files, and settings
-3. Create a subfolder called Tools and download / place the latest version of CURL from [https://curl.se/download.html, example -](https://curl.se/windows/) 
+3. Create a subfolder called Tools and download / place the latest version of CURL from [https://curl.se/download.html, CURL.SE](https://curl.se/windows/) 
 4. Run the DriverAutomationTool.exe
 
 
