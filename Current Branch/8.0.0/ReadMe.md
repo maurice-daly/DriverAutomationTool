@@ -7,22 +7,21 @@ Initial 8.0.0 Release
 The new Driver Automation Tool has a redesigned UI which is designed to be easier to use and allow for more expansion. The initial release is for Configuration Manager ONLY. Intune support will follow in the upcoming release in January.
 
 Current functionality
-✅ Current OEM Support: Acer, Dell, HP, Lenovo
-✅ Package Type Support: Drivers
-✅ Supported Operating Systems: Windows 11 Only
-✅ Supported Architectures : x64, x86
+✅ Current OEM Support: Acer, Dell, HP, Lenovo<BR>
+✅ Package Type Support: Drivers<BR>
+✅ Supported Operating Systems: Windows 11 Only<BR>
+✅ Supported Architectures : x64, x86<BR>
 
 In Progress Functionality
-🚧 Previous version removal
-🚧 Intune Support
-🚧 Deployment Rings
-🚧 New UI for driver additions to existing packages
-🚧 Custom driver package UI
-🚧 Signed EXE and MSI 
+🚧 Previous version removal<BR>
+🚧 Intune Support<BR>
+🚧 Deployment Rings<BR>
+🚧 New UI for driver additions to existing packages<BR>
+🚧 Custom driver package UI<BR>
+🚧 Signed EXE and MSI<BR>
 
 Note: The PowerShell module should be copied to C:\Program Files\WindowsPowerShell\Modules prior to running the EXE. 
 
-<br>
 
 ### New UI
 Elemeents have been moved to an application style layout, with previously contained tab elements migrated. The UI now supported both "Light" and "Dark"modes;
