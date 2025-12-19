@@ -22,6 +22,12 @@ In Progress Functionality
 
 Note: The PowerShell module should be copied to C:\Program Files\WindowsPowerShell\Modules prior to running the EXE. 
 
+Manual installation instructions (MSI to come)
+
+1. Copy the DriverAutomationCore module to C:\Program Files\WindowsPowerShell\Modules
+2. Create a folder and copy the DriverAutomationTool.exe to that folder, suggestion is C:\Program Files\MSEndpointMgr\Driver Automation Tool, as this will be used for temp, log files, and settings
+3. Create a subfolder called Tools and download / place the latest version of CURL from [https://curl.se/download.html, example -](https://curl.se/windows/) 
+
 
 ### New UI
 Elemeents have been moved to an application style layout, with previously contained tab elements migrated. The UI now supported both "Light" and "Dark"modes;
