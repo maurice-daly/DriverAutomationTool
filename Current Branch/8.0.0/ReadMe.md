@@ -1,8 +1,6 @@
-![MSEndpointMgr Driver Auatomation Tool - BETA Channel](https://msendpointmgr.com/wp-content/uploads/DAT/DAT1.jpg)
+![MSEndpointMgr Driver Auatomation Tool - Production Channel](https://msendpointmgr.com/wp-content/uploads/DAT/DAT1.jpg)
 
-
-MSEndpointMgr Driver Auatomation Tool - Production Channel
-Driver Automation Tool 8 
+Driver Automation Tool 8.0.0
 Welcome to the production channel for the Driver Automation Tool.
 
 Initial 8.0.0 Release
@@ -20,6 +18,9 @@ In Progress Functionality
 🚧 Deployment Rings
 🚧 New UI for driver additions to existing packages
 🚧 Custom driver package UI
+🚧 Signed EXE and MSI 
+
+Note: The PowerShell module should be copied to C:\Program Files\WindowsPowerShell\Modules prior to running the EXE. 
 
 <br>
 
