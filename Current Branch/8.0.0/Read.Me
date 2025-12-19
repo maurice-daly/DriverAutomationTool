@@ -1,1 +1,61 @@
+MSEndpointMgr Driver Auatomation Tool - Production Channel
+Driver Automation Tool 8 
+Welcome to the production channel for the Driver Automation Tool.
+
+Initial 8.0.0 Release
+The new Driver Automation Tool has a redesigned UI which is designed to be easier to use and allow for more expansion. The initial release is for Configuration Manager ONLY. Intune support will follow in the upcoming release in January.
+
+Current functionality
+✅ Current OEM Support: Acer, Dell, HP, Lenovo
+✅ Package Type Support: Drivers
+✅ Supported Operating Systems: Windows 10, Windows 11
+✅ Supported Architectures : x64, x86
+
+In Progress Functionality
+🚧 Previous version removal
+🚧 Intune Support
+🚧 Deployment Rings
+🚧 New UI for driver additions to existing packages
+🚧 Custom driver package UI
+
+
+New UI
+Elemeents have been moved to an application style layout, with previously contained tab elements migrated. The UI now supported both "Light" and "Dark"modes;
+
+
+
+Configuration Manager Environment:
+
+
+
+Configuration Manager Distribtion Point Configuration:
+
+
+
+Configuration Manager Package Management:
+
+
+
+Configuration Manager Package Settings:
+
+
+
+Shared Configuration Settings:
+
+
+Registry Storage
+The Driver Automation Tool now uses the registry to store all of your configuration settings, and critical information about the package build process;
+
+
+
+Configuration can now be exported and imported from the UI, using registry exports;
+
+
+Download Utility
+To provide additional feedback and control downloads better, CURL is used by the new release. This is packaged within the MSI.
+
+
+Fully Responsive UI
+The Driver Automation Tool now uses background jobs to undertake the majority of actions, and this results in a fully responsive UI, something that I had taken as feedback from previous builds. With this includes the addition to lauch the log file (in CMTrace format) and abort the build process;
+
 
