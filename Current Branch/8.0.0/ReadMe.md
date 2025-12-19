@@ -6,7 +6,7 @@ Welcome to the production channel for the Driver Automation Tool.
 ## Initial 8.0.0 Release
 The new Driver Automation Tool has a redesigned UI which is designed to be easier to use and allow for more expansion. The initial release is for Configuration Manager ONLY. Intune support will follow in the upcoming release in January.
 
-Current functionality
+Current Functionality<br>
 ✅ Current OEM Support: Acer, Dell, HP, Lenovo<BR>
 ✅ Package Type Support: Drivers<BR>
 ✅ Supported Operating Systems: Windows 11 Only<BR>
