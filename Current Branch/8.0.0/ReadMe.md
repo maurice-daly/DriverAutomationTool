@@ -1,9 +1,9 @@
 ![MSEndpointMgr Driver Auatomation Tool - Production Channel](https://msendpointmgr.com/wp-content/uploads/DAT/DAT1.jpg)
 
-Driver Automation Tool 8.0.0
+## Driver Automation Tool 8.0.0
 Welcome to the production channel for the Driver Automation Tool.
 
-Initial 8.0.0 Release
+## Initial 8.0.0 Release
 The new Driver Automation Tool has a redesigned UI which is designed to be easier to use and allow for more expansion. The initial release is for Configuration Manager ONLY. Intune support will follow in the upcoming release in January.
 
 Current functionality
