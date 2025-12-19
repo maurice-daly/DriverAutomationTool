@@ -12,7 +12,7 @@ Current Functionality<br>
 ✅ Supported Operating Systems: Windows 11 Only<BR>
 ✅ Supported Architectures : x64, x86<BR>
 
-In Progress Functionality
+In Progress Functionality <BR>
 🚧 Previous version removal<BR>
 🚧 Intune Support<BR>
 🚧 Deployment Rings<BR>
