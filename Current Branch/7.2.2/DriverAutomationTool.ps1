@@ -1161,7 +1161,12 @@ function Show-MainForm_psf
 		Invoke-RunningLog
 		global:Write-LogEntry -Value "- Validating all required selections have been made" -Severity 1
 		if ($UseProxyServerCheckbox.Checked -eq $true) {
-			Confirm-ProxyAccess -ProxyServer $ProxyServerInput.Text -UserName $ProxyUserInput.Text -Password $ProxyPswdInput.Text -URL $URL
+            if($ProxyUserInput.Text) {
+			    Confirm-ProxyAccess -ProxyServer $ProxyServerInput.Text -UserName $ProxyUserInput.Text -Password $ProxyPswdInput.Text -URL $URL
+            }
+            else {
+                Confirm-ProxyAccess -ProxyServer $ProxyServerInput.Text -URL $URL
+            }
 		}
 		Confirm-Settings
 		if ($global:Validation -eq $true) {
@@ -13372,7 +13377,7 @@ AABJRU5ErkJgggs='))
 	
 	# Windows Version Hash Table
 	$WindowsBuildHashTable = @{
-		'Win11-22H2' = "10.0.21621"
+		'Win11-22H2' = "10.0.22621"
 		'Win11-21H2' = "10.0.22000"
 		'22H2'	     = "10.0.19045.1"
 		'21H2'	     = "10.0.19044.1"
@@ -15277,7 +15282,7 @@ AABJRU5ErkJgggs='))
 				} else {
 					global:Write-LogEntry -Value "- BitsTransfer: Download issues detected. Cancelling download process" -Severity 2
 					Get-BitsTransfer | Where-Object {
-						$_.DisplayName -eq "$Model-DriverDownload"
+						$_.DisplayName -eq "$BitsJobName"
 					} | Remove-BitsTransfer
 				}
 			}
@@ -15301,6 +15306,13 @@ AABJRU5ErkJgggs='))
 					Start-Sleep -Seconds 1
 				}
 			}
+
+            if (($BitsJob).JobState -eq "Error") {
+                global:Write-LogEntry -Value "- BitsTransfer: Download issues detected. Cancelling download process" -Severity 2
+					Get-BitsTransfer | Where-Object {
+						$_.DisplayName -eq "$BitsJobName"
+					} | Remove-BitsTransfer
+            }
 		} catch {
 			global:Write-ErrorOutput -Message "[Error] - $($_.Exception.Message)" -Severity 3
 		}
@@ -18182,23 +18194,29 @@ AABJRU5ErkJgggs='))
 			[parameter(Mandatory = $true)]
 			[String[]][ValidateNotNullOrEmpty()]
 			[String]$ProxyServer,
-			[parameter(Mandatory = $true)]
+			[parameter(Mandatory = $false)]
 			[String[]][ValidateNotNullOrEmpty()]
 			[string]$UserName,
 			[parameter(Mandatory = $true)]
 			[Uri[]][ValidateNotNullOrEmpty()]
 			[Uri]$URL,
-			[parameter(Mandatory = $true)]
+			[parameter(Mandatory = $false)]
 			[String[]][ValidateNotNullOrEmpty()]
 			[string]$Password
 		)
 		
 		global:Write-LogEntry -Value "======== PROXY SERVER VALIDATION ========" -Severity 1
+        
 		$Proxy = New-Object System.Net.WebProxy($ProxyServer)
-		$SecurePassword = $Password | ConvertTo-SecureString -AsPlainText -Force
-		$global:ProxyCredentials = New-Object System.Management.Automation.PSCredential $Username, $SecurePassword
-		$global:ProxyServer = $Proxy
-		$Proxy.Credentials = $global:ProxyCredentials
+        if($UserName){
+		    $SecurePassword = $Password | ConvertTo-SecureString -AsPlainText -Force
+		    $global:ProxyCredentials = New-Object System.Management.Automation.PSCredential $Username, $SecurePassword
+            $Proxy.Credentials = $global:ProxyCredentials
+        }
+        else {
+            $global:ProxyCredentials = $null
+        }
+		$global:ProxyServer = $Proxy	
 		$WebClient = New-Object System.Net.WebClient
 		$WebClient.Proxy = $global:ProxyServer
 		global:Write-LogEntry -Value "Proxy: Proxy server set to $ProxyServer" -Severity 1
@@ -18211,15 +18229,26 @@ AABJRU5ErkJgggs='))
 				'Proxy'					     = "$global:ProxyServer";
 				'ProxyUseDefaultCredentials' = $true
 			}
-			$global:BitsProxyOptions = @{
-				'RetryInterval'	      = "60";
-				'RetryTimeout'	      = "180";
-				'ProxyList'		      = $global:ProxyServer;
-				'ProxyAuthentication' = "Negotiate";
-				'ProxyCredential'	  = $global:ProxyCredentials;
-				'ProxyUsage'		  = "Override";
-				'Priority'		      = "Foreground"
-			}
+            if($UserName) {
+			    $global:BitsProxyOptions = @{
+				    'RetryInterval'	      = "60";
+				    'RetryTimeout'	      = "180";
+				    'ProxyList'		      = $global:ProxyServer;
+				    'ProxyAuthentication' = "Negotiate";
+				    'ProxyCredential'	  = $global:ProxyCredentials;
+				    'ProxyUsage'		  = "Override";
+				    'Priority'		      = "Foreground"
+			    }
+            }
+            else {
+                $global:BitsProxyOptions = @{
+				    'RetryInterval'	      = "60";
+				    'RetryTimeout'	      = "180";
+				    'ProxyList'		      = $global:ProxyServer;
+				    'ProxyUsage'		  = "Override";
+				    'Priority'		      = "Foreground"
+			    }
+            }
 			$global:ProxySettingsSet = $true
 			global:Write-LogEntry -Value "Proxy: Global proxy settings set for web/bits transfers" -Severity 1
 		} catch [System.Exception] {
@@ -19394,7 +19423,12 @@ AABJRU5ErkJgggs='))
 			Connect-ConfigMgr
 		}
 		if (($global:ProxySettingsSet -ne $true) -and ($UseProxyServerCheckbox.Checked -eq $true)) {
-			Confirm-ProxyAccess -ProxyServer $ProxyServerInput.Text -UserName $ProxyUserInput.Text -Password $ProxyPswdInput.Text -URL "https://www.MSEndpointMgr.com"
+            if($ProxyUserInput.Text) {
+			    Confirm-ProxyAccess -ProxyServer $ProxyServerInput.Text -UserName $ProxyUserInput.Text -Password $ProxyPswdInput.Text -URL "https://www.MSEndpointMgr.com"
+            }
+            else {
+                Confirm-ProxyAccess -ProxyServer $ProxyServerInput.Text -URL "https://www.MSEndpointMgr.com"
+            }
 		}
 		$MakeModelDataGrid.Rows.Clear()
 		Update-ModeList $SiteServerInput.Text $SiteCodeText.Text
