@@ -14,7 +14,7 @@ Welcome to the new home of the **MSEndpointMgr Driver Automation Tool**.
 
 **Scripts, MSIs and downloads contained within are provided with no warranty or liabilities. They are provided as is**
 
-Implemenation guides for modern driver management and modern bios management can be found here;
+Implementation guides for modern driver management and modern bios management can be found here;
 
 [https://www.msendpointmgr.com/modern-driver-management/](https://www.msendpointmgr.com/modern-driver-management/)
 
