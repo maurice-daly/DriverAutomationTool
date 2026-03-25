@@ -169,6 +169,78 @@ function Get-ScriptDirectory {
 	}
 }
 
+function Test-IsAdministrator {
+	$CurrentIdentity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+	$Principal = New-Object System.Security.Principal.WindowsPrincipal($CurrentIdentity)
+	return $Principal.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
+function ConvertTo-QuotedArgument {
+	param (
+		[Parameter(Mandatory = $false)]
+		[AllowNull()]
+		$Value
+	)
+
+	if ($null -eq $Value) {
+		return '""'
+	}
+
+	$Escaped = $Value.ToString().Replace('"', '""')
+	return ('"{0}"' -f $Escaped)
+}
+
+function Restart-ScriptAsAdministrator {
+	$ScriptPath = $PSCommandPath
+	if ([string]::IsNullOrWhiteSpace($ScriptPath)) {
+		$ScriptPath = $MyInvocation.MyCommand.Path
+	}
+
+	if ([string]::IsNullOrWhiteSpace($ScriptPath)) {
+		[System.Windows.Forms.MessageBox]::Show(
+			"Unable to determine script path for elevation restart.",
+			"Driver Automation Tool",
+			[System.Windows.Forms.MessageBoxButtons]::OK,
+			[System.Windows.Forms.MessageBoxIcon]::Error
+		) | Out-Null
+		return
+	}
+
+	$ArgumentList = @('-ExecutionPolicy', 'Bypass', '-File', (ConvertTo-QuotedArgument -Value $ScriptPath))
+	foreach ($Key in $PSBoundParameters.Keys) {
+		$Value = $PSBoundParameters[$Key]
+		if ($Value -is [System.Management.Automation.SwitchParameter]) {
+			if ($Value.IsPresent) {
+				$ArgumentList += ('-{0}' -f $Key)
+			}
+		} else {
+			$ArgumentList += ('-{0}' -f $Key)
+			$ArgumentList += (ConvertTo-QuotedArgument -Value $Value)
+		}
+	}
+
+	$PowerShellExe = Join-Path -Path $PSHOME -ChildPath 'powershell.exe'
+	if (-not (Test-Path -Path $PowerShellExe)) {
+		$PowerShellExe = 'powershell.exe'
+	}
+
+	Start-Process -FilePath $PowerShellExe -ArgumentList ($ArgumentList -join ' ') -Verb RunAs
+	exit
+}
+
+if (-not (Test-IsAdministrator)) {
+	$UserChoice = [System.Windows.Forms.MessageBox]::Show(
+		"This tool is not running as Administrator. Select 'Yes' to restart as Administrator, or 'No' to continue without elevation.",
+		"Driver Automation Tool",
+		[System.Windows.Forms.MessageBoxButtons]::YesNo,
+		[System.Windows.Forms.MessageBoxIcon]::Warning
+	)
+
+	if ($UserChoice -eq [System.Windows.Forms.DialogResult]::Yes) {
+		Restart-ScriptAsAdministrator
+	}
+}
+
 # Set Temp & Log Location	
 [string]$TempDirectory = Join-Path $(Get-ScriptDirectory) -ChildPath "Temp"
 [string]$LogDirectory = Join-Path $(Get-ScriptDirectory) -ChildPath "Logs"
@@ -257,6 +329,21 @@ function Import-PSModules {
 	}
 }
 
+function Import-PSModulesLocally {
+	param
+	(
+		[parameter(Mandatory = $true)]
+		[string]$ModuleName
+	)
+
+    Get-ChildItem -Path (Join-Path $(Get-ScriptDirectory) -ChildPath "Modules") -Filter $ModuleName | ForEach-Object {
+        Get-ChildItem -Path $_.FullName -Filter "*.psd1" | ForEach-Object {
+            Write-LogEntry -Value "- Importing module $ModuleName from directory: $($_.Directory)" -Severity 1 -WriteOutput
+            Import-Module $_.FullName
+        }
+    }
+}
+
 # Create Temp & Log Folders
 $RequiredFolders = @(
 	$LogDirectory,
@@ -282,6 +369,7 @@ Write-LogEntry -Value "- Checking for preinstalled PS modules" -Severity 1 -Writ
 $AvailableModules = Get-Module -ListAvailable
 foreach ($Module in $RequiredModules) {
 	Import-PSModules -ModuleName $Module
+	Import-PSModulesLocally -ModuleName $Module
 }
 
 if ($PSCmdLet.ParameterSetName -eq "AzureProvisioning") {
@@ -542,6 +630,7 @@ function Show-MainForm_psf
 	$DownloadTypeLabel = New-Object 'System.Windows.Forms.Label'
 	$ManufacturerSelectionGroup = New-Object 'System.Windows.Forms.GroupBox'
 	$FindModelsButton = New-Object 'System.Windows.Forms.Button'
+	$FindExistingModelsButton = New-Object 'System.Windows.Forms.Button'
 	$MicrosoftCheckBox = New-Object 'System.Windows.Forms.CheckBox'
 	$HPCheckBox = New-Object 'System.Windows.Forms.CheckBox'
 	$LenovoCheckBox = New-Object 'System.Windows.Forms.CheckBox'
@@ -1198,6 +1287,16 @@ function Show-MainForm_psf
 	
 	$ResetDATSettings_Click = {
 		# Reset Windows Form
+		$ResetConfirmation = [System.Windows.Forms.MessageBox]::Show(
+			"Are you sure you want to reset all current settings?",
+			"Confirm Reset",
+			[System.Windows.Forms.MessageBoxButtons]::YesNo,
+			[System.Windows.Forms.MessageBoxIcon]::Question
+		)
+		
+		if ($ResetConfirmation -ne [System.Windows.Forms.DialogResult]::Yes) {
+			return
+		}
 		
 		# Clear site code information
 		$SiteServerInput.Enabled = $true
@@ -1244,6 +1343,11 @@ function Show-MainForm_psf
 	
 	$FindModelsButton_Click = {
 		Find-AvailableModels
+		[int]$ModelCount = $MakeModelDataGrid.Rows.Count
+	}
+
+	$FindExistingModelsButton_Click = {
+		Find-ExistingModels
 		[int]$ModelCount = $MakeModelDataGrid.Rows.Count
 	}
 	
@@ -1803,6 +1907,14 @@ function Show-MainForm_psf
 	
 	$FindModelsButton_MouseLeave = {
 		$FindModelsButton.BackColor = '64,64,64'
+	}
+
+	$FindExistingModelsButton_MouseEnter = {
+		$FindExistingModelsButton.BackColor = 'Maroon'
+	}
+
+	$FindExistingModelsButton_MouseLeave = {
+		$FindExistingModelsButton.BackColor = '64,64,64'
 	}
 	
 	$DownloadComboBox_TextChanged = {
@@ -2420,6 +2532,7 @@ function Show-MainForm_psf
 			$FindModelsButton.remove_Click($FindModelsButton_Click)
 			$FindModelsButton.remove_MouseEnter($FindModelsButton_MouseEnter)
 			$FindModelsButton.remove_MouseLeave($FindModelsButton_MouseLeave)
+			$FindExistingModelsButton.remove_Click($FindExistingModelsButton_Click)
 			$MicrosoftCheckBox.remove_CheckedChanged($MicrosoftCheckBox_CheckedChanged)
 			$HPCheckBox.remove_CheckedChanged($HPCheckBox_CheckedChanged)
 			$LenovoCheckBox.remove_CheckedChanged($LenovoCheckBox_CheckedChanged)
@@ -7399,6 +7512,7 @@ AABJRU5ErkJgggs='))
 	$OSComboBox.Font = [System.Drawing.Font]::new('Segoe UI', '10')
 	$OSComboBox.ForeColor = [System.Drawing.Color]::Black 
 	$OSComboBox.FormattingEnabled = $True
+	[void]$OSComboBox.Items.Add('Windows 11 25H2')
 	[void]$OSComboBox.Items.Add('Windows 11 24H2')
 	[void]$OSComboBox.Items.Add('Windows 11 23H2')
 	[void]$OSComboBox.Items.Add('Windows 11 22H2')
@@ -7542,6 +7656,7 @@ AABJRU5ErkJgggs='))
 	# ManufacturerSelectionGroup
 	#
 	$ManufacturerSelectionGroup.Controls.Add($FindModelsButton)
+	$ManufacturerSelectionGroup.Controls.Add($FindExistingModelsButton)
 	$ManufacturerSelectionGroup.Controls.Add($MicrosoftCheckBox)
 	$ManufacturerSelectionGroup.Controls.Add($HPCheckBox)
 	$ManufacturerSelectionGroup.Controls.Add($LenovoCheckBox)
@@ -7564,10 +7679,10 @@ AABJRU5ErkJgggs='))
 	$FindModelsButton.FlatStyle = 'Popup'
 	$FindModelsButton.Font = [System.Drawing.Font]::new('Segoe UI', '10', [System.Drawing.FontStyle]'Bold')
 	$FindModelsButton.ForeColor = [System.Drawing.Color]::White 
-	$FindModelsButton.Location = New-Object System.Drawing.Point(214, 52)
+	$FindModelsButton.Location = New-Object System.Drawing.Point(204, 22)
 	$FindModelsButton.Margin = '4, 3, 4, 3'
 	$FindModelsButton.Name = 'FindModelsButton'
-	$FindModelsButton.Size = New-Object System.Drawing.Size(158, 67)
+	$FindModelsButton.Size = New-Object System.Drawing.Size(158, 57)
 	$FindModelsButton.TabIndex = 9
 	$FindModelsButton.Text = 'Find Models'
 	$FindModelsButton.UseCompatibleTextRendering = $True
@@ -7576,6 +7691,26 @@ AABJRU5ErkJgggs='))
 	$FindModelsButton.add_Click($FindModelsButton_Click)
 	$FindModelsButton.add_MouseEnter($FindModelsButton_MouseEnter)
 	$FindModelsButton.add_MouseLeave($FindModelsButton_MouseLeave)
+	#
+	# FindExistingModelsButton
+	#
+	$FindExistingModelsButton.BackColor = [System.Drawing.Color]::FromArgb(255, 64, 64, 64)
+	$FindExistingModelsButton.Cursor = 'Hand'
+	$FindExistingModelsButton.FlatStyle = 'Popup'
+	$FindExistingModelsButton.Font = [System.Drawing.Font]::new('Segoe UI', '10', [System.Drawing.FontStyle]'Bold')
+	$FindExistingModelsButton.ForeColor = [System.Drawing.Color]::White 
+	$FindExistingModelsButton.Location = New-Object System.Drawing.Point(204, 92)
+	$FindExistingModelsButton.Margin = '4, 3, 4, 3'
+	$FindExistingModelsButton.Name = 'FindExistingModelsButton'
+	$FindExistingModelsButton.Size = New-Object System.Drawing.Size(158, 57)
+	$FindExistingModelsButton.TabIndex = 9
+	$FindExistingModelsButton.Text = 'Find Existing Models'
+	$FindExistingModelsButton.UseCompatibleTextRendering = $True
+	$FindExistingModelsButton.UseVisualStyleBackColor = $False
+	$FindExistingModelsButton.add_EnabledChanged($FindExistingModelsButton_EnabledChanged)
+	$FindExistingModelsButton.add_Click($FindExistingModelsButton_Click)
+	$FindExistingModelsButton.add_MouseEnter($FindExistingModelsButton_MouseEnter)
+	$FindExistingModelsButton.add_MouseLeave($FindExistingModelsButton_MouseLeave)
 	#
 	# MicrosoftCheckBox
 	#
@@ -10037,6 +10172,7 @@ aHlkaHlkaHlkaHlkaHlkaHlkaHlkaHlkaFnms68WxfyoJ3KVKAAAAABJRU5ErkJgggs='))
 	[void]$ConfigMgrPkgActionCombo.Items.Add('Move to Production')
 	[void]$ConfigMgrPkgActionCombo.Items.Add('Move to Pilot')
 	[void]$ConfigMgrPkgActionCombo.Items.Add('Mark as Retired')
+	[void]$ConfigMgrPkgActionCombo.Items.Add('Move to Windows 11 25H2')
 	[void]$ConfigMgrPkgActionCombo.Items.Add('Move to Windows 11 24H2')
 	[void]$ConfigMgrPkgActionCombo.Items.Add('Move to Windows 11 23H2')
 	[void]$ConfigMgrPkgActionCombo.Items.Add('Move to Windows 11 22H2')
@@ -13193,6 +13329,7 @@ AABJRU5ErkJgggs='))
 	$OperatingSystem.DefaultCellStyle = $System_Windows_Forms_DataGridViewCellStyle_25
 	$OperatingSystem.DisplayStyle = 'ComboBox'
 	$OperatingSystem.HeaderText = 'Operating System'
+	[void]$OperatingSystem.Items.Add('Windows 11 25H2')
 	[void]$OperatingSystem.Items.Add('Windows 11 24H2')
 	[void]$OperatingSystem.Items.Add('Windows 11 23H2')
 	[void]$OperatingSystem.Items.Add('Windows 11 22H2')
@@ -13397,6 +13534,7 @@ AABJRU5ErkJgggs='))
 	
 	# Windows Version Hash Table
 	$WindowsBuildHashTable = @{
+		'Win11-25H2' = "10.0.26200"
 		'Win11-24H2' = "10.0.26100"
 		'Win11-23H2' = "10.0.22631"
 		'Win11-22H2' = "10.0.22621"
@@ -16708,27 +16846,23 @@ AABJRU5ErkJgggs='))
 						$ModelURL = $DellDownloadBase + "/" + ($global:DellModelCabFiles | Where-Object {
 								((($_.SupportedOperatingSystems).OperatingSystem).osCode -match $WindowsVersion) -and ($_.SupportedSystems.Brand.Model.SystemID -match $global:SkuValue)
 							}).delta
-						if ($global:SkuValue.Count -gt 1) {
-							$DellSingleSKU = $global:SkuValue | Select-Object -First 1
-							$global:SkuValue = [string]($global:SkuValue -join ";")
-							global:Write-LogEntry -Value "- Using SKU : $DellSingleSKU" -Severity 1
-							$ModelURL = $DellDownloadBase + "/" + ($global:DellModelCabFiles | Where-Object {
-									((($_.SupportedOperatingSystems).OperatingSystem).osCode -match $WindowsVersion) -and ($_.SupportedSystems.Brand.Model.SystemID -match $DellSingleSKU)
-								}).delta
-							$DriverDownload = $DellDownloadBase + "/" + (($global:DellModelCabFiles | Where-Object {
-										((($_.SupportedOperatingSystems).OperatingSystem).osCode -match $WindowsVersion) -and ($_.SupportedSystems.Brand.Model.SystemID -match $DellSingleSKU)
-									}) | Sort-Object DateTime -Descending | Select-Object -First 1).path
-							$DriverCab = ($DriverDownload).Split("/") | Select-Object -Last 1
+							
+						global:Write-LogEntry -Value "- Dell System Model ID is : $global:SkuValue" -Severity 1
+						$ModelURL = $null
+						$DellModelCabFilesTmp = $global:DellModelCabFiles | Where-Object { $systemIds = @($_.SupportedSystems.Brand.Model.SystemID); $systemIds | Where-Object { $global:SkuValue -contains $_ } }
+						if($DellModelCabFilesTmp | Where-Object { $osCode = @($_.SupportedOperatingSystems.OperatingSystem.osCode); $osCode | Where-Object { $WindowsVersion -match $_ -or $_ -match $WindowsVersion } }) {
+							$DriverDownload = $DellDownloadBase + "/" + ($DellModelCabFilesTmp | Where-Object { $_.SupportedOperatingSystems.OperatingSystem.osCode -match $WindowsVersion } | Sort-Object DateTime -Descending | Select-Object -First 1).Path
+							$ModelURL = ($DellModelCabFilesTmp | Where-Object { $_.SupportedOperatingSystems.OperatingSystem.osCode -match $WindowsVersion -and [string]::IsNullOrEmpty($_.delta) -eq $false } | Sort-Object DateTime -Descending | Select-Object -First 1).delta
 							
 						} else {
-							$ModelURL = $DellDownloadBase + "/" + ($global:DellModelCabFiles | Where-Object {
-									((($_.SupportedOperatingSystems).OperatingSystem).osCode -match $WindowsVersion) -and ($_.SupportedSystems.Brand.Model.SystemID -match $global:SkuValue)
-								}).delta
-							$DriverDownload = $DellDownloadBase + "/" + ($global:DellModelCabFiles | Where-Object {
-									((($_.SupportedOperatingSystems).OperatingSystem).osCode -match $WindowsVersion) -and ($_.SupportedSystems.Brand.Model.SystemID -match $global:SkuValue)
-								} | Sort-Object DateTime -Descending | Select-Object -First 1).path
-							$DriverCab = ($DriverDownload).Split("/") | Select-Object -Last 1
+							$DriverDownload = $DellDownloadBase + "/" + ($DellModelCabFilesTmp |  Sort-Object -Property { ($_.SupportedOperatingSystems.OperatingSystem.osCode  -replace '[^\d.]','') -as [double] } -Descending | Select-Object -First 1).Path
+							$ModelURL = $DellDownloadBase + "/" + ($DellModelCabFilesTmp | Where-Object { -not [string]::IsNullOrEmpty($_.delta) } | ForEach-Object { $_ | Add-Member -NotePropertyName OSVersionNumber -NotePropertyValue ([double](@($_.SupportedOperatingSystems.OperatingSystem.osCode -replace '[^\d.]','') | Select-Object -First 1)) -Force; $_ } | Sort-Object -Property OSVersionNumber -Descending | Select-Object -First 1).delta
 						}
+						if([string]::IsNullOrEmpty($ModelURL)){
+							$ModelURL = $DellDownloadBase + "/" + ($DellModelCabFilesTmp | Where-Object { -not [string]::IsNullOrEmpty($_.delta) } | ForEach-Object { $_ | Add-Member -NotePropertyName OSVersionNumber -NotePropertyValue ([double](@($_.SupportedOperatingSystems.OperatingSystem.osCode -replace '[^\d.]','') | Select-Object -First 1)) -Force; $_ } | Sort-Object -Property OSVersionNumber -Descending | Select-Object -First 1).delta
+						}
+
+						$DriverCab = ($DriverDownload).Split("/") | Select-Object -Last 1
 						
 						$ModelURL = $ModelURL.Replace("\", "/")
 						if ($DriverCab -match ".cab") {
@@ -16736,7 +16870,6 @@ AABJRU5ErkJgggs='))
 						} else {
 							$DriverRevision = (($DriverCab.Split("_") | Select-Object -Last 1).Trim(".exe")).Trim()
 						}
-						global:Write-LogEntry -Value "- Dell System Model ID is : $global:SkuValue" -Severity 1
 						
 					}
 					"HP" {
@@ -17247,7 +17380,7 @@ AABJRU5ErkJgggs='))
 							if ($Product -ne "Intune") {
 								#$HPBIOSDownload = Find-HPBIOS -Model $Model -OSBuild $OSBuild -DisplayVersion $OSVersion -Architecture $Architecture -SKUValue $(($global:SkuValue).Split(",") | Select-Object -First 1)
 								global:Write-LogEntry -Value "- Using Get-SoftpaqList for SKU: $(($global:SkuValue).Split(",") | Select-Object -First 1) - OS: $OSNameShort - Build: $OSVersion" -Severity 1
-								$HPBIOSDownload = Get-SoftpaqList -Category BIOS -Platform $(($global:SkuValue).Split(",") | Select-Object -First 1) -Os $OSNameShort -OsVer $OSVersion | Sort-Object Version -Descending | Select-Object
+								$HPBIOSDownload = Get-SoftpaqList -Category BIOS -Platform $(($global:SkuValue).Split(",") | Select-Object -First 1) -Os $OSNameShort -OsVer $OSVersion | Sort-Object Version -Descending | Select-Object -First 1
 								if ($HPBIOSDownload.URL -ne $null) {
 									$BIOSDownload = $UrlPrefix + "://" + $($HPBIOSDownload.URL)
 									#$BIOSVer = $HPBIOSDownload.Version.Trim()
@@ -17412,6 +17545,7 @@ AABJRU5ErkJgggs='))
 						if ($DownloadType -ne "BIOS") {
 							# Driver variables & switches
 							$DriverSourceCab = ($DownloadRoot + $Model + "\Driver Cab\" + $DriverCab)
+							Write-Host $DriverCab
 							$DriverPackageDir = ($DriverCab).Substring(0, $DriverCab.length - 4)
 							$DriverCabDest = Join-Path -Path $PackageRoot -ChildPath $DriverPackageDir
 							
@@ -18439,6 +18573,9 @@ AABJRU5ErkJgggs='))
 				"*Retired*" {
 					$PackagePrefix = "$PackageType Retired "
 					$State = "retired"
+				}
+				"*Windows 11 25H2*"{
+					$Win11Version = "25H2"
 				}
 				"*Windows 11 24H2*"{
 					$Win11Version = "24H2"
@@ -19468,6 +19605,49 @@ AABJRU5ErkJgggs='))
 			$ClearModelSelection.Enabled = $true
 		}
 		$ModelResults.Text = "Found ($ModelCount) models"
+	}
+
+	function Find-ExistingModels {
+		if (($global:ConfigMgrValidation -ne $true) -and ($PlatformComboBox.Text -match "ConfigMgr")) {
+			Connect-ConfigMgr
+		}
+		if (($global:ProxySettingsSet -ne $true) -and ($UseProxyServerCheckbox.Checked -eq $true)) {
+			Confirm-ProxyAccess -ProxyServer $ProxyServerInput.Text -UserName $ProxyUserInput.Text -Password $ProxyPswdInput.Text -URL "https://www.MSEndpointMgr.com"
+		}
+		$MakeModelDataGrid.Rows.Clear()
+		Update-ModeList $SiteServerInput.Text $SiteCodeText.Text
+		Start-Sleep -Seconds 2
+		## Load SCCM package names and preselect matching models in the grid
+		Set-Location -Path ($SiteCode + ":")
+		$sccmPackages = Get-CMPackage -Fast | Select-Object -ExpandProperty Name
+		Set-Location -Path $global:TempDirectory
+		[int]$ExistingModelCount = 0
+		for ($Row = 0; $Row -lt $MakeModelDataGrid.RowCount; $Row++) {
+			$ModelName = [string]$MakeModelDataGrid.Rows[$Row].Cells[2].Value
+			if (-not [string]::IsNullOrEmpty($ModelName)) {
+				$EscapedModelName = [System.Management.Automation.WildcardPattern]::Escape($ModelName)
+				$MatchingPackage = $sccmPackages | Where-Object {
+					$_ -like "*$EscapedModelName*"
+				} | Select-Object -First 1
+				if ($null -ne $MatchingPackage) {
+					$MakeModelDataGrid.Rows[$Row].Cells[0].Value = $true
+					$MakeModelDataGrid.Rows[$Row].Cells[5].Value = $script:CheckIcon
+					$MakeModelDataGrid.Rows[$Row].Cells[6].Value = "Existing"
+					$MakeModelDataGrid.Rows[$Row].Selected = $true
+					$ExistingModelCount++
+				} else {
+					$MakeModelDataGrid.Rows[$Row].Cells[6].Value = $null
+				}
+			}
+		}
+		$MakeModelDataGrid.Sort($MakeModelDataGrid.Columns[6], [System.ComponentModel.ListSortDirection]::Descending)
+		
+		[int]$ModelCount = $MakeModelDataGrid.Rows.Count
+		if ($ModelCount -gt 0) {
+			$SelectAll.Enabled = $true
+			$ClearModelSelection.Enabled = $true
+		}
+		$ModelResults.Text = "Found ($ModelCount) models - Existing ($ExistingModelCount)"
 	}
 	
 	function Enable-FindModels {
