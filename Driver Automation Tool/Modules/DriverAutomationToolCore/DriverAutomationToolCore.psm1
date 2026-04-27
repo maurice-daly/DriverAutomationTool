@@ -4,7 +4,7 @@
      Organization:  MSEndpointMgr / Patch My PC
      Filename:      DriverAutomationToolCore.psm1
      Purpose:       Core functions for Driver Automation Tool v2.0
-     Version:       10.0.20.0
+     Version:       10.0.21.0
     ===========================================================================
 #>
 
@@ -21,8 +21,8 @@ if ($PSVersionTable.PSVersion.Major -le 5) {
 
 #region Variables
 
-[version]$global:ScriptRelease = "10.0.20.0"
-$global:ScriptBuildDate = "20-04-2026"
+[version]$global:ScriptRelease = "10.0.21.0"
+$global:ScriptBuildDate = "27-04-2026"
 $global:ReleaseNotesURL = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/DriverAutomationToolNotes.txt"
 $OEMLinksURL = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/OEMLinks.xml"
 
@@ -8117,6 +8117,16 @@ function Invoke-DATBiosPackaging {
             # The exe handles its own flash process; no extraction is needed.
             Write-DATLogEntry -Value "[BIOS] Dell: Staging self-contained BIOS updater" -Severity 1
             Copy-Item -Path $BiosFilePath -Destination $extractDir -Force
+
+            # ConfigMgr task sequences may run in WinPE where Flash64W.exe is required
+            # as a wrapper for the BIOS updater. Bundle it alongside the exe.
+            if ($SkipWim) {
+                Write-DATLogEntry -Value "[BIOS] Dell: ConfigMgr mode -- bundling Flash64W.exe for WinPE support" -Severity 1
+                $flash64Result = Get-DATFlash64W -DestinationDir $extractDir
+                if (-not $flash64Result) {
+                    Write-DATLogEntry -Value "[BIOS] Dell: WARNING -- Flash64W.exe could not be obtained. WinPE-based task sequences may fail." -Severity 2
+                }
+            }
         }
         'HP' {
             # HP BIOS SoftPaq is a self-extracting archive -- use the same expansion flags
