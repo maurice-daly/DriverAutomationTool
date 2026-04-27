@@ -3,6 +3,13 @@ Release Notes
 IMPORTANT
 - DAT Downloads have been moved to GitHub - https://github.com/maurice-daly/DriverAutomationTool
 
+Version 10.0.20
+Bug Fix
+- Additional handling for Lenovo extract issues due to pre-existing folder path
+New Additions
+- Added warning for long temp file paths
+
+
 Version 10.0.19
 Bug Fixes
 - Known model matching fixes

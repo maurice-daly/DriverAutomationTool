@@ -5578,6 +5578,48 @@ $btn_Build.Add_Click({
         }
     }
 
+    # Pre-flight: check for paths that may exceed MAX_PATH (260 chars)
+    $pfSelectedOS = if ($null -ne $cmb_OS.SelectedItem) { $cmb_OS.SelectedItem.Content } else { 'Windows 11' }
+    $pfMaxPathLimit = 260
+    $pfNestedFileHeadroom = 80  # typical depth of driver INF subfolders inside the extraction
+    # Use the user-configured temp storage path (same path the build actually uses)
+    $pfRegConfig = Get-ItemProperty -Path $global:RegPath -ErrorAction SilentlyContinue
+    $pfTempDir = if ($pfRegConfig -and -not [string]::IsNullOrEmpty($pfRegConfig.TempStoragePath)) { $pfRegConfig.TempStoragePath } else { $global:TempDirectory }
+
+    # Warn if the temp storage path itself is excessively long
+    if ($pfTempDir.Length -gt 100) {
+        $pfTempMessage = "The temp storage path is $($pfTempDir.Length) characters long, which significantly increases the risk of exceeding the Windows 260-character path limit during driver extraction.`n`nCurrent path: $pfTempDir`n`nThis can cause driver extractions to fail silently or produce incomplete packages with missing files. If you continue, the resulting packages may not contain all expected drivers and could cause deployment issues.`n`nTo resolve this, shorten the temp storage path in Common Settings."
+        $pfTempContinue = Show-DATConfirmDialog -Title 'Long Path Warning' `
+            -Message $pfTempMessage -Type Warning -ConfirmLabel 'Continue Anyway' -CancelLabel 'Cancel Build'
+        if (-not $pfTempContinue) {
+            Write-DATActivityLog "Build cancelled by user -- temp storage path exceeds 100 chars ($($pfTempDir.Length) chars): $pfTempDir" -Level Warn
+            return
+        }
+        Write-DATActivityLog "User acknowledged long temp storage path warning ($($pfTempDir.Length) chars)" -Level Warn
+    }
+
+    $pfLongModels = @()
+    foreach ($m in $selectedModels) {
+        $pfTestPath = Join-Path $pfTempDir "Build\$($m.OEM)\$($m.Model)\$pfSelectedOS\Extracted"
+        if (($pfTestPath.Length + $pfNestedFileHeadroom) -ge $pfMaxPathLimit) {
+            $pfLongModels += [PSCustomObject]@{
+                Model      = "$($m.OEM) $($m.Model)"
+                PathLength = $pfTestPath.Length
+            }
+        }
+    }
+    if ($pfLongModels.Count -gt 0) {
+        $pfModelList = ($pfLongModels | ForEach-Object { "  - $($_.Model) ($($_.PathLength) chars)" }) -join "`n"
+        $pfMessage = "The following model(s) have extraction paths that may exceed the Windows 260-character path limit:`n`n$pfModelList`n`nThis can cause driver extractions to fail silently or produce incomplete packages with missing files. If you continue, the resulting packages may not contain all expected drivers and could cause deployment issues.`n`nTo resolve this, shorten the temp storage path (currently: $pfTempDir)."
+        $pfContinue = Show-DATConfirmDialog -Title 'Long Path Warning' `
+            -Message $pfMessage -Type Warning -ConfirmLabel 'Continue Anyway' -CancelLabel 'Cancel Build'
+        if (-not $pfContinue) {
+            Write-DATActivityLog "Build cancelled by user -- extraction paths exceed MAX_PATH for $($pfLongModels.Count) model(s)" -Level Warn
+            return
+        }
+        Write-DATActivityLog "User acknowledged long path warning for $($pfLongModels.Count) model(s)" -Level Warn
+    }
+
     $btn_Build.IsEnabled = $false
     $btn_Abort.IsEnabled = $true
     $progress_Job.Visibility = 'Visible'
@@ -14035,7 +14077,7 @@ if (Test-Path $logoPath) {
 
 # Read version from module manifest
 $manifestPath = Join-Path $AppRoot "Modules\DriverAutomationToolCore\DriverAutomationToolCore.psd1"
-$script:versionString = "v10.0.19"
+$script:versionString = "v10.0.20"
 if (Test-Path $manifestPath) {
     $manifestData = Import-PowerShellDataFile $manifestPath
     $ver = [version]$manifestData.ModuleVersion
@@ -14379,6 +14421,26 @@ $Window.Add_ContentRendered({
         $txt_EulaWarning.Visibility = 'Visible'
         Write-DATActivityLog "EULA not accepted -- navigated to About page on startup" -Level Warn
     }
+
+    # Check for updates on startup
+    try {
+        $startupUpdateInfo = Get-DATAvailableUpdate
+        if ($startupUpdateInfo -and -not $startupUpdateInfo.Error -and $startupUpdateInfo.UpdateAvailable) {
+            Write-DATActivityLog "Update available: v$($startupUpdateInfo.LatestVersion) (current: $($global:ScriptRelease.ToString(3)))" -Level Info
+            $updateConfirm = Show-DATConfirmDialog -Title 'Update Available' `
+                -Message "A new version of the Driver Automation Tool is available.`n`nCurrent version: $($global:ScriptRelease.ToString(3))`nLatest version: $($startupUpdateInfo.LatestVersion)`n`nWould you like to go to the About page to download and install the update?" `
+                -Type Info -ConfirmLabel 'View Update' -CancelLabel 'Later'
+            if ($updateConfirm) {
+                Set-DATActiveView -ViewName 'view_About' -NavButtonName 'nav_About'
+                $txt_AboutVersion.Text = "Version $($global:ScriptRelease.ToString(3)) - Update available: $($startupUpdateInfo.LatestVersion)"
+                $btn_ApplyUpdate = $Window.FindName('btn_ApplyUpdate')
+                $btn_ApplyUpdate.Visibility = 'Visible'
+            }
+        }
+    } catch {
+        Write-DATActivityLog "Startup update check failed: $($_.Exception.Message)" -Level Warn
+    }
+
     # Trigger auto-refresh now that the main window is visible
     if ($script:AutoRefreshPending) {
         $script:AutoRefreshPending = $false

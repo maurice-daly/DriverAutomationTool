@@ -4,7 +4,7 @@
      Organization:  MSEndpointMgr / Patch My PC
      Filename:      DriverAutomationToolCore.psm1
      Purpose:       Core functions for Driver Automation Tool v2.0
-     Version:       10.0.19.0
+     Version:       10.0.20.0
     ===========================================================================
 #>
 
@@ -21,7 +21,7 @@ if ($PSVersionTable.PSVersion.Major -le 5) {
 
 #region Variables
 
-[version]$global:ScriptRelease = "10.0.19.0"
+[version]$global:ScriptRelease = "10.0.20.0"
 $global:ScriptBuildDate = "20-04-2026"
 $global:ReleaseNotesURL = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/DriverAutomationToolNotes.txt"
 $OEMLinksURL = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/OEMLinks.xml"
@@ -1141,11 +1141,10 @@ function Invoke-DATDriverFilePackaging {
                 "*.exe" {
                     # Lenovo SCCM driver packs use Inno Setup; all other OEMs use generic self-extractors
                     if ($OEM -eq 'Lenovo') {
-                        # Inno Setup fails if the target directory already exists -- remove it first
+                        # Inno Setup fails if the target directory already exists -- remove it and let Inno Setup create it via /DIR=
                         if (Test-Path -Path $DriverFolder) {
                             Write-DATLogEntry -Value "[$OEM] Removing existing extraction folder to avoid Inno Setup conflict: $DriverFolder" -Severity 1
                             Remove-Item -Path $DriverFolder -Recurse -Force -ErrorAction SilentlyContinue
-                            New-Item -Path $DriverFolder -ItemType Directory -Force | Out-Null
                         }
                         $exeArgs = "/VERYSILENT /DIR=`"$DriverFolder`" /SP- /SUPPRESSMSGBOXES /NORESTART"
                         Write-DATLogEntry -Value "[$OEM] Extracting (elevated) with: $exeArgs" -Severity 1
@@ -5209,8 +5208,10 @@ function Invoke-DATPackageRetention {
             }
 
             Write-DATLogEntry -Value "[Retention][Intune] Querying Win32 apps matching: $baseSearch" -Severity 1
-            $allApps = Get-DATIntuneWin32Apps -SearchString $baseSearch
-            $sorted  = $allApps | Sort-Object -Property { $_.displayVersion } -Descending
+            $allApps  = Get-DATIntuneWin32Apps
+            $matching = @($allApps | Where-Object { $_.displayName -like "$baseSearch*" })
+            Write-DATLogEntry -Value "[Retention][Intune] Found $($matching.Count) app(s) matching '$baseSearch'" -Severity 1
+            $sorted   = $matching | Sort-Object -Property { $_.displayVersion } -Descending
             $toDelete = if ($sorted.Count -gt ($RetainCount + 1)) { $sorted | Select-Object -Skip ($RetainCount + 1) } else { @() }
 
             foreach ($app in $toDelete) {
