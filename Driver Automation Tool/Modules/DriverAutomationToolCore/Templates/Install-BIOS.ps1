@@ -72,7 +72,7 @@ function Write-CMTraceLog {
     $Timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss.fff"
     $Time = Get-Date -Format "HH:mm:ss.fff"
     $Date = Get-Date -Format "MM-dd-yyyy"
-    $LogEntry = "<![LOG[$Message]LOG]!><time=""$Time+000"" date=""$Date"" component=""$Component"" context="""" type=""$Severity"" thread=""$PID"" file="""">"
+    $LogEntry = "<![LOG[$Timestamp $Message]LOG]!><time=""$Time+000"" date=""$Date"" component=""$Component"" context="""" type=""$Severity"" thread=""$PID"" file="""">"
     $LogDir = Split-Path $LogFile -Parent
     if (-not (Test-Path $LogDir)) { New-Item -Path $LogDir -ItemType Directory -Force | Out-Null }
     Add-Content -Path $LogFile -Value $LogEntry -Encoding UTF8 -ErrorAction SilentlyContinue

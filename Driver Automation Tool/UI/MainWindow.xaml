@@ -900,7 +900,7 @@
                                    Foreground="{DynamicResource AccentColor}" VerticalAlignment="Center" Margin="0,0,8,0"/>
                         <TextBlock Text="Driver Automation Tool" FontSize="13" FontWeight="SemiBold"
                                    Foreground="{DynamicResource WindowForeground}" VerticalAlignment="Center"/>
-                        <TextBlock x:Name="txt_Version" Text=" Version 10.0.18" FontSize="11"
+                        <TextBlock x:Name="txt_Version" Text=" Version 10.0.19" FontSize="11"
                                    Foreground="{DynamicResource InputPlaceholder}" VerticalAlignment="Center" Margin="4,0"/>
                     </StackPanel>
 
@@ -1226,6 +1226,7 @@
                                             <ColumnDefinition Width="*"/>
                                             <ColumnDefinition Width="Auto"/>
                                             <ColumnDefinition Width="Auto"/>
+                                            <ColumnDefinition Width="Auto"/>
                                         </Grid.ColumnDefinitions>
                                         <TextBox x:Name="txt_ModelSearch" Grid.Column="0"
                                                  Style="{StaticResource RoundedTextBox}"
@@ -1236,12 +1237,18 @@
                                                    VerticalAlignment="Center"
                                                    HorizontalAlignment="Right"
                                                    Margin="0,0,8,0"/>
-                                        <Button x:Name="btn_SelectAll" Grid.Column="2"
+                                        <Button x:Name="btn_SelectKnownModels" Grid.Column="2"
+                                                Style="{StaticResource SecondaryButton}"
+                                                Height="34" Margin="0,0,4,0"
+                                                Visibility="Collapsed">
+                                            <TextBlock><Run Text="&#xE8A7;" FontFamily="Segoe MDL2 Assets"/><Run Text="  Select Known Models"/></TextBlock>
+                                        </Button>
+                                        <Button x:Name="btn_SelectAll" Grid.Column="3"
                                                 Style="{StaticResource SecondaryButton}"
                                                 Height="34" Margin="0,0,4,0">
                                             <TextBlock><Run Text="&#xE8B3;" FontFamily="Segoe MDL2 Assets"/><Run Text="  Select All"/></TextBlock>
                                         </Button>
-                                        <Button x:Name="btn_DeselectAll" Grid.Column="3"
+                                        <Button x:Name="btn_DeselectAll" Grid.Column="4"
                                                 Style="{StaticResource SecondaryButton}"
                                                 Height="34" Margin="0,0,0,0">
                                             <TextBlock><Run Text="&#xE8E6;" FontFamily="Segoe MDL2 Assets"/><Run Text="  Deselect All"/></TextBlock>
@@ -1626,6 +1633,7 @@
                                 <RowDefinition Height="Auto"/>
                                 <RowDefinition Height="Auto"/>
                                 <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
                                 <RowDefinition Height="2*"/>
                                 <RowDefinition Height="Auto"/>
                             </Grid.RowDefinitions>
@@ -1681,8 +1689,39 @@
                                        Foreground="{DynamicResource InputPlaceholder}" Margin="0,0,0,8"
                                        Visibility="Collapsed"/>
 
-                            <!-- Search bar + Select All/None + Delete -->
+                            <!-- OEM / OS Filter -->
                             <Grid Grid.Row="3" Margin="0,0,0,8">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="200"/>
+                                    <ColumnDefinition Width="200"/>
+                                </Grid.ColumnDefinitions>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                </Grid.RowDefinitions>
+                                <TextBlock Grid.Column="0" Grid.Row="0" Text="Manufacturer" FontSize="11"
+                                           Foreground="{DynamicResource InputPlaceholder}" Margin="0,0,8,4"/>
+                                <TextBlock Grid.Column="1" Grid.Row="0" Text="Operating System" FontSize="11"
+                                           Foreground="{DynamicResource InputPlaceholder}" Margin="8,0,0,4"/>
+                                <ComboBox x:Name="cmb_CmPkgOEM" Grid.Column="0" Grid.Row="1" Margin="0,0,8,0" Height="34">
+                                    <ComboBoxItem Content="All" IsSelected="True"/>
+                                    <ComboBoxItem Content="Acer"/>
+                                    <ComboBoxItem Content="Dell"/>
+                                    <ComboBoxItem Content="HP"/>
+                                    <ComboBoxItem Content="Lenovo"/>
+                                    <ComboBoxItem Content="Microsoft"/>
+                                </ComboBox>
+                                <ComboBox x:Name="cmb_CmPkgOS" Grid.Column="1" Grid.Row="1" Margin="8,0,0,0" Height="34">
+                                    <ComboBoxItem Content="All" IsSelected="True"/>
+                                    <ComboBoxItem Content="Windows 11 25H2"/>
+                                    <ComboBoxItem Content="Windows 11 24H2"/>
+                                    <ComboBoxItem Content="Windows 11 23H2"/>
+                                    <ComboBoxItem Content="Windows 11 22H2"/>
+                                </ComboBox>
+                            </Grid>
+
+                            <!-- Search bar + Select All/None + Delete -->
+                            <Grid Grid.Row="4" Margin="0,0,0,8">
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="*"/>
                                     <ColumnDefinition Width="Auto"/>
@@ -1708,7 +1747,7 @@
                                 </Button>
                             </Grid>
 
-                            <Border Grid.Row="4" Style="{StaticResource CardPanel}">
+                            <Border Grid.Row="5" Style="{StaticResource CardPanel}">
                                 <DataGrid x:Name="grid_Packages" Style="{StaticResource ModernDataGrid}">
                                     <DataGrid.Columns>
                                         <DataGridCheckBoxColumn Header="&#x2611;" Width="40" Binding="{Binding Selected, UpdateSourceTrigger=PropertyChanged, Mode=TwoWay}"
@@ -1723,7 +1762,7 @@
                             </Border>
 
                             <!-- Package Details Panel -->
-                            <Border x:Name="panel_PkgDetails" Grid.Row="5" Style="{StaticResource CardPanel}" Margin="0,12,0,0" Visibility="Collapsed">
+                            <Border x:Name="panel_PkgDetails" Grid.Row="6" Style="{StaticResource CardPanel}" Margin="0,12,0,0" Visibility="Collapsed">
                                 <StackPanel>
                                     <Grid Margin="0,0,0,12">
                                         <Grid.ColumnDefinitions>
@@ -2999,6 +3038,7 @@
                                 <RowDefinition Height="Auto"/>
                                 <RowDefinition Height="Auto"/>
                                 <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
                                 <RowDefinition Height="2*"/>
                                 <RowDefinition Height="Auto"/>
                             </Grid.RowDefinitions>
@@ -3038,8 +3078,39 @@
                                        Text="Not connected to Intune. Please connect first."
                                        Visibility="Visible"/>
 
-                            <!-- Search bar + Select All/None + Delete -->
+                            <!-- OEM / OS Filter -->
                             <Grid Grid.Row="3" Margin="0,0,0,8">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="200"/>
+                                    <ColumnDefinition Width="200"/>
+                                </Grid.ColumnDefinitions>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                </Grid.RowDefinitions>
+                                <TextBlock Grid.Column="0" Grid.Row="0" Text="Manufacturer" FontSize="11"
+                                           Foreground="{DynamicResource InputPlaceholder}" Margin="0,0,8,4"/>
+                                <TextBlock Grid.Column="1" Grid.Row="0" Text="Operating System" FontSize="11"
+                                           Foreground="{DynamicResource InputPlaceholder}" Margin="8,0,0,4"/>
+                                <ComboBox x:Name="cmb_IntunePkgOEM" Grid.Column="0" Grid.Row="1" Margin="0,0,8,0" Height="34">
+                                    <ComboBoxItem Content="All" IsSelected="True"/>
+                                    <ComboBoxItem Content="Acer"/>
+                                    <ComboBoxItem Content="Dell"/>
+                                    <ComboBoxItem Content="HP"/>
+                                    <ComboBoxItem Content="Lenovo"/>
+                                    <ComboBoxItem Content="Microsoft"/>
+                                </ComboBox>
+                                <ComboBox x:Name="cmb_IntunePkgOS" Grid.Column="1" Grid.Row="1" Margin="8,0,0,0" Height="34">
+                                    <ComboBoxItem Content="All" IsSelected="True"/>
+                                    <ComboBoxItem Content="Windows 11 25H2"/>
+                                    <ComboBoxItem Content="Windows 11 24H2"/>
+                                    <ComboBoxItem Content="Windows 11 23H2"/>
+                                    <ComboBoxItem Content="Windows 11 22H2"/>
+                                </ComboBox>
+                            </Grid>
+
+                            <!-- Search bar + Select All/None + Delete -->
+                            <Grid Grid.Row="4" Margin="0,0,0,8">
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="*"/>
                                     <ColumnDefinition Width="Auto"/>
@@ -3065,7 +3136,7 @@
                                 </Button>
                             </Grid>
 
-                            <Border Grid.Row="4" Style="{StaticResource CardPanel}">
+                            <Border Grid.Row="5" Style="{StaticResource CardPanel}">
                                 <DataGrid x:Name="grid_IntuneApps"
                                           Style="{StaticResource ModernDataGrid}"
                                           BorderThickness="0"
@@ -3210,7 +3281,7 @@
                             </Border>
 
                             <!-- Package Detail Panel -->
-                            <Border x:Name="panel_IntuneAppDetail" Grid.Row="5" Style="{StaticResource CardPanel}" Margin="0,12,0,0" Visibility="Collapsed">
+                            <Border x:Name="panel_IntuneAppDetail" Grid.Row="6" Style="{StaticResource CardPanel}" Margin="0,12,0,0" Visibility="Collapsed">
                                 <StackPanel>
                                     <Grid Margin="0,0,0,12">
                                         <Grid.ColumnDefinitions>
@@ -4623,7 +4694,7 @@
                                     <StackPanel>
                                         <TextBlock Text="Driver Automation Tool" FontSize="22" FontWeight="Bold"
                                                    Foreground="{DynamicResource AccentColor}" Margin="0,0,0,4"/>
-                                        <TextBlock x:Name="txt_AboutVersion" Text="Version 10.0.18" FontSize="14"
+                                        <TextBlock x:Name="txt_AboutVersion" Text="Version 10.0.19" FontSize="14"
                                                    Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,16"/>
 
                                         <TextBlock TextWrapping="Wrap" FontSize="13"

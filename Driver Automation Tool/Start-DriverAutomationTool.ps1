@@ -1,5 +1,5 @@
-﻿<#
-    Driver Automation Tool v2.0 — Launcher
+<#
+    Driver Automation Tool v2.0 -- Launcher
     Run this script to start the application
 #>
 
@@ -135,7 +135,7 @@ if (-not (Test-Path $RegPath)) {
 }
 New-ItemProperty -Path $RegPath -Name "InstallDirectory" -Value $AppRoot -PropertyType String -Force | Out-Null
 
-# Create desktop shortcut (idempotent — only creates if missing or pointing to wrong location)
+# Create desktop shortcut (idempotent -- only creates if missing or pointing to wrong location)
 $desktopPath = [Environment]::GetFolderPath('Desktop')
 $shortcutPath = Join-Path $desktopPath 'Driver Automation Tool.lnk'
 $launcherPath = Join-Path $AppRoot 'Start-DriverAutomationTool.ps1'

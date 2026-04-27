@@ -28,7 +28,7 @@ if (-not (Test-Path $modulePath)) {
 }
 Import-Module $modulePath -Force
 
-# Override execution mode — module default uses [Environment]::UserInteractive which
+# Override execution mode -- module default uses [Environment]::UserInteractive which
 # is $true in a console session. Headless builds are always 'Scheduled Task'.
 $global:ExecutionMode = 'Scheduled Task'
 

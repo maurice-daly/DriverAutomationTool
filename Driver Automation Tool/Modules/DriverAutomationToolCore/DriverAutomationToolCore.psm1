@@ -4,7 +4,7 @@
      Organization:  MSEndpointMgr / Patch My PC
      Filename:      DriverAutomationToolCore.psm1
      Purpose:       Core functions for Driver Automation Tool v2.0
-     Version:       10.0.18.0
+     Version:       10.0.19.0
     ===========================================================================
 #>
 
@@ -21,7 +21,7 @@ if ($PSVersionTable.PSVersion.Major -le 5) {
 
 #region Variables
 
-[version]$global:ScriptRelease = "10.0.18.0"
+[version]$global:ScriptRelease = "10.0.19.0"
 $global:ScriptBuildDate = "20-04-2026"
 $global:ReleaseNotesURL = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/DriverAutomationToolNotes.txt"
 $OEMLinksURL = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/OEMLinks.xml"
@@ -367,7 +367,7 @@ function Find-DATLenovoModelType {
     )
     if ($ModelType.Length -gt 0) {
         $global:LenovoModelType = $global:LenovoModelDrivers | Where-Object {
-            $_.Types.Type -match $ModelType
+            $_.Types.Type -contains $ModelType
         } | Select-Object -ExpandProperty Name -First 1
     }
     if (-not [string]::IsNullOrEmpty($Model)) {
@@ -1122,7 +1122,7 @@ function Invoke-DATDriverFilePackaging {
     New-Item -Path $localWorkDir -ItemType Directory -Force | Out-Null
     Write-DATLogEntry -Value "[$OEM] Using local temp working directory: $localWorkDir" -Severity 1
 
-    $DriverFolder = Join-Path -Path $localWorkDir -ChildPath "$OEM\$Model\$OS\Extracted"
+    $DriverFolder = Join-Path -Path $localWorkDir -ChildPath "$OS\Extracted"
     if (-not (Test-Path -Path $DriverFolder)) {
         New-Item -Path $DriverFolder -ItemType Directory -Force | Out-Null
     }
@@ -1141,12 +1141,27 @@ function Invoke-DATDriverFilePackaging {
                 "*.exe" {
                     # Lenovo SCCM driver packs use Inno Setup; all other OEMs use generic self-extractors
                     if ($OEM -eq 'Lenovo') {
+                        # Inno Setup fails if the target directory already exists -- remove it first
+                        if (Test-Path -Path $DriverFolder) {
+                            Write-DATLogEntry -Value "[$OEM] Removing existing extraction folder to avoid Inno Setup conflict: $DriverFolder" -Severity 1
+                            Remove-Item -Path $DriverFolder -Recurse -Force -ErrorAction SilentlyContinue
+                            New-Item -Path $DriverFolder -ItemType Directory -Force | Out-Null
+                        }
                         $exeArgs = "/VERYSILENT /DIR=`"$DriverFolder`" /SP- /SUPPRESSMSGBOXES /NORESTART"
+                        Write-DATLogEntry -Value "[$OEM] Extracting (elevated) with: $exeArgs" -Severity 1
+                        Unblock-File -Path "$FilePath"
+                        try {
+                            $lenovoProc = Start-Process -FilePath $FilePath -ArgumentList $exeArgs -Verb RunAs -PassThru -Wait -ErrorAction Stop
+                            $exitCode = $lenovoProc.ExitCode
+                        } catch {
+                            Write-DATLogEntry -Value "[Error] - Lenovo elevated extraction failed: $($_.Exception.Message)" -Severity 3
+                            $exitCode = -1
+                        }
                     } else {
                         $exeArgs = "/s /e=`"$DriverFolder`""
+                        Write-DATLogEntry -Value "[$OEM] Extracting with: $exeArgs" -Severity 1
+                        $exitCode = Invoke-DATExecutable -FilePath $FilePath -Arguments $exeArgs
                     }
-                    Write-DATLogEntry -Value "[$OEM] Extracting with: $exeArgs" -Severity 1
-                    $exitCode = Invoke-DATExecutable -FilePath $FilePath -Arguments $exeArgs
                     if ($exitCode -ne 0 -and $null -ne $exitCode) {
                         Write-DATLogEntry -Value "[Warning] - EXE extraction returned exit code $exitCode for $FilePath" -Severity 2
                     }
@@ -1756,6 +1771,32 @@ function Get-DATConfigMgrKnownModels {
     $devicePairs = [System.Collections.Generic.Dictionary[string, PSCustomObject]]::new([System.StringComparer]::OrdinalIgnoreCase)
     $cimSession = $null
 
+    # Ensure the Lenovo catalog is loaded so Find-DATLenovoModelType can resolve
+    # 4-char machine types to friendly model names. This is needed when running in
+    # a background runspace where $global:LenovoModelDrivers is not populated.
+    if ($null -eq $global:LenovoModelDrivers) {
+        try {
+            if ($OnProgress) { & $OnProgress "Loading Lenovo model catalog..." }
+            Write-DATLogEntry -Value "[ConfigMgr Known Models] Lenovo catalog not loaded -- downloading for model resolution" -Severity 1
+            $OEMLinksURL = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/OEMLinks.xml"
+            $proxyParams = Get-DATWebRequestProxy
+            [xml]$oemLinksXml = (Invoke-WebRequest -Uri $OEMLinksURL -UseBasicParsing -TimeoutSec 30 @proxyParams).Content
+            $lenovoXmlUrl = ($oemLinksXml.OEM.Manufacturer | Where-Object { $_.Name -match "Lenovo" }).Link |
+                Where-Object { $_.Type -eq "XMLSource" } | Select-Object -ExpandProperty URL -First 1
+            if (-not [string]::IsNullOrEmpty($lenovoXmlUrl)) {
+                $lenovoTempPath = Join-Path $env:TEMP ($lenovoXmlUrl | Split-Path -Leaf)
+                if (-not (Test-Path $lenovoTempPath)) {
+                    Invoke-WebRequest -Uri $lenovoXmlUrl -OutFile $lenovoTempPath -UseBasicParsing -TimeoutSec 60 @proxyParams
+                }
+                [xml]$lenovoXml = Get-Content -Path $lenovoTempPath
+                $global:LenovoModelDrivers = $lenovoXml.ModelList.Model
+                Write-DATLogEntry -Value "[ConfigMgr Known Models] Lenovo catalog loaded: $(@($global:LenovoModelDrivers).Count) models" -Severity 1
+            }
+        } catch {
+            Write-DATLogEntry -Value "[ConfigMgr Known Models] Could not load Lenovo catalog: $($_.Exception.Message). Lenovo models will show raw WMI values." -Severity 2
+        }
+    }
+
     try {
         if ($OnProgress) { & $OnProgress "Connecting to $SiteServer..." }
         Write-DATLogEntry -Value "[ConfigMgr Known Models] Connecting CIM session to $SiteServer" -Severity 1
@@ -1832,9 +1873,12 @@ function Get-DATConfigMgrKnownModels {
                         $model = $model.Trim()
                     }
 
-                    # Lenovo: resolve 4-char machine type to friendly model name
+                    # Lenovo: resolve machine type to friendly model name
                     if ($oem.OEM -eq 'Lenovo' -and $model.Length -ge 4) {
-                        $friendlyName = Find-DATLenovoModelType -ModelType $model.Substring(0, 4)
+                        # WMI Model is typically a 4-char machine type (e.g. 21G2) or
+                        # a 10-char MTM (e.g. 21G2001EUS); extract the 4-char type prefix
+                        $machineType = $model.Substring(0, 4)
+                        $friendlyName = Find-DATLenovoModelType -ModelType $machineType
                         if (-not [string]::IsNullOrEmpty($friendlyName)) {
                             $model = $friendlyName.Trim()
                         }
@@ -1925,7 +1969,7 @@ function New-DATConfigMgrPkg {
         $smsNamespace = "root\SMS\Site_$SiteCode"
         $packagePrefix = if ($PackageType -eq 'BIOS') { 'BIOS Update' } else { 'Drivers' }
         $CMPackage = if ($PackageType -eq 'BIOS') {
-            "$packagePrefix - $OEM $Model"
+            "$packagePrefix - $OEM $Model - $Architecture"
         } else {
             "$packagePrefix - $OEM $Model - $OS $Architecture"
         }
@@ -2070,7 +2114,7 @@ function New-DATConfigMgrPkg {
         $newPkg.Description = "Models included: $Baseboards"
         $newPkg.Version = $Version
         $newPkg.MIFName = $Model
-        $newPkg.MIFVersion = "$OS $Architecture"
+        $newPkg.MIFVersion = if ($PackageType -eq 'BIOS') { "$Architecture" } else { "$OS $Architecture" }
         $newPkg.PkgSourceFlag = 2  # Direct source path
         $putResult = $newPkg.Put()
         $packageId = $putResult.RelativePath -replace '.*PackageID="([^"]+)".*', '$1'
@@ -2621,7 +2665,7 @@ function Start-DATModelProcessing {
                 $skipBios = $false
                 if (-not [string]::IsNullOrEmpty($catalogBIOSVersion)) {
                     if ($RunningMode -eq 'Configuration Manager') {
-                        $cmBiosPkgName = "Bios Update - $oem $modelName"
+                        $cmBiosPkgName = "BIOS Update - $oem $modelName - $arch"
                         $existingCMBiosVer = $cmPkgVersionCache[$cmBiosPkgName]
                         if (-not [string]::IsNullOrEmpty($existingCMBiosVer) -and $existingCMBiosVer -eq $catalogBIOSVersion -and -not $modelForceUpdate) {
                             Write-DATLogEntry -Value "[$currentIndex/$totalModels] SKIPPED -- BIOS version is current ($existingCMBiosVer): $cmBiosPkgName" -Severity 1
@@ -2632,7 +2676,7 @@ function Start-DATModelProcessing {
                             Write-DATLogEntry -Value "[$currentIndex/$totalModels] BIOS UPDATE needed -- existing v$existingCMBiosVer, catalog v${catalogBIOSVersion}: $cmBiosPkgName" -Severity 1
                         }
                     } elseif ($RunningMode -eq 'Intune') {
-                        $expectedBiosName = "Bios Update - $oem $modelName"
+                        $expectedBiosName = "BIOS - $oem $modelName - $arch"
                         $existingBiosApp = $cachedIntuneApps | Where-Object {
                             $_.displayName -eq $expectedBiosName
                         } | Sort-Object -Property displayVersion -Descending | Select-Object -First 1
@@ -2643,6 +2687,21 @@ function Start-DATModelProcessing {
                             $biosPackageSuccessCount++
                         } elseif ($existingBiosApp) {
                             Write-DATLogEntry -Value "[$currentIndex/$totalModels] BIOS UPDATE needed -- Intune v$($existingBiosApp.displayVersion), catalog v${catalogBIOSVersion}: $expectedBiosName" -Severity 1
+                        }
+                    } else {
+                        # Download Only / WIM Package Only -- check if BIOS package already exists with matching version
+                        $existingBiosDir = Join-Path $PackagePath "$oem\$modelName\BIOS"
+                        $existingBiosVersionFile = Join-Path $existingBiosDir ".biosversion"
+                        if ((Test-Path $existingBiosDir) -and (Test-Path $existingBiosVersionFile)) {
+                            $existingBiosVer = (Get-Content $existingBiosVersionFile -Raw -ErrorAction SilentlyContinue).Trim()
+                            if ($existingBiosVer -eq $catalogBIOSVersion -and -not $modelForceUpdate) {
+                                Write-DATLogEntry -Value "[$currentIndex/$totalModels] SKIPPED -- BIOS package already exists with current version ($existingBiosVer): $existingBiosDir" -Severity 1
+                                Set-DATRegistryValue -Name "RunningMessage" -Value "BIOS skipped (exists v$existingBiosVer): $oem $modelName" -Type String
+                                $skipBios = $true
+                                $biosPackageSuccessCount++
+                            } else {
+                                Write-DATLogEntry -Value "[$currentIndex/$totalModels] BIOS UPDATE needed -- local v$existingBiosVer, catalog v${catalogBIOSVersion}: $oem $modelName" -Severity 1
+                            }
                         }
                     }
                 }
@@ -2722,7 +2781,7 @@ function Start-DATModelProcessing {
 
                                 # Telemetry: BIOS report with .intunewin hash
                                 try {
-                                    $biosIntuneWinDir = Join-Path $PackagePath "IntuneWin\$oem\$modelName\$windowsVersion $windowsBuild"
+                                    $biosIntuneWinDir = Join-Path $PackagePath "IntuneWin\$oem\$modelName\BIOS"
                                     $biosIntuneWinFile = Get-ChildItem -Path $biosIntuneWinDir -Filter '*.intunewin' -ErrorAction SilentlyContinue | Select-Object -First 1
                                     $biosHash = if ($biosIntuneWinFile) { Get-DATPackageHash -FilePath $biosIntuneWinFile.FullName } else { $null }
                                     Send-DATBiosReport -Manufacturer $oem -Model $modelName `
@@ -6382,7 +6441,7 @@ try {{
 
     $skuMatch = $false
     foreach ($val in $expectedValues) {{
-        if ($systemSKU -eq $val -or $baseboardProduct -eq $val) {{
+        if ($systemSKU -match $val -or $baseboardProduct -match $val) {{
             $skuMatch = $true
             break
         }}
@@ -6516,7 +6575,7 @@ try {{
 
     $skuMatch = $false
     foreach ($val in $expectedValues) {{
-        if ($systemSKU -eq $val -or $baseboardProduct -eq $val) {{
+        if ($systemSKU -match $val -or $baseboardProduct -match $val) {{
             $skuMatch = $true
             break
         }}
@@ -7208,9 +7267,17 @@ function Invoke-DATIntunePackageCreation {
         $version = $Version
     }
     $installScriptName = if ($UpdateType -eq 'BIOS') { 'Install-BIOS.ps1' } else { 'Install-Drivers.ps1' }
-    $displayName = "$UpdateType - $OEM $Model - $OS $Architecture"
+    $displayName = if ($UpdateType -eq 'BIOS') {
+        "$UpdateType - $OEM $Model - $Architecture"
+    } else {
+        "$UpdateType - $OEM $Model - $OS $Architecture"
+    }
     $publisher = $OEM
-    $description = "$UpdateType package for $OEM $Model`nOS: $OS`nArchitecture: $Architecture`nBaseboards/SKU: $Baseboards`nVersion: $version`nCreated by Driver Automation Tool"
+    $description = if ($UpdateType -eq 'BIOS') {
+        "$UpdateType package for $OEM $Model`nArchitecture: $Architecture`nBaseboards/SKU: $Baseboards`nVersion: $version`nCreated by Driver Automation Tool"
+    } else {
+        "$UpdateType package for $OEM $Model`nOS: $OS`nArchitecture: $Architecture`nBaseboards/SKU: $Baseboards`nVersion: $version`nCreated by Driver Automation Tool"
+    }
 
     Write-DATLogEntry -Value "[Intune Pipeline] Starting Intune package creation for $OEM $Model" -Severity 1
     Write-DATLogEntry -Value "[Intune Pipeline] Version: $version | Display Name: $displayName" -Severity 1
@@ -7247,15 +7314,16 @@ function Invoke-DATIntunePackageCreation {
     }
 
     # Create staging directory for the package
-    $stagingDir = Join-Path $PackageDestination "IntuneStaging\$OEM\$Model\$OS"
+    $pkgSubDir = if ($UpdateType -eq 'BIOS') { "$OEM\$Model\BIOS" } else { "$OEM\$Model\$OS" }
+    $stagingDir = Join-Path $PackageDestination "IntuneStaging\$pkgSubDir"
     if (Test-Path $stagingDir) { Remove-Item $stagingDir -Recurse -Force }
     New-Item -Path $stagingDir -ItemType Directory -Force | Out-Null
 
-    $scriptsDir = Join-Path $PackageDestination "IntuneScripts\$OEM\$Model\$OS"
+    $scriptsDir = Join-Path $PackageDestination "IntuneScripts\$pkgSubDir"
     if (Test-Path $scriptsDir) { Remove-Item $scriptsDir -Recurse -Force }
     New-Item -Path $scriptsDir -ItemType Directory -Force | Out-Null
 
-    $outputDir = Join-Path $PackageDestination "IntuneWin\$OEM\$Model\$OS"
+    $outputDir = Join-Path $PackageDestination "IntuneWin\$pkgSubDir"
     if (Test-Path $outputDir) { Remove-Item $outputDir -Recurse -Force }
     New-Item -Path $outputDir -ItemType Directory -Force | Out-Null
 
@@ -8205,6 +8273,10 @@ function Invoke-DATBiosPackaging {
     Copy-Item -Path $wimFile -Destination $destWimFile -Force
     Write-DATLogEntry -Value "[BIOS] WIM copied to package destination successfully" -Severity 1
 
+    # Write a version marker so the pre-flight check can skip re-downloads when the version matches
+    $versionMarker = Join-Path $destBiosFolder ".biosversion"
+    Set-Content -Path $versionMarker -Value $Version -Encoding UTF8 -Force
+
     # Clean up temp directories
     Remove-Item -Path $extractDir -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item -Path $localWorkDir -Recurse -Force -ErrorAction SilentlyContinue
@@ -8575,3 +8647,205 @@ function Test-DATTelemetryConnection {
 }
 
 #endregion Telemetry
+
+#region BIOS Package Name Repair
+
+function Repair-DATBiosPackageNames {
+    <#
+    .SYNOPSIS
+        Scans Intune and/or ConfigMgr for BIOS packages using the old naming convention
+        (with OS version) and renames them to the new convention (architecture only).
+    .DESCRIPTION
+        Old Intune naming:   "BIOS - Dell Precision 5690 - Windows 11 25H2 x64"
+        New Intune naming:   "BIOS - Dell Precision 5690 - x64"
+
+        Old ConfigMgr naming: "BIOS Update - Dell Precision 5690" (no arch)
+        New ConfigMgr naming:  "BIOS Update - Dell Precision 5690 - x64"
+
+        Returns an array of result objects with OldName, NewName, Platform, Status, and Error.
+    #>
+    [CmdletBinding()]
+    param (
+        [ValidateSet('Intune','ConfigMgr','Both')]
+        [string]$Platform = 'Both',
+        [string]$SiteServer,
+        [string]$SiteCode,
+        [System.Collections.Concurrent.ConcurrentQueue[object]]$ProgressQueue
+    )
+
+    $results = [System.Collections.ArrayList]::new()
+
+    # --- Intune BIOS package rename ---
+    if ($Platform -in @('Intune', 'Both')) {
+        Write-DATLogEntry -Value "[BIOS Repair] Scanning Intune for old-format BIOS package names..." -Severity 1
+        try {
+            if (-not (Test-DATIntuneAuth)) {
+                [void]$results.Add([PSCustomObject]@{
+                    OldName  = ''; NewName = ''; Platform = 'Intune'
+                    Status   = 'Skipped'; Error = 'Not authenticated to Intune'
+                })
+            } else {
+                $allApps = Get-DATIntuneWin32Apps | Where-Object {
+                    $_.notes -eq 'Created by the Driver Automation Tool' -and
+                    $_.displayName -match '^BIOS\s*-\s*.+\s*-\s*Windows\s'
+                }
+                if ($allApps.Count -eq 0) {
+                    Write-DATLogEntry -Value "[BIOS Repair] No Intune BIOS packages with old naming found" -Severity 1
+                } else {
+                    Write-DATLogEntry -Value "[BIOS Repair] Found $($allApps.Count) Intune BIOS package(s) to fix" -Severity 1
+                    if ($ProgressQueue) {
+                        [void]$ProgressQueue.Enqueue([PSCustomObject]@{ Status = 'Info'; Message = "Found $($allApps.Count) Intune BIOS package(s) to rename" })
+                        [void]$ProgressQueue.Enqueue([PSCustomObject]@{ Status = 'ExpectedCount'; Count = $allApps.Count })
+                    }
+                }
+
+                foreach ($app in $allApps) {
+                    $oldName = $app.displayName
+                    # Extract architecture from end (x64 or Arm64), strip OS portion
+                    if ($oldName -match '^(BIOS\s*-\s*.+?)\s*-\s*Windows\s+\d+\s+\S+\s+(x64|Arm64)\s*$') {
+                        $prefix = $Matches[1].Trim()
+                        $arch   = $Matches[2]
+                        $newName = "$prefix - $arch"
+
+                        try {
+                            # Update displayName via Graph PATCH
+                            $patchBody = @{
+                                '@odata.type' = '#microsoft.graph.win32LobApp'
+                                displayName   = $newName
+                            }
+                            Invoke-DATGraphRequest -Uri "/deviceAppManagement/mobileApps/$($app.id)" `
+                                -Method PATCH -Body $patchBody | Out-Null
+
+                            # Also update description to remove OS line if present
+                            if ($app.description -match '(?m)^OS:\s*Windows\s') {
+                                $newDesc = ($app.description -replace '(?m)^OS:\s*Windows\s[^\n]*\n?', '').Trim()
+                                Invoke-DATGraphRequest -Uri "/deviceAppManagement/mobileApps/$($app.id)" `
+                                    -Method PATCH -Body @{
+                                        '@odata.type' = '#microsoft.graph.win32LobApp'
+                                        description   = $newDesc
+                                    } | Out-Null
+                            }
+
+                            Write-DATLogEntry -Value "[BIOS Repair] Intune: '$oldName' -> '$newName'" -Severity 1
+                            [void]$results.Add([PSCustomObject]@{
+                                OldName  = $oldName; NewName = $newName; Platform = 'Intune'
+                                Status   = 'Renamed'; Error = ''
+                            })
+                            if ($ProgressQueue) {
+                                [void]$ProgressQueue.Enqueue([PSCustomObject]@{ Status = 'Renamed'; OldName = $oldName; NewName = $newName; Platform = 'Intune' })
+                            }
+                        } catch {
+                            Write-DATLogEntry -Value "[BIOS Repair] Failed to rename '$oldName': $($_.Exception.Message)" -Severity 3
+                            [void]$results.Add([PSCustomObject]@{
+                                OldName  = $oldName; NewName = $newName; Platform = 'Intune'
+                                Status   = 'Failed'; Error = $_.Exception.Message
+                            })
+                            if ($ProgressQueue) {
+                                [void]$ProgressQueue.Enqueue([PSCustomObject]@{ Status = 'Failed'; OldName = $oldName; NewName = $newName; Platform = 'Intune'; Error = $_.Exception.Message })
+                            }
+                        }
+                    }
+                }
+            }
+        } catch {
+            Write-DATLogEntry -Value "[BIOS Repair] Intune scan failed: $($_.Exception.Message)" -Severity 3
+            [void]$results.Add([PSCustomObject]@{
+                OldName  = ''; NewName = ''; Platform = 'Intune'
+                Status   = 'Error'; Error = $_.Exception.Message
+            })
+        }
+    }
+
+    # --- ConfigMgr BIOS package rename ---
+    if ($Platform -in @('ConfigMgr', 'Both')) {
+        if ([string]::IsNullOrEmpty($SiteServer) -or [string]::IsNullOrEmpty($SiteCode)) {
+            Write-DATLogEntry -Value "[BIOS Repair] ConfigMgr site server/code not provided -- skipping" -Severity 2
+            [void]$results.Add([PSCustomObject]@{
+                OldName  = ''; NewName = ''; Platform = 'ConfigMgr'
+                Status   = 'Skipped'; Error = 'Site server or site code not configured'
+            })
+        } else {
+            Write-DATLogEntry -Value "[BIOS Repair] Scanning ConfigMgr for old-format BIOS package names..." -Severity 1
+            try {
+                $smsNamespace = "root\SMS\Site_$SiteCode"
+                # Old format: "BIOS Update - OEM Model" (no architecture suffix)
+                $wmiQuery = "SELECT PackageID, Name, Version, MIFVersion FROM SMS_Package WHERE Name LIKE 'BIOS Update -%'"
+                $cmPackages = Get-WmiObject -ComputerName $SiteServer -Namespace $smsNamespace `
+                    -Query $wmiQuery -ErrorAction Stop
+
+                # Filter to packages missing architecture suffix (old format)
+                $oldFormatPkgs = $cmPackages | Where-Object {
+                    # Old format: no " - x64" or " - Arm64" suffix, OR MIFVersion contains OS
+                    $name = $_.Name
+                    $mif = $_.MIFVersion
+                    $needsNameFix = $name -notmatch '\s*-\s*(x64|Arm64)\s*$'
+                    $needsMifFix = $mif -match 'Windows\s+\d+'
+                    $needsNameFix -or $needsMifFix
+                }
+
+                if ($oldFormatPkgs.Count -eq 0) {
+                    Write-DATLogEntry -Value "[BIOS Repair] No ConfigMgr BIOS packages with old naming found" -Severity 1
+                } else {
+                    Write-DATLogEntry -Value "[BIOS Repair] Found $($oldFormatPkgs.Count) ConfigMgr BIOS package(s) to fix" -Severity 1
+                    if ($ProgressQueue) {
+                        [void]$ProgressQueue.Enqueue([PSCustomObject]@{ Status = 'Info'; Message = "Found $($oldFormatPkgs.Count) ConfigMgr BIOS package(s) to rename" })
+                        [void]$ProgressQueue.Enqueue([PSCustomObject]@{ Status = 'ExpectedCount'; Count = $oldFormatPkgs.Count })
+                    }
+                }
+
+                foreach ($pkg in $oldFormatPkgs) {
+                    $oldName = $pkg.Name
+                    $oldMif = $pkg.MIFVersion
+
+                    # Determine architecture from MIFVersion or default to x64
+                    $arch = 'x64'
+                    if ($oldMif -match '(x64|Arm64)') { $arch = $Matches[1] }
+
+                    # Build new name: add architecture if missing
+                    $newName = $oldName
+                    if ($oldName -notmatch '\s*-\s*(x64|Arm64)\s*$') {
+                        $newName = "$oldName - $arch"
+                    }
+
+                    # Build new MIFVersion: strip OS, keep architecture only
+                    $newMif = $arch
+
+                    try {
+                        $pkg.Get()
+                        $pkg.Name = $newName
+                        $pkg.MIFVersion = $newMif
+                        $pkg.Put() | Out-Null
+
+                        Write-DATLogEntry -Value "[BIOS Repair] ConfigMgr: '$oldName' -> '$newName' (MIFVersion: '$oldMif' -> '$newMif')" -Severity 1
+                        [void]$results.Add([PSCustomObject]@{
+                            OldName  = $oldName; NewName = $newName; Platform = 'ConfigMgr'
+                            Status   = 'Renamed'; Error = ''
+                        })
+                        if ($ProgressQueue) {
+                            [void]$ProgressQueue.Enqueue([PSCustomObject]@{ Status = 'Renamed'; OldName = $oldName; NewName = $newName; Platform = 'ConfigMgr' })
+                        }
+                    } catch {
+                        Write-DATLogEntry -Value "[BIOS Repair] Failed to rename '$oldName': $($_.Exception.Message)" -Severity 3
+                        [void]$results.Add([PSCustomObject]@{
+                            OldName  = $oldName; NewName = $newName; Platform = 'ConfigMgr'
+                            Status   = 'Failed'; Error = $_.Exception.Message
+                        })
+                        if ($ProgressQueue) {
+                            [void]$ProgressQueue.Enqueue([PSCustomObject]@{ Status = 'Failed'; OldName = $oldName; NewName = $newName; Platform = 'ConfigMgr'; Error = $_.Exception.Message })
+                        }
+                    }
+                }
+            } catch {
+                Write-DATLogEntry -Value "[BIOS Repair] ConfigMgr scan failed: $($_.Exception.Message)" -Severity 3
+                [void]$results.Add([PSCustomObject]@{
+                    OldName  = ''; NewName = ''; Platform = 'ConfigMgr'
+                    Status   = 'Error'; Error = $_.Exception.Message
+                })
+            }
+        }
+    }
+
+    return $results
+}
+
+#endregion BIOS Package Name Repair

@@ -1,16 +1,16 @@
-﻿<#
+<#
     Theme definitions for Driver Automation Tool v10.0
     Provides Dark and Light themes with rounded, modern aesthetics
 #>
 
 $script:Themes = @{
     Dark = @{
-        # Window — IntuneGuardian dark navy base
+        # Window -- IntuneGuardian dark navy base
         WindowBackground       = "#0F172A"
         WindowForeground       = "#F8FAFC"
         WindowBorder           = "#334155"
 
-        # Sidebar — IntuneGuardian sidebar dark
+        # Sidebar -- IntuneGuardian sidebar dark
         SidebarBackground      = "#1A1A1A"
         SidebarForeground      = "#F5F5F5"
         SidebarHover           = "#334155"
@@ -66,7 +66,7 @@ $script:Themes = @{
         ProgressBackground     = "#334155"
         ProgressForeground     = "#22C55E"
 
-        # Status — IntuneGuardian semantic colors
+        # Status -- IntuneGuardian semantic colors
         StatusInfo             = "#0B84F1"
         StatusSuccess          = "#4ADE80"
         StatusWarning          = "#FFAA44"
@@ -93,19 +93,19 @@ $script:Themes = @{
         PipelineConnector      = "#374151"
     }
     Light = @{
-        # Window — cool grey surface so white cards stand out
+        # Window -- cool grey surface so white cards stand out
         WindowBackground       = "#EEF2F6"
         WindowForeground       = "#0F172A"
         WindowBorder           = "#CBD5E1"
 
-        # Sidebar — distinct panel darker than main surface
+        # Sidebar -- distinct panel darker than main surface
         SidebarBackground      = "#E0E5EC"
         SidebarForeground      = "#334155"
         SidebarHover           = "#CBD5E1"
         SidebarActive          = "#CDD5DF"
         SidebarAccent          = "#0078D4"
 
-        # Cards / Panels — white cards pop against grey surface
+        # Cards / Panels -- white cards pop against grey surface
         CardBackground         = "#FFFFFF"
         CardBorder             = "#C8D1DC"
         CardShadow             = "#D5DBE4"
@@ -131,7 +131,7 @@ $script:Themes = @{
         GridSelection          = "#D0DAEA"
         GridSelectionForeground = "#0F172A"
 
-        # Input — subtle grey so fields are distinguishable
+        # Input -- subtle grey so fields are distinguishable
         InputBackground        = "#F5F7FA"
         InputForeground        = "#0F172A"
         InputBorder            = "#B8C4D0"
@@ -154,7 +154,7 @@ $script:Themes = @{
         ProgressBackground     = "#D5DBE4"
         ProgressForeground     = "#107C10"
 
-        # Status — IntuneGuardian semantic colors
+        # Status -- IntuneGuardian semantic colors
         StatusInfo             = "#0078D4"
         StatusSuccess          = "#107C10"
         StatusWarning          = "#FFAA44"

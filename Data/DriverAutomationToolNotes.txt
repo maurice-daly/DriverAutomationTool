@@ -3,6 +3,15 @@ Release Notes
 IMPORTANT
 - DAT Downloads have been moved to GitHub - https://github.com/maurice-daly/DriverAutomationTool
 
+Version 10.0.19
+Bug Fixes
+- Known model matching fixes
+- Lenovo applicability/detection script fix
+New Additions
+- BIOS packages are now agnostic of the OS for their naming convention. Migration tool included.
+- Select known models button added
+- Driver Automation Tool API availability check on start up
+
 Version 10.0.18
 Bug fixes
 - Fixed Lenovo OS matching issue
