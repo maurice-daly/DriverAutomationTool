@@ -539,6 +539,25 @@ try {
 
             Write-CMTraceLog "HP flash utility found: $($flashUtil.FullName)"
 
+            # -- AC power check -- HP BIOS updaters may refuse to flash on battery --
+            if (-not $WhatIf) {
+                try {
+                    $battery = Get-CimInstance -ClassName Win32_Battery -ErrorAction SilentlyContinue | Select-Object -First 1
+                    if ($battery) {
+                        # BatteryStatus 2 = AC power connected
+                        if ($battery.BatteryStatus -ne 2) {
+                            Write-CMTraceLog "AC power adapter not detected (BatteryStatus=$($battery.BatteryStatus)). HP BIOS updates require AC power -- will retry on next Intune cycle." -Severity 2
+                            exit 1618  # ERROR_INSTALL_ALREADY_RUNNING -- tells Intune to retry
+                        }
+                        Write-CMTraceLog "AC power confirmed (BatteryStatus=$($battery.BatteryStatus))"
+                    } else {
+                        Write-CMTraceLog "No battery detected -- assuming desktop, skipping AC power check"
+                    }
+                } catch {
+                    Write-CMTraceLog "WARNING: Could not check AC power status -- $($_.Exception.Message). Proceeding with flash." -Severity 2
+                }
+            }
+
             # Build arguments: -s = silent, -r = do not reboot, -b = suspend BitLocker if needed
             # -f = folder containing firmware update files
             $flashArgs = "-s -r -b -f`"$($flashUtil.DirectoryName)`""
@@ -605,6 +624,25 @@ try {
         # -- Lenovo --------------------------------------------------------------
         '*Lenovo*' {
             Write-CMTraceLog "Lenovo BIOS update detected -- searching for flash utility"
+
+            # -- AC power check -- Lenovo BIOS updaters may refuse to flash on battery --
+            if (-not $WhatIf) {
+                try {
+                    $battery = Get-CimInstance -ClassName Win32_Battery -ErrorAction SilentlyContinue | Select-Object -First 1
+                    if ($battery) {
+                        # BatteryStatus 2 = AC power connected
+                        if ($battery.BatteryStatus -ne 2) {
+                            Write-CMTraceLog "AC power adapter not detected (BatteryStatus=$($battery.BatteryStatus)). Lenovo BIOS updates require AC power -- will retry on next Intune cycle." -Severity 2
+                            exit 1618  # ERROR_INSTALL_ALREADY_RUNNING -- tells Intune to retry
+                        }
+                        Write-CMTraceLog "AC power confirmed (BatteryStatus=$($battery.BatteryStatus))"
+                    } else {
+                        Write-CMTraceLog "No battery detected -- assuming desktop, skipping AC power check"
+                    }
+                } catch {
+                    Write-CMTraceLog "WARNING: Could not check AC power status -- $($_.Exception.Message). Proceeding with flash." -Severity 2
+                }
+            }
 
             # Lenovo ThinkPad uses WinUPTP64.exe (64-bit) or WinUPTP.exe (32-bit)
             $flashUtil = $null
