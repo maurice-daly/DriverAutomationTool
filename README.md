@@ -306,3 +306,7 @@ This tool is provided **as-is**, without warranty of any kind. Use is entirely a
 
 If you find this tool useful and would like to support its continued development, please use the **Sponsor** button at the top of this page.
 
+## Virus Warning
+
+Due to the nature of how the PowerShell script downloads EXEs and extracts / interacts with them, the code can be picked up as a false positive on some AV solutions. The code is all available for clear text review with your security team in this instance. 
+
