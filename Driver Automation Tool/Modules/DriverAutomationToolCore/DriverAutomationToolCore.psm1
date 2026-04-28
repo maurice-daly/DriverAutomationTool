@@ -4,7 +4,7 @@
      Organization:  MSEndpointMgr / Patch My PC
      Filename:      DriverAutomationToolCore.psm1
      Purpose:       Core functions for Driver Automation Tool v2.0
-     Version:       10.0.21.0
+     Version:       10.0.22.0
     ===========================================================================
 #>
 
@@ -21,7 +21,7 @@ if ($PSVersionTable.PSVersion.Major -le 5) {
 
 #region Variables
 
-[version]$global:ScriptRelease = "10.0.21.0"
+[version]$global:ScriptRelease = "10.0.22.0"
 $global:ScriptBuildDate = "20-04-2026"
 $global:ReleaseNotesURL = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/DriverAutomationToolNotes.txt"
 $OEMLinksURL = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/OEMLinks.xml"
@@ -2803,6 +2803,15 @@ function Start-DATModelProcessing {
 
                             # ConfigMgr: Create BIOS package on site server
                             if ($RunningMode -eq 'Configuration Manager') {
+                                # Dell ConfigMgr BIOS packages need Flash64W.exe for WinPE bare-metal deployment
+                                if ($oem -eq 'Dell') {
+                                    Write-DATLogEntry -Value "[BIOS] Dell ConfigMgr: Ensuring Flash64W.exe is staged" -Severity 1
+                                    $flash64Result = Get-DATFlash64W -DestinationDir $biosPackagePath
+                                    if (-not $flash64Result) {
+                                        Write-DATLogEntry -Value "[Warning] Flash64W.exe could not be obtained -- Dell BIOS package may not work in WinPE" -Severity 2
+                                    }
+                                }
+
                                 if (-not [string]::IsNullOrEmpty($SiteServer) -and -not [string]::IsNullOrEmpty($SiteCode)) {
                                     Write-DATLogEntry -Value "[$currentIndex/$totalModels] Starting ConfigMgr BIOS pipeline for $oem $modelName" -Severity 1
                                     Set-DATRegistryValue -Name "RunningMessage" -Value "Creating ConfigMgr BIOS package: $oem $modelName..." -Type String

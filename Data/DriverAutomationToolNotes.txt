@@ -3,6 +3,9 @@ Release Notes
 IMPORTANT
 - DAT Downloads have been moved to GitHub - https://github.com/maurice-daly/DriverAutomationTool
 
+Version 10.0.22
+- Lenovo BIOS release date matching fixed for both Intune and Configuration Manager (Modern BIOS Management).
+
 Version 10.0.21
 Bug Fix
 - Dell Flash64w removed from Dell Configuration Manager BIOS packages due to code change for all other scenarios. Restored.
