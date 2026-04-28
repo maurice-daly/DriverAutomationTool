@@ -5614,7 +5614,23 @@ $txt_ModelSearch.Add_TextChanged({
     } else {
         $view.Filter = [System.Predicate[object]]{
             param($item)
-            $item.Model -like "*$searchText*" -or $item.OEM -like "*$searchText*" -or $item.Baseboards -like "*$searchText*"
+            # Wrap search text in wildcards if it only contains simple characters
+            if ("$searchText" -imatch '^[\w\s\-]+$') {$searchText = "*$searchText*"}
+            if ("$searchText" -imatch '^[\w\s\-\*]+$') {
+                # Return regular comparison if search text is only simple characters and wildcards
+                return (
+                    $item.Model -like $searchText -or
+                    $item.OEM -like $searchText -or
+                    $item.Baseboards -like $searchText
+                )
+            } else {
+                # Return regex comparison when search text contains anything other than simple characters and wildcards
+                return (
+                    $item.Model -match $searchText -or
+                    $item.OEM -match $searchText -or
+                    $item.Baseboards -match $searchText
+                )
+            }
         }
     }
     $grid_Models.ItemsSource = $view
@@ -8152,9 +8168,25 @@ function Update-DATCmPackageFilter {
             if ($hasOem -and $item.Manufacturer -ne $oemFilter) { return $false }
             if ($hasOs -and $item.OperatingSystem -ne $osFilter) { return $false }
             if ($hasSearch) {
-                if ($item.Name -notlike "*$searchText*" -and
-                    $item.PackageID -notlike "*$searchText*" -and
-                    $item.Version -notlike "*$searchText*") { return $false }
+                # Wrap search text in wildcards if it only contains simple characters
+                if ("$searchText" -imatch '^[\w\s\-]+$') {$searchText = "*$searchText*"}
+                if ("$searchText" -imatch '^[\w\s\-\*]+$') {
+                    # Return regular comparison if search text is only simple characters and wildcards
+                    return (
+                        $item.Name -like $searchText -or
+                        $item.Description -like $searchText -or
+                        $item.PackageID -like $searchText -or
+                        $item.Version -like $searchText
+                    )
+                } else {
+                    # Return regex comparison when search text contains anything other than simple characters and wildcards
+                    return (
+                        $item.Name -match $searchText -or
+                        $item.Description -match $searchText -or
+                        $item.PackageID -match $searchText -or
+                        $item.Version -match $searchText
+                    )
+                }
             }
             return $true
         }
