@@ -217,7 +217,8 @@ function Compare-BIOSVersion {
     #>
     param (
         [Parameter(Mandatory)][string]$AvailableBIOSVersion,
-        [Parameter(Mandatory)][string]$Manufacturer
+        [Parameter(Mandatory)][string]$Manufacturer,
+        [string]$AvailableReleaseDate
     )
 
     $currentBIOS = $null
@@ -267,15 +268,23 @@ function Compare-BIOSVersion {
         }
         '*Lenovo*' {
             try {
-                # Lenovo uses BIOS release dates in yyyyMMdd or ddMMyyyy format
                 $currentReleaseDate = $currentBIOS.ReleaseDate.ToString('yyyyMMdd')
                 Write-CMTraceLog "Lenovo: Current BIOS release date: $currentReleaseDate"
                 Write-CMTraceLog "Lenovo: Available BIOS version: $AvailableBIOSVersion"
 
-                # Compare version strings -- Lenovo typically embeds date or incremental version
-                if ($AvailableBIOSVersion -gt $currentVersion) {
-                    Write-CMTraceLog "Lenovo: Newer BIOS available"
-                    return $true
+                # Use release date comparison when available (version strings like M43KT32A are not reliably sortable)
+                if (-not [string]::IsNullOrEmpty($AvailableReleaseDate)) {
+                    Write-CMTraceLog "Lenovo: Available BIOS release date: $AvailableReleaseDate"
+                    if ($AvailableReleaseDate -gt $currentReleaseDate) {
+                        Write-CMTraceLog "Lenovo: Newer BIOS available (release date $AvailableReleaseDate > $currentReleaseDate)"
+                        return $true
+                    }
+                } else {
+                    Write-CMTraceLog "Lenovo: No release date provided -- falling back to version string comparison" -Severity 2
+                    if ($AvailableBIOSVersion -gt $currentVersion) {
+                        Write-CMTraceLog "Lenovo: Newer BIOS available (version $AvailableBIOSVersion > $currentVersion)"
+                        return $true
+                    }
                 }
             } catch {
                 Write-CMTraceLog "WARNING: Lenovo BIOS version comparison failed -- $($_.Exception.Message). Proceeding with update." -Severity 2
@@ -372,7 +381,7 @@ try {
     # Compare versions BEFORE prompting the user -- no point showing a toast if
     # the BIOS is already current.
     Write-CMTraceLog "Performing BIOS version comparison..."
-    $updateNeeded = Compare-BIOSVersion -AvailableBIOSVersion '{{Version}}' -Manufacturer $Manufacturer
+    $updateNeeded = Compare-BIOSVersion -AvailableBIOSVersion '{{Version}}' -Manufacturer $Manufacturer -AvailableReleaseDate '{{ReleaseDate}}'
 
     if (-not $updateNeeded) {
         Write-CMTraceLog "BIOS is current -- no update will be applied"

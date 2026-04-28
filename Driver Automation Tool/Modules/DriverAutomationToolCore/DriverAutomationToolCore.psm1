@@ -22,7 +22,7 @@ if ($PSVersionTable.PSVersion.Major -le 5) {
 #region Variables
 
 [version]$global:ScriptRelease = "10.0.21.0"
-$global:ScriptBuildDate = "27-04-2026"
+$global:ScriptBuildDate = "20-04-2026"
 $global:ReleaseNotesURL = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/DriverAutomationToolNotes.txt"
 $OEMLinksURL = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/OEMLinks.xml"
 
@@ -1957,6 +1957,7 @@ function New-DATConfigMgrPkg {
         [Parameter(Mandatory)][string]$SiteCode,
         [Parameter(Mandatory)][string]$Version,
         [ValidateSet('Drivers','BIOS')][string]$PackageType = 'Drivers',
+        [string]$ReleaseDate,
         [string[]]$DistributionPointGroups,
         [string[]]$DistributionPoints,
         [ValidateSet('High','Normal','Low')][string]$Priority = 'Normal',
@@ -1973,6 +1974,14 @@ function New-DATConfigMgrPkg {
             "$packagePrefix - $OEM $Model - $OS $Architecture"
         }
         $folderName = if ($PackageType -eq 'BIOS') { "BIOS Packages" } else { "Driver Packages" }
+
+        # Build description -- BIOS packages include the release date in YYYYMMDD format for matching
+        $pkgDescription = if ($PackageType -eq 'BIOS' -and -not [string]::IsNullOrEmpty($ReleaseDate)) {
+            $releaseDateFormatted = try { ([datetime]$ReleaseDate).ToString('yyyyMMdd') } catch { $ReleaseDate }
+            "(Models included:$Baseboards) (Release Date:$releaseDateFormatted)"
+        } else {
+            "Models included: $Baseboards"
+        }
 
         # --- Stage 1: Check existing package via WMI before copying files ---
         Write-DATLogEntry -Value "- [ConfigMgr] Checking for existing package: $CMPackage (version $Version)" -Severity 1
@@ -2018,7 +2027,7 @@ function New-DATConfigMgrPkg {
             # Update package version and description via WMI
             $pkgWmi = [wmi]"\\$SiteServer\$($smsNamespace):SMS_Package.PackageID='$pkgId'"
             $pkgWmi.Version = $Version
-            $pkgWmi.Description = "Models included: $Baseboards"
+            $pkgWmi.Description = $pkgDescription
             $pkgWmi.Put() | Out-Null
             Write-DATLogEntry -Value "- [ConfigMgr] Package $pkgId metadata updated" -Severity 1
 
@@ -2110,7 +2119,7 @@ function New-DATConfigMgrPkg {
         $newPkg.Name = $CMPackage
         $newPkg.PkgSourcePath = $DestPath
         $newPkg.Manufacturer = $OEM
-        $newPkg.Description = "Models included: $Baseboards"
+        $newPkg.Description = $pkgDescription
         $newPkg.Version = $Version
         $newPkg.MIFName = $Model
         $newPkg.MIFVersion = if ($PackageType -eq 'BIOS') { "$Architecture" } else { "$OS $Architecture" }
@@ -2754,7 +2763,8 @@ function Start-DATModelProcessing {
                                     IntuneAuthToken    = $IntuneAuthToken
                                     UpdateType         = 'BIOS'
                                 }
-                                if (-not [string]::IsNullOrEmpty($biosEntry.Version)) { $intuneParams['Version'] = "$($biosEntry.Version)" }
+                if (-not [string]::IsNullOrEmpty($biosEntry.Version)) { $intuneParams['Version'] = "$($biosEntry.Version)" }
+                                if (-not [string]::IsNullOrEmpty($biosEntry.ReleaseDate)) { $intuneParams['ReleaseDate'] = $biosEntry.ReleaseDate }
                                 if ($DisableToast) { $intuneParams['DisableToast'] = $true }
                                 if ($ToastTimeoutAction -ne 'RemindMeLater') { $intuneParams['ToastTimeoutAction'] = $ToastTimeoutAction }
                                 if ($MaxDeferrals -gt 0) { $intuneParams['MaxDeferrals'] = $MaxDeferrals }
@@ -2811,6 +2821,9 @@ function Start-DATModelProcessing {
                                         Version       = $biosVersion
                                         PackageType   = 'BIOS'
                                         Priority      = $DistributionPriority
+                                    }
+                                    if (-not [string]::IsNullOrEmpty($biosEntry.ReleaseDate)) {
+                                        $cmParams['ReleaseDate'] = $biosEntry.ReleaseDate
                                     }
                                     if ($DistributionPointGroups -and $DistributionPointGroups.Count -gt 0) {
                                         $cmParams['DistributionPointGroups'] = $DistributionPointGroups
@@ -5937,6 +5950,7 @@ function New-DATIntuneInstallScript {
         [Parameter(Mandatory)][string]$Model,
         [Parameter(Mandatory)][string]$OS,
         [Parameter(Mandatory)][string]$Version,
+        [string]$ReleaseDate,
         [ValidateSet('Drivers','BIOS')][string]$UpdateType = 'Drivers',
         [switch]$DisableToast,
         [ValidateSet('RemindMeLater','InstallNow')][string]$ToastTimeoutAction = 'RemindMeLater',
@@ -6345,6 +6359,11 @@ function Show-DATStatusToast {
     $scriptContent = $scriptContent.Replace('{{Model}}', $Model)
     $scriptContent = $scriptContent.Replace('{{OS}}', $OS)
     $scriptContent = $scriptContent.Replace('{{Version}}', $Version)
+    $releaseDate8 = ''
+    if (-not [string]::IsNullOrEmpty($ReleaseDate)) {
+        try { $releaseDate8 = ([datetime]$ReleaseDate).ToString('yyyyMMdd') } catch { $releaseDate8 = $ReleaseDate }
+    }
+    $scriptContent = $scriptContent.Replace('{{ReleaseDate}}', $releaseDate8)
     $scriptContent = $scriptContent.Replace('{{Generated}}', (Get-Date -Format "yyyy-MM-dd HH:mm:ss"))
     $scriptContent = $scriptContent.Replace('{{TOAST_FUNCTIONS}}', $toastFunctions)
     $scriptContent = $scriptContent.Replace('{{TOAST_BLOCK}}', $toastBlock)
@@ -6373,6 +6392,7 @@ function New-DATIntuneRequirementScript {
         [Parameter(Mandatory)][string]$Baseboards,
         [Parameter(Mandatory)][string]$OS,
         [Parameter(Mandatory)][string]$Version,
+        [string]$ReleaseDate,
         [ValidateSet('Drivers','BIOS')][string]$UpdateType = 'Drivers'
     )
 
@@ -6395,6 +6415,78 @@ function New-DATIntuneRequirementScript {
     if (`$osCaption -notmatch "Windows $osNumber") {
         Write-Output "OS mismatch: got '`$osCaption', expected 'Windows $osNumber'"
         exit 0
+    }
+"@
+    }
+
+    # Build Check 4: version/release-date comparison block
+    $releaseDate8 = ''
+    if (-not [string]::IsNullOrEmpty($ReleaseDate)) {
+        try { $releaseDate8 = ([datetime]$ReleaseDate).ToString('yyyyMMdd') } catch { $releaseDate8 = $ReleaseDate }
+    }
+    $versionCheckBlock = if ($UpdateType -eq 'BIOS' -and -not [string]::IsNullOrEmpty($releaseDate8)) {
+        @"
+    # Check 4: BIOS release date comparison
+    try {
+        `$currentBIOS = Get-CimInstance -ClassName Win32_BIOS -ErrorAction Stop
+        `$currentReleaseDate = `$currentBIOS.ReleaseDate.ToString('yyyyMMdd')
+        `$packageReleaseDate = "$releaseDate8"
+        if (`$packageReleaseDate -le `$currentReleaseDate) {
+            Write-Output "BIOS release date not newer: package=`$packageReleaseDate, current=`$currentReleaseDate"
+            exit 0
+        }
+    } catch { }
+
+    # Also check if this exact version is already installed via registry
+    `$regPath = "HKLM:\SOFTWARE\DriverAutomationTool\$regSubKey\$OEM\$Model"
+    if (Test-Path `$regPath) {
+        `$installedVer = (Get-ItemProperty -Path `$regPath -Name 'Version' -ErrorAction SilentlyContinue).Version
+        if (`$installedVer -eq "$Version") {
+            Write-Output "Package already installed: version=$Version"
+            exit 0
+        }
+    }
+"@
+    } elseif ($UpdateType -eq 'BIOS') {
+        # BIOS without a catalog release date -- registry exact-match only
+        # (ddMMyyyy parsing is not valid for OEM BIOS version strings like M43KT32A)
+        @"
+    # Check 4: BIOS version check - registry exact match
+    `$regPath = "HKLM:\SOFTWARE\DriverAutomationTool\$regSubKey\$OEM\$Model"
+    if (Test-Path `$regPath) {
+        `$installedVer = (Get-ItemProperty -Path `$regPath -Name 'Version' -ErrorAction SilentlyContinue).Version
+        if (`$installedVer -eq "$Version") {
+            Write-Output "Package already installed: version=$Version"
+            exit 0
+        }
+    }
+"@
+    } else {
+        @"
+    # Check 4: Version check - registry-based installed version
+    `$packageVersion = "$Version"
+    `$regPath = "HKLM:\SOFTWARE\DriverAutomationTool\$regSubKey\$OEM\$Model"
+
+    if (Test-Path `$regPath) {
+        `$installedVer = (Get-ItemProperty -Path `$regPath -Name 'Version' -ErrorAction SilentlyContinue).Version
+        if (-not [string]::IsNullOrEmpty(`$installedVer)) {
+            try {
+                `$pkgDay = [int]`$packageVersion.Substring(0, 2)
+                `$pkgMonth = [int]`$packageVersion.Substring(2, 2)
+                `$pkgYear = [int]`$packageVersion.Substring(4, 4)
+                `$pkgDate = [datetime]::new(`$pkgYear, `$pkgMonth, `$pkgDay)
+
+                `$instDay = [int]`$installedVer.Substring(0, 2)
+                `$instMonth = [int]`$installedVer.Substring(2, 2)
+                `$instYear = [int]`$installedVer.Substring(4, 4)
+                `$instDate = [datetime]::new(`$instYear, `$instMonth, `$instDay)
+
+                if (`$pkgDate -le `$instDate) {
+                    Write-Output "Version not newer: package=`$packageVersion, installed=`$installedVer"
+                    exit 0
+                }
+            } catch { }
+        }
     }
 "@
     }
@@ -6454,31 +6546,7 @@ try {{
     }}
 
 {8}
-    # Check 4: Version check - registry-based installed version
-    $packageVersion = "{3}"
-    $regPath = "HKLM:\SOFTWARE\DriverAutomationTool\{9}\{0}\{1}"
-
-    if (Test-Path $regPath) {{
-        $installedVer = (Get-ItemProperty -Path $regPath -Name 'Version' -ErrorAction SilentlyContinue).Version
-        if (-not [string]::IsNullOrEmpty($installedVer)) {{
-            try {{
-                $pkgDay = [int]$packageVersion.Substring(0, 2)
-                $pkgMonth = [int]$packageVersion.Substring(2, 2)
-                $pkgYear = [int]$packageVersion.Substring(4, 4)
-                $pkgDate = [datetime]::new($pkgYear, $pkgMonth, $pkgDay)
-
-                $instDay = [int]$installedVer.Substring(0, 2)
-                $instMonth = [int]$installedVer.Substring(2, 2)
-                $instYear = [int]$installedVer.Substring(4, 4)
-                $instDate = [datetime]::new($instYear, $instMonth, $instDay)
-
-                if ($pkgDate -le $instDate) {{
-                    Write-Output "Version not newer: package=$packageVersion, installed=$installedVer"
-                    exit 0
-                }}
-            }} catch {{ }}
-        }}
-    }}
+%%VERSION_CHECK%%
 
     # All checks passed
     $RequirementMet = $true
@@ -6494,6 +6562,8 @@ if ($RequirementMet) {{
     Write-Output "Requirement not met"
 }}
 '@ -f $OEM, $Model, $OS, $Version, $bbValues, (Get-Date -Format "yyyy-MM-dd HH:mm:ss"), $osNumber, $UpdateType, $osCheckBlock, $regSubKey
+
+    $scriptContent = $scriptContent.Replace('%%VERSION_CHECK%%', $versionCheckBlock)
 
     [System.IO.File]::WriteAllText($OutputPath, $scriptContent, [System.Text.UTF8Encoding]::new($false))
     Write-DATLogEntry -Value "[Intune] Requirement script generated: $OutputPath (UpdateType: $UpdateType)" -Severity 1
@@ -6517,6 +6587,7 @@ function New-DATIntuneDetectionScript {
         [Parameter(Mandatory)][string]$Baseboards,
         [Parameter(Mandatory)][string]$OS,
         [Parameter(Mandatory)][string]$Version,
+        [string]$ReleaseDate,
         [ValidateSet('Drivers','BIOS')][string]$UpdateType = 'Drivers'
     )
 
@@ -6535,6 +6606,57 @@ function New-DATIntuneDetectionScript {
     # Check 3: OS version match
     `$osCaption = (Get-CimInstance -ClassName Win32_OperatingSystem -ErrorAction Stop).Caption
     if (`$osCaption -notmatch "Windows $osNumber") { exit 0 }
+"@
+    }
+
+    # Build release date for BIOS detection
+    $releaseDate8 = ''
+    if (-not [string]::IsNullOrEmpty($ReleaseDate)) {
+        try { $releaseDate8 = ([datetime]$ReleaseDate).ToString('yyyyMMdd') } catch { $releaseDate8 = $ReleaseDate }
+    }
+
+    # Build Check 4: detection block
+    $detectionCheckBlock = if ($UpdateType -eq 'BIOS' -and -not [string]::IsNullOrEmpty($releaseDate8)) {
+        @"
+    # Check 4: BIOS detection via release date and registry
+    # Detected if the device BIOS release date is at or newer than the package date,
+    # OR the registry version stamp matches exactly (covers pre-reboot detection).
+    `$detected = `$false
+    try {
+        `$currentBIOS = Get-CimInstance -ClassName Win32_BIOS -ErrorAction Stop
+        `$currentReleaseDate = `$currentBIOS.ReleaseDate.ToString('yyyyMMdd')
+        `$packageReleaseDate = "$releaseDate8"
+        if (`$currentReleaseDate -ge `$packageReleaseDate) {
+            `$detected = `$true
+        }
+    } catch { }
+
+    if (-not `$detected) {
+        `$regPath = "HKLM:\SOFTWARE\DriverAutomationTool\$regSubKey\$OEM\$Model"
+        if (Test-Path `$regPath) {
+            `$installedVer = (Get-ItemProperty -Path `$regPath -Name 'Version' -ErrorAction SilentlyContinue).Version
+            if (`$installedVer -eq "$Version") {
+                `$detected = `$true
+            }
+        }
+    }
+
+    if (`$detected) {
+        Write-Output "Detected: $OEM $Model $detectionLabel version $Version"
+        exit 0
+    }
+"@
+    } else {
+        @"
+    # Check 4: Version marker in registry
+    `$regPath = "HKLM:\SOFTWARE\DriverAutomationTool\$regSubKey\$OEM\$Model"
+    if (Test-Path `$regPath) {
+        `$installedVersion = (Get-ItemProperty -Path `$regPath -Name 'Version' -ErrorAction SilentlyContinue).Version
+        if (`$installedVersion -eq "$Version") {
+            Write-Output "Detected: $OEM $Model $detectionLabel version $Version"
+            exit 0
+        }
+    }
 "@
     }
 
@@ -6585,15 +6707,7 @@ try {{
     if (-not $skuMatch) {{ exit 0 }}
 
 {8}
-    # Check 4: Version marker in registry
-    $regPath = "HKLM:\SOFTWARE\DriverAutomationTool\{9}\{0}\{1}"
-    if (Test-Path $regPath) {{
-        $installedVersion = (Get-ItemProperty -Path $regPath -Name 'Version' -ErrorAction SilentlyContinue).Version
-        if ($installedVersion -eq "{3}") {{
-            Write-Output "Detected: {0} {1} {10} version {3}"
-            exit 0
-        }}
-    }}
+%%DETECTION_CHECK%%
 
     # Not detected - exit with no output
     exit 0
@@ -6603,6 +6717,8 @@ catch {{
     exit 0
 }}
 '@ -f $OEM, $Model, $OS, $Version, $bbValues, (Get-Date -Format "yyyy-MM-dd HH:mm:ss"), $osNumber, $UpdateType, $osCheckBlock, $regSubKey, $detectionLabel
+
+    $scriptContent = $scriptContent.Replace('%%DETECTION_CHECK%%', $detectionCheckBlock)
 
     [System.IO.File]::WriteAllText($OutputPath, $scriptContent, [System.Text.UTF8Encoding]::new($false))
     Write-DATLogEntry -Value "[Intune] Detection script generated: $OutputPath (UpdateType: $UpdateType)" -Severity 1
@@ -7247,6 +7363,7 @@ function Invoke-DATIntunePackageCreation {
         [string]$DebugBuildPath,
         [string]$CustomBrandingPath,
         [string]$Version,
+        [string]$ReleaseDate,
         [string]$HPPasswordBinPath,
         [switch]$ForceUpdate,
         [string]$CustomToastTitle,
@@ -7354,6 +7471,7 @@ function Invoke-DATIntunePackageCreation {
             Version     = $version
             UpdateType  = $UpdateType
         }
+        if (-not [string]::IsNullOrEmpty($ReleaseDate)) { $installScriptParams['ReleaseDate'] = $ReleaseDate }
         if ($DisableToast) { $installScriptParams['DisableToast'] = $true }
         if ($ToastTimeoutAction -ne 'RemindMeLater') { $installScriptParams['ToastTimeoutAction'] = $ToastTimeoutAction }
         if ($MaxDeferrals -gt 0) { $installScriptParams['MaxDeferrals'] = $MaxDeferrals }
@@ -7407,14 +7525,16 @@ function Invoke-DATIntunePackageCreation {
         Set-DATRegistryValue -Name "RunningMessage" -Value "Generating requirement script for $OEM $Model..." -Type String
         $requirementScriptPath = Join-Path $scriptsDir "Require-$OEM-$($Model -replace '\s+','-').ps1"
         New-DATIntuneRequirementScript -OutputPath $requirementScriptPath -OEM $OEM -Model $Model `
-            -Baseboards $Baseboards -OS $OS -Version $version -UpdateType $UpdateType
+            -Baseboards $Baseboards -OS $OS -Version $version -UpdateType $UpdateType `
+            -ReleaseDate $ReleaseDate
         Write-DATLogEntry -Value "[Intune Pipeline] Requirement script created: $requirementScriptPath" -Severity 1 -UpdateUI
 
         # Step 4: Generate detection script (stored separately, not in the .intunewin)
         Set-DATRegistryValue -Name "RunningMessage" -Value "Generating detection script for $OEM $Model..." -Type String
         $detectionScriptPath = Join-Path $scriptsDir "Detect-$OEM-$($Model -replace '\s+','-').ps1"
         New-DATIntuneDetectionScript -OutputPath $detectionScriptPath -OEM $OEM -Model $Model `
-            -Baseboards $Baseboards -OS $OS -Version $version -UpdateType $UpdateType
+            -Baseboards $Baseboards -OS $OS -Version $version -UpdateType $UpdateType `
+            -ReleaseDate $ReleaseDate
         Write-DATLogEntry -Value "[Intune Pipeline] Detection script created: $detectionScriptPath" -Severity 1 -UpdateUI
 
         # Debug output: copy staging and script content to debug folder for validation
@@ -8117,16 +8237,6 @@ function Invoke-DATBiosPackaging {
             # The exe handles its own flash process; no extraction is needed.
             Write-DATLogEntry -Value "[BIOS] Dell: Staging self-contained BIOS updater" -Severity 1
             Copy-Item -Path $BiosFilePath -Destination $extractDir -Force
-
-            # ConfigMgr task sequences may run in WinPE where Flash64W.exe is required
-            # as a wrapper for the BIOS updater. Bundle it alongside the exe.
-            if ($SkipWim) {
-                Write-DATLogEntry -Value "[BIOS] Dell: ConfigMgr mode -- bundling Flash64W.exe for WinPE support" -Severity 1
-                $flash64Result = Get-DATFlash64W -DestinationDir $extractDir
-                if (-not $flash64Result) {
-                    Write-DATLogEntry -Value "[BIOS] Dell: WARNING -- Flash64W.exe could not be obtained. WinPE-based task sequences may fail." -Severity 2
-                }
-            }
         }
         'HP' {
             # HP BIOS SoftPaq is a self-extracting archive -- use the same expansion flags
