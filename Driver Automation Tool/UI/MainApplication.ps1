@@ -7121,6 +7121,8 @@ function Invoke-DATConfigMgrKnownModelLookup {
             $script:ConfigMgrKnownMakes = $result.Makes
             $script:ConfigMgrKnownModels = $result.Models
             $script:ConfigMgrKnownDevices = $result.Devices
+            $script:ConfigMgrKnownFamilies = $result.Families
+            $script:ConfigMgrKnownSystemIds = $result.SystemIds
 
             Write-DATActivityLog "ConfigMgr known model lookup complete: $makeCount makes, $modelCount models" -Level Success
 
@@ -7189,10 +7191,16 @@ function Show-DATConfigMgrKnownModelsDialog {
     $mainPanel.RowDefinitions.Add($row2)
 
     $headerGrid = [System.Windows.Controls.Grid]::new()
-    $hCol1 = [System.Windows.Controls.ColumnDefinition]::new(); $hCol1.Width = [System.Windows.GridLength]::new(1, [System.Windows.GridUnitType]::Star)
+    $hCol1 = [System.Windows.Controls.ColumnDefinition]::new(); $hCol1.Width = [System.Windows.GridLength]::new(0, [System.Windows.GridUnitType]::Auto)
     $hCol2 = [System.Windows.Controls.ColumnDefinition]::new(); $hCol2.Width = [System.Windows.GridLength]::new(0, [System.Windows.GridUnitType]::Auto)
+    $hCol3 = [System.Windows.Controls.ColumnDefinition]::new(); $hCol3.Width = [System.Windows.GridLength]::new(0, [System.Windows.GridUnitType]::Auto)
+    $hCol4 = [System.Windows.Controls.ColumnDefinition]::new(); $hCol4.Width = [System.Windows.GridLength]::new(0, [System.Windows.GridUnitType]::Auto)
+    $hCol5 = [System.Windows.Controls.ColumnDefinition]::new(); $hCol5.Width = [System.Windows.GridLength]::new(1, [System.Windows.GridUnitType]::Star)
     $headerGrid.ColumnDefinitions.Add($hCol1)
     $headerGrid.ColumnDefinitions.Add($hCol2)
+    $headerGrid.ColumnDefinitions.Add($hCol3)
+    $headerGrid.ColumnDefinitions.Add($hCol4)
+    $headerGrid.ColumnDefinitions.Add($hCol5)
 
     $titleText = [System.Windows.Controls.TextBlock]::new()
     $titleText.FontSize = 16
@@ -7231,8 +7239,11 @@ function Show-DATConfigMgrKnownModelsDialog {
     $items = [System.Collections.ObjectModel.ObservableCollection[PSObject]]::new()
     foreach ($device in $script:ConfigMgrKnownDevices) {
         $items.Add([PSCustomObject]@{
+            Count = $device.Count
             Make  = $device.Make
             Model = $device.Model
+            Family = $device.Family
+            SystemId = $device.SystemId
         })
     }
 
@@ -7278,8 +7289,11 @@ function Show-DATConfigMgrKnownModelsDialog {
         </Style>
     </DataGrid.CellStyle>
     <DataGrid.Columns>
-        <DataGridTextColumn Header="Make" Width="*" Binding="{Binding Make}"/>
-        <DataGridTextColumn Header="Model" Width="2*" Binding="{Binding Model}"/>
+        <DataGridTextColumn Header="Count" Width="Auto" Binding="{Binding Count}"/>
+        <DataGridTextColumn Header="Make" Width="Auto" Binding="{Binding Make}"/>
+        <DataGridTextColumn Header="BIOS/Family" Width="Auto" Binding="{Binding Family}"/>
+        <DataGridTextColumn Header="Baseboard/SKU" Width="Auto" Binding="{Binding SystemId}"/>
+        <DataGridTextColumn Header="Model" Width="*" Binding="{Binding Model}"/>
     </DataGrid.Columns>
 </DataGrid>
 "@
@@ -7297,10 +7311,16 @@ function Show-DATConfigMgrKnownModelsDialog {
     $mainPanel.Children.Add($dgBorder) | Out-Null
 
     $footerGrid = [System.Windows.Controls.Grid]::new()
-    $fCol1 = [System.Windows.Controls.ColumnDefinition]::new(); $fCol1.Width = [System.Windows.GridLength]::new(1, [System.Windows.GridUnitType]::Star)
+    $fCol1 = [System.Windows.Controls.ColumnDefinition]::new(); $fCol1.Width = [System.Windows.GridLength]::new(0, [System.Windows.GridUnitType]::Auto)
     $fCol2 = [System.Windows.Controls.ColumnDefinition]::new(); $fCol2.Width = [System.Windows.GridLength]::new(0, [System.Windows.GridUnitType]::Auto)
+    $fCol3 = [System.Windows.Controls.ColumnDefinition]::new(); $fCol3.Width = [System.Windows.GridLength]::new(0, [System.Windows.GridUnitType]::Auto)
+    $fCol4 = [System.Windows.Controls.ColumnDefinition]::new(); $fCol4.Width = [System.Windows.GridLength]::new(0, [System.Windows.GridUnitType]::Auto)
+    $fCol5 = [System.Windows.Controls.ColumnDefinition]::new(); $fCol5.Width = [System.Windows.GridLength]::new(1, [System.Windows.GridUnitType]::Star)
     $footerGrid.ColumnDefinitions.Add($fCol1)
     $footerGrid.ColumnDefinitions.Add($fCol2)
+    $footerGrid.ColumnDefinitions.Add($fCol3)
+    $footerGrid.ColumnDefinitions.Add($fCol4)
+    $footerGrid.ColumnDefinitions.Add($fCol5)
 
     $summaryText = [System.Windows.Controls.TextBlock]::new()
     $summaryText.Text = "$makeCount makes, $deviceCount unique models from hardware inventory"

@@ -1757,6 +1757,84 @@ function Connect-DATConfigMgr {
     }
 }
 
+class MSSystemInformation {
+    hidden [string]$BaseBoardManufacturer
+    hidden [string]$BaseBoardProduct
+    hidden [string]$BIOSVersion
+    hidden [string]$SystemFamily
+    hidden [string]$SystemProductName
+    hidden [string]$SystemSKU
+    [string]$Make
+    [string]$Model
+    [string]$Family
+    [string]$SystemID
+    MSSystemInformation([object]$_object) {
+        # Copy $_object properties to $this
+        ([type]'MSSystemInformation').GetProperties().Name | Where-Object {$null -ne $_object.$_} | ForEach-Object {$this.$_ = "$($_object.$_)".Trim()}
+        # Make/Manufacturer
+        # - Using BaseBoardManufacturer because SystemManufacturer is sometimes an unset default
+        # - Non-defaults only included here to normalize name alternatives and casing
+        # - Defaults to first word
+        $this.Make = switch -Regex ($this.BaseBoardManufacturer) {
+            '^ASUS(Tek)*' {'ASUS'}
+            '^HP|Hewlett-Packard' {'HP'}
+            '^MSI$|^Micro.*Star.*Int' {'MSI'}
+            '^TOSHIBA' {'Toshiba'}
+            default {@($this.BaseBoardManufacturer -split '\W')[0]}
+        }
+        # BIOS/Family : useful for intra-OEM sorting
+        if (($this.Make -eq 'HP') -and ($this.BIOSVersion -match '^([A-Z]+\d+|\d+[A-Z]+)')) {
+            $this.FamilyKey = "$(@($this.BIOSVersion -split '^([A-Z]+\d+|\d+[A-Z]+)')[1])".ToUpper()
+        } elseif (($this.Make -eq 'Dell') -and ($this.SystemFamily -match '\w+')) {
+            $this.FamilyKey = $this.SystemFamily -replace '^Dell ',''
+        } elseif (($this.Make -eq 'Dell') -and ($this.SystemProductName -match '(Optiplex|Latitude|Precision|Vostro|Inspiron)')) {
+            $this.FamilyKey = @($this.SystemProductName -split '(Optiplex|Latitude|Precision|Vostro|Inspiron)')[1]
+        } elseif (($this.Make -eq 'Dell')) {
+            $this.FamilyKey = @($($this.SystemProductName -replace '^Dell ','') -split '\s')[0]
+        }
+        # Attempt to extract 4-digit-hex SystemID from BaseBoard, SystemSKU or Model.SubString(0,4) (Lenovo)
+        $_potentialIDs = @($this.BaseBoardProduct,$this.SystemSKU,$(@($this.SystemSKU -split 'SKU=([0-9A-F]{4});')[1]),$(try {$this.SystemProductName.SubString(0,4)} catch {}))
+        $this.SystemID = @($_potentialIDs | Where-Object {$_ -match '^[0-9A-F]{4}$'} | ForEach-Object {$_.ToUpper()})[0]
+        # Model Normalization (Environment Dependent, YMMV)
+        $this.Model = switch -Regex ($this.Make) {
+            '^ASUS$'      {$this.BaseBoardProduct}
+            '^MSI$'       {$this.BaseBoardProduct}
+            '^Panasonic$' {@(@($this.SystemFamily,$this.SystemSKU) | Where-Object {$_ -match '\w'}) -join ' '}
+            '^Toshiba$'   {@(@($this.SystemFamily,$this.SystemSKU) | Where-Object {$_ -match '\w'}) -join ' '}
+            '^HP$' {
+                $_model = $this.SystemProductName
+                $_model = $_model -replace '^(HP|Hewlett-Packard)*(\s*Compaq)*\s*',''
+                #$_model = $_model -replace '\sSFF\b',' Small Form Factor' # prefer abbreviation
+                #$_model = $_model -replace '\sUSDT\b',' Desktop'    # prefer Ultra-Slim DeskTop abbreviation over ambiguous Desktop overlap
+                $_model = $_model -replace '\sTWR\b',' Tower'        # expand
+                #$_model = $_model -replace '\sDM\b',' Desktop Mini' # under consideration
+                #$_model = $_model -replace 'Desktop Mini','DM'      # under consideration
+                $_model = $_model -replace 'Small Form Factor','SFF' # shrink
+                $_model = $_model -replace 'All-in-One','AiO'        # shrink
+                $_model = $_model -replace 'AiO (\d+).*','$1 AiO'    # custom correction
+                $_model = $_model -replace '\s*\W*\d+W\b.*',''       # strips 35W, 65W and anything after e.g. (TAA)
+                $_model = $_model -replace '\s+PC\b.*',''            # strips trailing PC and anything after e.g. mis-named
+                $_model
+            }
+            '^Lenovo$' {
+                $_model = $this.SystemProductName
+                if ($_model.Length -ge 4) {
+                    # WMI Model is typically a 4-char machine type (e.g. 21G2) or
+                    # a 10-char MTM (e.g. 21G2001EUS); extract the 4-char type prefix
+                    $machineType = $_model.Substring(0, 4)
+                    $friendlyName = Find-DATLenovoModelType -ModelType $machineType
+                    if (-not [string]::IsNullOrEmpty($friendlyName)) {
+                        $_model = $friendlyName.Trim()
+                    }
+                }
+                $_model
+            }
+            default {$this.SystemProductName}
+        }
+    }
+    [string] ToString() {return $this.Model}
+}
+
 function Get-DATConfigMgrKnownModels {
     <#
     .SYNOPSIS
@@ -1775,7 +1853,6 @@ function Get-DATConfigMgrKnownModels {
     )
 
     $namespace = "root/SMS/site_$SiteCode"
-    $devicePairs = [System.Collections.Generic.Dictionary[string, PSCustomObject]]::new([System.StringComparer]::OrdinalIgnoreCase)
     $cimSession = $null
 
     # Ensure the Lenovo catalog is loaded so Find-DATLenovoModelType can resolve
@@ -1810,98 +1887,17 @@ function Get-DATConfigMgrKnownModels {
 
         $cimSession = New-CimSession -ComputerName $SiteServer -ErrorAction Stop
 
-        # --- OEM query definitions ---
-        # Each entry: OEM display name, WQL query, Make property, Model property
-        $oemQueries = @(
-            @{
-                OEM   = 'HP'
-                Query = "SELECT DISTINCT Manufacturer, Model FROM SMS_G_System_COMPUTER_SYSTEM WHERE (Manufacturer = 'Hewlett-Packard' OR Manufacturer = 'HP') AND Model NOT LIKE '%Proliant%'"
-                MakeProp  = 'Manufacturer'
-                ModelProp = 'Model'
-                NormalizeMake  = 'HP'
-                NormalizeModel = $true
-            },
-            @{
-                OEM   = 'Dell'
-                Query = "SELECT DISTINCT Manufacturer, Model FROM SMS_G_System_COMPUTER_SYSTEM WHERE Manufacturer = 'Dell Inc.' AND (Model LIKE '%Optiplex%' OR Model LIKE '%PRO%' OR Model LIKE '%Latitude%' OR Model LIKE '%Precision%' OR Model LIKE '%XPS%' OR Model LIKE '%Vostro%' OR Model LIKE '%Inspiron%')"
-                MakeProp  = 'Manufacturer'
-                ModelProp = 'Model'
-                NormalizeMake  = 'Dell'
-                NormalizeModel = $false
-            },
-            @{
-                OEM   = 'Lenovo'
-                Query = "SELECT DISTINCT Manufacturer, Model FROM SMS_G_System_COMPUTER_SYSTEM WHERE Manufacturer = 'LENOVO'"
-                MakeProp  = 'Manufacturer'
-                ModelProp = 'Model'
-                NormalizeMake  = 'Lenovo'
-                NormalizeModel = $false
-            },
-            @{
-                OEM   = 'Microsoft'
-                Query = "SELECT DISTINCT SystemManufacturer, SystemProductName FROM SMS_G_System_MS_SYSTEMINFORMATION WHERE SystemManufacturer LIKE 'Microsoft%' AND SystemProductName LIKE 'Surface%'"
-                MakeProp  = 'SystemManufacturer'
-                ModelProp = 'SystemProductName'
-                NormalizeMake  = 'Microsoft'
-                NormalizeModel = $false
-            },
-            @{
-                OEM   = 'Acer'
-                Query = "SELECT DISTINCT Manufacturer, Model FROM SMS_G_System_COMPUTER_SYSTEM WHERE Manufacturer = 'Acer'"
-                MakeProp  = 'Manufacturer'
-                ModelProp = 'Model'
-                NormalizeMake  = 'Acer'
-                NormalizeModel = $false
-            }
-        )
-
-        foreach ($oem in $oemQueries) {
-            if ($OnProgress) { & $OnProgress "Querying $($oem.OEM) models..." }
-            Write-DATLogEntry -Value "[ConfigMgr Known Models] Querying $($oem.OEM): $($oem.Query)" -Severity 1
-
-            try {
-                $results = @(Get-CimInstance -CimSession $cimSession -Namespace $namespace -Query $oem.Query -ErrorAction Stop)
-                Write-DATLogEntry -Value "[ConfigMgr Known Models] $($oem.OEM): $($results.Count) raw results" -Severity 1
-
-                foreach ($item in $results) {
-                    $make = $oem.NormalizeMake
-                    $model = $item.($oem.ModelProp)
-                    if ([string]::IsNullOrWhiteSpace($model)) { continue }
-                    $model = $model.Trim()
-
-                    # HP model name normalization
-                    if ($oem.NormalizeModel) {
-                        $model = $model -replace '^(HP|Hewlett-Packard|COMPAQ|Hp|Compaq)\s*', ''
-                        $model = $model -replace '\sSFF\b', ' Small Form Factor'
-                        $model = $model -replace '\sUSDT\b', ' Desktop'
-                        $model = $model -replace '\sTWR\b', ' Tower'
-                        $model = $model -replace '\s*35W$', ''
-                        $model = $model -replace '\s+PC$', ''
-                        $model = $model.Trim()
-                    }
-
-                    # Lenovo: resolve machine type to friendly model name
-                    if ($oem.OEM -eq 'Lenovo' -and $model.Length -ge 4) {
-                        # WMI Model is typically a 4-char machine type (e.g. 21G2) or
-                        # a 10-char MTM (e.g. 21G2001EUS); extract the 4-char type prefix
-                        $machineType = $model.Substring(0, 4)
-                        $friendlyName = Find-DATLenovoModelType -ModelType $machineType
-                        if (-not [string]::IsNullOrEmpty($friendlyName)) {
-                            $model = $friendlyName.Trim()
-                        }
-                    }
-
-                    if (-not [string]::IsNullOrEmpty($model)) {
-                        $key = "$make|$model"
-                        if (-not $devicePairs.ContainsKey($key)) {
-                            $devicePairs[$key] = [PSCustomObject]@{ Make = $make; Model = $model }
-                        }
-                    }
-                }
-            }
-            catch {
-                Write-DATLogEntry -Value "[ConfigMgr Known Models] $($oem.OEM) query failed: $($_.Exception.Message)" -Severity 2
-            }
+        # Generic MS_SYSTEMINFORMATION Query
+        # Note: Uncertain if Hardware Inventory captures all of these properties by default so YMMV
+        if ($OnProgress) { & $OnProgress "Querying SMS_G_System_MS_SYSTEMINFORMATION models..." }
+        Write-DATLogEntry -Value "[ConfigMgr Known Models] Querying SMS_G_System_MS_SYSTEMINFORMATION" -Severity 1
+        try {
+            $queryProperties = @('BaseBoardManufacturer','BaseBoardProduct','BIOSVersion','SystemFamily','SystemProductName','SystemSKU')
+            $queryString = "SELECT $($baseQuery -join ',') FROM SMS_G_System_MS_SYSTEMINFORMATION"
+            $queryResults = Get-CimInstance -CimSession $cimSession -Namespace $namespace -Query $queryString -ErrorAction Stop
+            Write-DATLogEntry -Value "[ConfigMgr Known Models] $($queryResults.Count) raw results" -Severity 1
+        } catch {
+            Write-DATLogEntry -Value "[ConfigMgr Known Models] SMS_G_System_MS_SYSTEMINFORMATION query failed: $($_.Exception.Message)" -Severity 2
         }
     }
     catch {
@@ -1914,17 +1910,27 @@ function Get-DATConfigMgrKnownModels {
         }
     }
 
-    $devices = @($devicePairs.Values | Sort-Object -Property Make, Model)
-    $uniqueMakes = @($devices | Select-Object -ExpandProperty Make -Unique)
-    $uniqueModels = @($devices | Select-Object -ExpandProperty Model -Unique)
+    if ($OnProgress) { & $OnProgress "Normalizing and Sorting Known Systems..." }
+    Write-DATLogEntry -Value "[ConfigMgr Known Models] Normalizing and Sorting Known Systems" -Severity 1
+    $sortProperties  = @('Make','Family','SystemId','Model')
+    $knownSystems    = @($queryResults | ForEach-Object {[MSSystemInformation]$_} | Sort-Object $sortProperties)
+    $groupProperties = @(@{n="Count";e={$_count}})+@($sortProperties)
+    $uniqueDevices   = @($knownSystems | Group-Object -Property $sortProperties | ForEach-Object {$_count=$_.Count;$_.Group[0] | Select-Object $groupProperties})
+    $uniqueMakes     = @(($knownSystems | Group-Object Make).Name | Where-Object {-not [string]::IsNullOrEmpty($_)})
+    $uniqueModels    = @(($knownSystems | Group-Object Model).Name | Where-Object {-not [string]::IsNullOrEmpty($_)})
+    $uniqueFamilies  = @(($knownSystems | Group-Object Family).Name | Where-Object {-not [string]::IsNullOrEmpty($_)})
+    $uniqueSystemIds = @(($knownSystems | Group-Object SystemId).Name | Where-Object {-not [string]::IsNullOrEmpty($_)})
 
     if ($OnProgress) { & $OnProgress "Discovered $($uniqueMakes.Count) makes and $($uniqueModels.Count) models" }
-    Write-DATLogEntry -Value "[ConfigMgr Known Models] Complete: $($uniqueMakes.Count) makes, $($uniqueModels.Count) models, $($devices.Count) unique combinations" -Severity 1
+    Write-DATLogEntry -Value "[ConfigMgr Known Models] Complete: $($uniqueMakes.Count) makes, $($uniqueModels.Count) models, $($uniqueDevices.Count) unique combinations" -Severity 1
 
     return [PSCustomObject]@{
-        Makes   = [string[]]$uniqueMakes
-        Models  = [string[]]$uniqueModels
-        Devices = $devices
+        Makes     = [string[]]$uniqueMakes
+        Models    = [string[]]$uniqueModels
+        Families  = [string[]]$uniqueFamilies
+        SystemIds = [string[]]$uniqueSystemIds
+        Devices   = $uniqueDevices
+        Systems   = $knownSystems
     }
 }
 
