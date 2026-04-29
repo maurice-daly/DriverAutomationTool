@@ -6067,7 +6067,7 @@ $btn_RefreshModels.Add_Click({
                                     Baseboards = $Model.SystemId
                                     OS         = $WindowsVersion
                                     'OS Build' = $WindowsBuild
-                                    Version    = (Get-Date -Format 'ddMMyyyy')
+                                    Version    = (Get-Date -Format 'yyyyMMdd')
                                 }
                             }
                         }
@@ -6321,7 +6321,7 @@ $btn_RefreshModels.Add_Click({
                                     Baseboards = $Model
                                     OS         = $WindowsVersion
                                     'OS Build' = $WindowsBuild
-                                    Version    = (Get-Date -Format 'ddMMyyyy')
+                                    Version    = (Get-Date -Format 'yyyyMMdd')
                                 }
                             }
                         }
@@ -12805,7 +12805,7 @@ $btn_CustomBuild.Add_Click({
         }
     })
 
-    $customVersion = Get-Date -Format "ddMMyyyy"
+    $customVersion = Get-Date -Format "yyyyMMdd"
     [void]$script:CustomBuildPS.AddArgument((Resolve-Path $modulePath).Path)
     [void]$script:CustomBuildPS.AddArgument($make)
     [void]$script:CustomBuildPS.AddArgument($model)
