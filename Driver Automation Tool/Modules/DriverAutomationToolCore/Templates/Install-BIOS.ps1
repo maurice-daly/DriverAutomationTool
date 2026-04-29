@@ -257,7 +257,7 @@ function Compare-BIOSVersion {
                         return $true
                     }
                 } else {
-                    # Available version is a DAT package date stamp (ddMMyyyy) -- cannot compare
+                    # Available version is a DAT package date stamp (yyyyMMdd) -- cannot compare
                     Write-CMTraceLog "Dell: Package version '$AvailableBIOSVersion' is not a BIOS version -- skipping comparison, proceeding with update" -Severity 2
                     return $true
                 }
