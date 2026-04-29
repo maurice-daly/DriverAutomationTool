@@ -5087,7 +5087,7 @@ $btn_RefreshModels.Add_Click({
                                 Baseboards = $Model.SystemId
                                 OS         = $WindowsVersion
                                 'OS Build' = $WindowsBuild
-                                Version    = (Get-Date -Format 'ddMMyyyy')
+                                Version    = (Get-Date -Format 'yyyyMMdd')
                             }
                         }
                     } catch {
@@ -5298,7 +5298,28 @@ $btn_RefreshModels.Add_Click({
                                 Baseboards = $Model
                                 OS         = $WindowsVersion
                                 'OS Build' = $WindowsBuild
-                                Version    = (Get-Date -Format 'ddMMyyyy')
+                                Version    = (Get-Date -Format 'yyyyMMdd')
+                            }
+                        }
+
+                        # Acer BIOS lives in the Acer XML catalog (not the JSON BIOS catalog).
+                        # When BIOS or All is selected, include all Acer models from the XML catalog
+                        # that don't already have a driver pack for the selected OS/build.
+                        if ($PackageType -in @('BIOS', 'All')) {
+                            $existingAcerNames = @($AcerModels) | Select-Object -Unique
+                            $allAcerNames = ($AcerDrivers | Where-Object { $_.Name -gt $null } | Sort-Object).Name | Select-Object -Unique
+                            foreach ($extraModel in $allAcerNames) {
+                                if ($extraModel -notin $existingAcerNames) {
+                                    $OEMSupportedModels += [PSCustomObject]@{
+                                        OEM        = "Acer"
+                                        Model      = $extraModel
+                                        Baseboards = $extraModel
+                                        OS         = $WindowsVersion
+                                        'OS Build' = $WindowsBuild
+                                        Version    = ''
+                                        BIOSOnly   = $true
+                                    }
+                                }
                             }
                         }
 
@@ -10681,7 +10702,7 @@ $btn_CustomBuild.Add_Click({
         }
     })
 
-    $customVersion = Get-Date -Format "ddMMyyyy"
+    $customVersion = Get-Date -Format "yyyyMMdd"
     [void]$script:CustomBuildPS.AddArgument((Resolve-Path $modulePath).Path)
     [void]$script:CustomBuildPS.AddArgument($make)
     [void]$script:CustomBuildPS.AddArgument($model)
