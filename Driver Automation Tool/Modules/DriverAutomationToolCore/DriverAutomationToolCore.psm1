@@ -1984,11 +1984,20 @@ function New-DATConfigMgrPkg {
         $folderName = if ($PackageType -eq 'BIOS') { "BIOS Packages" } else { "Driver Packages" }
 
         # Build description -- BIOS packages include the release date in YYYYMMDD format for matching
-        $pkgDescription = if ($PackageType -eq 'BIOS' -and -not [string]::IsNullOrEmpty($ReleaseDate)) {
-            $releaseDateFormatted = try { ([datetime]$ReleaseDate).ToString('yyyyMMdd') } catch { $ReleaseDate }
-            "(Models included:$Baseboards) (Release Date:$releaseDateFormatted)"
+        $regJSON = (Get-ItemProperty -Path $global:RegPath -Name 'JsonDescriptions' -ErrorAction SilentlyContinue).JsonDescriptions
+        if ($regJSON) {
+            $jsonDescription = [ordered]@{IDs=@($Baseboards -split '\W' | ForEach-Object {"$_".Trim().ToUpper()})}
+            if ($PackageType -eq 'BIOS' -and -not [string]::IsNullOrEmpty($ReleaseDate)){
+                $jsonDescription.ReleaseDate = try { ([datetime]$ReleaseDate).ToString('yyyyMMdd') } catch { $ReleaseDate }
+            }
+            $pkgDescription = $($jsonDescription | ConvertTo-Json -Compress)
         } else {
-            "Models included: $Baseboards"
+            $pkgDescription = if ($PackageType -eq 'BIOS' -and -not [string]::IsNullOrEmpty($ReleaseDate)) {
+                $releaseDateFormatted = try { ([datetime]$ReleaseDate).ToString('yyyyMMdd') } catch { $ReleaseDate }
+                "(Models included:$Baseboards) (Release Date:$releaseDateFormatted)"
+            } else {
+                "Models included: $Baseboards"
+            }
         }
 
         # --- Stage 1: Check existing package via WMI before copying files ---

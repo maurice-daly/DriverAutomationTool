@@ -7967,6 +7967,8 @@ $txt_PkgStatus = $Window.FindName('txt_PkgStatus')
 $btn_CmReportIssue = $Window.FindName('btn_CmReportIssue')
 $cmb_CmPkgOEM = $Window.FindName('cmb_CmPkgOEM')
 $cmb_CmPkgOS = $Window.FindName('cmb_CmPkgOS')
+$chk_CmPkgJSON = $Window.FindName('chk_CmPkgJSON')
+$col_CmPkgDescription = $Window.FindName('col_CmPkgDescription')
 
 $script:PackageData = [System.Collections.ObjectModel.ObservableCollection[PSObject]]::new()
 $grid_Packages.ItemsSource = $script:PackageData
@@ -8070,6 +8072,7 @@ function Invoke-DATPackageRefresh {
                     Name            = $pkg.Name
                     Version         = $pkg.Version
                     PackageID       = $pkg.PackageID
+                    Description     = $pkg.Description
                     SourceDate      = if ($pkg.SourceDate) { [Management.ManagementDateTimeConverter]::ToDateTime($pkg.SourceDate).ToString('yyyy-MM-dd HH:mm') } else { '' }
                     Manufacturer    = if ($pkg.Manufacturer) { $pkg.Manufacturer } else { '' }
                     Model           = $pkgModel
@@ -8136,6 +8139,11 @@ function Invoke-DATPackageRefresh {
                     }
                     $restore = $cmb_CmPkgOS.Items | Where-Object { $_.Content -eq $prevOS }
                     $cmb_CmPkgOS.SelectedItem = if ($restore) { $restore } else { $cmb_CmPkgOS.Items[0] }
+
+                    # Restore JSON Descriptions setting
+                    $jsonDescEnabled = (Get-ItemProperty -Path $global:RegPath -Name 'JsonDescriptions' -ErrorAction SilentlyContinue).JsonDescriptions
+                    $chk_CmPkgJSON.IsChecked = if ($jsonDescEnabled -eq 1) { $true } else { $false }
+                    $col_CmPkgDescription.Visibility = if ($chk_CmPkgJSON.IsChecked -eq $true) { 'Visible' } else { 'Collapsed' }
 
                     # Detect old-format BIOS package names and prompt user
                     $oldBiosNames = @($script:PackageData | Where-Object {
@@ -8218,6 +8226,17 @@ $txt_CmPkgSearch = $Window.FindName('txt_CmPkgSearch')
 $txt_CmPkgSearch.Add_TextChanged({ Update-DATCmPackageFilter })
 $cmb_CmPkgOEM.Add_SelectionChanged({ Update-DATCmPackageFilter })
 $cmb_CmPkgOS.Add_SelectionChanged({ Update-DATCmPackageFilter })
+
+$chk_CmPkgJSON.Add_Checked({
+    Set-DATRegistryValue -Name 'JsonDescriptions' -Value 1 -Type DWord
+    $col_CmPkgDescription.Visibility = if ($chk_CmPkgJSON.IsChecked -eq $true) {'Visible'} else {'Collapsed'}
+    Write-DATActivityLog "JSON Package Descriptions enabled" -Level Info
+})
+$chk_CmPkgJSON.Add_Unchecked({
+    Set-DATRegistryValue -Name 'JsonDescriptions' -Value 0 -Type DWord
+    $col_CmPkgDescription.Visibility = if ($chk_CmPkgJSON.IsChecked -eq $true) {'Visible'} else {'Collapsed'}
+    Write-DATActivityLog "JSON Package Descriptions disabled" -Level Info
+})
 
 # ConfigMgr Select All / Select None
 $btn_CmPkgSelectAll = $Window.FindName('btn_CmPkgSelectAll')

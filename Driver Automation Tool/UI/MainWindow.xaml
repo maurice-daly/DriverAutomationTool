@@ -1718,6 +1718,7 @@
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="200"/>
                                     <ColumnDefinition Width="200"/>
+                                    <ColumnDefinition Width="200"/>
                                 </Grid.ColumnDefinitions>
                                 <Grid.RowDefinitions>
                                     <RowDefinition Height="Auto"/>
@@ -1726,6 +1727,8 @@
                                 <TextBlock Grid.Column="0" Grid.Row="0" Text="Manufacturer" FontSize="11"
                                            Foreground="{DynamicResource InputPlaceholder}" Margin="0,0,8,4"/>
                                 <TextBlock Grid.Column="1" Grid.Row="0" Text="Operating System" FontSize="11"
+                                           Foreground="{DynamicResource InputPlaceholder}" Margin="8,0,0,4"/>
+                                <TextBlock Grid.Column="2" Grid.Row="0" Text="Enable JSON Descriptions" FontSize="11"
                                            Foreground="{DynamicResource InputPlaceholder}" Margin="8,0,0,4"/>
                                 <ComboBox x:Name="cmb_CmPkgOEM" Grid.Column="0" Grid.Row="1" Margin="0,0,8,0" Height="34">
                                     <ComboBoxItem Content="All" IsSelected="True"/>
@@ -1742,6 +1745,9 @@
                                     <ComboBoxItem Content="Windows 11 23H2"/>
                                     <ComboBoxItem Content="Windows 11 22H2"/>
                                 </ComboBox>
+                                <CheckBox x:Name="chk_CmPkgJSON" Grid.Column="2" Grid.Row="1" Margin="8,0,0,0" Height="34"
+                                            Style="{StaticResource ToggleSwitch}"
+                                            VerticalAlignment="Center"/>
                             </Grid>
 
                             <!-- Search bar + Select All/None + Delete -->
@@ -1778,6 +1784,7 @@
                                                                 ElementStyle="{StaticResource DataGridCheckBox}"
                                                                 EditingElementStyle="{StaticResource DataGridCheckBox}"/>
                                         <DataGridTextColumn Header="Name" Width="*" Binding="{Binding Name}" IsReadOnly="True"/>
+                                        <DataGridTextColumn x:Name="col_CmPkgDescription" Header="Description" Width="160" Binding="{Binding Description}" IsReadOnly="True"/>
                                         <DataGridTextColumn Header="Version" Width="90" Binding="{Binding Version}" IsReadOnly="True"/>
                                         <DataGridTextColumn Header="Package ID" Width="95" Binding="{Binding PackageID}" IsReadOnly="True"/>
                                         <DataGridTextColumn Header="Source Date" Width="155" Binding="{Binding SourceDate}" IsReadOnly="True"/>
