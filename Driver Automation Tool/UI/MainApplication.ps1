@@ -59,6 +59,7 @@ public class ModelItem : INotifyPropertyChanged {
     public string CustomDriverPath { get; set; }
     public string Version    { get; set; }
     public string BIOSVersion { get; set; }
+    public bool   BIOSOnly   { get; set; }
 }
 '@
     } catch {
@@ -322,6 +323,139 @@ function Invoke-DATLogQueueDrain {
 #endregion Activity Log
 
 #region Themed Dialogs
+
+# Adds the application's themed (custom-look) ScrollBar styles to the supplied
+# FrameworkElement's Resources so any nested ScrollViewer/ListBox/etc. uses
+# the same slim rounded scrollbars as the main window instead of the default
+# Windows look. Safe to call once per modal (typically the modal Window).
+function Add-DATThemedScrollBars {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)]
+        [System.Windows.FrameworkElement]$Element,
+        [Parameter(Mandatory=$false)]
+        $Theme
+    )
+    if (-not $Theme) {
+        $Theme = Get-DATTheme -ThemeName $script:CurrentTheme
+    }
+    if (-not $Theme) { return }
+
+    try {
+        $scrollStyles = [System.Windows.Markup.XamlReader]::Parse(@"
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <Style x:Key="DATModalScrollThumb" TargetType="Thumb">
+        <Setter Property="SnapsToDevicePixels" Value="True"/>
+        <Setter Property="OverridesDefaultStyle" Value="True"/>
+        <Setter Property="IsTabStop" Value="False"/>
+        <Setter Property="Focusable" Value="False"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Thumb">
+                    <Border x:Name="thumbBorder" CornerRadius="5"
+                            Background="$($Theme['ScrollThumb'])" Margin="1"/>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="thumbBorder" Property="Background" Value="$($Theme['ScrollThumbHover'])"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+    <Style x:Key="DATModalScrollTrackBtn" TargetType="RepeatButton">
+        <Setter Property="SnapsToDevicePixels" Value="True"/>
+        <Setter Property="OverridesDefaultStyle" Value="True"/>
+        <Setter Property="IsTabStop" Value="False"/>
+        <Setter Property="Focusable" Value="False"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="RepeatButton">
+                    <Border Background="Transparent"/>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+    <ControlTemplate x:Key="DATModalVertSB" TargetType="ScrollBar">
+        <Border Background="$($Theme['ScrollTrack'])" CornerRadius="5" Width="10">
+            <Track x:Name="PART_Track" IsDirectionReversed="True">
+                <Track.DecreaseRepeatButton>
+                    <RepeatButton Style="{StaticResource DATModalScrollTrackBtn}" Command="ScrollBar.PageUpCommand"/>
+                </Track.DecreaseRepeatButton>
+                <Track.Thumb>
+                    <Thumb Style="{StaticResource DATModalScrollThumb}"/>
+                </Track.Thumb>
+                <Track.IncreaseRepeatButton>
+                    <RepeatButton Style="{StaticResource DATModalScrollTrackBtn}" Command="ScrollBar.PageDownCommand"/>
+                </Track.IncreaseRepeatButton>
+            </Track>
+        </Border>
+    </ControlTemplate>
+    <ControlTemplate x:Key="DATModalHorizSB" TargetType="ScrollBar">
+        <Border Background="$($Theme['ScrollTrack'])" CornerRadius="5" Height="10">
+            <Track x:Name="PART_Track" IsDirectionReversed="False">
+                <Track.DecreaseRepeatButton>
+                    <RepeatButton Style="{StaticResource DATModalScrollTrackBtn}" Command="ScrollBar.PageLeftCommand"/>
+                </Track.DecreaseRepeatButton>
+                <Track.Thumb>
+                    <Thumb Style="{StaticResource DATModalScrollThumb}"/>
+                </Track.Thumb>
+                <Track.IncreaseRepeatButton>
+                    <RepeatButton Style="{StaticResource DATModalScrollTrackBtn}" Command="ScrollBar.PageRightCommand"/>
+                </Track.IncreaseRepeatButton>
+            </Track>
+        </Border>
+    </ControlTemplate>
+    <Style TargetType="ScrollBar">
+        <Setter Property="SnapsToDevicePixels" Value="True"/>
+        <Setter Property="OverridesDefaultStyle" Value="True"/>
+        <Style.Triggers>
+            <Trigger Property="Orientation" Value="Vertical">
+                <Setter Property="Width" Value="10"/>
+                <Setter Property="Height" Value="Auto"/>
+                <Setter Property="Template" Value="{StaticResource DATModalVertSB}"/>
+            </Trigger>
+            <Trigger Property="Orientation" Value="Horizontal">
+                <Setter Property="Width" Value="Auto"/>
+                <Setter Property="Height" Value="10"/>
+                <Setter Property="Template" Value="{StaticResource DATModalHorizSB}"/>
+            </Trigger>
+        </Style.Triggers>
+    </Style>
+</ResourceDictionary>
+"@)
+        $Element.Resources.MergedDictionaries.Add($scrollStyles)
+    } catch {
+        Write-DATLogMessage -Message "Failed to apply themed scrollbars: $($_.Exception.Message)" -Severity 2 -Category 'UI'
+    }
+}
+
+# Register a single class-level Loaded handler so every Window opened by the
+# application (modals, dialogs, prompts) automatically receives the themed
+# scrollbar styles. The main window is excluded because its scrollbars are
+# already styled in MainWindow.xaml.
+if (-not $script:DATThemedScrollBarsHandlerRegistered) {
+    try {
+        [System.Windows.EventManager]::RegisterClassHandler(
+            [System.Windows.Window],
+            [System.Windows.FrameworkElement]::LoadedEvent,
+            [System.Windows.RoutedEventHandler]{
+                param($sender, $e)
+                try {
+                    if ($null -eq $sender) { return }
+                    if ($null -ne $script:Window -and [object]::ReferenceEquals($sender, $script:Window)) { return }
+                    # Idempotency: only apply once per Window
+                    if ($sender.Resources.Contains('__DATThemedScrollBarsApplied')) { return }
+                    $sender.Resources.Add('__DATThemedScrollBarsApplied', $true)
+                    Add-DATThemedScrollBars -Element $sender
+                } catch { }
+            })
+        $script:DATThemedScrollBarsHandlerRegistered = $true
+    } catch {
+        Write-DATLogMessage -Message "Failed to register themed scrollbar class handler: $($_.Exception.Message)" -Severity 2 -Category 'UI'
+    }
+}
 
 function Show-DATConfirmDialog {
     param (
@@ -3471,10 +3605,13 @@ function Show-DATBuildProgressModal {
 
     # For 'All' package type, expand each model into two rows: Drivers then BIOS
     # Microsoft models skip the BIOS row (firmware is delivered via driver injection)
+    # BIOSOnly models skip the Drivers row (no driver package for the selected OS/build)
     $displayModels = if ($PackageType -eq 'All') {
         $expanded = [System.Collections.ArrayList]::new()
         foreach ($m in $Models) {
-            [void]$expanded.Add([PSCustomObject]@{ OEM = $m.OEM; Model = $m.Model; Phase = 'Drivers' })
+            if (-not $m.BIOSOnly) {
+                [void]$expanded.Add([PSCustomObject]@{ OEM = $m.OEM; Model = $m.Model; Phase = 'Drivers' })
+            }
             if ($m.OEM -ne 'Microsoft') {
                 [void]$expanded.Add([PSCustomObject]@{ OEM = $m.OEM; Model = $m.Model; Phase = 'BIOS' })
             }
@@ -4018,6 +4155,29 @@ function Update-DATBuildModalFromRegistry {
         return
     }
 
+    # Detect driver no-match for BIOS-only models (no driver package for selected OS/build)
+    if ($runningMode -eq 'DriverNoMatch') {
+        $row = $script:BuildModalRows[$modelKey]
+        $alreadySkipped = $false
+        foreach ($s in $row.Stages) {
+            if ($row.Status[$s] -eq 'Skipped') { $alreadySkipped = $true; break }
+        }
+        if (-not $alreadySkipped) {
+            foreach ($s in $row.Stages) {
+                Update-DATBuildModalStage -OEM $oem -Model $modelDisplayName -Stage $s -State Skipped
+            }
+            if ($row.Label) {
+                $theme = Get-DATTheme -ThemeName $script:CurrentTheme
+                $row.Label.Text = "$oem $modelName -- No driver package"
+                $row.Label.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+                    [System.Windows.Media.ColorConverter]::ConvertFromString($theme['InputPlaceholder']))
+                $row.Label.FontStyle = [System.Windows.FontStyles]::Italic
+                $row.Label.ToolTip = "No driver package available for the selected OS/build -- BIOS only"
+            }
+        }
+        return
+    }
+
     # Detect per-model failure when CurrentJob advances
     # If CurrentJob moved forward but CompletedJobs didn't increment, the previous model failed
     if ($currentJob -gt $script:BuildProgressLastJob -and $script:BuildProgressLastJob -gt 0) {
@@ -4434,11 +4594,38 @@ function Update-DATOEMSelectionHighlight {
     }
 }
 
-# Wire checkbox change events to update display text and highlight
-foreach ($chk in $script:OEMCheckboxes.Values) {
-    $chk.Add_Checked({ Update-DATOEMDisplayText; Update-DATOEMSelectionHighlight })
-    $chk.Add_Unchecked({ Update-DATOEMDisplayText; Update-DATOEMSelectionHighlight })
+# Wire checkbox change events to update display text and highlight.
+# Model refresh is deferred until the OEM popup closes (see popup_OEM.Closed
+# handler below) so toggling multiple OEMs doesn't trigger repeated refreshes.
+$script:OEMSelectionDirty = $false
+$oemSelectionChangedHandler = {
+    Update-DATOEMDisplayText
+    Update-DATOEMSelectionHighlight
+    if (-not $script:SuppressModelRefresh) {
+        $script:OEMSelectionDirty = $true
+    }
 }
+foreach ($chk in $script:OEMCheckboxes.Values) {
+    $chk.Add_Checked($oemSelectionChangedHandler)
+    $chk.Add_Unchecked($oemSelectionChangedHandler)
+}
+
+# When the OEM popup closes, refresh the model list if any OEMs were toggled.
+$popup_OEM.Add_Closed({
+    if (-not $script:OEMSelectionDirty) { return }
+    $script:OEMSelectionDirty = $false
+    if ($script:SuppressModelRefresh) { return }
+    if ((Get-DATSelectedOEMs).Count -gt 0 -and $null -ne $cmb_OS.SelectedItem) {
+        if ($script:ModelData.Count -gt 0) { Save-DATModelSelections }
+        Invoke-DATRefreshModelsClick
+    } else {
+        # No OEMs selected (or no OS) -- clear the model grid
+        if ($script:ModelData.Count -gt 0) {
+            Save-DATModelSelections
+            $script:ModelData.Clear()
+        }
+    }
+})
 
 # Check for HP CMSL module availability
 $script:HPCMSLAvailable = $null -ne (Get-Module -ListAvailable -Name HPCMSL -ErrorAction SilentlyContinue)
@@ -4519,7 +4706,47 @@ $grid_Models.Add_SelectionChanged({
     $txt_ModelDetail_OS.Text         = $item.OS
     $txt_ModelDetail_Build.Text      = $item.Build
     $txt_ModelDetail_Baseboards.Text = if ($item.Baseboards) { $item.Baseboards } else { '--' }
-    $txt_ModelDetail_Version.Text    = if ($item.Version) { $item.Version } else { '--' }
+
+    # Known Model indicator -- check Intune and ConfigMgr known device lists
+    $isKnown = $false
+    $gridMake = ConvertTo-DATNormalizedMake -Make $item.OEM
+    $gridModel = ConvertTo-DATNormalizedModel -Make $item.OEM -Model $item.Model
+    if ($script:IntuneKnownDevices -and @($script:IntuneKnownDevices).Count -gt 0) {
+        foreach ($device in $script:IntuneKnownDevices) {
+            $normMake = ConvertTo-DATNormalizedMake -Make $device.Make
+            $normModel = ConvertTo-DATNormalizedModel -Make $device.Make -Model $device.Model
+            if ($gridModel -eq $normModel -or "$gridMake|$gridModel" -eq "$normMake|$normModel") {
+                $isKnown = $true; break
+            }
+        }
+    }
+    if (-not $isKnown -and $script:ConfigMgrKnownDevices -and @($script:ConfigMgrKnownDevices).Count -gt 0) {
+        foreach ($device in $script:ConfigMgrKnownDevices) {
+            $normMake = ConvertTo-DATNormalizedMake -Make $device.Make
+            $normModel = ConvertTo-DATNormalizedModel -Make $device.Make -Model $device.Model
+            if ($gridModel -eq $normModel -or "$gridMake|$gridModel" -eq "$normMake|$normModel") {
+                $isKnown = $true; break
+            }
+        }
+    }
+    if ($isKnown) {
+        $txt_ModelDetail_KnownModel.Text       = 'Yes'
+        $txt_ModelDetail_KnownModel.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+            [System.Windows.Media.ColorConverter]::ConvertFromString(
+                (Get-DATTheme -ThemeName $script:CurrentTheme)['StatusSuccess']))
+    } else {
+        $txt_ModelDetail_KnownModel.Text       = 'No'
+        $txt_ModelDetail_KnownModel.Foreground = $txt_ModelDetail_OEM.TryFindResource('InputPlaceholder')
+    }
+    $isBIOSOnly = try { [bool]$item.BIOSOnly } catch { $false }
+    if ($isBIOSOnly) {
+        $txt_ModelDetail_Version.Text       = 'N/A'
+        $noPackBrush = $txt_ModelDetail_OEM.TryFindResource('DriverNoPackForeground')
+        if ($noPackBrush) { $txt_ModelDetail_Version.Foreground = $noPackBrush }
+    } else {
+        $txt_ModelDetail_Version.Text       = if ($item.Version) { $item.Version } else { '--' }
+        $txt_ModelDetail_Version.Foreground = $txt_ModelDetail_OEM.Foreground
+    }
     try { $txt_ModelDetail_BIOS.Text = if ($item.BIOSVersion) { $item.BIOSVersion } else { '--' } } catch { $txt_ModelDetail_BIOS.Text = '--' }
 
     # NVIDIA GFX indicator
@@ -4626,11 +4853,19 @@ $grid_Models.ContextMenu.Add_Opened({
 # Suppress auto-refresh during initial load/restore
 $script:SuppressModelRefresh = $true
 
-# Save Package Type immediately on change so the selection persists across restarts
+# Save Package Type immediately on change so the selection persists across restarts.
+# Refresh the model list because BIOS / All shows additional BIOS-only models from
+# the BIOS catalog that don't have a driver pack for the selected OS/build.
 $cmb_PackageType.Add_SelectionChanged({
     if ($script:SuppressModelRefresh) { return }
     $selected = if ($null -ne $cmb_PackageType.SelectedItem) { $cmb_PackageType.SelectedItem.Content } else { 'Drivers' }
     Set-DATRegistryValue -Name "PackageType" -Value "$selected" -Type String
+
+    if ((Get-DATSelectedOEMs).Count -gt 0 -and $null -ne $cmb_OS.SelectedItem) {
+        # Save current selections so they can be restored after the refresh clears the grid
+        if ($script:ModelData.Count -gt 0) { Save-DATModelSelections }
+        Invoke-DATRefreshModelsClick
+    }
 })
 
 # Helper to programmatically invoke the Refresh Models button click
@@ -4705,8 +4940,12 @@ $btn_RefreshModels.Add_Click({
 
     $script:RefreshPS = [powershell]::Create()
     $script:RefreshPS.Runspace = $script:RefreshRunspace
+    # Resolve temp storage path from registry (same as build runspace) with fallback to app Temp folder
+    $regConfig = Get-ItemProperty -Path $global:RegPath -ErrorAction SilentlyContinue
+    $refreshTempDir = if ($regConfig -and -not [string]::IsNullOrEmpty($regConfig.TempStoragePath)) { $regConfig.TempStoragePath } else { Join-Path $global:ScriptDirectory 'Temp' }
+
     [void]$script:RefreshPS.AddScript({
-        param($CoreModulePath, $RequiredOEMs, $OS, $Architecture, $PackageType)
+        param($CoreModulePath, $RequiredOEMs, $OS, $Architecture, $PackageType, $TempDir)
 
         function Write-Log {
             param([string]$Message, [string]$Level = 'Info')
@@ -4735,8 +4974,7 @@ $btn_RefreshModels.Add_Click({
             return @([PSCustomObject]@{ _Error = $_.Exception.Message })
         }
 
-        # Inline model retrieval with per-step logging
-        $TempDir = Join-Path $env:TEMP "DriverAutomationTool"
+        # Use the configured temp storage path passed from the UI thread
         if (-not (Test-Path $TempDir)) { New-Item -Path $TempDir -ItemType Directory -Force | Out-Null }
 
         $OEMLinksURL = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/OEMLinks.xml"
@@ -4813,6 +5051,8 @@ $btn_RefreshModels.Add_Click({
                     try {
                         $HPCabPath = Join-Path $TempDir $HPCabFile
                         $HPXMLPath = Join-Path $TempDir $HPXMLFile
+                        Write-Log "[HP] CAB download path: $HPCabPath"
+                        Write-Log "[HP] XML extract path: $HPXMLPath"
                         if (Test-CatalogFresh -FilePath $HPXMLPath) {
                             Write-Log "Using cached HP catalog (less than 24h old)."
                             $LogQueue.Enqueue('[SOURCE:HP:Cached]')
@@ -4820,7 +5060,7 @@ $btn_RefreshModels.Add_Click({
                             Write-Log "Downloading HP driver pack catalog..."
                             $proxyParams = Get-DATWebRequestProxy
                             Invoke-WebRequest -Uri $HPLink -OutFile $HPCabPath -UseBasicParsing -TimeoutSec 60 @proxyParams
-                            Write-Log "Extracting $HPCabFile..."
+                            Write-Log "Extracting $HPCabFile to $TempDir..."
                             & expand.exe "$HPCabPath" -F:* "$TempDir" -R 2>&1 | Out-Null
                         }
                         if (-not (Test-Path $HPXMLPath)) {
@@ -4829,12 +5069,18 @@ $btn_RefreshModels.Add_Click({
                         }
                         [xml]$HPModelXML = Get-Content -Path $HPXMLPath -Raw
                         $HPPacks = $HPModelXML.NewDataSet.HPClientDriverPackCatalog.ProductOSDriverPackList.ProductOSDriverPack
+                        $totalPacks = @($HPPacks).Count
+                        Write-Log "[HP] Total packs in catalog: $totalPacks (filtering: OSName -match '$WindowsVersion' -and -match '$WindowsBuild')"
                         $HPMatches = $HPPacks | Where-Object { $_.OSName -match $WindowsVersion -and $_.OSName -match $WindowsBuild }
                         $count = @($HPMatches).Count
+                        if ($count -eq 0 -and $totalPacks -gt 0) {
+                            $sampleOSNames = @($HPPacks | Select-Object -ExpandProperty OSName -Unique | Select-Object -First 10)
+                            Write-Log "[HP] 0 matches -- sample OSName values in catalog: $($sampleOSNames -join '; ')" -Level Warn
+                        }
                         Write-Log "HP: Found $count matching driver packs." -Level Success
                         $LogQueue.Enqueue("[SOURCE:HP:OK:$count models]")
                         foreach ($Model in $HPMatches) {
-                            $modelName = $($($Model.SystemName).TrimStart("HP")).Trim()
+                            $modelName = ($Model.SystemName -replace '^HP\s+', '').Trim()
                             $OEMSupportedModels += [PSCustomObject]@{
                                 OEM        = "HP"
                                 Model      = $modelName
@@ -5055,6 +5301,27 @@ $btn_RefreshModels.Add_Click({
                                 Version    = (Get-Date -Format 'ddMMyyyy')
                             }
                         }
+
+                        # Acer BIOS lives in the Acer XML catalog (not the JSON BIOS catalog).
+                        # When BIOS or All is selected, include all Acer models from the XML catalog
+                        # that don't already have a driver pack for the selected OS/build.
+                        if ($PackageType -in @('BIOS', 'All')) {
+                            $existingAcerNames = @($AcerModels) | Select-Object -Unique
+                            $allAcerNames = ($AcerDrivers | Where-Object { $_.Name -gt $null } | Sort-Object).Name | Select-Object -Unique
+                            foreach ($extraModel in $allAcerNames) {
+                                if ($extraModel -notin $existingAcerNames) {
+                                    $OEMSupportedModels += [PSCustomObject]@{
+                                        OEM        = "Acer"
+                                        Model      = $extraModel
+                                        Baseboards = $extraModel
+                                        OS         = $WindowsVersion
+                                        'OS Build' = $WindowsBuild
+                                        Version    = ''
+                                        BIOSOnly   = $true
+                                    }
+                                }
+                            }
+                        }
                     } catch {
                         Write-Log "Acer processing failed: $($_.Exception.Message)" -Level Error
                         $LogQueue.Enqueue('[SOURCE:Acer:Error]')
@@ -5143,6 +5410,87 @@ $btn_RefreshModels.Add_Click({
             if (-not $biosCatalogFailed) {
                 $LogQueue.Enqueue("[SOURCE:BIOS:OK:$biosMatched matched]")
             }
+
+            # ── BIOS-only models (BIOS or All package type only) ──
+            # BIOS packages are OS-agnostic. Add an entry for every BIOS catalog model
+            # that isn't already represented in the driver-pack-derived list.
+            if ($PackageType -in @('BIOS', 'All') -and -not $biosCatalogFailed -and @($biosCatalog).Count -gt 0) {
+                # Build a set of OEM|Model keys already present (case-insensitive).
+                # Also build a normalised-key set for fuzzy HP matching (HP driver
+                # catalog strips manufacturer prefix AND common suffixes like
+                # "Desktop PC", "Notebook PC", etc.)
+                $existingKeys = New-Object System.Collections.Generic.HashSet[string] ([System.StringComparer]::OrdinalIgnoreCase)
+                $existingNorm = New-Object System.Collections.Generic.HashSet[string] ([System.StringComparer]::OrdinalIgnoreCase)
+                foreach ($m in $OEMSupportedModels) {
+                    [void]$existingKeys.Add("$($m.OEM)|$($m.Model)")
+                    # Normalised key: strip common suffixes for HP so BIOS catalog
+                    # entries (which lack these suffixes) match existing driver entries
+                    $normName = $m.Model
+                    if ($m.OEM -eq 'HP') {
+                        $normName = $normName -replace '\s+2-in-1\s+Notebook\s+PC$', ''
+                        $normName = $normName -replace '\s+Mobile\s+Workstation\s+PC$', ''
+                        $normName = $normName -replace '\s+Notebook\s+PC$', ''
+                        $normName = $normName -replace '\s+Desktop\s+PC$', ''
+                        $normName = $normName -replace '\s+All-in-One$', ''
+                        $normName = $normName -replace '\s+Mobile\s+Workstation$', ''
+                        $normName = $normName -replace '\s+PC$', ''
+                        $normName = $normName.Trim()
+                    }
+                    [void]$existingNorm.Add("$($m.OEM)|$normName")
+                }
+
+                # Group BIOS catalog by Manufacturer + DisplayName, taking the latest entry
+                # (by ReleaseDate) and aggregating all SupportedDevices
+                $biosOnlyAdded = 0
+                $biosGroups = $biosCatalog |
+                    Where-Object { -not [string]::IsNullOrEmpty($_.Manufacturer) -and -not [string]::IsNullOrEmpty($_.DisplayName) -and $_.Manufacturer -in $RequiredOEMs } |
+                    Group-Object { "$($_.Manufacturer)|$($_.DisplayName)" }
+
+                foreach ($grp in $biosGroups) {
+                    # Pick the latest entry by ReleaseDate
+                    $latest = $grp.Group | Sort-Object {
+                        try { [datetime]$_.ReleaseDate } catch { [datetime]::MinValue }
+                    } -Descending | Select-Object -First 1
+
+                    # Normalise DisplayName: strip manufacturer prefix for HP
+                    # (driver catalog entries drop the HP/Hewlett-Packard prefix)
+                    $displayName = $latest.DisplayName
+                    if ($latest.Manufacturer -eq 'HP') {
+                        $displayName = $displayName -replace '^(HP|Hewlett-Packard|COMPAQ|Compaq)\s+', ''
+                    }
+
+                    $key = "$($latest.Manufacturer)|$displayName"
+                    if ($existingKeys.Contains($key) -or $existingNorm.Contains($key)) { continue }
+
+                    # Aggregate all SupportedDevices across the group (deduped)
+                    $allBoards = @()
+                    foreach ($e in $grp.Group) {
+                        if (-not [string]::IsNullOrEmpty($e.SupportedDevices)) {
+                            $allBoards += ($e.SupportedDevices -split '[;,\s]+' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+                        }
+                    }
+                    $boardsCsv = ($allBoards | Select-Object -Unique) -join ','
+
+                    $OEMSupportedModels += [PSCustomObject]@{
+                        OEM         = $latest.Manufacturer
+                        Model       = $displayName
+                        Baseboards  = $boardsCsv
+                        OS          = $WindowsVersion
+                        'OS Build'  = $WindowsBuild
+                        Version     = ''
+                        BIOSVersion = $latest.Version
+                        BIOSOnly    = $true
+                    }
+                    [void]$existingKeys.Add($key)
+                    $biosOnlyAdded++
+                }
+
+                if ($biosOnlyAdded -gt 0) {
+                    Write-Log "Added $biosOnlyAdded BIOS-only models from BIOS catalog (no driver package for selected OS/build)." -Level Info
+                    $LogQueue.Enqueue("[SOURCE:BIOS:OK:$biosOnlyAdded BIOS-only added]")
+                }
+                $totalCount = @($OEMSupportedModels).Count
+            }
         }
 
         return $OEMSupportedModels
@@ -5152,6 +5500,7 @@ $btn_RefreshModels.Add_Click({
     [void]$script:RefreshPS.AddArgument($selectedOS)
     [void]$script:RefreshPS.AddArgument($selectedArch)
     [void]$script:RefreshPS.AddArgument($selectedPackageType)
+    [void]$script:RefreshPS.AddArgument($refreshTempDir)
 
     $script:RefreshAsyncResult = $script:RefreshPS.BeginInvoke()
 
@@ -5196,8 +5545,9 @@ $btn_RefreshModels.Add_Click({
                                 GFXBrand   = if ($model.GFXBrand) { $model.GFXBrand } else { '' }
                                 Version    = if ($model.Version) { $model.Version } else { '' }
                             }
-                            # BIOSVersion set separately -- property may not exist on stale cached type
+                            # BIOSVersion / BIOSOnly set separately -- property may not exist on stale cached type
                             try { $modelItem.BIOSVersion = if ($model.BIOSVersion) { $model.BIOSVersion } else { '' } } catch { }
+                            try { $modelItem.BIOSOnly = if ($model.BIOSOnly) { $true } else { $false } } catch { }
                             $script:ModelData.Add($modelItem)
                         }
                     }
@@ -5299,7 +5649,7 @@ function ConvertTo-DATNormalizedModel {
     param ([string]$Make, [string]$Model)
     if ([string]::IsNullOrWhiteSpace($Model)) { return $Model }
     $m = $Model.Trim()
-    # HP: strip manufacturer prefix and common suffixes (matches catalog TrimStart("HP"))
+    # HP: strip manufacturer prefix and common suffixes (matches catalog regex strip)
     if ($Make -match '^(HP|Hewlett-Packard|COMPAQ|Compaq)') {
         $m = $m -replace '^(HP|Hewlett-Packard|COMPAQ|Hp|Compaq)\s*', ''
         $m = $m -replace '\s+2-in-1\s+Notebook\s+PC$', ''
@@ -5648,6 +5998,7 @@ $btn_Build.Add_Click({
             Version          = $model.Version
             BIOSVersion      = $(try { $model.BIOSVersion } catch { '' })
             ForceUpdate      = [bool]$model.ForceUpdate
+            BIOSOnly         = $(try { [bool]$model.BIOSOnly } catch { $false })
         }
         $global:SelectedModels.Add($modelObj) | Out-Null
     }
@@ -11407,16 +11758,40 @@ $script:IntuneTokenTimer.Add_Tick({
             Write-DATActivityLog "Token refreshed silently" -Level Info
             Update-DATIntuneAuthUI
         } else {
-            $script:IntuneTokenTimer.Stop()
-            Update-DATIntuneAuthUI
-            $txt_IntuneStatus.Text = "Session expired - please re-authenticate."
-            $txt_IntuneStatus.Foreground = [System.Windows.Media.SolidColorBrush]::new(
-                [System.Windows.Media.ColorConverter]::ConvertFromString(
-                    (Get-DATTheme -ThemeName $script:CurrentTheme)['StatusWarning']))
-            $grid_IntuneApps.IsEnabled = $false
-            $btn_RefreshIntuneApps.IsEnabled = $false
-            $btn_DeleteIntuneApp.IsEnabled = $false
-            Write-DATActivityLog "Intune token expired" -Level Warn
+            # Fallback: if client credentials are saved in registry, re-authenticate silently
+            $ccRenewed = $false
+            try {
+                $savedTenantId = (Get-ItemProperty -Path $global:RegPath -Name 'IntuneTenantId' -ErrorAction SilentlyContinue).IntuneTenantId
+                $savedAppId = (Get-ItemProperty -Path $global:RegPath -Name 'IntuneAppId' -ErrorAction SilentlyContinue).IntuneAppId
+                $savedEncSecret = (Get-ItemProperty -Path $global:RegPath -Name 'IntuneClientSecret' -ErrorAction SilentlyContinue).IntuneClientSecret
+                $savedAuthMode = (Get-ItemProperty -Path $global:RegPath -Name 'IntuneAuthMode' -ErrorAction SilentlyContinue).IntuneAuthMode
+                if ($savedAuthMode -eq 2 -and -not [string]::IsNullOrEmpty($savedTenantId) -and
+                    -not [string]::IsNullOrEmpty($savedAppId) -and -not [string]::IsNullOrEmpty($savedEncSecret)) {
+                    $secStr = ConvertTo-SecureString -String $savedEncSecret
+                    $plainSecret = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto(
+                        [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($secStr))
+                    $ccResult = Connect-DATIntuneGraphClientCredential -TenantId $savedTenantId -AppId $savedAppId -ClientSecret $plainSecret
+                    if ($ccResult.Success) {
+                        $ccRenewed = $true
+                        Write-DATActivityLog "Token renewed silently using saved client credentials" -Level Info
+                        Update-DATIntuneAuthUI
+                    }
+                }
+            } catch {
+                Write-DATActivityLog "Client credential silent re-auth failed: $($_.Exception.Message)" -Level Warn
+            }
+            if (-not $ccRenewed) {
+                $script:IntuneTokenTimer.Stop()
+                Update-DATIntuneAuthUI
+                $txt_IntuneStatus.Text = "Session expired - please re-authenticate."
+                $txt_IntuneStatus.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+                    [System.Windows.Media.ColorConverter]::ConvertFromString(
+                        (Get-DATTheme -ThemeName $script:CurrentTheme)['StatusWarning']))
+                $grid_IntuneApps.IsEnabled = $false
+                $btn_RefreshIntuneApps.IsEnabled = $false
+                $btn_DeleteIntuneApp.IsEnabled = $false
+                Write-DATActivityLog "Intune token expired" -Level Warn
+            }
         }
     } else {
         $status = Get-DATIntuneAuthStatus
@@ -11428,9 +11803,33 @@ $script:IntuneTokenTimer.Add_Tick({
                 Write-DATActivityLog "Token refreshed proactively (was expiring in $($status.MinutesRemaining) min)" -Level Info
                 Update-DATIntuneAuthUI
             } else {
-                $txt_IntuneTokenExpiry.Foreground = [System.Windows.Media.SolidColorBrush]::new(
-                    [System.Windows.Media.ColorConverter]::ConvertFromString(
-                        (Get-DATTheme -ThemeName $script:CurrentTheme)['StatusWarning']))
+                # Fallback: try client credential re-auth if saved
+                $ccProactive = $false
+                try {
+                    $savedTenantId = (Get-ItemProperty -Path $global:RegPath -Name 'IntuneTenantId' -ErrorAction SilentlyContinue).IntuneTenantId
+                    $savedAppId = (Get-ItemProperty -Path $global:RegPath -Name 'IntuneAppId' -ErrorAction SilentlyContinue).IntuneAppId
+                    $savedEncSecret = (Get-ItemProperty -Path $global:RegPath -Name 'IntuneClientSecret' -ErrorAction SilentlyContinue).IntuneClientSecret
+                    $savedAuthMode = (Get-ItemProperty -Path $global:RegPath -Name 'IntuneAuthMode' -ErrorAction SilentlyContinue).IntuneAuthMode
+                    if ($savedAuthMode -eq 2 -and -not [string]::IsNullOrEmpty($savedTenantId) -and
+                        -not [string]::IsNullOrEmpty($savedAppId) -and -not [string]::IsNullOrEmpty($savedEncSecret)) {
+                        $secStr = ConvertTo-SecureString -String $savedEncSecret
+                        $plainSecret = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto(
+                            [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($secStr))
+                        $ccResult = Connect-DATIntuneGraphClientCredential -TenantId $savedTenantId -AppId $savedAppId -ClientSecret $plainSecret
+                        if ($ccResult.Success) {
+                            $ccProactive = $true
+                            Write-DATActivityLog "Token renewed proactively using saved client credentials (was expiring in $($status.MinutesRemaining) min)" -Level Info
+                            Update-DATIntuneAuthUI
+                        }
+                    }
+                } catch {
+                    Write-DATActivityLog "Proactive client credential re-auth failed: $($_.Exception.Message)" -Level Warn
+                }
+                if (-not $ccProactive) {
+                    $txt_IntuneTokenExpiry.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+                        [System.Windows.Media.ColorConverter]::ConvertFromString(
+                            (Get-DATTheme -ThemeName $script:CurrentTheme)['StatusWarning']))
+                }
             }
         }
     }
@@ -14077,7 +14476,7 @@ if (Test-Path $logoPath) {
 
 # Read version from module manifest
 $manifestPath = Join-Path $AppRoot "Modules\DriverAutomationToolCore\DriverAutomationToolCore.psd1"
-$script:versionString = "v10.0.22"
+$script:versionString = "v10.0.23"
 if (Test-Path $manifestPath) {
     $manifestData = Import-PowerShellDataFile $manifestPath
     $ver = [version]$manifestData.ModuleVersion

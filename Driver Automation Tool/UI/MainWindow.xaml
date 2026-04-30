@@ -900,7 +900,7 @@
                                    Foreground="{DynamicResource AccentColor}" VerticalAlignment="Center" Margin="0,0,8,0"/>
                         <TextBlock Text="Driver Automation Tool" FontSize="13" FontWeight="SemiBold"
                                    Foreground="{DynamicResource WindowForeground}" VerticalAlignment="Center"/>
-                        <TextBlock x:Name="txt_Version" Text=" Version 10.0.22" FontSize="11"
+                        <TextBlock x:Name="txt_Version" Text=" Version 10.0.23" FontSize="11"
                                    Foreground="{DynamicResource InputPlaceholder}" VerticalAlignment="Center" Margin="4,0"/>
                     </StackPanel>
 
@@ -1426,9 +1426,29 @@
                                                 <DataGridTextColumn Header="Baseboards" Width="140"
                                                                     Binding="{Binding Baseboards}" IsReadOnly="True"
                                                                     SortMemberPath="Baseboards"/>
-                                                <DataGridTextColumn Header="Driver" Width="80"
-                                                                    Binding="{Binding Version}" IsReadOnly="True"
-                                                                    SortMemberPath="Version"/>
+                                                <DataGridTemplateColumn Header="Driver" Width="80" SortMemberPath="Version">
+                                                    <DataGridTemplateColumn.CellTemplate>
+                                                        <DataTemplate>
+                                                            <TextBlock VerticalAlignment="Center"
+                                                                       TextTrimming="CharacterEllipsis">
+                                                                <TextBlock.Style>
+                                                                    <Style TargetType="TextBlock">
+                                                                        <!-- Default: show driver Version -->
+                                                                        <Setter Property="Text" Value="{Binding Version}"/>
+                                                                        <Style.Triggers>
+                                                                            <!-- BIOS-only models have no driver package -->
+                                                                            <DataTrigger Binding="{Binding BIOSOnly}" Value="True">
+                                                                                <Setter Property="Text" Value="N/A"/>
+                                                                                <Setter Property="Foreground" Value="{DynamicResource DriverNoPackForeground}"/>
+                                                                                <Setter Property="FontWeight" Value="SemiBold"/>
+                                                                            </DataTrigger>
+                                                                        </Style.Triggers>
+                                                                    </Style>
+                                                                </TextBlock.Style>
+                                                            </TextBlock>
+                                                        </DataTemplate>
+                                                    </DataGridTemplateColumn.CellTemplate>
+                                                </DataGridTemplateColumn>
                                                 <DataGridTextColumn Header="BIOS" Width="80"
                                                                     Binding="{Binding BIOSVersion}" IsReadOnly="True"
                                                                     SortMemberPath="BIOSVersion"/>
@@ -1466,6 +1486,10 @@
                                             <TextBlock x:Name="txt_ModelDetail_Model"
                                                        FontSize="11" Foreground="{DynamicResource WindowForeground}"
                                                        TextTrimming="CharacterEllipsis"/>
+                                            <TextBlock Text="KNOWN MODEL" FontSize="10" FontWeight="SemiBold"
+                                                       Foreground="{DynamicResource InputPlaceholder}" Margin="0,10,0,4"/>
+                                            <TextBlock x:Name="txt_ModelDetail_KnownModel"
+                                                       FontSize="11" FontWeight="SemiBold"/>
                                         </StackPanel>
 
                                         <!-- OS & Build -->
@@ -4694,7 +4718,7 @@
                                     <StackPanel>
                                         <TextBlock Text="Driver Automation Tool" FontSize="22" FontWeight="Bold"
                                                    Foreground="{DynamicResource AccentColor}" Margin="0,0,0,4"/>
-                                        <TextBlock x:Name="txt_AboutVersion" Text="Version 10.0.22" FontSize="14"
+                                        <TextBlock x:Name="txt_AboutVersion" Text="Version 10.0.23" FontSize="14"
                                                    Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,16"/>
 
                                         <TextBlock TextWrapping="Wrap" FontSize="13"

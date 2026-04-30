@@ -72,6 +72,9 @@ $script:Themes = @{
         StatusWarning          = "#FFAA44"
         StatusError            = "#E74856"
 
+        # Driver "N/A" indicator (when no driver package is available for a model)
+        DriverNoPackForeground = "#FFAA44"
+
         # ScrollBar
         ScrollTrack            = "#0F172A"
         ScrollThumb            = "#334155"
@@ -159,6 +162,9 @@ $script:Themes = @{
         StatusSuccess          = "#107C10"
         StatusWarning          = "#FFAA44"
         StatusError            = "#E74856"
+
+        # Driver "N/A" indicator (when no driver package is available for a model)
+        DriverNoPackForeground = "#DC2626"
 
         # ScrollBar
         ScrollTrack            = "#E8ECF1"

@@ -4,7 +4,7 @@
      Organization:  MSEndpointMgr / Patch My PC
      Filename:      DriverAutomationToolCore.psm1
      Purpose:       Core functions for Driver Automation Tool v2.0
-     Version:       10.0.22.0
+     Version:       10.0.23.0
     ===========================================================================
 #>
 
@@ -21,7 +21,7 @@ if ($PSVersionTable.PSVersion.Major -le 5) {
 
 #region Variables
 
-[version]$global:ScriptRelease = "10.0.22.0"
+[version]$global:ScriptRelease = "10.0.23.0"
 $global:ScriptBuildDate = "20-04-2026"
 $global:ReleaseNotesURL = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/DriverAutomationToolNotes.txt"
 $OEMLinksURL = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/OEMLinks.xml"
@@ -430,15 +430,23 @@ function Get-DATOEMModelInfo {
                 $HPCabFile = [string]($HPXMLCabinetSource | Split-Path -Leaf)
                 $HPXMLFile = $HPCabFile.TrimEnd(".cab") + ".xml"
                 try {
-                    Write-DATLogEntry -Value "[HP] Catalog cab path: $(Join-Path $global:TempDirectory $HPCabFile)" -Severity 1
-                    Write-DATLogEntry -Value "[HP] Catalog XML extract path: $(Join-Path $global:TempDirectory $HPXMLFile)" -Severity 1
+                    $HPCabPath = Join-Path $global:TempDirectory $HPCabFile
+                    $HPXMLPath = Join-Path $global:TempDirectory $HPXMLFile
+                    Write-DATLogEntry -Value "[HP] CAB download path: $HPCabPath" -Severity 1
+                    Write-DATLogEntry -Value "[HP] XML extract path: $HPXMLPath" -Severity 1
                     Invoke-DATContentDownload -DownloadURL $HPXMLCabinetSource -DownloadDestination $global:TempDirectory
-                    Expand "$global:TempDirectory\$HPCabFile" -F:* "$global:TempDirectory" -R | Out-Null
-                    [xml]$HPModelXML = Get-Content -Path (Join-Path -Path $global:TempDirectory -ChildPath $HPXMLFile) -Raw
+                    Expand "$HPCabPath" -F:* "$global:TempDirectory" -R | Out-Null
+                    [xml]$HPModelXML = Get-Content -Path $HPXMLPath -Raw
                     $HPModelSoftPaqs = $HPModelXML.NewDataSet.HPClientDriverPackCatalog.ProductOSDriverPackList.ProductOSDriverPack
+                    $totalPacks = @($HPModelSoftPaqs).Count
+                    Write-DATLogEntry -Value "[HP] Total packs in catalog: $totalPacks (filtering: OSName -match '$WindowsVersion' -and -match '$WindowsBuild')" -Severity 1
                     $HPOSSupportedPacks = $HPModelSoftPaqs | Where-Object { $_.OSName -match $WindowsVersion -and $_.OSName -match $WindowsBuild }
+                    if (@($HPOSSupportedPacks).Count -eq 0 -and $totalPacks -gt 0) {
+                        $sampleOSNames = @($HPModelSoftPaqs | Select-Object -ExpandProperty OSName -Unique | Select-Object -First 10)
+                        Write-DATLogEntry -Value "[HP] 0 matches -- sample OSName values: $($sampleOSNames -join '; ')" -Severity 2
+                    }
                     foreach ($Model in $HPOSSupportedPacks) {
-                        $Model.SystemName = $($($Model.SystemName).TrimStart("HP")).Trim()
+                        $Model.SystemName = ($Model.SystemName -replace '^HP\s+', '').Trim()
                         # Null-safe SystemId join (#16)
                         $sysIds = $Model.SystemId | Where-Object { $_ } | Select-Object -Unique
                         $OEMSupportedModels += [PSCustomObject]@{
@@ -2419,6 +2427,14 @@ function Start-DATModelProcessing {
         try {
             # ── Driver processing (when PackageType is 'Drivers' or 'All') ──────────
             if ($PackageType -in @('Drivers', 'All')) {
+                $modelBIOSOnly = [bool]$model.BIOSOnly
+                if ($modelBIOSOnly) {
+                    Write-DATLogEntry -Value "[Warning] [$currentIndex/$totalModels] SKIPPED driver processing -- no driver package available for $oem $modelName ($windowsVersion $windowsBuild) -- BIOS only model" -Severity 2
+                    if ($PackageType -eq 'Drivers') {
+                        Set-DATRegistryValue -Name "PackagePhase" -Value "Drivers" -Type String
+                        Set-DATRegistryValue -Name "RunningMode" -Value "DriverNoMatch" -Type String
+                    }
+                } else {
                 Set-DATRegistryValue -Name "PackagePhase" -Value "Drivers" -Type String
                 Write-DATLogEntry -Value "[$currentIndex/$totalModels] Starting driver processing for $oem $modelName" -Severity 1
 
@@ -2656,6 +2672,7 @@ function Start-DATModelProcessing {
                 if ((Test-Path $drvWimCheck) -or $script:driverPipelineSuccess) { $driverPackageSuccessCount++ }
                 $script:driverPipelineSuccess = $false
                 } # end if (-not $skipDriverDownload)
+            } # end if (-not $modelBIOSOnly)
             }
 
             # ── BIOS processing (when PackageType is 'BIOS' or 'All') ──────────────
@@ -4466,6 +4483,10 @@ function Complete-DATDeviceCodeAuth {
         # Success - store token
         $script:IntuneAuthToken = $tokenResponse.access_token
         $script:IntuneTokenExpiry = (Get-Date).AddSeconds([int]$tokenResponse.expires_in - 60)
+        # Store refresh token for silent renewal (device code flow includes offline_access)
+        if ($tokenResponse.refresh_token) {
+            $script:IntuneRefreshToken = $tokenResponse.refresh_token
+        }
 
         # Extract tenant ID from the JWT access token
         $tokenParts = $script:IntuneAuthToken.Split('.')

@@ -3,6 +3,9 @@ Release Notes
 IMPORTANT
 - DAT Downloads have been moved to GitHub - https://github.com/maurice-daly/DriverAutomationTool
 
+Version 10.0.23
+- BIOS updates are now no longer linked to the OS version, and thus BIOS versions for all models will be displayed. Where no driver version is present, this will be reflected in the UI
+
 Version 10.0.22
 - Lenovo BIOS release date matching fixed for both Intune and Configuration Manager (Modern BIOS Management).
 
