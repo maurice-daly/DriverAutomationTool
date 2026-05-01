@@ -3,6 +3,10 @@ Release Notes
 IMPORTANT
 - DAT Downloads have been moved to GitHub - https://github.com/maurice-daly/DriverAutomationTool
 
+Version 10.0.24
+Bug Fix(s)
+- Updated Lenovo BIOS extraction to poll after two seconds for the BIOS extracted files. Users are having issues with files not being included in the package. Unfortunately there is no silent extract without the Flash being initiated.
+
 Version 10.0.23
 - BIOS updates are now no longer linked to the OS version, and thus BIOS versions for all models will be displayed. Where no driver version is present, this will be reflected in the UI
 

@@ -4,7 +4,7 @@
      Organization:  MSEndpointMgr / Patch My PC
      Filename:      DriverAutomationToolCore.psm1
      Purpose:       Core functions for Driver Automation Tool v2.0
-     Version:       10.0.23.0
+     Version:       10.0.24.0
     ===========================================================================
 #>
 
@@ -21,8 +21,8 @@ if ($PSVersionTable.PSVersion.Major -le 5) {
 
 #region Variables
 
-[version]$global:ScriptRelease = "10.0.23.0"
-$global:ScriptBuildDate = "20-04-2026"
+[version]$global:ScriptRelease = "10.0.24.0"
+$global:ScriptBuildDate = "01-05-2026"
 $global:ReleaseNotesURL = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/DriverAutomationToolNotes.txt"
 $OEMLinksURL = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/OEMLinks.xml"
 
@@ -2320,6 +2320,8 @@ function Start-DATModelProcessing {
         [string]$StoragePath,
         [string]$PackagePath,
         [string]$IntuneAuthToken,
+        [string]$IntuneRefreshToken,
+        [int]$IntuneTokenExpiresInSec = 0,
         [string]$SiteServer,
         [string]$SiteCode,
         [string]$PackageType = 'Drivers',
@@ -2354,8 +2356,19 @@ function Start-DATModelProcessing {
     # Set Intune auth token if provided (for background runspace)
     if (-not [string]::IsNullOrEmpty($IntuneAuthToken) -and $RunningMode -eq 'Intune') {
         $script:IntuneAuthToken = $IntuneAuthToken
-        $script:IntuneTokenExpiry = (Get-Date).AddMinutes(55)
-        Write-DATLogEntry -Value "[Intune] Auth token set for background runspace processing" -Severity 1
+        # Use real expiry if provided, otherwise estimate conservatively
+        if ($IntuneTokenExpiresInSec -gt 0) {
+            $script:IntuneTokenExpiry = (Get-Date).AddSeconds($IntuneTokenExpiresInSec)
+        } else {
+            $script:IntuneTokenExpiry = (Get-Date).AddMinutes(55)
+        }
+        # Store refresh token for automatic renewal during long builds
+        if (-not [string]::IsNullOrEmpty($IntuneRefreshToken)) {
+            $script:IntuneRefreshToken = $IntuneRefreshToken
+            Write-DATLogEntry -Value "[Intune] Auth token and refresh token set for background runspace -- token expires $($script:IntuneTokenExpiry)" -Severity 1
+        } else {
+            Write-DATLogEntry -Value "[Intune] Auth token set for background runspace -- token expires $($script:IntuneTokenExpiry) (no refresh token; will attempt client credentials renewal if needed)" -Severity 1
+        }
     }
 
     $modelList = @($SelectedModels)
@@ -2402,6 +2415,15 @@ function Start-DATModelProcessing {
         $currentIndex++
         $oem = $model.OEM
         $modelName = $model.Model
+
+        # Proactively refresh Intune token before each model to prevent expiry during long builds
+        if ($RunningMode -eq 'Intune' -and -not [string]::IsNullOrEmpty($script:IntuneAuthToken)) {
+            if (-not (Update-DATIntuneTokenIfNeeded)) {
+                Write-DATLogEntry -Value "[$currentIndex/$totalModels] WARNING: Intune token refresh failed -- uploads for remaining models may fail" -Severity 3
+                Set-DATRegistryValue -Name "RunningMessage" -Value "WARNING: Intune token expired -- attempting to continue..." -Type String
+            }
+        }
+
         $baseboards = if ($model.Baseboards -is [array]) { $model.Baseboards -join "," } else { [string]$model.Baseboards }
         $os = $model.OS
         $arch = $model.Architecture
@@ -4892,6 +4914,79 @@ function Test-DATIntuneAuth {
         return $false
     }
     return $true
+}
+
+function Update-DATIntuneTokenIfNeeded {
+    <#
+    .SYNOPSIS
+        Proactively refreshes the Intune access token if it expires within 10 minutes.
+        Supports both interactive (refresh token) and app registration (client credentials) flows.
+        Called at the start of each model iteration during long builds.
+    .OUTPUTS
+        $true if the token is valid (refreshed or still good), $false if refresh failed.
+    #>
+    [OutputType([bool])]
+    [CmdletBinding()]
+    param ()
+
+    # No token at all -- nothing to refresh
+    if ([string]::IsNullOrEmpty($script:IntuneAuthToken)) { return $false }
+
+    $minutesRemaining = ($script:IntuneTokenExpiry - (Get-Date)).TotalMinutes
+    if ($minutesRemaining -gt 10) {
+        # Token still has plenty of life -- no action needed
+        return $true
+    }
+
+    Write-DATLogEntry -Value "[Intune Auth] Token expires in $([math]::Round($minutesRemaining, 1)) minutes -- attempting proactive refresh" -Severity 2
+
+    # Strategy 1: Use refresh token (interactive / device code / browser auth)
+    if (-not [string]::IsNullOrEmpty($script:IntuneRefreshToken)) {
+        $result = Invoke-DATTokenRefresh
+        if ($result.Success) {
+            Write-DATLogEntry -Value "[Intune Auth] Token refreshed via refresh token -- new expiry: $($result.ExpiresOn)" -Severity 1
+            return $true
+        }
+        Write-DATLogEntry -Value "[Intune Auth] Refresh token renewal failed: $($result.Error)" -Severity 2
+    }
+
+    # Strategy 2: Use client credentials from registry (app registration)
+    try {
+        $regValues = Get-ItemProperty -Path $global:RegPath -ErrorAction SilentlyContinue
+        $authMode = $regValues.IntuneAuthMode
+        $appId = $regValues.IntuneAppId
+        $encSecret = $regValues.IntuneClientSecret
+        $tenantId = $regValues.IntuneTenantId
+
+        if ($authMode -eq 2 -and -not [string]::IsNullOrEmpty($appId) -and
+            -not [string]::IsNullOrEmpty($encSecret) -and -not [string]::IsNullOrEmpty($tenantId)) {
+
+            # Decrypt the client secret (stored via ConvertFrom-SecureString / DPAPI)
+            $secString = ConvertTo-SecureString -String $encSecret -ErrorAction Stop
+            $bstr = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($secString)
+            $clientSecret = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($bstr)
+            [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
+
+            Write-DATLogEntry -Value "[Intune Auth] Attempting client credentials refresh for tenant $tenantId" -Severity 1
+            $ccResult = Connect-DATIntuneGraphClientCredential -TenantId $tenantId -AppId $appId -ClientSecret $clientSecret
+            if ($ccResult.Success) {
+                Write-DATLogEntry -Value "[Intune Auth] Token refreshed via client credentials -- new expiry: $($ccResult.ExpiresOn)" -Severity 1
+                return $true
+            }
+            Write-DATLogEntry -Value "[Intune Auth] Client credentials refresh failed: $($ccResult.Error)" -Severity 2
+        }
+    } catch {
+        Write-DATLogEntry -Value "[Intune Auth] Client credentials refresh error: $($_.Exception.Message)" -Severity 2
+    }
+
+    # If we get here and the token hasn't actually expired yet, it's still usable
+    if ((Get-Date) -lt $script:IntuneTokenExpiry) {
+        Write-DATLogEntry -Value "[Intune Auth] Refresh failed but token still valid for $([math]::Round(($script:IntuneTokenExpiry - (Get-Date)).TotalMinutes, 1)) minutes" -Severity 2
+        return $true
+    }
+
+    Write-DATLogEntry -Value "[Intune Auth] Token expired and all refresh attempts failed" -Severity 3
+    return $false
 }
 
 function Set-DATIntuneAuthToken {
@@ -7401,7 +7496,10 @@ function Invoke-DATIntunePackageCreation {
     )
     if (-not [string]::IsNullOrEmpty($IntuneAuthToken)) {
         $script:IntuneAuthToken = $IntuneAuthToken
-        $script:IntuneTokenExpiry = (Get-Date).AddMinutes(30)  # Reasonable buffer
+        # Only update expiry if not already set (token refresh maintains its own expiry)
+        if ($script:IntuneTokenExpiry -le (Get-Date)) {
+            $script:IntuneTokenExpiry = (Get-Date).AddMinutes(30)
+        }
     }
 
     if (-not (Test-DATIntuneAuth)) {
@@ -8287,31 +8385,62 @@ function Invoke-DATBiosPackaging {
             }
         }
         'Lenovo' {
-            # Lenovo BIOS packages are Inno Setup self-extracting installers containing
-            # the flash utilities (Flash64.cmd, WinUPTP64.exe, etc.).
-            # The Inno Setup post-install [Run] section launches the firmware update utility,
-            # so we cannot use /VERYSILENT alone -- it would trigger a BIOS flash.
-            # Instead we start the extraction silently, wait for files to appear in the
-            # target directory, then kill the entire process tree to prevent the flash.
+            # Lenovo BIOS packages are Inno Setup self-extracting installers.
+            # Run the installer silently to extract files to the target directory,
+            # poll for extracted files, then kill the process tree before the [Run]
+            # section can flash the BIOS.
             Write-DATLogEntry -Value "[BIOS] Lenovo: Extracting Inno Setup BIOS package to expose flash utilities" -Severity 1
+
+            # Known Lenovo flash utility process names -- kill immediately if spawned
+            $flashProcessNames = @('WinUPTP64', 'WinUPTP', 'wFlashGUIX64', 'wFlashGUI',
+                                   'AFUWINx64', 'AFUWIN', 'Flash64', 'InsydeFlash')
+
             try {
                 Unblock-File -Path $BiosFilePath -ErrorAction SilentlyContinue
+
+                # Clear any previous flash-killed flag
+                Remove-ItemProperty -Path $global:RegPath -Name 'LenovoFlashKilled' -ErrorAction SilentlyContinue
+
                 $extractProc = Start-Process -FilePath $BiosFilePath `
                     -ArgumentList "/VERYSILENT /DIR=`"$extractDir`" /SP- /SUPPRESSMSGBOXES /NORESTART" `
                     -WindowStyle Hidden -PassThru
 
-                # Poll until flash-related files appear in the extract directory, confirming
-                # that Inno Setup has finished extracting and is about to run [Run] entries.
+                # Poll until flash-related files appear AND the file count stabilises,
+                # confirming Inno Setup has finished writing all files before we kill it.
+                # Simultaneously monitor for flash utility processes and kill them immediately.
                 $maxWaitSec = 120
                 $elapsed = 0
                 $extractionDone = $false
+                $lastFileCount = 0
+                $stableChecks = 0
+                $requiredStableChecks = 4  # 4 x 500ms = 2 seconds of stable file count
                 while ($elapsed -lt $maxWaitSec -and -not $extractProc.HasExited) {
+                    # Immediately kill any flash utilities that Inno Setup may have spawned
+                    foreach ($flashName in $flashProcessNames) {
+                        $flashProcs = Get-Process -Name $flashName -ErrorAction SilentlyContinue
+                        foreach ($fp in $flashProcs) {
+                            try {
+                                $fp.Kill()
+                                Write-DATLogEntry -Value "[BIOS] Lenovo: Auto-killed flash utility $($fp.ProcessName) (PID $($fp.Id)) before it could run" -Severity 2
+                                Set-DATRegistryValue -Name 'LenovoFlashKilled' -Value $fp.ProcessName -Type String
+                            } catch {}
+                        }
+                    }
+
                     $extractedFiles = @(Get-ChildItem -Path $extractDir -File -ErrorAction SilentlyContinue |
                         Where-Object { $_.Name -match '\.(cmd|cap|rom|bin|exe)$' -and $_.Name -ne (Split-Path $BiosFilePath -Leaf) })
                     if ($extractedFiles.Count -ge 2) {
-                        $extractionDone = $true
-                        Write-DATLogEntry -Value "[BIOS] Lenovo: Extraction complete -- $($extractedFiles.Count) files detected, terminating installer" -Severity 1
-                        break
+                        if ($extractedFiles.Count -eq $lastFileCount) {
+                            $stableChecks++
+                        } else {
+                            $stableChecks = 0
+                            $lastFileCount = $extractedFiles.Count
+                        }
+                        if ($stableChecks -ge $requiredStableChecks) {
+                            $extractionDone = $true
+                            Write-DATLogEntry -Value "[BIOS] Lenovo: Extraction complete -- $($extractedFiles.Count) files detected and stable for $($requiredStableChecks * 0.5)s, terminating installer" -Severity 1
+                            break
+                        }
                     }
                     Start-Sleep -Milliseconds 500
                     $elapsed += 0.5
@@ -8331,6 +8460,18 @@ function Invoke-DATBiosPackaging {
                     } catch {}
                 }
 
+                # Final sweep: kill any flash utilities that may have survived
+                foreach ($flashName in $flashProcessNames) {
+                    $flashProcs = Get-Process -Name $flashName -ErrorAction SilentlyContinue
+                    foreach ($fp in $flashProcs) {
+                        try {
+                            $fp.Kill()
+                            Write-DATLogEntry -Value "[BIOS] Lenovo: Post-extract killed flash utility $($fp.ProcessName) (PID $($fp.Id))" -Severity 2
+                            Set-DATRegistryValue -Name 'LenovoFlashKilled' -Value $fp.ProcessName -Type String
+                        } catch {}
+                    }
+                }
+
                 if (-not $extractionDone) {
                     # Process exited on its own -- check if files were extracted
                     $extractedFiles = @(Get-ChildItem -Path $extractDir -File -ErrorAction SilentlyContinue)
@@ -8340,7 +8481,6 @@ function Invoke-DATBiosPackaging {
                 }
 
                 # Clean up: remove uninstall artifacts left by Inno Setup
-                $uninstDir = Join-Path $extractDir 'unins*'
                 Get-ChildItem -Path $extractDir -Filter 'unins*' -File -ErrorAction SilentlyContinue |
                     Remove-Item -Force -ErrorAction SilentlyContinue
             } catch {

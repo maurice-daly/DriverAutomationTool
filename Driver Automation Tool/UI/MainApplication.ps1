@@ -907,7 +907,29 @@ function Show-DATLoadingSourcesModal {
     $shadow.Color = [System.Windows.Media.Colors]::Black
     $border.Effect = $shadow
 
+    # Wrap content in a Grid so we can overlay a close button in the top-right corner
+    $grid = [System.Windows.Controls.Grid]::new()
+
     $panel = [System.Windows.Controls.StackPanel]::new()
+
+    # Close (X) button -- allows user to dismiss the modal if loading stalls
+    $closeBtn = [System.Windows.Controls.Button]::new()
+    $closeBtn.Content = [string][char]0xE711  # ChromeClose glyph
+    $closeBtn.FontFamily = [System.Windows.Media.FontFamily]::new('Segoe MDL2 Assets')
+    $closeBtn.FontSize = 12
+    $closeBtn.Width = 28
+    $closeBtn.Height = 28
+    $closeBtn.HorizontalAlignment = 'Right'
+    $closeBtn.VerticalAlignment = 'Top'
+    $closeBtn.Margin = [System.Windows.Thickness]::new(0, -8, -12, 0)
+    $closeBtn.Cursor = [System.Windows.Input.Cursors]::Hand
+    $closeBtn.Background = [System.Windows.Media.Brushes]::Transparent
+    $closeBtn.BorderThickness = [System.Windows.Thickness]::new(0)
+    $closeBtn.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.ColorConverter]::ConvertFromString($theme['InputPlaceholder']))
+    $closeBtn.Add_Click({
+        Close-DATLoadingSourcesModal
+    })
 
     # Spinner icon
     $iconText = [System.Windows.Controls.TextBlock]::new()
@@ -1090,7 +1112,10 @@ function Show-DATLoadingSourcesModal {
     $script:SourceStatusLabels['BIOS'] = $biosStatus
     $script:SourceStatusIcons['BIOS']  = $biosIcon
 
-    $border.Child = $panel
+    $grid.Children.Add($panel) | Out-Null
+    $grid.Children.Add($closeBtn) | Out-Null
+
+    $border.Child = $grid
     $dlg.Content = $border
 
     # Store reference so the refresh timer can update/close it
@@ -1160,6 +1185,127 @@ function Close-DATLoadingSourcesModal {
         try { $script:LoadingSourcesDlg.Close() } catch { }
         $script:LoadingSourcesDlg = $null
     }
+}
+
+function Show-DATLenovoFlashKilledModal {
+    <#
+    .SYNOPSIS
+        Shows a brief auto-closing modal informing the user that a Lenovo flash utility was
+        automatically closed during BIOS extraction. Includes an X close button.
+    #>
+    param (
+        [string]$ProcessName = 'Flash Utility'
+    )
+
+    $theme = Get-DATTheme -ThemeName $script:CurrentTheme
+    $bgColor = [System.Windows.Media.ColorConverter]::ConvertFromString($theme['CardBackground'])
+
+    $dlg = [System.Windows.Window]::new()
+    $dlg.WindowStyle = 'None'
+    $dlg.AllowsTransparency = $true
+    $dlg.Background = [System.Windows.Media.Brushes]::Transparent
+    $dlg.Width = 400
+    try {
+        $dlg.Owner = $Window
+        $dlg.WindowStartupLocation = 'CenterOwner'
+    } catch {
+        $dlg.WindowStartupLocation = 'CenterScreen'
+    }
+    $dlg.SizeToContent = 'Height'
+    $dlg.Topmost = $true
+    $dlg.ResizeMode = 'NoResize'
+    $dlg.ShowInTaskbar = $false
+
+    $border = [System.Windows.Controls.Border]::new()
+    $border.Background = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.Color]::FromArgb(245, $bgColor.R, $bgColor.G, $bgColor.B))
+    $border.CornerRadius = [System.Windows.CornerRadius]::new(16)
+    $border.Padding = [System.Windows.Thickness]::new(28, 24, 28, 24)
+    $border.BorderBrush = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.ColorConverter]::ConvertFromString($theme['CardBorder']))
+    $border.BorderThickness = [System.Windows.Thickness]::new(1)
+    $shadow = [System.Windows.Media.Effects.DropShadowEffect]::new()
+    $shadow.BlurRadius = 30; $shadow.ShadowDepth = 0; $shadow.Opacity = 0.5
+    $shadow.Color = [System.Windows.Media.Colors]::Black
+    $border.Effect = $shadow
+
+    $grid = [System.Windows.Controls.Grid]::new()
+
+    $panel = [System.Windows.Controls.StackPanel]::new()
+
+    # Close (X) button
+    $closeBtn = [System.Windows.Controls.Button]::new()
+    $closeBtn.Content = [string][char]0xE711
+    $closeBtn.FontFamily = [System.Windows.Media.FontFamily]::new('Segoe MDL2 Assets')
+    $closeBtn.FontSize = 12
+    $closeBtn.Width = 28
+    $closeBtn.Height = 28
+    $closeBtn.HorizontalAlignment = 'Right'
+    $closeBtn.VerticalAlignment = 'Top'
+    $closeBtn.Margin = [System.Windows.Thickness]::new(0, -8, -12, 0)
+    $closeBtn.Cursor = [System.Windows.Input.Cursors]::Hand
+    $closeBtn.Background = [System.Windows.Media.Brushes]::Transparent
+    $closeBtn.BorderThickness = [System.Windows.Thickness]::new(0)
+    $closeBtn.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.ColorConverter]::ConvertFromString($theme['InputPlaceholder']))
+    $closeBtn.Add_Click({ $dlg.Close() }.GetNewClosure())
+
+    # Warning icon
+    $iconText = [System.Windows.Controls.TextBlock]::new()
+    $iconText.Text = [string][char]0xE7BA  # Warning glyph
+    $iconText.FontFamily = [System.Windows.Media.FontFamily]::new('Segoe MDL2 Assets')
+    $iconText.FontSize = 28
+    $iconText.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.ColorConverter]::ConvertFromString($theme['StatusWarning']))
+    $iconText.HorizontalAlignment = 'Center'
+    $iconText.Margin = [System.Windows.Thickness]::new(0, 0, 0, 12)
+    $panel.Children.Add($iconText) | Out-Null
+
+    # Title
+    $titleText = [System.Windows.Controls.TextBlock]::new()
+    $titleText.Text = "Automatically Closing Lenovo Flash Utility"
+    $titleText.FontSize = 15
+    $titleText.FontWeight = [System.Windows.FontWeights]::Bold
+    $titleText.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.ColorConverter]::ConvertFromString($theme['WindowForeground']))
+    $titleText.HorizontalAlignment = 'Center'
+    $titleText.TextAlignment = [System.Windows.TextAlignment]::Center
+    $titleText.TextWrapping = [System.Windows.TextWrapping]::Wrap
+    $titleText.Margin = [System.Windows.Thickness]::new(0, 0, 0, 12)
+    $panel.Children.Add($titleText) | Out-Null
+
+    # Description
+    $descText = [System.Windows.Controls.TextBlock]::new()
+    $descText.Text = "The Lenovo BIOS flash utility ($ProcessName) was launched during extraction and has been safely terminated. No BIOS changes were applied."
+    $descText.FontSize = 13
+    $descText.TextWrapping = [System.Windows.TextWrapping]::Wrap
+    $descText.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.ColorConverter]::ConvertFromString($theme['InputPlaceholder']))
+    $descText.HorizontalAlignment = 'Center'
+    $descText.TextAlignment = [System.Windows.TextAlignment]::Center
+    $descText.Margin = [System.Windows.Thickness]::new(0, 0, 0, 0)
+    $panel.Children.Add($descText) | Out-Null
+
+    $grid.Children.Add($panel) | Out-Null
+    $grid.Children.Add($closeBtn) | Out-Null
+
+    $border.Child = $grid
+    $dlg.Content = $border
+
+    $script:LenovoFlashKilledDlg = $dlg
+    $dlg.Show()
+
+    # Auto-close after 1 second
+    $script:LenovoFlashAutoCloseTimer = [System.Windows.Threading.DispatcherTimer]::new()
+    $script:LenovoFlashAutoCloseTimer.Interval = [TimeSpan]::FromSeconds(1)
+    $script:LenovoFlashAutoCloseTimer.Add_Tick({
+        $script:LenovoFlashAutoCloseTimer.Stop()
+        if ($null -ne $script:LenovoFlashKilledDlg) {
+            try { $script:LenovoFlashKilledDlg.Close() } catch { }
+            $script:LenovoFlashKilledDlg = $null
+        }
+    })
+    $script:LenovoFlashAutoCloseTimer.Start()
 }
 
 function Show-DATBuildSummaryDialog {
@@ -6061,7 +6207,7 @@ $btn_Build.Add_Click({
     $script:BuildPS = [powershell]::Create()
     $script:BuildPS.Runspace = $script:BuildRunspace
     [void]$script:BuildPS.AddScript({
-        param($ModulePath, $ScriptDir, $RegPath, $RunningMode, $SelectedModels, $StoragePath, $PackagePath, $IntuneToken, $DisableToast, $SiteServer, $SiteCode, $PackageType, $DPGroups, $DPs, $DistPriority, $EnableBDR, $DebugBuildPath, $CustomBrandingPath, $HPPasswordBinPath, $ToastTimeoutAction, $MaxDeferrals, $TeamsWebhookUrl, $TeamsNotificationsEnabled, $CustomToastTitle, $CustomToastBody)
+        param($ModulePath, $ScriptDir, $RegPath, $RunningMode, $SelectedModels, $StoragePath, $PackagePath, $IntuneToken, $IntuneRefreshTok, $IntuneTokenExpSec, $DisableToast, $SiteServer, $SiteCode, $PackageType, $DPGroups, $DPs, $DistPriority, $EnableBDR, $DebugBuildPath, $CustomBrandingPath, $HPPasswordBinPath, $ToastTimeoutAction, $MaxDeferrals, $TeamsWebhookUrl, $TeamsNotificationsEnabled, $CustomToastTitle, $CustomToastBody)
         try {
         Import-Module $ModulePath -Force
         $procParams = @{
@@ -6073,6 +6219,8 @@ $btn_Build.Add_Click({
             PackagePath     = $PackagePath
             IntuneAuthToken = $IntuneToken
         }
+        if (-not [string]::IsNullOrEmpty($IntuneRefreshTok)) { $procParams['IntuneRefreshToken'] = $IntuneRefreshTok }
+        if ($IntuneTokenExpSec -gt 0) { $procParams['IntuneTokenExpiresInSec'] = $IntuneTokenExpSec }
         if ($DisableToast) { $procParams['DisableToast'] = $true }
         if ($ToastTimeoutAction -ne 'RemindMeLater') { $procParams['ToastTimeoutAction'] = $ToastTimeoutAction }
         if ($MaxDeferrals -gt 0) { $procParams['MaxDeferrals'] = $MaxDeferrals }
@@ -6105,16 +6253,19 @@ $btn_Build.Add_Click({
     $tempStoragePath = if ($regConfig -and -not [string]::IsNullOrEmpty($regConfig.TempStoragePath)) { $regConfig.TempStoragePath } else { Join-Path $global:ScriptDirectory 'Temp' }
     $packageStoragePath = if ($regConfig -and -not [string]::IsNullOrEmpty($regConfig.PackageStoragePath)) { $regConfig.PackageStoragePath } else { $null }
 
-    # Pass Intune auth token for Intune mode
-    $intuneToken = if ($selectedPlatform -eq 'Intune') {
-        # The token is stored in the module's script scope - use the exported accessor
+    # Pass Intune auth token, refresh token, and real expiry for Intune mode
+    $intuneToken = $null
+    $intuneRefreshToken = $null
+    $intuneTokenExpSec = 0
+    if ($selectedPlatform -eq 'Intune') {
         $authStatus = Get-DATIntuneAuthStatus
         if ($authStatus.IsAuthenticated) {
-            # Access the module-internal token via the module's session state
             $coreModule = Get-Module -Name DriverAutomationToolCore
             if ($coreModule) {
-                & $coreModule { $script:IntuneAuthToken }
-            } else { $null }
+                $intuneToken = & $coreModule { $script:IntuneAuthToken }
+                $intuneRefreshToken = & $coreModule { $script:IntuneRefreshToken }
+                $intuneTokenExpSec = [math]::Max(0, [int]($authStatus.MinutesRemaining * 60))
+            }
         } else {
             Write-DATActivityLog "Intune platform selected but not authenticated. Build aborted." -Level Warn
             $txt_Status.Text = "Please authenticate to Intune before building packages."
@@ -6129,7 +6280,7 @@ $btn_Build.Add_Click({
             $panel_BuildProgress.Visibility = 'Collapsed'
             return
         }
-    } else { $null }
+    }
 
     # Read the Disable Toast checkbox state (Intune only)
     $disableToast = ($selectedPlatform -eq 'Intune') -and ($chk_DisableToastPrompt.IsChecked -eq $true)
@@ -6160,6 +6311,8 @@ $btn_Build.Add_Click({
     [void]$script:BuildPS.AddArgument($tempStoragePath)
     [void]$script:BuildPS.AddArgument($packageStoragePath)
     [void]$script:BuildPS.AddArgument($intuneToken)
+    [void]$script:BuildPS.AddArgument($intuneRefreshToken)
+    [void]$script:BuildPS.AddArgument($intuneTokenExpSec)
     [void]$script:BuildPS.AddArgument($disableToast)
     [void]$script:BuildPS.AddArgument($cmSiteServer)
     [void]$script:BuildPS.AddArgument($cmSiteCode)
@@ -6238,6 +6391,15 @@ $btn_Build.Add_Click({
 
         # Update build progress modal from registry
         Update-DATBuildModalFromRegistry
+
+        # Check if a Lenovo flash utility was auto-killed during extraction
+        try {
+            $flashKilled = (Get-ItemProperty -Path $global:RegPath -Name 'LenovoFlashKilled' -ErrorAction SilentlyContinue).LenovoFlashKilled
+            if (-not [string]::IsNullOrEmpty($flashKilled)) {
+                Remove-ItemProperty -Path $global:RegPath -Name 'LenovoFlashKilled' -ErrorAction SilentlyContinue
+                Show-DATLenovoFlashKilledModal -ProcessName $flashKilled
+            }
+        } catch { }
 
         # Read registry for progress
         $regValues = $null
@@ -14476,7 +14638,7 @@ if (Test-Path $logoPath) {
 
 # Read version from module manifest
 $manifestPath = Join-Path $AppRoot "Modules\DriverAutomationToolCore\DriverAutomationToolCore.psd1"
-$script:versionString = "v10.0.23"
+$script:versionString = "v10.0.24"
 if (Test-Path $manifestPath) {
     $manifestData = Import-PowerShellDataFile $manifestPath
     $ver = [version]$manifestData.ModuleVersion
