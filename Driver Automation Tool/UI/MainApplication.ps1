@@ -195,6 +195,12 @@ function Set-DATApplicationTheme {
     $script:CurrentTheme = $ThemeName
 }
 
+# Load saved theme preference from registry (falls back to parameter default)
+$savedThemePref = (Get-ItemProperty -Path $global:RegPath -Name 'Theme' -ErrorAction SilentlyContinue).Theme
+if ($savedThemePref -in @('Dark', 'Light')) {
+    $Theme = $savedThemePref
+}
+
 # Apply initial theme
 Set-DATApplicationTheme -ThemeName $Theme
 
@@ -257,6 +263,8 @@ $btn_ThemeToggle.Add_Click({
         } else {
             Set-DATApplicationTheme -ThemeName 'Dark'
         }
+        # Persist theme preference to registry
+        New-ItemProperty -Path $global:RegPath -Name 'Theme' -Value $script:CurrentTheme -PropertyType String -Force | Out-Null
         # Update the build progress modal if it's open
         Update-DATBuildModalTheme
     } catch {
@@ -4760,12 +4768,117 @@ foreach ($chk in $script:OEMCheckboxes.Values) {
 $popup_OEM.Add_Closed({
     if (-not $script:OEMSelectionDirty) { return }
     $script:OEMSelectionDirty = $false
+    # Persist OEM selection to registry immediately
+    $currentOEMs = Get-DATSelectedOEMs
+    Set-DATRegistryValue -Name "SelectedOEMs" -Value ($currentOEMs -join ',') -Type String
     if ($script:SuppressModelRefresh) { return }
-    if ((Get-DATSelectedOEMs).Count -gt 0 -and $null -ne $cmb_OS.SelectedItem) {
+    if ((Get-DATSelectedOEMs).Count -gt 0 -and (Get-DATSelectedOSes).Count -gt 0) {
         if ($script:ModelData.Count -gt 0) { Save-DATModelSelections }
         Invoke-DATRefreshModelsClick
     } else {
         # No OEMs selected (or no OS) -- clear the model grid
+        if ($script:ModelData.Count -gt 0) {
+            Save-DATModelSelections
+            $script:ModelData.Clear()
+        }
+    }
+})
+
+# OS multi-select pill dropdown controls
+$btn_OSToggle = $Window.FindName('btn_OSToggle')
+$txt_OSDisplay = $Window.FindName('txt_OSDisplay')
+$popup_OS = $Window.FindName('popup_OS')
+$script:OSCheckboxes = [ordered]@{
+    'Windows 11 25H2' = $Window.FindName('chk_OS_Win11_25H2')
+    'Windows 11 24H2' = $Window.FindName('chk_OS_Win11_24H2')
+    'Windows 11 23H2' = $Window.FindName('chk_OS_Win11_23H2')
+    'Windows 11 22H2' = $Window.FindName('chk_OS_Win11_22H2')
+}
+$script:OSBorders = [ordered]@{
+    'Windows 11 25H2' = $Window.FindName('border_OS_Win11_25H2')
+    'Windows 11 24H2' = $Window.FindName('border_OS_Win11_24H2')
+    'Windows 11 23H2' = $Window.FindName('border_OS_Win11_23H2')
+    'Windows 11 22H2' = $Window.FindName('border_OS_Win11_22H2')
+}
+
+# Backing store for selected OS values -- survives regardless of popup/checkbox state
+$script:SelectedOSValues = [System.Collections.Generic.List[string]]::new()
+
+function Get-DATSelectedOSes {
+    return @($script:SelectedOSValues)
+}
+
+function Update-DATOSDisplayText {
+    $selected = Get-DATSelectedOSes
+    if ($selected.Count -eq 0) {
+        $txt_OSDisplay.Text = 'Select OS...'
+    } elseif ($selected.Count -eq 1) {
+        $txt_OSDisplay.Text = $selected[0]
+    } else {
+        $txt_OSDisplay.Text = "$($selected.Count) selected"
+    }
+}
+
+function Update-DATOSSelectionHighlight {
+    $brushSelected = $Window.FindResource('ButtonPrimary')
+    $brushTransparent = [System.Windows.Media.Brushes]::Transparent
+    foreach ($entry in $script:OSCheckboxes.GetEnumerator()) {
+        $border = $script:OSBorders[$entry.Key]
+        if ($null -ne $border) {
+            $border.Background = if ($entry.Value.IsChecked -eq $true) { $brushSelected } else { $brushTransparent }
+        }
+    }
+}
+
+# Wire OS checkbox change events -- deferred refresh on popup close (like OEM)
+$script:OSSelectionDirty = $false
+$osSelectionChangedHandler = {
+    if ($script:SuppressOSSync) { return }
+    # Rebuild backing store from checkbox state
+    $script:SelectedOSValues.Clear()
+    foreach ($entry in $script:OSCheckboxes.GetEnumerator()) {
+        if ($null -ne $entry.Value -and $entry.Value.IsChecked -eq $true) {
+            $script:SelectedOSValues.Add($entry.Key)
+        }
+    }
+    Update-DATOSDisplayText
+    Update-DATOSSelectionHighlight
+    if (-not $script:SuppressModelRefresh) {
+        $script:OSSelectionDirty = $true
+    }
+}
+foreach ($chk in $script:OSCheckboxes.Values) {
+    if ($null -ne $chk) {
+        $chk.Add_Checked($osSelectionChangedHandler)
+        $chk.Add_Unchecked($osSelectionChangedHandler)
+    }
+}
+
+# Sync checkboxes from backing store when popup opens (ensures UI matches state)
+$script:SuppressOSSync = $false
+$popup_OS.Add_Opened({
+    $script:SuppressOSSync = $true
+    foreach ($entry in $script:OSCheckboxes.GetEnumerator()) {
+        if ($null -ne $entry.Value) {
+            $entry.Value.IsChecked = ($script:SelectedOSValues -contains $entry.Key)
+        }
+    }
+    $script:SuppressOSSync = $false
+    Update-DATOSSelectionHighlight
+})
+
+# When the OS popup closes, refresh the model list if any OS values were toggled.
+$popup_OS.Add_Closed({
+    if (-not $script:OSSelectionDirty) { return }
+    $script:OSSelectionDirty = $false
+    # Persist OS selection to registry immediately
+    $currentOSes = Get-DATSelectedOSes
+    Set-DATRegistryValue -Name "OS" -Value ($currentOSes -join ';') -Type String
+    if ($script:SuppressModelRefresh) { return }
+    if ((Get-DATSelectedOEMs).Count -gt 0 -and (Get-DATSelectedOSes).Count -gt 0) {
+        if ($script:ModelData.Count -gt 0) { Save-DATModelSelections }
+        Invoke-DATRefreshModelsClick
+    } else {
         if ($script:ModelData.Count -gt 0) {
             Save-DATModelSelections
             $script:ModelData.Clear()
@@ -5007,7 +5120,7 @@ $cmb_PackageType.Add_SelectionChanged({
     $selected = if ($null -ne $cmb_PackageType.SelectedItem) { $cmb_PackageType.SelectedItem.Content } else { 'Drivers' }
     Set-DATRegistryValue -Name "PackageType" -Value "$selected" -Type String
 
-    if ((Get-DATSelectedOEMs).Count -gt 0 -and $null -ne $cmb_OS.SelectedItem) {
+    if ((Get-DATSelectedOEMs).Count -gt 0 -and (Get-DATSelectedOSes).Count -gt 0) {
         # Save current selections so they can be restored after the refresh clears the grid
         if ($script:ModelData.Count -gt 0) { Save-DATModelSelections }
         Invoke-DATRefreshModelsClick
@@ -5021,19 +5134,10 @@ function Invoke-DATRefreshModelsClick {
     $invokeProvider.Invoke()
 }
 
-# Refresh models when OS or Architecture selection changes
-$cmb_OS.Add_SelectionChanged({
-    if ($script:SuppressModelRefresh) { return }
-    if ((Get-DATSelectedOEMs).Count -gt 0 -and $null -ne $cmb_OS.SelectedItem) {
-        # Save current selections before refresh clears the model list
-        if ($script:ModelData.Count -gt 0) { Save-DATModelSelections }
-        Invoke-DATRefreshModelsClick
-    }
-})
-
+# Refresh models when Architecture selection changes
 $cmb_Architecture.Add_SelectionChanged({
     if ($script:SuppressModelRefresh) { return }
-    if ((Get-DATSelectedOEMs).Count -gt 0 -and $null -ne $cmb_OS.SelectedItem) {
+    if ((Get-DATSelectedOEMs).Count -gt 0 -and (Get-DATSelectedOSes).Count -gt 0) {
         # Save current selections before refresh clears the model list
         if ($script:ModelData.Count -gt 0) { Save-DATModelSelections }
         Invoke-DATRefreshModelsClick
@@ -5043,7 +5147,8 @@ $cmb_Architecture.Add_SelectionChanged({
 $btn_RefreshModels.Add_Click({
     # Capture selections on UI thread
     $selectedOEMs = Get-DATSelectedOEMs
-    $selectedOS = if ($null -ne $cmb_OS.SelectedItem) { $cmb_OS.SelectedItem.Content } else { $null }
+    $selectedOSes = Get-DATSelectedOSes
+    $selectedOS = $selectedOSes -join ';'
     $selectedArch = if ($null -ne $cmb_Architecture.SelectedItem) { $cmb_Architecture.SelectedItem.Content } else { "x64" }
 
     $selectedPlatformValue = if ($null -ne $cmb_Platform.SelectedItem) { $cmb_Platform.SelectedItem.Content } else { "Download Only" }
@@ -5057,9 +5162,9 @@ $btn_RefreshModels.Add_Click({
     Set-DATRegistryValue -Name "PackageType" -Value "$selectedPackageType" -Type String
 
     Write-DATActivityLog "Selected OEMs: $($selectedOEMs -join ', ')" -Level Info
-    Write-DATActivityLog "OS: $selectedOS | Architecture: $selectedArch | Platform: $selectedPlatformValue" -Level Info
+    Write-DATActivityLog "OS: $($selectedOSes -join ', ') | Architecture: $selectedArch | Platform: $selectedPlatformValue" -Level Info
 
-    if ($selectedOEMs.Count -eq 0 -or [string]::IsNullOrEmpty($selectedOS)) {
+    if ($selectedOEMs.Count -eq 0 -or $selectedOSes.Count -eq 0) {
         Write-DATActivityLog "Validation failed - select at least one OEM and an OS." -Level Warn
         $txt_Status.Text = "Please select at least one OEM and an operating system."
         return
@@ -5176,9 +5281,8 @@ $btn_RefreshModels.Add_Click({
             return @([PSCustomObject]@{ _Error = "Cannot download OEM catalog: $($_.Exception.Message)" })
         }
 
-        $WindowsBuild = $($OS).Split(" ")[2]
-        $WindowsVersion = $OS.Trim("$WindowsBuild").TrimEnd()
-        Write-Log "Parsed OS: Version=$WindowsVersion Build=$WindowsBuild"
+        # Support multiple OS values separated by semicolons
+        $OSList = $OS -split ';' | Where-Object { $_ }
         $OEMSupportedModels = @()
 
         foreach ($OEM in $RequiredOEMs) {
@@ -5189,6 +5293,7 @@ $btn_RefreshModels.Add_Click({
                     $HPLink = ($OEMLinks.OEM.Manufacturer | Where-Object { $_.Name -match "HP" }).Link | Where-Object { $_.Type -eq "XMLCabinetSource" } | Select-Object -ExpandProperty URL -First 1
                     if ([string]::IsNullOrEmpty($HPLink)) {
                         Write-Log "No HP XMLCabinetSource URL found in OEM catalog." -Level Error
+                        $LogQueue.Enqueue('[SOURCE:HP:Error:No catalog URL]')
                         continue
                     }
                     Write-Log "HP catalog URL: $HPLink"
@@ -5211,31 +5316,38 @@ $btn_RefreshModels.Add_Click({
                         }
                         if (-not (Test-Path $HPXMLPath)) {
                             Write-Log "Extracted XML not found at $HPXMLPath" -Level Error
+                            $LogQueue.Enqueue('[SOURCE:HP:Error:XML not found]')
                             continue
                         }
                         [xml]$HPModelXML = Get-Content -Path $HPXMLPath -Raw
                         $HPPacks = $HPModelXML.NewDataSet.HPClientDriverPackCatalog.ProductOSDriverPackList.ProductOSDriverPack
                         $totalPacks = @($HPPacks).Count
-                        Write-Log "[HP] Total packs in catalog: $totalPacks (filtering: OSName -match '$WindowsVersion' -and -match '$WindowsBuild')"
-                        $HPMatches = $HPPacks | Where-Object { $_.OSName -match $WindowsVersion -and $_.OSName -match $WindowsBuild }
-                        $count = @($HPMatches).Count
-                        if ($count -eq 0 -and $totalPacks -gt 0) {
-                            $sampleOSNames = @($HPPacks | Select-Object -ExpandProperty OSName -Unique | Select-Object -First 10)
-                            Write-Log "[HP] 0 matches -- sample OSName values in catalog: $($sampleOSNames -join '; ')" -Level Warn
-                        }
-                        Write-Log "HP: Found $count matching driver packs." -Level Success
-                        $LogQueue.Enqueue("[SOURCE:HP:OK:$count models]")
-                        foreach ($Model in $HPMatches) {
-                            $modelName = ($Model.SystemName -replace '^HP\s+', '').Trim()
-                            $OEMSupportedModels += [PSCustomObject]@{
-                                OEM        = "HP"
-                                Model      = $modelName
-                                Baseboards = $Model.SystemId
-                                OS         = $WindowsVersion
-                                'OS Build' = $WindowsBuild
-                                Version    = (Get-Date -Format 'ddMMyyyy')
+                        foreach ($SingleOS in $OSList) {
+                            $WindowsBuild = $($SingleOS).Split(" ")[2]
+                            $WindowsVersion = $SingleOS.Trim("$WindowsBuild").TrimEnd()
+                            Write-Log "[HP] Filtering for $WindowsVersion build $WindowsBuild (total packs: $totalPacks)"
+                            $HPMatches = $HPPacks | Where-Object { $_.OSName -match $WindowsVersion -and $_.OSName -match $WindowsBuild }
+                            $count = @($HPMatches).Count
+                            if ($count -eq 0 -and $totalPacks -gt 0) {
+                                $sampleOSNames = @($HPPacks | Select-Object -ExpandProperty OSName -Unique | Select-Object -First 10)
+                                Write-Log "[HP] 0 matches for $SingleOS -- sample OSName values: $($sampleOSNames -join '; ')" -Level Warn
+                            }
+                            Write-Log "HP: Found $count matching driver packs for $SingleOS." -Level Success
+                            foreach ($Model in $HPMatches) {
+                                $modelName = ($Model.SystemName -replace '^HP\s+', '').Trim()
+                                $OEMSupportedModels += [PSCustomObject]@{
+                                    OEM        = "HP"
+                                    Model      = $modelName
+                                    Baseboards = $Model.SystemId
+                                    OS         = $WindowsVersion
+                                    'OS Build' = $WindowsBuild
+                                    Version    = (Get-Date -Format 'ddMMyyyy')
+                                }
                             }
                         }
+                        $uniqueCount = @($OEMSupportedModels | Where-Object { $_.OEM -eq 'HP' } | Select-Object -Property Model -Unique).Count
+                        Write-Log "HP: $uniqueCount unique models across all selected OS versions." -Level Success
+                        $LogQueue.Enqueue("[SOURCE:HP:OK:$uniqueCount models]")
                     } catch {
                         Write-Log "HP processing failed: $($_.Exception.Message)" -Level Error
                         $LogQueue.Enqueue('[SOURCE:HP:Error]')
@@ -5245,12 +5357,12 @@ $btn_RefreshModels.Add_Click({
                     $DellLink = ($OEMLinks.OEM.Manufacturer | Where-Object { $_.Name -match "Dell" }).Link | Where-Object { $_.Type -eq "XMLCabinetSource" } | Select-Object -ExpandProperty URL -First 1
                     if ([string]::IsNullOrEmpty($DellLink)) {
                         Write-Log "No Dell XMLCabinetSource URL found in OEM catalog." -Level Error
+                        $LogQueue.Enqueue('[SOURCE:Dell:Error:No catalog URL]')
                         continue
                     }
                     Write-Log "Dell catalog URL: $DellLink"
                     $DellCabFile = [string]($DellLink | Split-Path -Leaf)
                     $DellXMLFile = $DellCabFile.TrimEnd(".cab") + ".xml"
-                    $DellWindowsVersion = $WindowsVersion.Replace(" ", "")
                     try {
                         $DellCabPath = Join-Path $TempDir $DellCabFile
                         $DellXMLPath = Join-Path $TempDir $DellXMLFile
@@ -5269,32 +5381,41 @@ $btn_RefreshModels.Add_Click({
                         }
                         if (-not (Test-Path $DellXMLPath)) {
                             Write-Log "Extracted Dell XML not found at $DellXMLPath" -Level Error
+                            $LogQueue.Enqueue('[SOURCE:Dell:Error:XML not found]')
                             continue
                         }
                         [xml]$DellModelXML = Get-Content -Path $DellXMLPath -Raw
                         $DellPkgs = $DellModelXML.driverpackmanifest.driverpackage
-                        $DellMatchingPkgs = $DellPkgs | Where-Object {
-                            ($_.SupportedOperatingSystems.OperatingSystem.osCode -eq "$DellWindowsVersion") -and
-                            ($_.SupportedOperatingSystems.OperatingSystem.osArch -match $Architecture)
-                        }
-                        $DellModels = $DellMatchingPkgs | Select-Object @{ Name = "SystemName"; Expression = { $_.SupportedSystems.Brand.Model.name | Select-Object -First 1 } },
-                        @{ Name = "SystemID"; Expression = { $_.SupportedSystems.Brand.Model.SystemID } },
-                        @{ Name = "DellVersion"; Expression = { $_.dellVersion } } -Unique |
-                        Where-Object { $_.SystemName -gt $null }
-                        $count = @($DellModels).Count
-                        Write-Log "Dell: Found $count matching models." -Level Success
-                        $LogQueue.Enqueue("[SOURCE:Dell:OK:$count models]")
-                        foreach ($Model in $DellModels) {
-                            $sysIds = $Model.SystemID | Where-Object { $_ } | Select-Object -Unique
-                            $OEMSupportedModels += [PSCustomObject]@{
-                                OEM        = "Dell"
-                                Model      = $Model.SystemName
-                                Baseboards = $(if ($sysIds) { $sysIds -join "," } else { "" })
-                                OS         = $WindowsVersion
-                                'OS Build' = $WindowsBuild
-                                Version    = $Model.DellVersion
+                        foreach ($SingleOS in $OSList) {
+                            $WindowsBuild = $($SingleOS).Split(" ")[2]
+                            $WindowsVersion = $SingleOS.Trim("$WindowsBuild").TrimEnd()
+                            $DellWindowsVersion = $WindowsVersion.Replace(" ", "")
+                            Write-Log "[Dell] Filtering for $DellWindowsVersion arch $Architecture (OS: $SingleOS)"
+                            $DellMatchingPkgs = $DellPkgs | Where-Object {
+                                ($_.SupportedOperatingSystems.OperatingSystem.osCode -eq "$DellWindowsVersion") -and
+                                ($_.SupportedOperatingSystems.OperatingSystem.osArch -match $Architecture)
+                            }
+                            $DellModels = $DellMatchingPkgs | Select-Object @{ Name = "SystemName"; Expression = { $_.SupportedSystems.Brand.Model.name | Select-Object -First 1 } },
+                            @{ Name = "SystemID"; Expression = { $_.SupportedSystems.Brand.Model.SystemID } },
+                            @{ Name = "DellVersion"; Expression = { $_.dellVersion } } -Unique |
+                            Where-Object { $_.SystemName -gt $null }
+                            $count = @($DellModels).Count
+                            Write-Log "Dell: Found $count matching models for $SingleOS." -Level Success
+                            foreach ($Model in $DellModels) {
+                                $sysIds = $Model.SystemID | Where-Object { $_ } | Select-Object -Unique
+                                $OEMSupportedModels += [PSCustomObject]@{
+                                    OEM        = "Dell"
+                                    Model      = $Model.SystemName
+                                    Baseboards = $(if ($sysIds) { $sysIds -join "," } else { "" })
+                                    OS         = $WindowsVersion
+                                    'OS Build' = $WindowsBuild
+                                    Version    = $Model.DellVersion
+                                }
                             }
                         }
+                        $uniqueCount = @($OEMSupportedModels | Where-Object { $_.OEM -eq 'Dell' } | Select-Object -Property Model -Unique).Count
+                        Write-Log "Dell: $uniqueCount unique models across all selected OS versions." -Level Success
+                        $LogQueue.Enqueue("[SOURCE:Dell:OK:$uniqueCount models]")
                     } catch {
                         Write-Log "Dell processing failed: $($_.Exception.Message)" -Level Error
                         $LogQueue.Enqueue('[SOURCE:Dell:Error]')
@@ -5304,6 +5425,7 @@ $btn_RefreshModels.Add_Click({
                     $LenovoLink = ($OEMLinks.OEM.Manufacturer | Where-Object { $_.Name -match "Lenovo" }).Link | Where-Object { $_.Type -eq "XMLSource" } | Select-Object -ExpandProperty URL -First 1
                     if ([string]::IsNullOrEmpty($LenovoLink)) {
                         Write-Log "No Lenovo XMLSource URL found in OEM catalog." -Level Error
+                        $LogQueue.Enqueue('[SOURCE:Lenovo:Error:No catalog URL]')
                         continue
                     }
                     Write-Log "Lenovo catalog URL: $LenovoLink"
@@ -5320,37 +5442,43 @@ $btn_RefreshModels.Add_Click({
                         }
                         [xml]$LenovoModelXML = Get-Content -Path $LenovoFilePath
                         $LenovoDrivers = $LenovoModelXML.ModelList.Model
-                        $WinVer = "Win" + "$($WindowsVersion.Split(' ')[1])"
-                        Write-Log "Filtering Lenovo models for $WinVer build $WindowsBuild..."
-                        $LenovoModels = ($LenovoDrivers | Where-Object {
-                            ($_.SCCM.Version -eq $WindowsBuild -and $_.SCCM.OS -eq $WinVer)
-                        } | Sort-Object).Name
-                        $count = @($LenovoModels).Count
-                        Write-Log "Lenovo: Found $count matching models." -Level Success
-                        $LogQueue.Enqueue("[SOURCE:Lenovo:OK:$count models]")
-                        foreach ($Model in $LenovoModels) {
-                            $modelNode = $LenovoDrivers | Where-Object { $_.Name -eq $Model } | Select-Object -First 1
-                            $baseboards = $modelNode.Types.Type
-                            $baseboardStr = if ($null -ne $baseboards) { ([string]$baseboards).Replace(" ", ",").Trim() } else { "" }
-                            # Get driver pack date from the matching SCCM node
-                            $sccmNode = $modelNode.SCCM | Where-Object { $_.Version -eq $WindowsBuild -and $_.OS -eq $WinVer } | Select-Object -First 1
-                            $lenovoDate = if ($sccmNode.date) { $sccmNode.date } else { '' }
-                            # Check for supplemental NVIDIA GFX driver package
-                            $gfxNode = $modelNode.GFX | Where-Object { $_.os -eq $WinVer -and $_.version -eq $WindowsBuild } | Select-Object -First 1
-                            $hasGFX = $null -ne $gfxNode
-                            $gfxBrand = if ($hasGFX) { $gfxNode.brand } else { $null }
-                            if ($hasGFX) { Write-Log "Lenovo: $Model has supplemental $gfxBrand GFX driver package" }
-                            $OEMSupportedModels += [PSCustomObject]@{
-                                OEM        = "Lenovo"
-                                Model      = $Model
-                                Baseboards = $baseboardStr
-                                OS         = $WindowsVersion
-                                'OS Build' = $WindowsBuild
-                                HasGFX     = $hasGFX
-                                GFXBrand   = $gfxBrand
-                                Version    = $lenovoDate
+                        foreach ($SingleOS in $OSList) {
+                            $WindowsBuild = $($SingleOS).Split(" ")[2]
+                            $WindowsVersion = $SingleOS.Trim("$WindowsBuild").TrimEnd()
+                            $WinVer = "Win" + "$($WindowsVersion.Split(' ')[1])"
+                            Write-Log "Filtering Lenovo models for $WinVer build $WindowsBuild..."
+                            $LenovoModels = ($LenovoDrivers | Where-Object {
+                                ($_.SCCM.Version -eq $WindowsBuild -and $_.SCCM.OS -eq $WinVer)
+                            } | Sort-Object).Name
+                            $count = @($LenovoModels).Count
+                            Write-Log "Lenovo: Found $count matching models for $SingleOS." -Level Success
+                            foreach ($Model in $LenovoModels) {
+                                $modelNode = $LenovoDrivers | Where-Object { $_.Name -eq $Model } | Select-Object -First 1
+                                $baseboards = $modelNode.Types.Type
+                                $baseboardStr = if ($null -ne $baseboards) { ([string]$baseboards).Replace(" ", ",").Trim() } else { "" }
+                                # Get driver pack date from the matching SCCM node
+                                $sccmNode = $modelNode.SCCM | Where-Object { $_.Version -eq $WindowsBuild -and $_.OS -eq $WinVer } | Select-Object -First 1
+                                $lenovoDate = if ($sccmNode.date) { $sccmNode.date } else { '' }
+                                # Check for supplemental NVIDIA GFX driver package
+                                $gfxNode = $modelNode.GFX | Where-Object { $_.os -eq $WinVer -and $_.version -eq $WindowsBuild } | Select-Object -First 1
+                                $hasGFX = $null -ne $gfxNode
+                                $gfxBrand = if ($hasGFX) { $gfxNode.brand } else { $null }
+                                if ($hasGFX) { Write-Log "Lenovo: $Model has supplemental $gfxBrand GFX driver package" }
+                                $OEMSupportedModels += [PSCustomObject]@{
+                                    OEM        = "Lenovo"
+                                    Model      = $Model
+                                    Baseboards = $baseboardStr
+                                    OS         = $WindowsVersion
+                                    'OS Build' = $WindowsBuild
+                                    HasGFX     = $hasGFX
+                                    GFXBrand   = $gfxBrand
+                                    Version    = $lenovoDate
+                                }
                             }
                         }
+                        $uniqueCount = @($OEMSupportedModels | Where-Object { $_.OEM -eq 'Lenovo' } | Select-Object -Property Model -Unique).Count
+                        Write-Log "Lenovo: $uniqueCount unique models across all selected OS versions." -Level Success
+                        $LogQueue.Enqueue("[SOURCE:Lenovo:OK:$uniqueCount models]")
                     } catch {
                         Write-Log "Lenovo processing failed: $($_.Exception.Message)" -Level Error
                         $LogQueue.Enqueue('[SOURCE:Lenovo:Error]')
@@ -5381,30 +5509,36 @@ $btn_RefreshModels.Add_Click({
                             $availableOSVersions = ($MSModelList | Select-Object -ExpandProperty OperatingSystem -ErrorAction SilentlyContinue | Sort-Object -Unique) -join ', '
                             Write-Log "Microsoft catalog OS versions: $availableOSVersions"
                         }
-                        Write-Log "Filtering Microsoft models where OperatingSystem matches '$WindowsVersion'..."
                         $MSArchFilter = if ($Architecture -eq 'Arm64') { 'arm64' } else { 'amd64' }
                         Write-Log "Microsoft architecture filter: $MSArchFilter (from $Architecture)"
-                        $MSFiltered = $MSModelList | Where-Object { $_.OperatingSystem -match $WindowsVersion -and $_.OSArchitecture -eq $MSArchFilter }
-                        $MSModels = $MSFiltered | Group-Object -Property Model
-                        $count = @($MSModels).Count
-                        Write-Log "Microsoft: Found $count matching models after filtering." -Level $(if ($count -gt 0) { 'Success' } else { 'Warn' })
-                        $LogQueue.Enqueue("[SOURCE:Microsoft:OK:$count models]")
-                        if ($count -eq 0) {
-                            Write-Log "No Microsoft models matched OSVersion='$WindowsVersion'. Check catalog OS versions above." -Level Warn
-                        }
-                        foreach ($MSModelGroup in $MSModels) {
-                            $products = ($MSModelGroup.Group | ForEach-Object { $_.SystemId } | Select-Object -Unique) -join ','
-                            $latestEntry = $MSModelGroup.Group | Sort-Object { try { [datetime]$_.ReleaseDate } catch { [datetime]::MinValue } } -Descending | Select-Object -First 1
-                            $msVersion = if ($latestEntry.ReleaseDate) { $latestEntry.ReleaseDate } else { '' }
-                            $OEMSupportedModels += [PSCustomObject]@{
-                                OEM        = "Microsoft"
-                                Model      = $MSModelGroup.Name
-                                Baseboards = $products
-                                OS         = $WindowsVersion
-                                'OS Build' = $WindowsBuild
-                                Version    = $msVersion
+                        foreach ($SingleOS in $OSList) {
+                            $WindowsBuild = $($SingleOS).Split(" ")[2]
+                            $WindowsVersion = $SingleOS.Trim("$WindowsBuild").TrimEnd()
+                            Write-Log "Filtering Microsoft models for $WindowsVersion (OS: $SingleOS)..."
+                            $MSFiltered = $MSModelList | Where-Object { $_.OperatingSystem -match $WindowsVersion -and $_.OSArchitecture -eq $MSArchFilter }
+                            $MSModels = $MSFiltered | Group-Object -Property Model
+                            $count = @($MSModels).Count
+                            Write-Log "Microsoft: Found $count matching models for $SingleOS." -Level $(if ($count -gt 0) { 'Success' } else { 'Warn' })
+                            if ($count -eq 0) {
+                                Write-Log "No Microsoft models matched for $SingleOS." -Level Warn
+                            }
+                            foreach ($MSModelGroup in $MSModels) {
+                                $products = ($MSModelGroup.Group | ForEach-Object { $_.SystemId } | Select-Object -Unique) -join ','
+                                $latestEntry = $MSModelGroup.Group | Sort-Object { try { [datetime]$_.ReleaseDate } catch { [datetime]::MinValue } } -Descending | Select-Object -First 1
+                                $msVersion = if ($latestEntry.ReleaseDate) { $latestEntry.ReleaseDate } else { '' }
+                                $OEMSupportedModels += [PSCustomObject]@{
+                                    OEM        = "Microsoft"
+                                    Model      = $MSModelGroup.Name
+                                    Baseboards = $products
+                                    OS         = $WindowsVersion
+                                    'OS Build' = $WindowsBuild
+                                    Version    = $msVersion
+                                }
                             }
                         }
+                        $uniqueCount = @($OEMSupportedModels | Where-Object { $_.OEM -eq 'Microsoft' } | Select-Object -Property Model -Unique).Count
+                        Write-Log "Microsoft: $uniqueCount unique models across all selected OS versions." -Level Success
+                        $LogQueue.Enqueue("[SOURCE:Microsoft:OK:$uniqueCount models]")
                     } catch {
                         Write-Log "Microsoft processing failed: $($_.Exception.Message)" -Level Error
                         $LogQueue.Enqueue('[SOURCE:Microsoft:Error]')
@@ -5414,6 +5548,7 @@ $btn_RefreshModels.Add_Click({
                     $AcerLink = ($OEMLinks.OEM.Manufacturer | Where-Object { $_.Name -match "Acer" }).Link | Where-Object { $_.Type -eq "XMLSource" } | Select-Object -ExpandProperty URL -First 1
                     if ([string]::IsNullOrEmpty($AcerLink)) {
                         Write-Log "No Acer XMLSource URL found in OEM catalog." -Level Error
+                        $LogQueue.Enqueue('[SOURCE:Acer:Error:No catalog URL]')
                         continue
                     }
                     Write-Log "Acer catalog URL: $AcerLink"
@@ -5430,51 +5565,63 @@ $btn_RefreshModels.Add_Click({
                         }
                         [xml]$AcerModelXML = Get-Content -Path $AcerFilePath
                         $AcerDrivers = $AcerModelXML.ModelList.Model
-                        $WinVer = "Win" + "$($WindowsVersion.Split(' ')[1])"
-                        $AcerModels = ($AcerDrivers | Where-Object {
-                            ($_.SCCM.Version -eq $WindowsBuild -and $_.SCCM.OS -eq $WinVer)
-                        } | Sort-Object).Name
-                        $count = @($AcerModels).Count
-                        Write-Log "Acer: Found $count matching models." -Level Success
-                        $LogQueue.Enqueue("[SOURCE:Acer:OK:$count models]")
-                        foreach ($Model in $AcerModels) {
-                            $OEMSupportedModels += [PSCustomObject]@{
-                                OEM        = "Acer"
-                                Model      = $Model
-                                Baseboards = $Model
-                                OS         = $WindowsVersion
-                                'OS Build' = $WindowsBuild
-                                Version    = (Get-Date -Format 'ddMMyyyy')
+                        $allAcerDriverModels = @()
+                        foreach ($SingleOS in $OSList) {
+                            $WindowsBuild = $($SingleOS).Split(" ")[2]
+                            $WindowsVersion = $SingleOS.Trim("$WindowsBuild").TrimEnd()
+                            $WinVer = "Win" + "$($WindowsVersion.Split(' ')[1])"
+                            $AcerModels = ($AcerDrivers | Where-Object {
+                                ($_.SCCM.Version -eq $WindowsBuild -and $_.SCCM.OS -eq $WinVer)
+                            } | Sort-Object).Name
+                            $count = @($AcerModels).Count
+                            Write-Log "Acer: Found $count matching models for $SingleOS." -Level Success
+                            $allAcerDriverModels += @($AcerModels)
+                            foreach ($Model in $AcerModels) {
+                                $OEMSupportedModels += [PSCustomObject]@{
+                                    OEM        = "Acer"
+                                    Model      = $Model
+                                    Baseboards = $Model
+                                    OS         = $WindowsVersion
+                                    'OS Build' = $WindowsBuild
+                                    Version    = (Get-Date -Format 'ddMMyyyy')
+                                }
                             }
                         }
 
                         # Acer BIOS lives in the Acer XML catalog (not the JSON BIOS catalog).
                         # When BIOS or All is selected, include all Acer models from the XML catalog
-                        # that don't already have a driver pack for the selected OS/build.
+                        # that don't already have a driver pack for any selected OS/build.
                         if ($PackageType -in @('BIOS', 'All')) {
-                            $existingAcerNames = @($AcerModels) | Select-Object -Unique
+                            $existingAcerNames = @($allAcerDriverModels) | Select-Object -Unique
                             $allAcerNames = ($AcerDrivers | Where-Object { $_.Name -gt $null } | Sort-Object).Name | Select-Object -Unique
+                            # Use the first OS for BIOS-only entries (BIOS is OS-agnostic)
+                            $firstOS = $OSList | Select-Object -First 1
+                            $firstWindowsBuild = $($firstOS).Split(" ")[2]
+                            $firstWindowsVersion = $firstOS.Trim("$firstWindowsBuild").TrimEnd()
                             foreach ($extraModel in $allAcerNames) {
                                 if ($extraModel -notin $existingAcerNames) {
                                     $OEMSupportedModels += [PSCustomObject]@{
                                         OEM        = "Acer"
                                         Model      = $extraModel
                                         Baseboards = $extraModel
-                                        OS         = $WindowsVersion
-                                        'OS Build' = $WindowsBuild
+                                        OS         = $firstWindowsVersion
+                                        'OS Build' = $firstWindowsBuild
                                         Version    = ''
                                         BIOSOnly   = $true
                                     }
                                 }
                             }
                         }
+                        $uniqueCount = @($OEMSupportedModels | Where-Object { $_.OEM -eq 'Acer' } | Select-Object -Property Model -Unique).Count
+                        Write-Log "Acer: $uniqueCount unique models across all selected OS versions." -Level Success
+                        $LogQueue.Enqueue("[SOURCE:Acer:OK:$uniqueCount models]")
                     } catch {
                         Write-Log "Acer processing failed: $($_.Exception.Message)" -Level Error
                         $LogQueue.Enqueue('[SOURCE:Acer:Error]')
                     }
                 }
             }
-        }
+        } # end foreach ($OEM in $RequiredOEMs)
 
         $totalCount = @($OEMSupportedModels).Count
         Write-Log "=== Complete: $totalCount total models found ===" -Level Success
@@ -5502,8 +5649,17 @@ $btn_RefreshModels.Add_Click({
 
             # Pre-build a device→entry hashtable for fast O(1) lookups instead of scanning per model
             $biosDeviceMap = @{}
+            $biosNameMap = @{}  # Acer: keyed by "Manufacturer|DisplayName" (no SupportedDevices)
             foreach ($entry in $biosCatalog) {
-                if ([string]::IsNullOrEmpty($entry.SupportedDevices) -or [string]::IsNullOrEmpty($entry.DownloadURL)) { continue }
+                if ([string]::IsNullOrEmpty($entry.DownloadURL)) { continue }
+                if ([string]::IsNullOrEmpty($entry.SupportedDevices)) {
+                    # Acer entries have no SupportedDevices -- use DisplayName for matching
+                    if (-not [string]::IsNullOrEmpty($entry.DisplayName)) {
+                        $nameKey = "$($entry.Manufacturer)|$($entry.DisplayName.Trim())"
+                        $biosNameMap[$nameKey] = $entry
+                    }
+                    continue
+                }
                 $devices = $entry.SupportedDevices -split '[;\s]+' | ForEach-Object { $_.Trim().ToUpper() } | Where-Object { $_ }
                 foreach ($dev in $devices) {
                     $key = "$($entry.Manufacturer)|$dev"
@@ -5533,8 +5689,8 @@ $btn_RefreshModels.Add_Click({
                         continue
                     }
                     if ($model.OEM -eq 'Acer') {
-                        # Acer uses XML catalog -- use the existing function
-                        $biosEntry = Find-DATBiosPackage -OEM $model.OEM -Baseboards $model.Baseboards -Catalog $biosCatalog
+                        # Acer: match by DisplayName from JSON BIOS catalog
+                        $biosEntry = $biosNameMap["Acer|$($model.Model)"]
                     } else {
                         # Fast hashtable lookup for Dell/HP/Lenovo/Microsoft
                         $biosEntry = $null
@@ -6075,7 +6231,8 @@ $btn_Build.Add_Click({
     }
 
     # Pre-flight: check for paths that may exceed MAX_PATH (260 chars)
-    $pfSelectedOS = if ($null -ne $cmb_OS.SelectedItem) { $cmb_OS.SelectedItem.Content } else { 'Windows 11' }
+    $pfSelectedOSes = Get-DATSelectedOSes
+    $pfSelectedOS = if ($pfSelectedOSes.Count -gt 0) { $pfSelectedOSes[0] } else { 'Windows 11' }
     $pfMaxPathLimit = 260
     $pfNestedFileHeadroom = 80  # typical depth of driver INF subfolders inside the extraction
     # Use the user-configured temp storage path (same path the build actually uses)
@@ -6125,7 +6282,8 @@ $btn_Build.Add_Click({
 
     # Store selected configuration (null-safe -- #5)
     $selectedPlatform = if ($null -ne $cmb_Platform.SelectedItem) { $cmb_Platform.SelectedItem.Content } else { 'Download Only' }
-    $selectedOS = if ($null -ne $cmb_OS.SelectedItem) { $cmb_OS.SelectedItem.Content } else { $null }
+    $selectedOSes = Get-DATSelectedOSes
+    $selectedOS = $selectedOSes -join ';'
     $selectedArch = if ($null -ne $cmb_Architecture.SelectedItem) { $cmb_Architecture.SelectedItem.Content } else { 'x64' }
 
     Set-DATRegistryValue -Name "Platform" -Value "$selectedPlatform" -Type String
@@ -6138,7 +6296,7 @@ $btn_Build.Add_Click({
             OEM              = $model.OEM
             Model            = $model.Model
             Baseboards       = $model.Baseboards
-            OS               = $selectedOS
+            OS               = if ($model.OS -and $model.Build) { "$($model.OS) $($model.Build)" } else { $selectedOS }
             Architecture     = $selectedArch
             CustomDriverPath = $model.CustomDriverPath
             Version          = $model.Version
@@ -6207,7 +6365,7 @@ $btn_Build.Add_Click({
     $script:BuildPS = [powershell]::Create()
     $script:BuildPS.Runspace = $script:BuildRunspace
     [void]$script:BuildPS.AddScript({
-        param($ModulePath, $ScriptDir, $RegPath, $RunningMode, $SelectedModels, $StoragePath, $PackagePath, $IntuneToken, $IntuneRefreshTok, $IntuneTokenExpSec, $DisableToast, $SiteServer, $SiteCode, $PackageType, $DPGroups, $DPs, $DistPriority, $EnableBDR, $DebugBuildPath, $CustomBrandingPath, $HPPasswordBinPath, $ToastTimeoutAction, $MaxDeferrals, $TeamsWebhookUrl, $TeamsNotificationsEnabled, $CustomToastTitle, $CustomToastBody)
+        param($ModulePath, $ScriptDir, $RegPath, $RunningMode, $SelectedModels, $StoragePath, $PackagePath, $IntuneToken, $IntuneRefreshTok, $IntuneTokenExpSec, $DisableToast, $SiteServer, $SiteCode, $PackageType, $DPGroups, $DPs, $DistPriority, $EnableBDR, $DebugBuildPath, $CustomBrandingPath, $HPPasswordBinPath, $ToastTimeoutAction, $MaxDeferrals, $BIOSRestartDelayMinutes, $TeamsWebhookUrl, $TeamsNotificationsEnabled, $CustomToastTextsJson)
         try {
         Import-Module $ModulePath -Force
         $procParams = @{
@@ -6224,11 +6382,11 @@ $btn_Build.Add_Click({
         if ($DisableToast) { $procParams['DisableToast'] = $true }
         if ($ToastTimeoutAction -ne 'RemindMeLater') { $procParams['ToastTimeoutAction'] = $ToastTimeoutAction }
         if ($MaxDeferrals -gt 0) { $procParams['MaxDeferrals'] = $MaxDeferrals }
+        if ($BIOSRestartDelayMinutes -gt 0 -and $BIOSRestartDelayMinutes -ne 10) { $procParams['RestartDelaySeconds'] = $BIOSRestartDelayMinutes * 60 }
         if (-not [string]::IsNullOrEmpty($DebugBuildPath)) { $procParams['DebugBuildPath'] = $DebugBuildPath }
         if (-not [string]::IsNullOrEmpty($CustomBrandingPath)) { $procParams['CustomBrandingPath'] = $CustomBrandingPath }
         if (-not [string]::IsNullOrEmpty($HPPasswordBinPath)) { $procParams['HPPasswordBinPath'] = $HPPasswordBinPath }
-        if (-not [string]::IsNullOrEmpty($CustomToastTitle)) { $procParams['CustomToastTitle'] = $CustomToastTitle }
-        if (-not [string]::IsNullOrEmpty($CustomToastBody)) { $procParams['CustomToastBody'] = $CustomToastBody }
+        if (-not [string]::IsNullOrEmpty($CustomToastTextsJson)) { $procParams['CustomToastTextsJson'] = $CustomToastTextsJson }
         if (-not [string]::IsNullOrEmpty($SiteServer)) { $procParams['SiteServer'] = $SiteServer }
         if (-not [string]::IsNullOrEmpty($SiteCode)) { $procParams['SiteCode'] = $SiteCode }
         if (-not [string]::IsNullOrEmpty($PackageType)) { $procParams['PackageType'] = $PackageType }
@@ -6327,6 +6485,9 @@ $btn_Build.Add_Click({
     [void]$script:BuildPS.AddArgument($script:HPPasswordBinPath)
     [void]$script:BuildPS.AddArgument($biosTimeoutAction)
     [void]$script:BuildPS.AddArgument($biosMaxDeferrals)
+    $biosRestartDelay = if ((-not [string]::IsNullOrEmpty($txt_BIOSRestartDelay.Text)) -and
+        ($txt_BIOSRestartDelay.Text -match '^\d+$')) { [int]$txt_BIOSRestartDelay.Text } else { 10 }
+    [void]$script:BuildPS.AddArgument($biosRestartDelay)
 
     # Teams notification settings
     $teamsEnabled = $chk_TeamsNotifications.IsChecked -eq $true
@@ -6334,11 +6495,24 @@ $btn_Build.Add_Click({
     [void]$script:BuildPS.AddArgument($teamsUrl)
     [void]$script:BuildPS.AddArgument($teamsEnabled)
 
-    # Custom toast text (Intune only)
-    $customToastTitle = if ($selectedPlatform -eq 'Intune') { $txt_CustomToastTitle.Text } else { $null }
-    $customToastBody = if ($selectedPlatform -eq 'Intune') { $txt_CustomToastBody.Text } else { $null }
-    [void]$script:BuildPS.AddArgument($customToastTitle)
-    [void]$script:BuildPS.AddArgument($customToastBody)
+    # Custom toast text (Intune only) -- pass per-type custom texts as JSON
+    $customToastTextsJson = $null
+    if ($selectedPlatform -eq 'Intune') {
+        $toastTexts = @{}
+        foreach ($typeKey in @('Toast_Drivers', 'Toast_BIOS', 'Toast_Success', 'Toast_BIOSSuccess', 'Toast_Issues', 'Toast_BIOSIssues')) {
+            $tTitle    = (Get-ItemProperty -Path $global:RegPath -Name "${typeKey}_Title" -ErrorAction SilentlyContinue)."${typeKey}_Title"
+            $tBody     = (Get-ItemProperty -Path $global:RegPath -Name "${typeKey}_Body" -ErrorAction SilentlyContinue)."${typeKey}_Body"
+            $tGreeting = (Get-ItemProperty -Path $global:RegPath -Name "${typeKey}_Greeting" -ErrorAction SilentlyContinue)."${typeKey}_Greeting"
+            $tSubtitle = (Get-ItemProperty -Path $global:RegPath -Name "${typeKey}_Subtitle" -ErrorAction SilentlyContinue)."${typeKey}_Subtitle"
+            if (-not [string]::IsNullOrEmpty($tTitle) -or -not [string]::IsNullOrEmpty($tBody) -or -not [string]::IsNullOrEmpty($tGreeting) -or -not [string]::IsNullOrEmpty($tSubtitle)) {
+                $toastTexts[$typeKey] = @{ Title = $tTitle; Body = $tBody; Greeting = $tGreeting; Subtitle = $tSubtitle }
+            }
+        }
+        if ($toastTexts.Count -gt 0) {
+            $customToastTextsJson = ($toastTexts | ConvertTo-Json -Compress -Depth 3)
+        }
+    }
+    [void]$script:BuildPS.AddArgument($customToastTextsJson)
 
     $script:BuildAsyncResult = $script:BuildPS.BeginInvoke()
 
@@ -9468,7 +9642,8 @@ $btn_ScheduleSave.Add_Click({
         }
     }
 
-    $schedOS = if ($null -ne $cmb_OS.SelectedItem) { $cmb_OS.SelectedItem.Content } else { $null }
+    $schedOSes = Get-DATSelectedOSes
+    $schedOS = $schedOSes -join ';'
     $schedArch = if ($null -ne $cmb_Architecture.SelectedItem) { $cmb_Architecture.SelectedItem.Content } else { 'x64' }
     $schedPkgType = if ($null -ne $cmb_PackageType -and $null -ne $cmb_PackageType.SelectedItem) { $cmb_PackageType.SelectedItem.Content } else { 'Drivers' }
 
@@ -9495,6 +9670,7 @@ $btn_ScheduleSave.Add_Click({
     $schedDisableToast = ($schedPlatform -eq 'Intune') -and ($chk_DisableToastPrompt.IsChecked -eq $true)
     $schedTimeoutAction = if ($cmb_BIOSTimeoutAction.SelectedIndex -eq 1) { 'InstallNow' } else { 'RemindMeLater' }
     $schedMaxDeferrals = if (($chk_EnableMaxDeferrals.IsChecked -eq $true) -and ($txt_MaxDeferrals.Text -match '^\d+$')) { [int]$txt_MaxDeferrals.Text } else { 0 }
+    $schedBIOSRestartDelay = if (($txt_BIOSRestartDelay.Text -match '^\d+$')) { [int]$txt_BIOSRestartDelay.Text } else { 10 }
     $schedTeamsEnabled = $chk_TeamsNotifications.IsChecked -eq $true
     $schedTeamsUrl = $txt_TeamsWebhookUrl.Text
     $regConfig = Get-ItemProperty -Path $global:RegPath -ErrorAction SilentlyContinue
@@ -9521,6 +9697,7 @@ $btn_ScheduleSave.Add_Click({
         Export-DATBuildConfig -ConfigPath $configPath -Platform $schedPlatform -OS $schedOS -Architecture $schedArch `
             -PackageType $schedPkgType -Models @($schedModels) -TempPath $schedTempPath -PackagePath $schedPkgPath `
             -DisableToast $schedDisableToast -ToastTimeoutAction $schedTimeoutAction -MaxDeferrals $schedMaxDeferrals `
+            -BIOSRestartDelayMinutes $schedBIOSRestartDelay `
             -TeamsWebhookUrl $schedTeamsUrl -TeamsNotificationsEnabled $schedTeamsEnabled -ConfigMgr $schedCM `
             -Intune $schedIntune
     } catch {
@@ -9853,7 +10030,7 @@ function Update-DATHpcmslStatus {
 
         # Re-enable HP in OEM selection
         $script:HPCMSLAvailable = $true
-        if ($null -ne $script:OEMCheckboxes -and $script:OEMCheckboxes.ContainsKey('HP')) {
+        if ($null -ne $script:OEMCheckboxes -and $script:OEMCheckboxes.Contains('HP')) {
             $script:OEMCheckboxes['HP'].IsEnabled = $true
             $script:OEMCheckboxes['HP'].Content = 'HP'
             $script:OEMCheckboxes['HP'].ToolTip = $null
@@ -11066,6 +11243,16 @@ $cmb_BIOSTimeoutAction.Add_SelectionChanged({
     Write-DATActivityLog "Toast timeout action: $action" -Level Info
 })
 
+$txt_BIOSRestartDelay.Add_LostFocus({
+    $val = $txt_BIOSRestartDelay.Text
+    if ($val -match '^\d+$' -and [int]$val -ge 1) {
+        Set-DATRegistryValue -Name "BIOSRestartDelayMinutes" -Value ([int]$val) -Type DWord
+    } else {
+        $txt_BIOSRestartDelay.Text = '10'
+        Set-DATRegistryValue -Name "BIOSRestartDelayMinutes" -Value 10 -Type DWord
+    }
+})
+
 #endregion Toast Behaviour
 
 #region Package Deployment
@@ -11166,6 +11353,9 @@ $bd_ToastStatusIcon       = $Window.FindName('bd_ToastStatusIcon')
 $txt_ToastStatusIcon      = $Window.FindName('txt_ToastStatusIcon')
 $txt_ToastStatusHeading   = $Window.FindName('txt_ToastStatusHeading')
 $txt_ToastStatusBody      = $Window.FindName('txt_ToastStatusBody')
+$bd_ToastRestartBtn       = $Window.FindName('bd_ToastRestartBtn')
+$col_ToastRestartGap      = $Window.FindName('col_ToastRestartGap')
+$col_ToastRestart         = $Window.FindName('col_ToastRestart')
 
 # Load banner image
 $script:DefaultBannerPath = Join-Path (Split-Path $UIPath -Parent) 'Branding\DATLogo_Wide.png'
@@ -11273,42 +11463,126 @@ $btn_ClearCustomBranding.Add_Click({
     Remove-ItemProperty -Path $global:RegPath -Name 'CustomBrandingPath' -ErrorAction SilentlyContinue
 })
 
-# Custom Toast Text -- Bind controls and restore from registry
+# Custom Toast Text -- Per notification type customization
 $txt_CustomToastTitle = $Window.FindName('txt_CustomToastTitle')
 $txt_CustomToastBody  = $Window.FindName('txt_CustomToastBody')
+$panel_ToastBodyVariables = $Window.FindName('panel_ToastBodyVariables')
+$btn_InsertMinutesVar     = $Window.FindName('btn_InsertMinutesVar')
 
-$savedToastTitle = (Get-ItemProperty -Path $global:RegPath -Name 'CustomToastTitle' -ErrorAction SilentlyContinue).CustomToastTitle
-$savedToastBody  = (Get-ItemProperty -Path $global:RegPath -Name 'CustomToastBody'  -ErrorAction SilentlyContinue).CustomToastBody
-if (-not [string]::IsNullOrEmpty($savedToastTitle)) { $txt_CustomToastTitle.Text = $savedToastTitle }
-if (-not [string]::IsNullOrEmpty($savedToastBody))  { $txt_CustomToastBody.Text  = $savedToastBody  }
+# Map preview combo type names to registry key prefixes
+function Get-DATToastRegistryPrefix {
+    param([string]$PreviewType)
+    switch ($PreviewType) {
+        'BIOS Update'        { return 'Toast_BIOS' }
+        'Successfully Updated' { return 'Toast_Success' }
+        'BIOS Prestaged'     { return 'Toast_BIOSSuccess' }
+        'Driver Issues'      { return 'Toast_Issues' }
+        'BIOS Issues'        { return 'Toast_BIOSIssues' }
+        default              { return 'Toast_Drivers' }
+    }
+}
+
+# Default texts for each notification type (used when no custom text is set)
+$script:ToastDefaults = @{
+    'Toast_Drivers'     = @{ Title = 'Driver Updates Pending'; Body = 'Your device has pending updates which are required for security / stability reasons. Pressing the Update button can result in temporary network or display interruption.'; Greeting = 'Hi'; Subtitle = 'Driver Automation Tool V10' }
+    'Toast_BIOS'        = @{ Title = 'BIOS Update Pending'; Body = 'Your device has pending updates which are required for security / stability reasons. Pressing the Update button will trigger a restart of your device. DO NOT power off the device during the update process.'; Greeting = 'Hi'; Subtitle = 'Driver Automation Tool V10' }
+    'Toast_Success'     = @{ Title = 'Drivers Successfully Updated'; Body = 'Your device drivers have been successfully updated. No restart is required unless indicated by your IT department.'; Greeting = 'Hi'; Subtitle = 'Driver Automation Tool V10' }
+    'Toast_BIOSSuccess' = @{ Title = 'BIOS Firmware Prestaged'; Body = 'Your system has a pending BIOS update and will be restarted in {{MINUTES}} minute(s). Please save your work. Do NOT power off the device during the update process.'; Greeting = 'Hi'; Subtitle = 'Driver Automation Tool V10' }
+    'Toast_Issues'      = @{ Title = 'Driver Update Issues Detected'; Body = 'One or more driver updates encountered errors during installation. Please contact your IT department or check the device logs for details.'; Greeting = 'Hi'; Subtitle = 'Driver Automation Tool V10' }
+    'Toast_BIOSIssues'  = @{ Title = 'BIOS Update Issues Detected'; Body = 'The BIOS firmware update encountered errors during installation. Please contact your IT department or check the device logs for details.'; Greeting = 'Hi'; Subtitle = 'Driver Automation Tool V10' }
+}
+
+# Suppress TextChanged events during programmatic loads
+$script:ToastTextLoading = $false
+
+# Load saved text for the initially selected type (Driver Update)
+$initPrefix = Get-DATToastRegistryPrefix -PreviewType 'Driver Update'
+$savedTitle = (Get-ItemProperty -Path $global:RegPath -Name "${initPrefix}_Title" -ErrorAction SilentlyContinue)."${initPrefix}_Title"
+$savedBody  = (Get-ItemProperty -Path $global:RegPath -Name "${initPrefix}_Body" -ErrorAction SilentlyContinue)."${initPrefix}_Body"
+$savedGreeting  = (Get-ItemProperty -Path $global:RegPath -Name "${initPrefix}_Greeting" -ErrorAction SilentlyContinue)."${initPrefix}_Greeting"
+$savedSubtitle  = (Get-ItemProperty -Path $global:RegPath -Name "${initPrefix}_Subtitle" -ErrorAction SilentlyContinue)."${initPrefix}_Subtitle"
+if (-not [string]::IsNullOrEmpty($savedTitle)) { $script:ToastTextLoading = $true; $txt_CustomToastTitle.Text = $savedTitle; $script:ToastTextLoading = $false }
+if (-not [string]::IsNullOrEmpty($savedBody))  { $script:ToastTextLoading = $true; $txt_CustomToastBody.Text  = $savedBody;  $script:ToastTextLoading = $false }
+if (-not [string]::IsNullOrEmpty($savedGreeting))  { $script:ToastTextLoading = $true; $txt_CustomToastGreeting.Text = $savedGreeting; $script:ToastTextLoading = $false }
+if (-not [string]::IsNullOrEmpty($savedSubtitle))  { $script:ToastTextLoading = $true; $txt_CustomToastSubtitle.Text = $savedSubtitle; $script:ToastTextLoading = $false }
 
 $txt_CustomToastTitle.Add_TextChanged({
+    if ($script:ToastTextLoading) { return }
     $val = $txt_CustomToastTitle.Text.Trim()
-    Set-DATRegistryValue -Name 'CustomToastTitle' -Value $val -Type String
     $selectedType = if ($null -ne $cmb_ToastPreviewType.SelectedItem) { $cmb_ToastPreviewType.SelectedItem.Content } else { 'Driver Update' }
+    $prefix = Get-DATToastRegistryPrefix -PreviewType $selectedType
+    Set-DATRegistryValue -Name "${prefix}_Title" -Value $val -Type String
     Update-DATToastPreview -Type $selectedType
 })
 
 $txt_CustomToastBody.Add_TextChanged({
+    if ($script:ToastTextLoading) { return }
     $val = $txt_CustomToastBody.Text.Trim()
-    Set-DATRegistryValue -Name 'CustomToastBody' -Value $val -Type String
     $selectedType = if ($null -ne $cmb_ToastPreviewType.SelectedItem) { $cmb_ToastPreviewType.SelectedItem.Content } else { 'Driver Update' }
+    $prefix = Get-DATToastRegistryPrefix -PreviewType $selectedType
+    Set-DATRegistryValue -Name "${prefix}_Body" -Value $val -Type String
+    Update-DATToastPreview -Type $selectedType
+})
+
+# Insert {{MINUTES}} variable at cursor position in body text
+$btn_InsertMinutesVar.Add_Click({
+    $caretIndex = $txt_CustomToastBody.CaretIndex
+    $txt_CustomToastBody.Text = $txt_CustomToastBody.Text.Insert($caretIndex, '{{MINUTES}}')
+    $txt_CustomToastBody.CaretIndex = $caretIndex + '{{MINUTES}}'.Length
+    $txt_CustomToastBody.Focus()
+})
+
+$txt_CustomToastGreeting.Add_TextChanged({
+    if ($script:ToastTextLoading) { return }
+    $val = $txt_CustomToastGreeting.Text.Trim()
+    $selectedType = if ($null -ne $cmb_ToastPreviewType.SelectedItem) { $cmb_ToastPreviewType.SelectedItem.Content } else { 'Driver Update' }
+    $prefix = Get-DATToastRegistryPrefix -PreviewType $selectedType
+    Set-DATRegistryValue -Name "${prefix}_Greeting" -Value $val -Type String
+    Update-DATToastPreview -Type $selectedType
+})
+
+$txt_CustomToastSubtitle.Add_TextChanged({
+    if ($script:ToastTextLoading) { return }
+    $val = $txt_CustomToastSubtitle.Text.Trim()
+    $selectedType = if ($null -ne $cmb_ToastPreviewType.SelectedItem) { $cmb_ToastPreviewType.SelectedItem.Content } else { 'Driver Update' }
+    $prefix = Get-DATToastRegistryPrefix -PreviewType $selectedType
+    Set-DATRegistryValue -Name "${prefix}_Subtitle" -Value $val -Type String
     Update-DATToastPreview -Type $selectedType
 })
 
 function Update-DATToastPreview {
     param([string]$Type)
 
-    # Read custom text overrides (apply only to Driver Update and BIOS Update previews)
+    # Read custom text for the selected type
+    $prefix = Get-DATToastRegistryPrefix -PreviewType $Type
     $customTitle = $txt_CustomToastTitle.Text.Trim()
     $customBody  = $txt_CustomToastBody.Text.Trim()
+    $customGreeting  = $txt_CustomToastGreeting.Text.Trim()
+    $customSubtitle  = $txt_CustomToastSubtitle.Text.Trim()
+    $defaults = $script:ToastDefaults[$prefix]
+
+    # Update greeting and subtitle on the update mockup preview
+    $greetingPrefix = if (-not [string]::IsNullOrEmpty($customGreeting)) { $customGreeting } else { $defaults.Greeting }
+    $txt_ToastGreeting.Text  = "$greetingPrefix User"
+    $txt_ToastSubtitle.Text  = if (-not [string]::IsNullOrEmpty($customSubtitle)) { $customSubtitle } else { $defaults.Subtitle }
+
+    # Show Restart Now button only for BIOS Prestaged
+    if ($Type -eq 'BIOS Prestaged') {
+        $bd_ToastRestartBtn.Visibility = 'Visible'
+        $col_ToastRestartGap.Width = [System.Windows.GridLength]::new(10)
+        $col_ToastRestart.Width    = [System.Windows.GridLength]::new(1, [System.Windows.GridUnitType]::Star)
+    } else {
+        $bd_ToastRestartBtn.Visibility = 'Collapsed'
+        $col_ToastRestartGap.Width = [System.Windows.GridLength]::new(0)
+        $col_ToastRestart.Width    = [System.Windows.GridLength]::new(0)
+    }
 
     switch ($Type) {
         'BIOS Update' {
             $panel_ToastUpdateMockup.Visibility = 'Visible'
             $panel_ToastStatusMockup.Visibility = 'Collapsed'
-            $txt_ToastHeading.Text = if (-not [string]::IsNullOrEmpty($customTitle)) { $customTitle } else { 'BIOS Update Pending' }
-            $txt_ToastBody.Text    = if (-not [string]::IsNullOrEmpty($customBody)) { $customBody } else { 'Your device has pending updates which are required for security / stability reasons. Pressing the Update button will trigger a restart of your device. DO NOT power off the device during the update process.' }
+            $txt_ToastHeading.Text = if (-not [string]::IsNullOrEmpty($customTitle)) { $customTitle } else { $defaults.Title }
+            $txt_ToastBody.Text    = if (-not [string]::IsNullOrEmpty($customBody)) { $customBody } else { $defaults.Body }
         }
         'Successfully Updated' {
             $panel_ToastUpdateMockup.Visibility = 'Collapsed'
@@ -11321,8 +11595,8 @@ function Update-DATToastPreview {
             $bd_ToastStatusIcon.Background         = $iconBg
             $txt_ToastStatusIcon.Foreground        = $iconFg
             $txt_ToastStatusIcon.Text              = [char]0xE930   # CompletedSolid
-            $txt_ToastStatusHeading.Text           = 'Drivers Successfully Updated'
-            $txt_ToastStatusBody.Text              = 'Your device drivers have been successfully updated. No restart is required unless indicated by your IT department.'
+            $txt_ToastStatusHeading.Text           = if (-not [string]::IsNullOrEmpty($customTitle)) { $customTitle } else { $defaults.Title }
+            $txt_ToastStatusBody.Text              = if (-not [string]::IsNullOrEmpty($customBody)) { $customBody } else { $defaults.Body }
         }
         'BIOS Prestaged' {
             $panel_ToastUpdateMockup.Visibility = 'Collapsed'
@@ -11335,8 +11609,11 @@ function Update-DATToastPreview {
             $bd_ToastStatusIcon.Background         = $iconBg
             $txt_ToastStatusIcon.Foreground        = $iconFg
             $txt_ToastStatusIcon.Text              = [char]0xE835   # FirmwareUpdate
-            $txt_ToastStatusHeading.Text           = 'BIOS Firmware Prestaged'
-            $txt_ToastStatusBody.Text              = 'Your system has a pending BIOS update and will be restarted in 180 seconds. Please save your work. Do NOT power off the device during the update process.'
+            $restartMins = if (($txt_BIOSRestartDelay.Text -match '^\d+$')) { [int]$txt_BIOSRestartDelay.Text } else { 10 }
+            $defaultBody = $defaults.Body -replace '\{\{MINUTES\}\}', $restartMins
+            $customBodyResolved = if (-not [string]::IsNullOrEmpty($customBody)) { $customBody -replace '\{\{MINUTES\}\}', $restartMins } else { $null }
+            $txt_ToastStatusHeading.Text           = if (-not [string]::IsNullOrEmpty($customTitle)) { $customTitle } else { $defaults.Title }
+            $txt_ToastStatusBody.Text              = if (-not [string]::IsNullOrEmpty($customBodyResolved)) { $customBodyResolved } else { $defaultBody }
         }
         'Driver Issues' {
             $panel_ToastUpdateMockup.Visibility = 'Collapsed'
@@ -11349,8 +11626,8 @@ function Update-DATToastPreview {
             $bd_ToastStatusIcon.Background         = $iconBg
             $txt_ToastStatusIcon.Foreground        = $iconFg
             $txt_ToastStatusIcon.Text              = [char]0xE7BA   # Warning
-            $txt_ToastStatusHeading.Text           = 'Driver Update Issues Detected'
-            $txt_ToastStatusBody.Text              = 'One or more driver updates encountered errors during installation. Please contact your IT department or check the device logs for details.'
+            $txt_ToastStatusHeading.Text           = if (-not [string]::IsNullOrEmpty($customTitle)) { $customTitle } else { $defaults.Title }
+            $txt_ToastStatusBody.Text              = if (-not [string]::IsNullOrEmpty($customBody)) { $customBody } else { $defaults.Body }
         }
         'BIOS Issues' {
             $panel_ToastUpdateMockup.Visibility = 'Collapsed'
@@ -11363,22 +11640,41 @@ function Update-DATToastPreview {
             $bd_ToastStatusIcon.Background         = $iconBg
             $txt_ToastStatusIcon.Foreground        = $iconFg
             $txt_ToastStatusIcon.Text              = [char]0xE7BA   # Warning
-            $txt_ToastStatusHeading.Text           = 'BIOS Update Issues Detected'
-            $txt_ToastStatusBody.Text              = 'The BIOS firmware update encountered errors during installation. Please contact your IT department or check the device logs for details.'
+            $txt_ToastStatusHeading.Text           = if (-not [string]::IsNullOrEmpty($customTitle)) { $customTitle } else { $defaults.Title }
+            $txt_ToastStatusBody.Text              = if (-not [string]::IsNullOrEmpty($customBody)) { $customBody } else { $defaults.Body }
         }
         default {
             # Driver Update
             $panel_ToastUpdateMockup.Visibility = 'Visible'
             $panel_ToastStatusMockup.Visibility = 'Collapsed'
-            $txt_ToastHeading.Text = if (-not [string]::IsNullOrEmpty($customTitle)) { $customTitle } else { 'Driver Updates Pending' }
-            $txt_ToastBody.Text    = if (-not [string]::IsNullOrEmpty($customBody)) { $customBody } else { 'Your device has pending updates which are required for security / stability reasons. Pressing the Update button can result in temporary network or display interruption.' }
+            $txt_ToastHeading.Text = if (-not [string]::IsNullOrEmpty($customTitle)) { $customTitle } else { $defaults.Title }
+            $txt_ToastBody.Text    = if (-not [string]::IsNullOrEmpty($customBody)) { $customBody } else { $defaults.Body }
         }
     }
 }
 
 $cmb_ToastPreviewType.Add_SelectionChanged({
     $selectedType = if ($null -ne $cmb_ToastPreviewType.SelectedItem) { $cmb_ToastPreviewType.SelectedItem.Content } else { 'Driver Update' }
+    # Load saved custom text for the newly selected type
+    $prefix = Get-DATToastRegistryPrefix -PreviewType $selectedType
+    $savedTitle = (Get-ItemProperty -Path $global:RegPath -Name "${prefix}_Title" -ErrorAction SilentlyContinue)."${prefix}_Title"
+    $savedBody  = (Get-ItemProperty -Path $global:RegPath -Name "${prefix}_Body" -ErrorAction SilentlyContinue)."${prefix}_Body"
+    $savedGreeting  = (Get-ItemProperty -Path $global:RegPath -Name "${prefix}_Greeting" -ErrorAction SilentlyContinue)."${prefix}_Greeting"
+    $savedSubtitle  = (Get-ItemProperty -Path $global:RegPath -Name "${prefix}_Subtitle" -ErrorAction SilentlyContinue)."${prefix}_Subtitle"
+    $script:ToastTextLoading = $true
+    $txt_CustomToastTitle.Text = if (-not [string]::IsNullOrEmpty($savedTitle)) { $savedTitle } else { '' }
+    $txt_CustomToastBody.Text  = if (-not [string]::IsNullOrEmpty($savedBody))  { $savedBody  } else { '' }
+    $txt_CustomToastGreeting.Text  = if (-not [string]::IsNullOrEmpty($savedGreeting))  { $savedGreeting  } else { '' }
+    $txt_CustomToastSubtitle.Text  = if (-not [string]::IsNullOrEmpty($savedSubtitle))  { $savedSubtitle  } else { '' }
+    $script:ToastTextLoading = $false
+    # Show variables panel only for BIOS Prestaged
+    $panel_ToastBodyVariables.Visibility = if ($selectedType -eq 'BIOS Prestaged') { 'Visible' } else { 'Collapsed' }
     Update-DATToastPreview -Type $selectedType
+})
+
+$txt_BIOSRestartDelay.Add_TextChanged({
+    $selectedType = if ($null -ne $cmb_ToastPreviewType.SelectedItem) { $cmb_ToastPreviewType.SelectedItem.Content } else { 'Driver Update' }
+    if ($selectedType -eq 'BIOS Prestaged') { Update-DATToastPreview -Type $selectedType }
 })
 
 #endregion Toast Notification Preview
@@ -14057,6 +14353,22 @@ $btn_AgreeEula.Add_Click({
 
 #endregion EULA Agreement
 
+#region Release Notes
+# Fetch release notes from GitHub and display in the About section
+try {
+    if ($null -ne $txt_ReleaseNotes) {
+        $releaseNotesUrl = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/DriverAutomationToolNotes.txt"
+        $releaseNotesText = (Invoke-WebRequest -Uri $releaseNotesUrl -UseBasicParsing -ErrorAction Stop).Content
+        $txt_ReleaseNotes.Text = $releaseNotesText
+    }
+} catch {
+    if ($null -ne $txt_ReleaseNotes) {
+        $txt_ReleaseNotes.Text = "Unable to load release notes. Please check your internet connection."
+    }
+    Write-DATActivityLog "Failed to fetch release notes: $_" -Level Warn
+}
+#endregion Release Notes
+
 #region Load Saved Settings
 
 try {
@@ -14241,6 +14553,15 @@ try {
             Write-Host "Disabled" -ForegroundColor DarkYellow
         }
 
+        # Restore BIOS Restart Delay
+        Write-Host "  Restart Delay : " -NoNewline -ForegroundColor DarkGray
+        if ($null -ne $savedConfig.BIOSRestartDelayMinutes -and $savedConfig.BIOSRestartDelayMinutes -gt 0) {
+            $txt_BIOSRestartDelay.Text = [string]$savedConfig.BIOSRestartDelayMinutes
+            Write-Host "$($savedConfig.BIOSRestartDelayMinutes) minute(s)" -ForegroundColor White
+        } else {
+            Write-Host "3 minutes (Default)" -ForegroundColor White
+        }
+
         # Restore Upload Chunk Size
         Write-Host "  Chunk Size    : " -NoNewline -ForegroundColor DarkGray
         if ($null -ne $savedConfig.IntuneChunkSizeMB -and $savedConfig.IntuneChunkSizeMB -gt 0) {
@@ -14317,7 +14638,7 @@ try {
             $savedOEMs = $savedConfig.SelectedOEMs -split ','
             foreach ($oem in $savedOEMs) {
                 $oem = $oem.Trim()
-                if ($script:OEMCheckboxes.ContainsKey($oem) -and $script:OEMCheckboxes[$oem].IsEnabled) {
+                if ($script:OEMCheckboxes.Contains($oem) -and $script:OEMCheckboxes[$oem].IsEnabled) {
                     $script:OEMCheckboxes[$oem].IsChecked = $true
                 }
             }
@@ -14330,14 +14651,20 @@ try {
 
         # Restore OS selection
         if (-not [string]::IsNullOrEmpty($savedConfig.OS)) {
+            $savedOSValues = $savedConfig.OS -split ';' | Where-Object { $_ }
             Write-Host "  OS            : " -NoNewline -ForegroundColor DarkGray
-            Write-Host $savedConfig.OS -ForegroundColor White
-            foreach ($item in $cmb_OS.Items) {
-                if ($item.Content -eq $savedConfig.OS) {
-                    $cmb_OS.SelectedItem = $item
-                    break
+            Write-Host ($savedOSValues -join ', ') -ForegroundColor White
+            # Only populate backing store -- do NOT touch checkboxes here.
+            # The popup Add_Opened handler syncs checkbox UI from the backing store.
+            $script:SelectedOSValues.Clear()
+            foreach ($osVal in $savedOSValues) {
+                if ($script:OSCheckboxes.Contains($osVal)) {
+                    $script:SelectedOSValues.Add($osVal)
                 }
             }
+            Write-Host "  OS backing    : $($script:SelectedOSValues.Count) values: $($script:SelectedOSValues -join ', ')" -ForegroundColor DarkGray
+            Update-DATOSDisplayText
+            Write-Host "  OS display    : $($txt_OSDisplay.Text)" -ForegroundColor DarkGray
         } else {
             Write-Host "  OS            : " -NoNewline -ForegroundColor DarkGray
             Write-Host "(not set)" -ForegroundColor DarkYellow
@@ -14609,7 +14936,10 @@ try {
         Write-Host "  No saved configuration found in registry." -ForegroundColor DarkYellow
         Write-Host ""
     }
-} catch { }
+} catch {
+    Write-Host "[ERROR] Settings restore failed: $($_.Exception.Message)" -ForegroundColor Red
+    Write-Host "  at $($_.ScriptStackTrace)" -ForegroundColor Red
+}
 
 #endregion Load Saved Settings
 
@@ -14618,7 +14948,8 @@ $script:SuppressModelRefresh = $false
 
 # Auto-refresh models if previous selections were restored
 # Deferred to ContentRendered so the Loading Sources modal appears over the main window
-$script:AutoRefreshPending = ((Get-DATSelectedOEMs).Count -gt 0 -and $null -ne $cmb_OS.SelectedItem)
+$script:AutoRefreshPending = ((Get-DATSelectedOEMs).Count -gt 0 -and (Get-DATSelectedOSes).Count -gt 0)
+#Write-Host "[DEBUG] Post-restore: SelectedOSValues=$($script:SelectedOSValues.Count), AutoRefreshPending=$($script:AutoRefreshPending), Display=$($txt_OSDisplay.Text)" -ForegroundColor Magenta
 
 # Set sidebar logo image
 $logoPath = Join-Path $UIPath "Assets\NewDatLogo.png"
@@ -14638,7 +14969,7 @@ if (Test-Path $logoPath) {
 
 # Read version from module manifest
 $manifestPath = Join-Path $AppRoot "Modules\DriverAutomationToolCore\DriverAutomationToolCore.psd1"
-$script:versionString = "v10.0.24"
+$script:versionString = "v10.0.26"
 if (Test-Path $manifestPath) {
     $manifestData = Import-PowerShellDataFile $manifestPath
     $ver = [version]$manifestData.ModuleVersion
@@ -14806,6 +15137,17 @@ if ($cmb_Platform.SelectedItem -and $cmb_Platform.SelectedItem.Content -eq 'Intu
 $script:WindowClosing = $false
 $Window.Add_Closing({
     $script:WindowClosing = $true
+
+    # Persist current selections to registry on exit
+    try {
+        $exitOEMs = Get-DATSelectedOEMs
+        $exitOSes = Get-DATSelectedOSes
+        if ($exitOEMs.Count -gt 0) { Set-DATRegistryValue -Name "SelectedOEMs" -Value ($exitOEMs -join ',') -Type String }
+        if ($exitOSes.Count -gt 0) { Set-DATRegistryValue -Name "OS" -Value ($exitOSes -join ';') -Type String }
+        if ($null -ne $cmb_Architecture.SelectedItem) { Set-DATRegistryValue -Name "Architecture" -Value $cmb_Architecture.SelectedItem.Content -Type String }
+        if ($null -ne $cmb_Platform.SelectedItem) { Set-DATRegistryValue -Name "Platform" -Value $cmb_Platform.SelectedItem.Content -Type String }
+        if ($null -ne $cmb_PackageType.SelectedItem) { Set-DATRegistryValue -Name "PackageType" -Value $cmb_PackageType.SelectedItem.Content -Type String }
+    } catch { }
 
     # Stop all running timers to prevent disposed-object access
     if ($script:BuildProgressTimer) { try { $script:BuildProgressTimer.Stop() } catch { } }

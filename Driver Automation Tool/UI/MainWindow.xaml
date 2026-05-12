@@ -900,7 +900,7 @@
                                    Foreground="{DynamicResource AccentColor}" VerticalAlignment="Center" Margin="0,0,8,0"/>
                         <TextBlock Text="Driver Automation Tool" FontSize="13" FontWeight="SemiBold"
                                    Foreground="{DynamicResource WindowForeground}" VerticalAlignment="Center"/>
-                        <TextBlock x:Name="txt_Version" Text=" Version 10.0.24" FontSize="11"
+                        <TextBlock x:Name="txt_Version" Text=" Version 10.0.26" FontSize="11"
                                    Foreground="{DynamicResource InputPlaceholder}" VerticalAlignment="Center" Margin="4,0"/>
                     </StackPanel>
 
@@ -944,9 +944,17 @@
                             </StackPanel>
                         </Border>
 
+                        <!-- Footer -->
+                        <Border DockPanel.Dock="Bottom" Padding="16,8,16,12">
+                            <StackPanel>
+                                <Border Height="1" Background="{DynamicResource WindowBorder}" Margin="0,0,0,8"/>
+                                <TextBlock Text="Created by Maurice Daly" FontSize="10"
+                                           Foreground="{DynamicResource InputPlaceholder}"/>
+                            </StackPanel>
+                        </Border>
+
                         <!-- Navigation -->
-                        <ScrollViewer DockPanel.Dock="Top"
-                                      VerticalScrollBarVisibility="Auto"
+                        <ScrollViewer VerticalScrollBarVisibility="Auto"
                                       HorizontalScrollBarVisibility="Disabled"
                                       Padding="0">
                         <StackPanel Margin="8,8,8,0">
@@ -1024,15 +1032,6 @@
                             </Button>
                         </StackPanel>
                         </ScrollViewer>
-
-                        <!-- Footer -->
-                        <Border DockPanel.Dock="Bottom" Padding="16,8,16,12" VerticalAlignment="Bottom">
-                            <StackPanel>
-                                <Border Height="1" Background="{DynamicResource WindowBorder}" Margin="0,0,0,8"/>
-                                <TextBlock Text="Created by Maurice Daly" FontSize="10"
-                                           Foreground="{DynamicResource InputPlaceholder}"/>
-                            </StackPanel>
-                        </Border>
                     </DockPanel>
                 </Border>
 
@@ -1178,13 +1177,88 @@
                                             </Popup>
                                         </Grid>
                                     </Border>
-                                    <ComboBox x:Name="cmb_OS" Grid.Column="1" Grid.Row="1" Margin="8,0,8,0"
-                                              VerticalAlignment="Top" Height="34">
-                                        <ComboBoxItem Content="Windows 11 25H2" IsSelected="True"/>
-                                        <ComboBoxItem Content="Windows 11 24H2"/>
-                                        <ComboBoxItem Content="Windows 11 23H2"/>
-                                        <ComboBoxItem Content="Windows 11 22H2"/>
-                                    </ComboBox>
+                                    <!-- OS Multi-Select Pill Dropdown -->
+                                    <Border Grid.Column="1" Grid.Row="1" Margin="8,0,8,0" VerticalAlignment="Top">
+                                        <Grid>
+                                            <ToggleButton x:Name="btn_OSToggle"
+                                                          Template="{StaticResource PillComboBoxToggleButton}"
+                                                          Height="34"
+                                                          Focusable="False"
+                                                          ClickMode="Press">
+                                                <TextBlock x:Name="txt_OSDisplay" Text="Select OS..."
+                                                           Foreground="{DynamicResource ComboForeground}"
+                                                           FontSize="13" FontFamily="Segoe UI"
+                                                           VerticalAlignment="Center"
+                                                           TextTrimming="CharacterEllipsis"/>
+                                            </ToggleButton>
+                                            <Popup x:Name="popup_OS"
+                                                   PlacementTarget="{Binding ElementName=btn_OSToggle}"
+                                                   Placement="Bottom"
+                                                   IsOpen="{Binding IsChecked, ElementName=btn_OSToggle, Mode=TwoWay}"
+                                                   AllowsTransparency="True"
+                                                   StaysOpen="False"
+                                                   PopupAnimation="Slide"
+                                                   VerticalOffset="4">
+                                                <Border Background="{DynamicResource ComboBackground}"
+                                                        BorderBrush="{DynamicResource ComboBorder}"
+                                                        BorderThickness="1"
+                                                        CornerRadius="12"
+                                                        Padding="4"
+                                                        MinWidth="{Binding ActualWidth, ElementName=btn_OSToggle}">
+                                                    <StackPanel>
+                                                        <Border x:Name="border_OS_Win11_25H2" Background="Transparent" CornerRadius="8" Padding="12,7" Margin="0,1" Cursor="Hand">
+                                                            <Border.Style>
+                                                                <Style TargetType="Border">
+                                                                    <Style.Triggers>
+                                                                        <Trigger Property="IsMouseOver" Value="True">
+                                                                            <Setter Property="Background" Value="{DynamicResource SidebarHover}"/>
+                                                                        </Trigger>
+                                                                    </Style.Triggers>
+                                                                </Style>
+                                                            </Border.Style>
+                                                            <CheckBox x:Name="chk_OS_Win11_25H2" Content="Windows 11 25H2" Margin="0"/>
+                                                        </Border>
+                                                        <Border x:Name="border_OS_Win11_24H2" Background="Transparent" CornerRadius="8" Padding="12,7" Margin="0,1" Cursor="Hand">
+                                                            <Border.Style>
+                                                                <Style TargetType="Border">
+                                                                    <Style.Triggers>
+                                                                        <Trigger Property="IsMouseOver" Value="True">
+                                                                            <Setter Property="Background" Value="{DynamicResource SidebarHover}"/>
+                                                                        </Trigger>
+                                                                    </Style.Triggers>
+                                                                </Style>
+                                                            </Border.Style>
+                                                            <CheckBox x:Name="chk_OS_Win11_24H2" Content="Windows 11 24H2" Margin="0"/>
+                                                        </Border>
+                                                        <Border x:Name="border_OS_Win11_23H2" Background="Transparent" CornerRadius="8" Padding="12,7" Margin="0,1" Cursor="Hand">
+                                                            <Border.Style>
+                                                                <Style TargetType="Border">
+                                                                    <Style.Triggers>
+                                                                        <Trigger Property="IsMouseOver" Value="True">
+                                                                            <Setter Property="Background" Value="{DynamicResource SidebarHover}"/>
+                                                                        </Trigger>
+                                                                    </Style.Triggers>
+                                                                </Style>
+                                                            </Border.Style>
+                                                            <CheckBox x:Name="chk_OS_Win11_23H2" Content="Windows 11 23H2" Margin="0"/>
+                                                        </Border>
+                                                        <Border x:Name="border_OS_Win11_22H2" Background="Transparent" CornerRadius="8" Padding="12,7" Margin="0,1" Cursor="Hand">
+                                                            <Border.Style>
+                                                                <Style TargetType="Border">
+                                                                    <Style.Triggers>
+                                                                        <Trigger Property="IsMouseOver" Value="True">
+                                                                            <Setter Property="Background" Value="{DynamicResource SidebarHover}"/>
+                                                                        </Trigger>
+                                                                    </Style.Triggers>
+                                                                </Style>
+                                                            </Border.Style>
+                                                            <CheckBox x:Name="chk_OS_Win11_22H2" Content="Windows 11 22H2" Margin="0"/>
+                                                        </Border>
+                                                    </StackPanel>
+                                                </Border>
+                                            </Popup>
+                                        </Grid>
+                                    </Border>
                                     <ComboBox x:Name="cmb_Architecture" Grid.Column="2" Grid.Row="1" Margin="8,0,8,0"
                                               VerticalAlignment="Top" Height="34">
                                         <ComboBoxItem Content="x64" IsSelected="True"/>
@@ -2704,9 +2778,9 @@
                                                 </Border>
                                                 <!-- Body Content -->
                                                 <StackPanel Grid.Row="1" Margin="20,16,20,12">
-                                                    <TextBlock Text="Hi User" FontSize="14" Foreground="#F8FAFC"
+                                                    <TextBlock x:Name="txt_ToastGreeting" Text="Hi User" FontSize="14" Foreground="#F8FAFC"
                                                                FontWeight="SemiBold" Margin="0,0,0,2"/>
-                                                    <TextBlock Text="Driver Automation Tool V10" FontSize="11"
+                                                    <TextBlock x:Name="txt_ToastSubtitle" Text="Driver Automation Tool V10" FontSize="11"
                                                                Foreground="#CBD5E1" Margin="0,0,0,12"/>
                                                     <TextBlock x:Name="txt_ToastHeading" Text="Driver Updates Pending"
                                                                FontSize="17" FontWeight="Bold"
@@ -2771,10 +2845,23 @@
                                                                    LineHeight="18" MaxWidth="300"/>
                                                     </StackPanel>
                                                     <Grid Grid.Row="2" Margin="24,0,24,16">
-                                                        <Border CornerRadius="8" Background="#334155" Height="34"
-                                                                Width="140" HorizontalAlignment="Center"
+                                                        <Grid.ColumnDefinitions>
+                                                            <ColumnDefinition Width="*"/>
+                                                            <ColumnDefinition x:Name="col_ToastRestartGap" Width="0"/>
+                                                            <ColumnDefinition x:Name="col_ToastRestart" Width="0"/>
+                                                        </Grid.ColumnDefinitions>
+                                                        <Border Grid.Column="0" CornerRadius="8" Background="#334155" Height="34"
+                                                                HorizontalAlignment="Stretch"
                                                                 BorderBrush="#475569" BorderThickness="1" Cursor="Arrow">
                                                             <TextBlock Text="Close" HorizontalAlignment="Center"
+                                                                       VerticalAlignment="Center" FontSize="13"
+                                                                       FontWeight="SemiBold" Foreground="#F8FAFC"/>
+                                                        </Border>
+                                                        <Border x:Name="bd_ToastRestartBtn" Grid.Column="2" CornerRadius="8" Height="34"
+                                                                HorizontalAlignment="Stretch"
+                                                                BorderBrush="#3B82F6" BorderThickness="1" Cursor="Arrow"
+                                                                Background="#2563EB" Visibility="Collapsed">
+                                                            <TextBlock Text="Restart Now" HorizontalAlignment="Center"
                                                                        VerticalAlignment="Center" FontSize="13"
                                                                        FontWeight="SemiBold" Foreground="#F8FAFC"/>
                                                         </Border>
@@ -2800,6 +2887,23 @@
                                             <TextBlock Text="Override the default heading and body text shown in driver and BIOS update toast notifications."
                                                        FontSize="11" Foreground="{DynamicResource InputPlaceholder}" TextWrapping="Wrap" Margin="0,0,0,10" LineHeight="16"/>
 
+                                            <TextBlock Text="Greeting Prefix" FontSize="11" FontWeight="SemiBold"
+                                                       Foreground="{DynamicResource InputPlaceholder}" Margin="0,0,0,4"/>
+                                            <Grid Margin="0,0,0,10">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*"/>
+                                                    <ColumnDefinition Width="8"/>
+                                                    <ColumnDefinition Width="Auto"/>
+                                                </Grid.ColumnDefinitions>
+                                                <TextBox x:Name="txt_CustomToastGreeting" Grid.Column="0" Style="{StaticResource RoundedTextBox}" Height="34"/>
+                                                <TextBlock Grid.Column="2" Text="+ {Username}" FontSize="11" VerticalAlignment="Center"
+                                                           Foreground="{DynamicResource InputPlaceholder}" FontStyle="Italic"/>
+                                            </Grid>
+
+                                            <TextBlock Text="Subtitle" FontSize="11" FontWeight="SemiBold"
+                                                       Foreground="{DynamicResource InputPlaceholder}" Margin="0,0,0,4"/>
+                                            <TextBox x:Name="txt_CustomToastSubtitle" Style="{StaticResource RoundedTextBox}" Height="34" Margin="0,0,0,10"/>
+
                                             <TextBlock Text="Toast Title" FontSize="11" FontWeight="SemiBold"
                                                        Foreground="{DynamicResource InputPlaceholder}" Margin="0,0,0,4"/>
                                             <TextBox x:Name="txt_CustomToastTitle" Style="{StaticResource RoundedTextBox}" Height="34" Margin="0,0,0,10"/>
@@ -2809,6 +2913,18 @@
                                             <TextBox x:Name="txt_CustomToastBody" Style="{StaticResource RoundedTextBox}" Height="60"
                                                      TextWrapping="Wrap" AcceptsReturn="True" VerticalContentAlignment="Top"
                                                      Padding="8,6"/>
+
+                                            <!-- Variables (shown for BIOS Prestaged) -->
+                                            <StackPanel x:Name="panel_ToastBodyVariables" Orientation="Horizontal" Margin="0,6,0,0" Visibility="Collapsed">
+                                                <TextBlock Text="Variables:" FontSize="11" FontWeight="SemiBold"
+                                                           Foreground="{DynamicResource InputPlaceholder}" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                                                <Button x:Name="btn_InsertMinutesVar" Style="{StaticResource RoundedButton}" Height="30" Cursor="Hand"
+                                                        ToolTip="Insert restart time variable into body text" Padding="8,4">
+                                                    <TextBlock FontSize="11" Foreground="{DynamicResource WindowForeground}">
+                                                        <Run Text="&#xE121;" FontFamily="Segoe MDL2 Assets" FontSize="10"/><Run Text="  {{MINUTES}}"/>
+                                                    </TextBlock>
+                                                </Button>
+                                            </StackPanel>
                                         </StackPanel>
                                     </Border>
 
@@ -2902,6 +3018,26 @@
                                                          ToolTip="Number of times the user can defer before the update is forced"/>
                                                 <TextBlock Grid.Column="2"
                                                            Text=" deferrals before forcing install"
+                                                           FontSize="12" Foreground="{DynamicResource WindowForeground}"
+                                                           VerticalAlignment="Center" Margin="8,0,0,0"/>
+                                            </Grid>
+
+                                            <!-- BIOS restart delay -->
+                                            <Grid Margin="0,12,0,0">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="Auto"/>
+                                                    <ColumnDefinition Width="60"/>
+                                                    <ColumnDefinition Width="*"/>
+                                                </Grid.ColumnDefinitions>
+                                                <TextBlock Text="Restart delay:"
+                                                           FontSize="12" Foreground="{DynamicResource WindowForeground}"
+                                                           VerticalAlignment="Center" Margin="0,0,10,0"/>
+                                                <TextBox x:Name="txt_BIOSRestartDelay" Grid.Column="1"
+                                                         Style="{StaticResource RoundedTextBox}" Height="32" FontSize="12"
+                                                         Text="3" VerticalContentAlignment="Center"
+                                                         ToolTip="Number of minutes before the device restarts after BIOS update prestaging"/>
+                                                <TextBlock Grid.Column="2"
+                                                           Text=" minutes before restart"
                                                            FontSize="12" Foreground="{DynamicResource WindowForeground}"
                                                            VerticalAlignment="Center" Margin="8,0,0,0"/>
                                             </Grid>
@@ -4695,7 +4831,6 @@
                         <Grid x:Name="view_About" Visibility="Collapsed">
                             <Grid.RowDefinitions>
                                 <RowDefinition Height="Auto"/>
-                                <RowDefinition Height="Auto"/>
                                 <RowDefinition Height="*"/>
                             </Grid.RowDefinitions>
 
@@ -4703,7 +4838,7 @@
                                 <Run Text="&#xE946;" FontFamily="Segoe MDL2 Assets" FontSize="20"/><Run Text="  About"/>
                             </TextBlock>
 
-                            <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Disabled" HorizontalScrollBarVisibility="Disabled">
+                            <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
                                 <StackPanel>
 
                             <!-- Side-by-side: Driver Automation Tool + Support This Project -->
@@ -4718,7 +4853,7 @@
                                     <StackPanel>
                                         <TextBlock Text="Driver Automation Tool" FontSize="22" FontWeight="Bold"
                                                    Foreground="{DynamicResource AccentColor}" Margin="0,0,0,4"/>
-                                        <TextBlock x:Name="txt_AboutVersion" Text="Version 10.0.24" FontSize="14"
+                                        <TextBlock x:Name="txt_AboutVersion" Text="Version 10.0.26" FontSize="14"
                                                    Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,16"/>
 
                                         <TextBlock TextWrapping="Wrap" FontSize="13"
@@ -4799,10 +4934,7 @@
                                 </Border>
                             </Grid>
 
-                                </StackPanel>
-                            </ScrollViewer>
-
-                            <Border Grid.Row="2" Style="{StaticResource CardPanel}" VerticalAlignment="Stretch" Margin="0,8,0,0">
+                            <Border Style="{StaticResource CardPanel}" VerticalAlignment="Stretch" Margin="0,8,0,0">
                                 <Grid>
                                     <Grid.RowDefinitions>
                                         <RowDefinition Height="Auto"/>
@@ -4942,6 +5074,28 @@ BY USING THIS TOOL, YOU ACKNOWLEDGE AND AGREE THAT:
                                     </StackPanel>
                                 </Grid>
                             </Border>
+
+                            <!-- Release Notes -->
+                            <Border Style="{StaticResource CardPanel}" VerticalAlignment="Stretch" Margin="0,8,0,0">
+                                <Grid>
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="*"/>
+                                    </Grid.RowDefinitions>
+                                    <TextBlock Grid.Row="0" Text="Release Notes" FontSize="18" FontWeight="Bold"
+                                               Foreground="{DynamicResource AccentColor}" Margin="0,0,0,12"/>
+                                    <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" MaxHeight="300">
+                                        <TextBlock x:Name="txt_ReleaseNotes" TextWrapping="Wrap" FontSize="12"
+                                                   FontFamily="Consolas"
+                                                   Foreground="{DynamicResource WindowForeground}"
+                                                   Text="Loading release notes..."/>
+                                    </ScrollViewer>
+                                </Grid>
+                            </Border>
+
+                                </StackPanel>
+                            </ScrollViewer>
+
                         </Grid>
 
                     </Grid>

@@ -4,7 +4,7 @@
      Organization:  MSEndpointMgr / Patch My PC
      Filename:      DriverAutomationToolCore.psm1
      Purpose:       Core functions for Driver Automation Tool v2.0
-     Version:       10.0.24.0
+     Version:       10.0.26.0
     ===========================================================================
 #>
 
@@ -21,7 +21,7 @@ if ($PSVersionTable.PSVersion.Major -le 5) {
 
 #region Variables
 
-[version]$global:ScriptRelease = "10.0.24.0"
+[version]$global:ScriptRelease = "10.0.26.0"
 $global:ScriptBuildDate = "01-05-2026"
 $global:ReleaseNotesURL = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/DriverAutomationToolNotes.txt"
 $OEMLinksURL = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/OEMLinks.xml"
@@ -2332,18 +2332,45 @@ function Start-DATModelProcessing {
         [switch]$DisableToast,
         [ValidateSet('RemindMeLater','InstallNow')][string]$ToastTimeoutAction = 'RemindMeLater',
         [int]$MaxDeferrals = 0,
+        [int]$RestartDelaySeconds = 600,
         [string]$DebugBuildPath,
         [string]$CustomBrandingPath,
         [string]$HPPasswordBinPath,
         [string]$TeamsWebhookUrl,
         [switch]$TeamsNotificationsEnabled,
-        [string]$CustomToastTitle,
-        [string]$CustomToastBody
+        [string]$CustomToastTextsJson
     )
     $global:ScriptDirectory = $ScriptDirectory
     $global:LogDirectory = Join-Path $ScriptDirectory "Logs"
     $global:TempDirectory = if ([string]::IsNullOrEmpty($StoragePath)) { Join-Path $ScriptDirectory "Temp" } else { $StoragePath }
     $global:ToolsDirectory = Join-Path $ScriptDirectory "Tools"
+
+    # Parse per-notification-type custom toast texts from JSON
+    $customToastTexts = @{}
+    if (-not [string]::IsNullOrEmpty($CustomToastTextsJson)) {
+        try { $customToastTexts = $CustomToastTextsJson | ConvertFrom-Json -AsHashtable -ErrorAction Stop }
+        catch {
+            try { $customToastTexts = @{}; ($CustomToastTextsJson | ConvertFrom-Json).PSObject.Properties | ForEach-Object { $customToastTexts[$_.Name] = @{ Title = $_.Value.Title; Body = $_.Value.Body; Greeting = $_.Value.Greeting; Subtitle = $_.Value.Subtitle } } }
+            catch { $customToastTexts = @{} }
+        }
+    }
+    # Extract per-type title/body/greeting/subtitle for backward-compatible passing
+    $CustomToastTitle = if ($customToastTexts.ContainsKey('Toast_Drivers')) { $customToastTexts['Toast_Drivers'].Title } else { '' }
+    $CustomToastBody  = if ($customToastTexts.ContainsKey('Toast_Drivers')) { $customToastTexts['Toast_Drivers'].Body } else { '' }
+    $CustomToastGreeting = if ($customToastTexts.ContainsKey('Toast_Drivers')) { $customToastTexts['Toast_Drivers'].Greeting } else { '' }
+    $CustomToastSubtitle = if ($customToastTexts.ContainsKey('Toast_Drivers')) { $customToastTexts['Toast_Drivers'].Subtitle } else { '' }
+    $CustomBIOSToastTitle = if ($customToastTexts.ContainsKey('Toast_BIOS')) { $customToastTexts['Toast_BIOS'].Title } else { '' }
+    $CustomBIOSToastBody  = if ($customToastTexts.ContainsKey('Toast_BIOS')) { $customToastTexts['Toast_BIOS'].Body } else { '' }
+    $CustomBIOSToastGreeting = if ($customToastTexts.ContainsKey('Toast_BIOS')) { $customToastTexts['Toast_BIOS'].Greeting } else { '' }
+    $CustomBIOSToastSubtitle = if ($customToastTexts.ContainsKey('Toast_BIOS')) { $customToastTexts['Toast_BIOS'].Subtitle } else { '' }
+    $CustomSuccessTitle = if ($customToastTexts.ContainsKey('Toast_Success')) { $customToastTexts['Toast_Success'].Title } else { '' }
+    $CustomSuccessBody  = if ($customToastTexts.ContainsKey('Toast_Success')) { $customToastTexts['Toast_Success'].Body } else { '' }
+    $CustomBIOSSuccessTitle = if ($customToastTexts.ContainsKey('Toast_BIOSSuccess')) { $customToastTexts['Toast_BIOSSuccess'].Title } else { '' }
+    $CustomBIOSSuccessBody  = if ($customToastTexts.ContainsKey('Toast_BIOSSuccess')) { $customToastTexts['Toast_BIOSSuccess'].Body } else { '' }
+    $CustomIssuesTitle = if ($customToastTexts.ContainsKey('Toast_Issues')) { $customToastTexts['Toast_Issues'].Title } else { '' }
+    $CustomIssuesBody  = if ($customToastTexts.ContainsKey('Toast_Issues')) { $customToastTexts['Toast_Issues'].Body } else { '' }
+    $CustomBIOSIssuesTitle = if ($customToastTexts.ContainsKey('Toast_BIOSIssues')) { $customToastTexts['Toast_BIOSIssues'].Title } else { '' }
+    $CustomBIOSIssuesBody  = if ($customToastTexts.ContainsKey('Toast_BIOSIssues')) { $customToastTexts['Toast_BIOSIssues'].Body } else { '' }
 
     # Use user-configured paths if provided, otherwise default to ScriptDirectory sub-folders
     if ([string]::IsNullOrEmpty($StoragePath)) { $StoragePath = Join-Path $ScriptDirectory "Downloads" }
@@ -2540,10 +2567,17 @@ function Start-DATModelProcessing {
                         if ($DisableToast) { $intuneParams['DisableToast'] = $true }
                         if ($ToastTimeoutAction -ne 'RemindMeLater') { $intuneParams['ToastTimeoutAction'] = $ToastTimeoutAction }
                         if ($MaxDeferrals -gt 0) { $intuneParams['MaxDeferrals'] = $MaxDeferrals }
+                        if ($RestartDelaySeconds -ne 600) { $intuneParams['RestartDelaySeconds'] = $RestartDelaySeconds }
                         if (-not [string]::IsNullOrEmpty($DebugBuildPath)) { $intuneParams['DebugBuildPath'] = $DebugBuildPath }
                         if (-not [string]::IsNullOrEmpty($CustomBrandingPath)) { $intuneParams['CustomBrandingPath'] = $CustomBrandingPath }
                         if (-not [string]::IsNullOrEmpty($CustomToastTitle)) { $intuneParams['CustomToastTitle'] = $CustomToastTitle }
                         if (-not [string]::IsNullOrEmpty($CustomToastBody)) { $intuneParams['CustomToastBody'] = $CustomToastBody }
+                        if (-not [string]::IsNullOrEmpty($CustomToastGreeting)) { $intuneParams['CustomToastGreeting'] = $CustomToastGreeting }
+                        if (-not [string]::IsNullOrEmpty($CustomToastSubtitle)) { $intuneParams['CustomToastSubtitle'] = $CustomToastSubtitle }
+                        if (-not [string]::IsNullOrEmpty($CustomSuccessTitle)) { $intuneParams['CustomSuccessTitle'] = $CustomSuccessTitle }
+                        if (-not [string]::IsNullOrEmpty($CustomSuccessBody)) { $intuneParams['CustomSuccessBody'] = $CustomSuccessBody }
+                        if (-not [string]::IsNullOrEmpty($CustomIssuesTitle)) { $intuneParams['CustomIssuesTitle'] = $CustomIssuesTitle }
+                        if (-not [string]::IsNullOrEmpty($CustomIssuesBody)) { $intuneParams['CustomIssuesBody'] = $CustomIssuesBody }
                         if ($modelForceUpdate) { $intuneParams['ForceUpdate'] = $true }
                         Invoke-DATIntunePackageCreation @intuneParams
 
@@ -2807,11 +2841,18 @@ function Start-DATModelProcessing {
                                 if ($DisableToast) { $intuneParams['DisableToast'] = $true }
                                 if ($ToastTimeoutAction -ne 'RemindMeLater') { $intuneParams['ToastTimeoutAction'] = $ToastTimeoutAction }
                                 if ($MaxDeferrals -gt 0) { $intuneParams['MaxDeferrals'] = $MaxDeferrals }
+                                if ($RestartDelaySeconds -ne 600) { $intuneParams['RestartDelaySeconds'] = $RestartDelaySeconds }
                                 if (-not [string]::IsNullOrEmpty($DebugBuildPath)) { $intuneParams['DebugBuildPath'] = $DebugBuildPath }
                                 if (-not [string]::IsNullOrEmpty($CustomBrandingPath)) { $intuneParams['CustomBrandingPath'] = $CustomBrandingPath }
                                 if (-not [string]::IsNullOrEmpty($HPPasswordBinPath)) { $intuneParams['HPPasswordBinPath'] = $HPPasswordBinPath }
-                                if (-not [string]::IsNullOrEmpty($CustomToastTitle)) { $intuneParams['CustomToastTitle'] = $CustomToastTitle }
-                                if (-not [string]::IsNullOrEmpty($CustomToastBody)) { $intuneParams['CustomToastBody'] = $CustomToastBody }
+                                if (-not [string]::IsNullOrEmpty($CustomBIOSToastTitle)) { $intuneParams['CustomToastTitle'] = $CustomBIOSToastTitle }
+                                if (-not [string]::IsNullOrEmpty($CustomBIOSToastBody)) { $intuneParams['CustomToastBody'] = $CustomBIOSToastBody }
+                                if (-not [string]::IsNullOrEmpty($CustomBIOSToastGreeting)) { $intuneParams['CustomToastGreeting'] = $CustomBIOSToastGreeting }
+                                if (-not [string]::IsNullOrEmpty($CustomBIOSToastSubtitle)) { $intuneParams['CustomToastSubtitle'] = $CustomBIOSToastSubtitle }
+                                if (-not [string]::IsNullOrEmpty($CustomBIOSSuccessTitle)) { $intuneParams['CustomBIOSSuccessTitle'] = $CustomBIOSSuccessTitle }
+                                if (-not [string]::IsNullOrEmpty($CustomBIOSSuccessBody)) { $intuneParams['CustomBIOSSuccessBody'] = $CustomBIOSSuccessBody }
+                                if (-not [string]::IsNullOrEmpty($CustomBIOSIssuesTitle)) { $intuneParams['CustomBIOSIssuesTitle'] = $CustomBIOSIssuesTitle }
+                                if (-not [string]::IsNullOrEmpty($CustomBIOSIssuesBody)) { $intuneParams['CustomBIOSIssuesBody'] = $CustomBIOSIssuesBody }
                                 if ($modelForceUpdate) { $intuneParams['ForceUpdate'] = $true }
                                 Invoke-DATIntunePackageCreation @intuneParams
 
@@ -3130,6 +3171,7 @@ function Export-DATBuildConfig {
         [bool]$DisableToast = $false,
         [string]$ToastTimeoutAction = 'RemindMeLater',
         [int]$MaxDeferrals = 0,
+        [int]$BIOSRestartDelayMinutes = 3,
         [string]$TeamsWebhookUrl,
         [bool]$TeamsNotificationsEnabled = $false,
         [hashtable]$Intune,
@@ -3150,12 +3192,13 @@ function Export-DATBuildConfig {
         TempPath                   = if ($TempPath) { $TempPath } else { '' }
         PackagePath                = if ($PackagePath) { $PackagePath } else { '' }
         Platform                   = $Platform
-        OS                         = $OS
+        OS                         = if ($OS -match ';') { @($OS -split ';' | Where-Object { $_.Trim() } | ForEach-Object { $_.Trim() }) } else { $OS }
         Architecture               = $Architecture
         PackageType                = $PackageType
         DisableToast               = $DisableToast
         ToastTimeoutAction         = $ToastTimeoutAction
         MaxDeferrals               = $MaxDeferrals
+        BIOSRestartDelayMinutes    = $BIOSRestartDelayMinutes
         TeamsWebhookUrl            = if ($TeamsWebhookUrl) { $TeamsWebhookUrl } else { '' }
         TeamsNotificationsEnabled  = $TeamsNotificationsEnabled
         Intune                     = if ($Intune) { $Intune } else { [ordered]@{ TenantId = ''; AppId = ''; AppSecret = '' } }
@@ -3192,17 +3235,26 @@ function Import-DATBuildConfig {
     if ([string]::IsNullOrEmpty($config.OS)) { throw "BuildConfig must specify 'OS'" }
     if ([string]::IsNullOrEmpty($config.Architecture)) { throw "BuildConfig must specify 'Architecture'" }
 
-    # Build model objects matching the pipeline format
+    # Support multiple OS values: semicolon-separated string or JSON array
+    $osList = if ($config.OS -is [array]) {
+        $config.OS
+    } else {
+        $config.OS -split ';' | Where-Object { $_.Trim() } | ForEach-Object { $_.Trim() }
+    }
+
+    # Build model objects matching the pipeline format (one entry per model per OS)
     $models = foreach ($m in $config.Models) {
-        [PSCustomObject]@{
-            OEM              = $m.OEM
-            Model            = $m.Model
-            Baseboards       = if ($m.Baseboards) { $m.Baseboards } else { '' }
-            OS               = $config.OS
-            Architecture     = $config.Architecture
-            CustomDriverPath = $null
-            Version          = $null
-            BIOSVersion      = $null
+        foreach ($osValue in $osList) {
+            [PSCustomObject]@{
+                OEM              = $m.OEM
+                Model            = $m.Model
+                Baseboards       = if ($m.Baseboards) { $m.Baseboards } else { '' }
+                OS               = $osValue
+                Architecture     = $config.Architecture
+                CustomDriverPath = $null
+                Version          = $null
+                BIOSVersion      = $null
+            }
         }
     }
 
@@ -3216,6 +3268,7 @@ function Import-DATBuildConfig {
         DisableToast              = [bool]$config.DisableToast
         ToastTimeoutAction        = if ($config.ToastTimeoutAction) { $config.ToastTimeoutAction } else { 'RemindMeLater' }
         MaxDeferrals              = if ($config.MaxDeferrals) { [int]$config.MaxDeferrals } else { 0 }
+        BIOSRestartDelayMinutes   = if ($config.BIOSRestartDelayMinutes) { [int]$config.BIOSRestartDelayMinutes } else { 3 }
         TeamsWebhookUrl           = $config.TeamsWebhookUrl
         TeamsNotificationsEnabled = [bool]$config.TeamsNotificationsEnabled
         WimEngine                 = if ($config.WimEngine) { $config.WimEngine } else { $null }
@@ -4903,14 +4956,19 @@ function Test-DATIntuneAuth {
     <#
     .SYNOPSIS
         Checks whether the in-memory Intune token is still valid.
+        Attempts automatic refresh if the token has expired.
     #>
     [OutputType([bool])]
     param ()
 
     if ([string]::IsNullOrEmpty($script:IntuneAuthToken)) { return $false }
     if ((Get-Date) -ge $script:IntuneTokenExpiry) {
-        Write-DATLogEntry -Value "[Intune Auth] Token expired - reauthentication required" -Severity 2
+        Write-DATLogEntry -Value "[Intune Auth] Token expired - attempting automatic refresh" -Severity 2
+        if (Update-DATIntuneTokenIfNeeded -Force) {
+            return $true
+        }
         $script:IntuneAuthToken = $null
+        Write-DATLogEntry -Value "[Intune Auth] Token expired and refresh failed - reauthentication required" -Severity 3
         return $false
     }
     return $true
@@ -4922,23 +4980,30 @@ function Update-DATIntuneTokenIfNeeded {
         Proactively refreshes the Intune access token if it expires within 10 minutes.
         Supports both interactive (refresh token) and app registration (client credentials) flows.
         Called at the start of each model iteration during long builds.
+    .PARAMETER Force
+        Skip the time-remaining check and always attempt a refresh. Used after receiving a 401.
     .OUTPUTS
         $true if the token is valid (refreshed or still good), $false if refresh failed.
     #>
     [OutputType([bool])]
     [CmdletBinding()]
-    param ()
+    param (
+        [switch]$Force
+    )
 
     # No token at all -- nothing to refresh
     if ([string]::IsNullOrEmpty($script:IntuneAuthToken)) { return $false }
 
-    $minutesRemaining = ($script:IntuneTokenExpiry - (Get-Date)).TotalMinutes
-    if ($minutesRemaining -gt 10) {
-        # Token still has plenty of life -- no action needed
-        return $true
+    if (-not $Force) {
+        $minutesRemaining = ($script:IntuneTokenExpiry - (Get-Date)).TotalMinutes
+        if ($minutesRemaining -gt 10) {
+            # Token still has plenty of life -- no action needed
+            return $true
+        }
+        Write-DATLogEntry -Value "[Intune Auth] Token expires in $([math]::Round($minutesRemaining, 1)) minutes -- attempting proactive refresh" -Severity 2
+    } else {
+        Write-DATLogEntry -Value "[Intune Auth] Forced token refresh requested (e.g. after 401)" -Severity 2
     }
-
-    Write-DATLogEntry -Value "[Intune Auth] Token expires in $([math]::Round($minutesRemaining, 1)) minutes -- attempting proactive refresh" -Severity 2
 
     # Strategy 1: Use refresh token (interactive / device code / browser auth)
     if (-not [string]::IsNullOrEmpty($script:IntuneRefreshToken)) {
@@ -4979,8 +5044,8 @@ function Update-DATIntuneTokenIfNeeded {
         Write-DATLogEntry -Value "[Intune Auth] Client credentials refresh error: $($_.Exception.Message)" -Severity 2
     }
 
-    # If we get here and the token hasn't actually expired yet, it's still usable
-    if ((Get-Date) -lt $script:IntuneTokenExpiry) {
+    # If we get here and we weren't forced (proactive check), the token might still be usable
+    if (-not $Force -and (Get-Date) -lt $script:IntuneTokenExpiry) {
         Write-DATLogEntry -Value "[Intune Auth] Refresh failed but token still valid for $([math]::Round(($script:IntuneTokenExpiry - (Get-Date)).TotalMinutes, 1)) minutes" -Severity 2
         return $true
     }
@@ -5138,8 +5203,32 @@ function Invoke-DATGraphRequest {
             $responseBody = $_.ErrorDetails.Message
         }
         if ($statusCode -eq 401) {
+            # Attempt automatic token refresh before giving up
+            Write-DATLogEntry -Value "[Graph API] 401 Unauthorized - attempting automatic token refresh..." -Severity 2
+            if (Update-DATIntuneTokenIfNeeded -Force) {
+                Write-DATLogEntry -Value "[Graph API] Token refreshed after 401 - retrying request ($Method $Uri)" -Severity 1
+                # Update headers with new token and retry once
+                $headers["Authorization"] = "Bearer $($script:IntuneAuthToken)"
+                try {
+                    $retrySplat = @{
+                        Method      = $Method
+                        Uri         = if ($Uri -match '^https://') { $Uri } else { "$($script:GraphBaseUrl)/$($Uri.TrimStart('/'))" }
+                        Headers     = $headers
+                        ErrorAction = 'Stop'
+                    }
+                    if ($Body -and $Method -in @('POST', 'PATCH')) {
+                        $retrySplat['Body'] = if ($Body -is [string]) { $Body } else { $Body | ConvertTo-Json -Depth 20 -Compress }
+                    }
+                    $retryProxy = Get-DATWebRequestProxy
+                    foreach ($key in $retryProxy.Keys) { $retrySplat[$key] = $retryProxy[$key] }
+                    $retryResponse = Invoke-RestMethod @retrySplat
+                    if ($retryResponse.value) { return @($retryResponse.value) } else { return $retryResponse }
+                } catch {
+                    Write-DATLogEntry -Value "[Graph API] Retry after token refresh also failed: $($_.Exception.Message)" -Severity 3
+                }
+            }
             $script:IntuneAuthToken = $null
-            Write-DATLogEntry -Value "[Graph API] 401 Unauthorized - token invalidated" -Severity 3
+            Write-DATLogEntry -Value "[Graph API] 401 Unauthorized - token invalidated after failed refresh" -Severity 3
             throw "Authentication expired. Please re-authenticate."
         }
         Write-DATLogEntry -Value "[Graph API] Request failed ($Method $Uri): $($_.Exception.Message)" -Severity 3
@@ -5469,7 +5558,10 @@ function New-DATIntuneToastScript {
         [string]$BrandingPath = '',
         [string]$CustomBrandingImagePath = '',
         [string]$CustomToastTitle = '',
-        [string]$CustomToastBody = ''
+        [string]$CustomToastBody = '',
+        [string]$CustomToastGreeting = '',
+        [string]$CustomToastSubtitle = '',
+        [int]$RestartDelayMinutes = 10
     )
 
     # Determine layout type and per-type content
@@ -5481,32 +5573,32 @@ function New-DATIntuneToastScript {
             $body    = if (-not [string]::IsNullOrEmpty($CustomToastBody))  { $CustomToastBody  } else { 'Your device has pending updates which are required for security / stability reasons. Pressing the Update button will trigger a restart of your device. DO NOT power off the device during the update process.' }
         }
         'BIOSSuccess' {
-            $heading        = 'BIOS Firmware Prestaged'
-            $body           = 'Your system has a pending BIOS update and will be restarted in 180 seconds. Please save your work. Do NOT power off the device during the update process.'
+            $heading        = if (-not [string]::IsNullOrEmpty($CustomToastTitle)) { $CustomToastTitle } else { 'BIOS Firmware Prestaged' }
+            $body           = if (-not [string]::IsNullOrEmpty($CustomToastBody))  { $CustomToastBody  } else { "Your system has a pending BIOS update and will be restarted in $RestartDelayMinutes minute(s). Please save your work. Do NOT power off the device during the update process." }
             $statusIcon     = '&#xE835;'   # FirmwareUpdate (Segoe MDL2 Assets)
             $iconColor      = '#3B82F6'    # blue-500
             $accentColor    = '#2563EB'    # blue-600
             $iconBackground = '#172554'    # blue-950
         }
         'Success' {
-            $heading        = 'Drivers Successfully Updated'
-            $body           = 'Your device drivers have been successfully updated. No restart is required unless indicated by your IT department.'
+            $heading        = if (-not [string]::IsNullOrEmpty($CustomToastTitle)) { $CustomToastTitle } else { 'Drivers Successfully Updated' }
+            $body           = if (-not [string]::IsNullOrEmpty($CustomToastBody))  { $CustomToastBody  } else { 'Your device drivers have been successfully updated. No restart is required unless indicated by your IT department.' }
             $statusIcon     = '&#xE930;'   # CompletedSolid (Segoe MDL2 Assets)
             $iconColor      = '#22C55E'    # green-500
             $accentColor    = '#16A34A'    # green-600
             $iconBackground = '#052e16'    # green-950
         }
         'Issues' {
-            $heading        = 'Driver Update Issues Detected'
-            $body           = 'One or more driver updates encountered errors during installation. Please contact your IT department or check the device logs for details.'
+            $heading        = if (-not [string]::IsNullOrEmpty($CustomToastTitle)) { $CustomToastTitle } else { 'Driver Update Issues Detected' }
+            $body           = if (-not [string]::IsNullOrEmpty($CustomToastBody))  { $CustomToastBody  } else { 'One or more driver updates encountered errors during installation. Please contact your IT department or check the device logs for details.' }
             $statusIcon     = '&#xE7BA;'   # Warning (Segoe MDL2 Assets)
             $iconColor      = '#F59E0B'    # amber-500
             $accentColor    = '#D97706'    # amber-600
             $iconBackground = '#451a03'    # amber-950
         }
         'BIOSIssues' {
-            $heading        = 'BIOS Update Issues Detected'
-            $body           = 'The BIOS firmware update encountered errors during installation. Please contact your IT department or check the device logs for details.'
+            $heading        = if (-not [string]::IsNullOrEmpty($CustomToastTitle)) { $CustomToastTitle } else { 'BIOS Update Issues Detected' }
+            $body           = if (-not [string]::IsNullOrEmpty($CustomToastBody))  { $CustomToastBody  } else { 'The BIOS firmware update encountered errors during installation. Please contact your IT department or check the device logs for details.' }
             $statusIcon     = '&#xE7BA;'   # Warning (Segoe MDL2 Assets)
             $iconColor      = '#F59E0B'    # amber-500
             $accentColor    = '#D97706'    # amber-600
@@ -5517,6 +5609,10 @@ function New-DATIntuneToastScript {
             $body    = if (-not [string]::IsNullOrEmpty($CustomToastBody))  { $CustomToastBody  } else { 'Your device has pending updates which are required for security / stability reasons. Pressing the Update button can result in temporary network or display interruption.' }
         }
     }
+
+    # Resolve greeting prefix and subtitle
+    $greetingPrefix = if (-not [string]::IsNullOrEmpty($CustomToastGreeting)) { $CustomToastGreeting } else { 'Hi' }
+    $subtitle = if (-not [string]::IsNullOrEmpty($CustomToastSubtitle)) { $CustomToastSubtitle } else { 'Driver Automation Tool V10' }
 
     # Read module version from manifest for embedding in generated scripts
     $moduleManifest = Import-PowerShellDataFile -Path (Join-Path $PSScriptRoot 'DriverAutomationToolCore.psd1') -ErrorAction SilentlyContinue
@@ -5538,6 +5634,7 @@ function New-DATIntuneToastScript {
 `$DATToastVersion   = '$scriptVersion'
 `$DATToastBuildTime = '$buildTimestamp'
 `$DATToastType      = '$UpdateType'
+`$greetingPrefix    = '$($greetingPrefix -replace "'","''")'
 
 # --- Toast Debug Logging ---
 `$toastLogPath = Join-Path `$env:ProgramData 'DriverAutomationTool\DAT_Toast.log'
@@ -5864,9 +5961,9 @@ try {
 
         $bodyXaml = @"
             <StackPanel Grid.Row="1" Margin="24,20,24,16">
-                <TextBlock x:Name="txtGreeting" Text="Hi User" FontSize="16" Foreground="#F8FAFC"
+                <TextBlock x:Name="txtGreeting" Text="$greetingPrefix User" FontSize="16" Foreground="#F8FAFC"
                            FontWeight="SemiBold" Margin="0,0,0,2"/>
-                <TextBlock Text="Driver Automation Tool V10" FontSize="12"
+                <TextBlock Text="$subtitle" FontSize="12"
                            Foreground="#CBD5E1" Margin="0,0,0,16"/>
                 <TextBlock Text="$heading" FontSize="20" FontWeight="Bold"
                            Foreground="#F8FAFC" Margin="0,0,0,10"/>
@@ -5982,7 +6079,7 @@ try {
     }
     Write-ToastLog "Greeting user as: $displayName"
 
-    $window.FindName('txtGreeting').Text = "Hi $displayName"
+    $window.FindName('txtGreeting').Text = "$greetingPrefix $displayName"
 
     # Position at bottom-right of the working area (above the taskbar) once rendered
     $window.Add_ContentRendered({
@@ -6079,7 +6176,8 @@ function New-DATIntuneInstallScript {
         [ValidateSet('Drivers','BIOS')][string]$UpdateType = 'Drivers',
         [switch]$DisableToast,
         [ValidateSet('RemindMeLater','InstallNow')][string]$ToastTimeoutAction = 'RemindMeLater',
-        [int]$MaxDeferrals = 0
+        [int]$MaxDeferrals = 0,
+        [int]$RestartDelaySeconds = 600
     )
 
     # Select the correct template based on update type
@@ -6494,6 +6592,7 @@ function Show-DATStatusToast {
     $scriptContent = $scriptContent.Replace('{{TOAST_BLOCK}}', $toastBlock)
     $scriptContent = $scriptContent.Replace('{{STATUS_TOAST_BLOCK}}', $statusToastBlock)
     $scriptContent = $scriptContent.Replace('{{STATUS_TOAST_ERROR_BLOCK}}', $statusToastErrorBlock)
+    $scriptContent = $scriptContent.Replace('{{RESTART_DELAY_SECONDS}}', [string]$RestartDelaySeconds)
 
     [System.IO.File]::WriteAllText($OutputPath, $scriptContent, [System.Text.UTF8Encoding]::new($false))
     Write-DATLogEntry -Value "[Intune] Install script generated: $OutputPath (Toast: $(if ($DisableToast) { 'Disabled' } else { 'Enabled' }))" -Severity 1
@@ -7485,6 +7584,7 @@ function Invoke-DATIntunePackageCreation {
         [switch]$DisableToast,
         [ValidateSet('RemindMeLater','InstallNow')][string]$ToastTimeoutAction = 'RemindMeLater',
         [int]$MaxDeferrals = 0,
+        [int]$RestartDelaySeconds = 600,
         [string]$DebugBuildPath,
         [string]$CustomBrandingPath,
         [string]$Version,
@@ -7492,7 +7592,17 @@ function Invoke-DATIntunePackageCreation {
         [string]$HPPasswordBinPath,
         [switch]$ForceUpdate,
         [string]$CustomToastTitle,
-        [string]$CustomToastBody
+        [string]$CustomToastBody,
+        [string]$CustomToastGreeting,
+        [string]$CustomToastSubtitle,
+        [string]$CustomSuccessTitle,
+        [string]$CustomSuccessBody,
+        [string]$CustomBIOSSuccessTitle,
+        [string]$CustomBIOSSuccessBody,
+        [string]$CustomIssuesTitle,
+        [string]$CustomIssuesBody,
+        [string]$CustomBIOSIssuesTitle,
+        [string]$CustomBIOSIssuesBody
     )
     if (-not [string]::IsNullOrEmpty($IntuneAuthToken)) {
         $script:IntuneAuthToken = $IntuneAuthToken
@@ -7603,6 +7713,7 @@ function Invoke-DATIntunePackageCreation {
         if ($DisableToast) { $installScriptParams['DisableToast'] = $true }
         if ($ToastTimeoutAction -ne 'RemindMeLater') { $installScriptParams['ToastTimeoutAction'] = $ToastTimeoutAction }
         if ($MaxDeferrals -gt 0) { $installScriptParams['MaxDeferrals'] = $MaxDeferrals }
+        if ($RestartDelaySeconds -ne 600) { $installScriptParams['RestartDelaySeconds'] = $RestartDelaySeconds }
         New-DATIntuneInstallScript @installScriptParams
         Write-DATLogEntry -Value "[Intune Pipeline] Install script created: $installScriptPath" -Severity 1 -UpdateUI
 
@@ -7617,6 +7728,8 @@ function Invoke-DATIntunePackageCreation {
             if (-not [string]::IsNullOrEmpty($CustomBrandingPath)) { $toastParams['CustomBrandingImagePath'] = $CustomBrandingPath }
             if (-not [string]::IsNullOrEmpty($CustomToastTitle)) { $toastParams['CustomToastTitle'] = $CustomToastTitle }
             if (-not [string]::IsNullOrEmpty($CustomToastBody))  { $toastParams['CustomToastBody']  = $CustomToastBody  }
+            if (-not [string]::IsNullOrEmpty($CustomToastGreeting))  { $toastParams['CustomToastGreeting']  = $CustomToastGreeting  }
+            if (-not [string]::IsNullOrEmpty($CustomToastSubtitle))  { $toastParams['CustomToastSubtitle']  = $CustomToastSubtitle  }
             New-DATIntuneToastScript @toastParams
             Write-DATLogEntry -Value "[Intune Pipeline] Toast script created: $toastScriptPath" -Severity 1 -UpdateUI
 
@@ -7625,26 +7738,41 @@ function Invoke-DATIntunePackageCreation {
                 BrandingPath = Join-Path $global:ScriptDirectory 'Branding'
             }
             if (-not [string]::IsNullOrEmpty($CustomBrandingPath)) { $statusToastParams['CustomBrandingImagePath'] = $CustomBrandingPath }
+            if ($UpdateType -eq 'BIOS' -and $RestartDelaySeconds -gt 0) {
+                $statusToastParams['RestartDelayMinutes'] = [math]::Round($RestartDelaySeconds / 60, 0)
+            }
 
             $successToastPath = Join-Path $stagingDir "Show-StatusToast-Success.ps1"
-            New-DATIntuneToastScript -OutputPath $successToastPath -UpdateType 'Success' @statusToastParams
+            $successParams = @{} + $statusToastParams
+            if (-not [string]::IsNullOrEmpty($CustomSuccessTitle)) { $successParams['CustomToastTitle'] = $CustomSuccessTitle }
+            if (-not [string]::IsNullOrEmpty($CustomSuccessBody))  { $successParams['CustomToastBody']  = $CustomSuccessBody  }
+            New-DATIntuneToastScript -OutputPath $successToastPath -UpdateType 'Success' @successParams
             Write-DATLogEntry -Value "[Intune Pipeline] Success toast script created: $successToastPath" -Severity 1 -UpdateUI
 
             # Generate BIOS-specific prestaged toast (used only by BIOS install scripts)
             if ($UpdateType -eq 'BIOS') {
                 $biosSuccessToastPath = Join-Path $stagingDir "Show-StatusToast-BIOSSuccess.ps1"
-                New-DATIntuneToastScript -OutputPath $biosSuccessToastPath -UpdateType 'BIOSSuccess' @statusToastParams
+                $biosSuccessParams = @{} + $statusToastParams
+                if (-not [string]::IsNullOrEmpty($CustomBIOSSuccessTitle)) { $biosSuccessParams['CustomToastTitle'] = $CustomBIOSSuccessTitle }
+                if (-not [string]::IsNullOrEmpty($CustomBIOSSuccessBody))  { $biosSuccessParams['CustomToastBody']  = $CustomBIOSSuccessBody  }
+                New-DATIntuneToastScript -OutputPath $biosSuccessToastPath -UpdateType 'BIOSSuccess' @biosSuccessParams
                 Write-DATLogEntry -Value "[Intune Pipeline] BIOS prestaged toast script created: $biosSuccessToastPath" -Severity 1 -UpdateUI
             }
 
             $issuesToastPath = Join-Path $stagingDir "Show-StatusToast-Issues.ps1"
-            New-DATIntuneToastScript -OutputPath $issuesToastPath -UpdateType 'Issues' @statusToastParams
+            $issuesParams = @{} + $statusToastParams
+            if (-not [string]::IsNullOrEmpty($CustomIssuesTitle)) { $issuesParams['CustomToastTitle'] = $CustomIssuesTitle }
+            if (-not [string]::IsNullOrEmpty($CustomIssuesBody))  { $issuesParams['CustomToastBody']  = $CustomIssuesBody  }
+            New-DATIntuneToastScript -OutputPath $issuesToastPath -UpdateType 'Issues' @issuesParams
             Write-DATLogEntry -Value "[Intune Pipeline] Issues toast script created: $issuesToastPath" -Severity 1 -UpdateUI
 
             # Generate BIOS-specific issues toast (used only by BIOS install scripts)
             if ($UpdateType -eq 'BIOS') {
                 $biosIssuesToastPath = Join-Path $stagingDir "Show-StatusToast-BIOSIssues.ps1"
-                New-DATIntuneToastScript -OutputPath $biosIssuesToastPath -UpdateType 'BIOSIssues' @statusToastParams
+                $biosIssuesParams = @{} + $statusToastParams
+                if (-not [string]::IsNullOrEmpty($CustomBIOSIssuesTitle)) { $biosIssuesParams['CustomToastTitle'] = $CustomBIOSIssuesTitle }
+                if (-not [string]::IsNullOrEmpty($CustomBIOSIssuesBody))  { $biosIssuesParams['CustomToastBody']  = $CustomBIOSIssuesBody  }
+                New-DATIntuneToastScript -OutputPath $biosIssuesToastPath -UpdateType 'BIOSIssues' @biosIssuesParams
                 Write-DATLogEntry -Value "[Intune Pipeline] BIOS issues toast script created: $biosIssuesToastPath" -Severity 1 -UpdateUI
             }
         }
@@ -8402,7 +8530,7 @@ function Invoke-DATBiosPackaging {
                 Remove-ItemProperty -Path $global:RegPath -Name 'LenovoFlashKilled' -ErrorAction SilentlyContinue
 
                 $extractProc = Start-Process -FilePath $BiosFilePath `
-                    -ArgumentList "/VERYSILENT /DIR=`"$extractDir`" /SP- /SUPPRESSMSGBOXES /NORESTART" `
+                    -ArgumentList "/VERYSILENT /DIR=`"$extractDir`" /EXTRACT=`"YES`" /SP- /SUPPRESSMSGBOXES /NORESTART" `
                     -WindowStyle Hidden -PassThru
 
                 # Poll until flash-related files appear AND the file count stabilises,
@@ -8415,8 +8543,8 @@ function Invoke-DATBiosPackaging {
                 $stableChecks = 0
                 $requiredStableChecks = 4  # 4 x 500ms = 2 seconds of stable file count
                 while ($elapsed -lt $maxWaitSec -and -not $extractProc.HasExited) {
-                    # Immediately kill any flash utilities that Inno Setup may have spawned
-                    foreach ($flashName in $flashProcessNames) {
+                    # TEMPORARILY DISABLED: kill flash utilities during extraction
+                    <# foreach ($flashName in $flashProcessNames) {
                         $flashProcs = Get-Process -Name $flashName -ErrorAction SilentlyContinue
                         foreach ($fp in $flashProcs) {
                             try {
@@ -8425,7 +8553,7 @@ function Invoke-DATBiosPackaging {
                                 Set-DATRegistryValue -Name 'LenovoFlashKilled' -Value $fp.ProcessName -Type String
                             } catch {}
                         }
-                    }
+                    } #>
 
                     $extractedFiles = @(Get-ChildItem -Path $extractDir -File -ErrorAction SilentlyContinue |
                         Where-Object { $_.Name -match '\.(cmd|cap|rom|bin|exe)$' -and $_.Name -ne (Split-Path $BiosFilePath -Leaf) })
@@ -8446,8 +8574,8 @@ function Invoke-DATBiosPackaging {
                     $elapsed += 0.5
                 }
 
-                # Kill the Inno Setup process tree to prevent the BIOS flash from executing
-                if (-not $extractProc.HasExited) {
+                # TEMPORARILY DISABLED: Kill the Inno Setup process tree
+                <# if (-not $extractProc.HasExited) {
                     try {
                         # Kill child processes first (wFlashGUIX64.exe, AFUWINx64.EXE, etc.)
                         $children = Get-CimInstance -ClassName Win32_Process -Filter "ParentProcessId = $($extractProc.Id)" -ErrorAction SilentlyContinue
@@ -8458,10 +8586,10 @@ function Invoke-DATBiosPackaging {
                         $extractProc.Kill()
                         Write-DATLogEntry -Value "[BIOS] Lenovo: Killed Inno Setup installer process" -Severity 1
                     } catch {}
-                }
+                } #>
 
-                # Final sweep: kill any flash utilities that may have survived
-                foreach ($flashName in $flashProcessNames) {
+                # TEMPORARILY DISABLED: Final sweep kill flash utilities
+                <# foreach ($flashName in $flashProcessNames) {
                     $flashProcs = Get-Process -Name $flashName -ErrorAction SilentlyContinue
                     foreach ($fp in $flashProcs) {
                         try {
@@ -8470,7 +8598,7 @@ function Invoke-DATBiosPackaging {
                             Set-DATRegistryValue -Name 'LenovoFlashKilled' -Value $fp.ProcessName -Type String
                         } catch {}
                     }
-                }
+                } #>
 
                 if (-not $extractionDone) {
                     # Process exited on its own -- check if files were extracted
@@ -9061,18 +9189,18 @@ function Repair-DATBiosPackageNames {
                 $smsNamespace = "root\SMS\Site_$SiteCode"
                 # Old format: "BIOS Update - OEM Model" (no architecture suffix)
                 $wmiQuery = "SELECT PackageID, Name, Version, MIFVersion FROM SMS_Package WHERE Name LIKE 'BIOS Update -%'"
-                $cmPackages = Get-WmiObject -ComputerName $SiteServer -Namespace $smsNamespace `
+                $cmPackages = Get-CimInstance -ComputerName $SiteServer -Namespace $smsNamespace `
                     -Query $wmiQuery -ErrorAction Stop
 
                 # Filter to packages missing architecture suffix (old format)
-                $oldFormatPkgs = $cmPackages | Where-Object {
+                $oldFormatPkgs = @($cmPackages | Where-Object {
                     # Old format: no " - x64" or " - Arm64" suffix, OR MIFVersion contains OS
                     $name = $_.Name
                     $mif = $_.MIFVersion
                     $needsNameFix = $name -notmatch '\s*-\s*(x64|Arm64)\s*$'
                     $needsMifFix = $mif -match 'Windows\s+\d+'
                     $needsNameFix -or $needsMifFix
-                }
+                })
 
                 if ($oldFormatPkgs.Count -eq 0) {
                     Write-DATLogEntry -Value "[BIOS Repair] No ConfigMgr BIOS packages with old naming found" -Severity 1
@@ -9102,10 +9230,9 @@ function Repair-DATBiosPackageNames {
                     $newMif = $arch
 
                     try {
-                        $pkg.Get()
-                        $pkg.Name = $newName
-                        $pkg.MIFVersion = $newMif
-                        $pkg.Put() | Out-Null
+                        Set-CimInstance -ComputerName $SiteServer -Namespace $smsNamespace `
+                            -Query "SELECT * FROM SMS_Package WHERE PackageID = '$($pkg.PackageID)'" `
+                            -Property @{ Name = $newName; MIFVersion = $newMif } -ErrorAction Stop
 
                         Write-DATLogEntry -Value "[BIOS Repair] ConfigMgr: '$oldName' -> '$newName' (MIFVersion: '$oldMif' -> '$newMif')" -Severity 1
                         [void]$results.Add([PSCustomObject]@{

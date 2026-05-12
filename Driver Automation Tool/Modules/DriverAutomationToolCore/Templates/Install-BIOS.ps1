@@ -810,9 +810,43 @@ try {
     } else {
         Write-CMTraceLog "BIOS firmware prestaged successfully"
         if ($flashExitCode -in @(2, 1, 3010)) {
-            $RestartDelaySeconds = 180
-            Write-CMTraceLog "Scheduling system restart in $RestartDelaySeconds seconds to apply BIOS update"
-            shutdown.exe /r /t $RestartDelaySeconds /c "BIOS firmware update prestaged by Driver Automation Tool. Your system will restart in $RestartDelaySeconds seconds to apply the update. Please save your work." /d p:1:18
+            $RestartDelaySeconds = {{RESTART_DELAY_SECONDS}}
+            $RestartDelayMinutes = [math]::Round($RestartDelaySeconds / 60, 0)
+
+            # -- Focus Assist / DND Check Before Restart --
+            # If the user has Focus Assist (Do Not Disturb) active, we must NOT restart
+            # the device regardless of deferral count. The BIOS update is already prestaged
+            # and will apply on the next natural reboot.
+            $focusAssistBlocking = $false
+            try {
+                $focusAssistCSharp = 'using System; using System.Runtime.InteropServices; public class DATFocusAssistRestart { [DllImport("shell32.dll")] public static extern int SHQueryUserNotificationState(out int state); }'
+                Add-Type -TypeDefinition $focusAssistCSharp -ErrorAction SilentlyContinue
+                $focusState = 0
+                [void][DATFocusAssistRestart]::SHQueryUserNotificationState([ref]$focusState)
+                $focusStateNames = @{
+                    1 = 'QUNS_NOT_PRESENT'; 2 = 'QUNS_BUSY'; 3 = 'QUNS_RUNNING_D3D_FULL_SCREEN'
+                    4 = 'QUNS_PRESENTATION_MODE'; 5 = 'QUNS_ACCEPTS_NOTIFICATIONS'
+                    6 = 'QUNS_QUIET_TIME'; 7 = 'QUNS_APP'
+                }
+                $focusStateName = if ($focusStateNames.ContainsKey($focusState)) { $focusStateNames[$focusState] } else { "Unknown ($focusState)" }
+                Write-CMTraceLog "[FocusAssist] SHQueryUserNotificationState returned: $focusState ($focusStateName)"
+                if ($focusState -ne 5) {
+                    $focusAssistBlocking = $true
+                    Write-CMTraceLog "[FocusAssist] Focus Assist / DND is active -- suppressing automatic restart to avoid interrupting the user" -Severity 2
+                }
+            } catch {
+                Write-CMTraceLog "[FocusAssist] Check failed: $($_.Exception.Message) -- proceeding with restart" -Severity 2
+            }
+
+            if ($focusAssistBlocking) {
+                Write-CMTraceLog "BIOS update prestaged but restart suppressed due to Focus Assist. The update will apply on the next manual reboot."
+                Write-CMTraceLog "=========================================="
+                # Exit 3010 signals soft-reboot-needed to Intune without forcing a restart
+                exit 3010
+            }
+
+            Write-CMTraceLog "Scheduling system restart in $RestartDelayMinutes minute(s) ($RestartDelaySeconds seconds) to apply BIOS update"
+            shutdown.exe /r /t $RestartDelaySeconds /c "BIOS firmware update prestaged by Driver Automation Tool. Your system will restart in $RestartDelayMinutes minute(s) to apply the update. Please save your work." /d p:1:18
             Write-CMTraceLog "Restart scheduled -- shutdown.exe exit code: $LASTEXITCODE"
             Write-CMTraceLog "=========================================="
             exit 3010

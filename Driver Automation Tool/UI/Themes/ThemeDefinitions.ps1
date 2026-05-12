@@ -131,8 +131,8 @@ $script:Themes = @{
         GridHeader             = "#E3E8EF"
         GridHeaderForeground   = "#1E293B"
         GridBorder             = "#CBD5E1"
-        GridSelection          = "#D0DAEA"
-        GridSelectionForeground = "#0F172A"
+        GridSelection          = "#B3D4F0"
+        GridSelectionForeground = "#0A1628"
 
         # Input -- subtle grey so fields are distinguishable
         InputBackground        = "#F5F7FA"
