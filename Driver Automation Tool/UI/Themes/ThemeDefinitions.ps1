@@ -72,6 +72,12 @@ $script:Themes = @{
         StatusWarning          = "#FFAA44"
         StatusError            = "#E74856"
 
+        # Info box callouts (auth cards, notes)
+        InfoBoxGreen           = "#4ADE80"
+        InfoBoxGreenBg         = "#1A4ADE80"
+        InfoBoxAmber           = "#FBBF24"
+        InfoBoxAmberBg         = "#1AFBBF24"
+
         # Driver "N/A" indicator (when no driver package is available for a model)
         DriverNoPackForeground = "#FFAA44"
 
@@ -162,6 +168,12 @@ $script:Themes = @{
         StatusSuccess          = "#107C10"
         StatusWarning          = "#FFAA44"
         StatusError            = "#E74856"
+
+        # Info box callouts (auth cards, notes)
+        InfoBoxGreen           = "#16A34A"
+        InfoBoxGreenBg         = "#2016A34A"
+        InfoBoxAmber           = "#D97706"
+        InfoBoxAmberBg         = "#20D97706"
 
         # Driver "N/A" indicator (when no driver package is available for a model)
         DriverNoPackForeground = "#DC2626"

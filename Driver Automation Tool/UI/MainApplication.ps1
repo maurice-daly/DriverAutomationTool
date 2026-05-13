@@ -973,7 +973,7 @@ function Show-DATLoadingSourcesModal {
     $subtitleText.Margin = [System.Windows.Thickness]::new(0, 0, 0, 24)
     $panel.Children.Add($subtitleText) | Out-Null
 
-    # Per-OEM status rows
+    # Row order: DAT API → BIOS Catalog → OEM Links → OEMs (sorted A-Z)
     $script:SourceStatusLabels = @{}
     $script:SourceStatusIcons  = @{}
 
@@ -982,143 +982,51 @@ function Show-DATLoadingSourcesModal {
     $fgBrush = [System.Windows.Media.SolidColorBrush]::new(
         [System.Windows.Media.ColorConverter]::ConvertFromString($theme['WindowForeground']))
 
-    foreach ($oem in $OEMs) {
+    # Helper: build a standard status row and register it in the lookup dictionaries
+    function New-DATStatusRow {
+        param([string]$Label, [string]$Key)
         $row = [System.Windows.Controls.DockPanel]::new()
         $row.Margin = [System.Windows.Thickness]::new(0, 3, 0, 3)
-
-        # Status icon (spinner initially)
-        $statusIcon = [System.Windows.Controls.TextBlock]::new()
-        $statusIcon.Text = [string][char]0xF16A  # sync/loading glyph
-        $statusIcon.FontFamily = [System.Windows.Media.FontFamily]::new('Segoe MDL2 Assets')
-        $statusIcon.FontSize = 14
-        $statusIcon.Foreground = $loadingBrush
-        $statusIcon.VerticalAlignment = 'Center'
-        $statusIcon.Width = 24
-        [System.Windows.Controls.DockPanel]::SetDock($statusIcon, 'Left')
-        $row.Children.Add($statusIcon) | Out-Null
-
-        # OEM name
-        $oemLabel = [System.Windows.Controls.TextBlock]::new()
-        $oemLabel.Text = $oem
-        $oemLabel.FontSize = 13
-        $oemLabel.FontWeight = [System.Windows.FontWeights]::SemiBold
-        $oemLabel.Foreground = $fgBrush
-        $oemLabel.VerticalAlignment = 'Center'
-        $oemLabel.Width = 90
-        [System.Windows.Controls.DockPanel]::SetDock($oemLabel, 'Left')
-        $row.Children.Add($oemLabel) | Out-Null
-
-        # Status text
-        $statusLabel = [System.Windows.Controls.TextBlock]::new()
-        $statusLabel.Text = "Waiting..."
-        $statusLabel.FontSize = 12
-        $statusLabel.Foreground = $loadingBrush
-        $statusLabel.VerticalAlignment = 'Center'
-        $statusLabel.HorizontalAlignment = 'Right'
-        $row.Children.Add($statusLabel) | Out-Null
-
-        $panel.Children.Add($row) | Out-Null
-
-        $script:SourceStatusLabels[$oem] = $statusLabel
-        $script:SourceStatusIcons[$oem]  = $statusIcon
+        $icon = [System.Windows.Controls.TextBlock]::new()
+        $icon.Text = [string][char]0xF16A
+        $icon.FontFamily = [System.Windows.Media.FontFamily]::new('Segoe MDL2 Assets')
+        $icon.FontSize = 14
+        $icon.Foreground = $loadingBrush
+        $icon.VerticalAlignment = 'Center'
+        $icon.Width = 24
+        [System.Windows.Controls.DockPanel]::SetDock($icon, 'Left')
+        $row.Children.Add($icon) | Out-Null
+        $lbl = [System.Windows.Controls.TextBlock]::new()
+        $lbl.Text = $Label
+        $lbl.FontSize = 13
+        $lbl.FontWeight = [System.Windows.FontWeights]::SemiBold
+        $lbl.Foreground = $fgBrush
+        $lbl.VerticalAlignment = 'Center'
+        $lbl.Width = 90
+        [System.Windows.Controls.DockPanel]::SetDock($lbl, 'Left')
+        $row.Children.Add($lbl) | Out-Null
+        $status = [System.Windows.Controls.TextBlock]::new()
+        $status.Text = 'Waiting...'
+        $status.FontSize = 12
+        $status.Foreground = $loadingBrush
+        $status.VerticalAlignment = 'Center'
+        $status.HorizontalAlignment = 'Right'
+        $row.Children.Add($status) | Out-Null
+        $script:SourceStatusLabels[$Key] = $status
+        $script:SourceStatusIcons[$Key]  = $icon
+        return $row
     }
 
-    # OEM Links row (always present)
-    $oemLinksRow = [System.Windows.Controls.DockPanel]::new()
-    $oemLinksRow.Margin = [System.Windows.Thickness]::new(0, 3, 0, 3)
-    $oemLinksIcon = [System.Windows.Controls.TextBlock]::new()
-    $oemLinksIcon.Text = [string][char]0xF16A
-    $oemLinksIcon.FontFamily = [System.Windows.Media.FontFamily]::new('Segoe MDL2 Assets')
-    $oemLinksIcon.FontSize = 14
-    $oemLinksIcon.Foreground = $loadingBrush
-    $oemLinksIcon.VerticalAlignment = 'Center'
-    $oemLinksIcon.Width = 24
-    [System.Windows.Controls.DockPanel]::SetDock($oemLinksIcon, 'Left')
-    $oemLinksRow.Children.Add($oemLinksIcon) | Out-Null
-    $oemLinksLabel = [System.Windows.Controls.TextBlock]::new()
-    $oemLinksLabel.Text = "OEM Links"
-    $oemLinksLabel.FontSize = 13
-    $oemLinksLabel.FontWeight = [System.Windows.FontWeights]::SemiBold
-    $oemLinksLabel.Foreground = $fgBrush
-    $oemLinksLabel.VerticalAlignment = 'Center'
-    $oemLinksLabel.Width = 90
-    [System.Windows.Controls.DockPanel]::SetDock($oemLinksLabel, 'Left')
-    $oemLinksRow.Children.Add($oemLinksLabel) | Out-Null
-    $oemLinksStatus = [System.Windows.Controls.TextBlock]::new()
-    $oemLinksStatus.Text = "Waiting..."
-    $oemLinksStatus.FontSize = 12
-    $oemLinksStatus.Foreground = $loadingBrush
-    $oemLinksStatus.VerticalAlignment = 'Center'
-    $oemLinksStatus.HorizontalAlignment = 'Right'
-    $oemLinksRow.Children.Add($oemLinksStatus) | Out-Null
-    # Insert OEM Links row at the top of the OEM list (after subtitle)
-    $panel.Children.Insert(3, $oemLinksRow)
-    $script:SourceStatusLabels['OEMLinks'] = $oemLinksStatus
-    $script:SourceStatusIcons['OEMLinks']  = $oemLinksIcon
-
-    # DAT API row
-    $apiRow = [System.Windows.Controls.DockPanel]::new()
-    $apiRow.Margin = [System.Windows.Thickness]::new(0, 3, 0, 3)
-    $apiIcon = [System.Windows.Controls.TextBlock]::new()
-    $apiIcon.Text = [string][char]0xF16A
-    $apiIcon.FontFamily = [System.Windows.Media.FontFamily]::new('Segoe MDL2 Assets')
-    $apiIcon.FontSize = 14
-    $apiIcon.Foreground = $loadingBrush
-    $apiIcon.VerticalAlignment = 'Center'
-    $apiIcon.Width = 24
-    [System.Windows.Controls.DockPanel]::SetDock($apiIcon, 'Left')
-    $apiRow.Children.Add($apiIcon) | Out-Null
-    $apiLabel = [System.Windows.Controls.TextBlock]::new()
-    $apiLabel.Text = "DAT API"
-    $apiLabel.FontSize = 13
-    $apiLabel.FontWeight = [System.Windows.FontWeights]::SemiBold
-    $apiLabel.Foreground = $fgBrush
-    $apiLabel.VerticalAlignment = 'Center'
-    $apiLabel.Width = 90
-    [System.Windows.Controls.DockPanel]::SetDock($apiLabel, 'Left')
-    $apiRow.Children.Add($apiLabel) | Out-Null
-    $apiStatus = [System.Windows.Controls.TextBlock]::new()
-    $apiStatus.Text = "Waiting..."
-    $apiStatus.FontSize = 12
-    $apiStatus.Foreground = $loadingBrush
-    $apiStatus.VerticalAlignment = 'Center'
-    $apiStatus.HorizontalAlignment = 'Right'
-    $apiRow.Children.Add($apiStatus) | Out-Null
-    $panel.Children.Add($apiRow) | Out-Null
-    $script:SourceStatusLabels['DATAPI'] = $apiStatus
-    $script:SourceStatusIcons['DATAPI']  = $apiIcon
-
-    # BIOS lookup row
-    $biosRow = [System.Windows.Controls.DockPanel]::new()
-    $biosRow.Margin = [System.Windows.Thickness]::new(0, 3, 0, 3)
-    $biosIcon = [System.Windows.Controls.TextBlock]::new()
-    $biosIcon.Text = [string][char]0xF16A
-    $biosIcon.FontFamily = [System.Windows.Media.FontFamily]::new('Segoe MDL2 Assets')
-    $biosIcon.FontSize = 14
-    $biosIcon.Foreground = $loadingBrush
-    $biosIcon.VerticalAlignment = 'Center'
-    $biosIcon.Width = 24
-    [System.Windows.Controls.DockPanel]::SetDock($biosIcon, 'Left')
-    $biosRow.Children.Add($biosIcon) | Out-Null
-    $biosLabel = [System.Windows.Controls.TextBlock]::new()
-    $biosLabel.Text = "BIOS Catalog"
-    $biosLabel.FontSize = 13
-    $biosLabel.FontWeight = [System.Windows.FontWeights]::SemiBold
-    $biosLabel.Foreground = $fgBrush
-    $biosLabel.VerticalAlignment = 'Center'
-    $biosLabel.Width = 90
-    [System.Windows.Controls.DockPanel]::SetDock($biosLabel, 'Left')
-    $biosRow.Children.Add($biosLabel) | Out-Null
-    $biosStatus = [System.Windows.Controls.TextBlock]::new()
-    $biosStatus.Text = "Waiting..."
-    $biosStatus.FontSize = 12
-    $biosStatus.Foreground = $loadingBrush
-    $biosStatus.VerticalAlignment = 'Center'
-    $biosStatus.HorizontalAlignment = 'Right'
-    $biosRow.Children.Add($biosStatus) | Out-Null
-    $panel.Children.Add($biosRow) | Out-Null
-    $script:SourceStatusLabels['BIOS'] = $biosStatus
-    $script:SourceStatusIcons['BIOS']  = $biosIcon
+    # 1. DAT API
+    $panel.Children.Add((New-DATStatusRow -Label 'DAT API'      -Key 'DATAPI'))   | Out-Null
+    # 2. BIOS Catalog
+    $panel.Children.Add((New-DATStatusRow -Label 'BIOS Catalog' -Key 'BIOS'))     | Out-Null
+    # 3. OEM Links
+    $panel.Children.Add((New-DATStatusRow -Label 'OEM Links'    -Key 'OEMLinks')) | Out-Null
+    # 4. OEMs (already sorted A-Z by caller)
+    foreach ($oem in $OEMs) {
+        $panel.Children.Add((New-DATStatusRow -Label $oem -Key $oem)) | Out-Null
+    }
 
     $grid.Children.Add($panel) | Out-Null
     $grid.Children.Add($closeBtn) | Out-Null
@@ -3762,24 +3670,40 @@ function Show-DATBuildProgressModal {
     # BIOSOnly models skip the Drivers row (no driver package for the selected OS/build)
     $displayModels = if ($PackageType -eq 'All') {
         $expanded = [System.Collections.ArrayList]::new()
+        $srcIdx = 0
         foreach ($m in $Models) {
+            $srcIdx++
             if (-not $m.BIOSOnly) {
-                [void]$expanded.Add([PSCustomObject]@{ OEM = $m.OEM; Model = $m.Model; Phase = 'Drivers' })
+                [void]$expanded.Add([PSCustomObject]@{ OEM = $m.OEM; Model = $m.Model; OS = $m.OS; Phase = 'Drivers'; SourceIndex = $srcIdx })
             }
             if ($m.OEM -ne 'Microsoft') {
-                [void]$expanded.Add([PSCustomObject]@{ OEM = $m.OEM; Model = $m.Model; Phase = 'BIOS' })
+                [void]$expanded.Add([PSCustomObject]@{ OEM = $m.OEM; Model = $m.Model; OS = $m.OS; Phase = 'BIOS'; SourceIndex = $srcIdx })
             }
         }
         $expanded
     } else {
-        $Models
+        $wrapped = [System.Collections.ArrayList]::new()
+        $idx = 0
+        foreach ($m in $Models) {
+            $idx++
+            [void]$wrapped.Add([PSCustomObject]@{ OEM = $m.OEM; Model = $m.Model; OS = $m.OS; SourceIndex = $idx })
+        }
+        $wrapped
+    }
+
+    # Detect models with duplicate OEM+Model names (selected for multiple OS versions)
+    $modelNameCounts = @{}
+    foreach ($m in $Models) {
+        $nameKey = "$($m.OEM)|$($m.Model)"
+        $modelNameCounts[$nameKey] = ($modelNameCounts[$nameKey] -as [int]) + 1
     }
 
     $separatorsList = @()
     $modelIndex = 0
     foreach ($model in $displayModels) {
         $modelPhase = if ($model.PSObject.Properties.Name -contains 'Phase') { $model.Phase } else { '' }
-        $modelKey = if ($modelPhase) { "$($model.OEM)|$($model.Model) ($modelPhase)" } else { "$($model.OEM)|$($model.Model)" }
+        $srcIdx = if ($model.PSObject.Properties.Name -contains 'SourceIndex') { $model.SourceIndex } else { $modelIndex + 1 }
+        $modelKey = if ($modelPhase) { "$($model.OEM)|$srcIdx|$($model.Model) ($modelPhase)" } else { "$($model.OEM)|$srcIdx|$($model.Model)" }
         $modelIndex++
 
         $rowGrid = [System.Windows.Controls.Grid]::new()
@@ -3817,8 +3741,20 @@ function Show-DATBuildProgressModal {
             [System.Windows.Media.ColorConverter]::ConvertFromString($theme['InputPlaceholder']))
         $subtitleLabel.TextTrimming = 'CharacterEllipsis'
         $subtitleLabel.Visibility = 'Collapsed'
-        if ($modelPhase) {
+
+        # Show OS in subtitle when the same model is selected for multiple OS versions
+        $modelNameKey = "$($model.OEM)|$($model.Model)"
+        $hasDuplicateName = ($modelNameCounts[$modelNameKey] -gt 1)
+        $modelOS = if ($model.PSObject.Properties.Name -contains 'OS' -and -not [string]::IsNullOrEmpty($model.OS)) { $model.OS } else { '' }
+
+        if ($modelPhase -and $hasDuplicateName -and $modelOS) {
+            $subtitleLabel.Text = "$modelPhase -- $modelOS"
+            $subtitleLabel.Visibility = 'Visible'
+        } elseif ($modelPhase) {
             $subtitleLabel.Text = $modelPhase
+            $subtitleLabel.Visibility = 'Visible'
+        } elseif ($hasDuplicateName -and $modelOS) {
+            $subtitleLabel.Text = $modelOS
             $subtitleLabel.Visibility = 'Visible'
         }
         $labelPanel.Children.Add($subtitleLabel) | Out-Null
@@ -4103,10 +4039,9 @@ function Update-DATBuildModalTheme {
         [System.Windows.Media.ColorConverter]::ConvertFromString($theme['WindowForeground']))
     foreach ($key in $script:BuildModalRows.Keys) {
         $row = $script:BuildModalRows[$key]
-        $parts = $key -split '\|', 2
         $row.Label.Foreground = $fgBrush
         foreach ($s in $row.Stages) {
-            Update-DATBuildModalStage -OEM $parts[0] -Model $parts[1] -Stage $s -State $row.Status[$s]
+            Update-DATBuildModalStage -ModelKey $key -Stage $s -State $row.Status[$s]
         }
     }
 }
@@ -4115,26 +4050,22 @@ function Update-DATBuildModalStage {
     <#
     .SYNOPSIS
         Updates a specific model's stage circle to a new state.
-    .PARAMETER OEM
-        The OEM name.
-    .PARAMETER Model
-        The model name.
+    .PARAMETER ModelKey
+        The full model key in BuildModalRows (e.g. "Dell|1|Dell Pro 14 PC14250").
     .PARAMETER Stage
         The pipeline stage: Download, Extract, Package, Upload
     .PARAMETER State
         The state: Active, Success, Error, Pending
     #>
     param (
-        [string]$OEM,
-        [string]$Model,
+        [string]$ModelKey,
         [ValidateSet('Download','Extract','Package','Upload')][string]$Stage,
         [ValidateSet('Pending','Active','Success','Error','Skipped')][string]$State
     )
 
     if (-not $script:BuildModal -or -not $script:BuildModalRows) { return }
 
-    $modelKey = "$OEM|$Model"
-    $row = $script:BuildModalRows[$modelKey]
+    $row = $script:BuildModalRows[$ModelKey]
     if (-not $row) { return }
     if (-not $row.Circles.ContainsKey($Stage)) { return }
 
@@ -4281,7 +4212,7 @@ function Update-DATBuildModalFromRegistry {
     } else {
         $modelName
     }
-    $modelKey = "$oem|$modelDisplayName"
+    $modelKey = "$oem|$currentJob|$modelDisplayName"
 
     if (-not $script:BuildModalRows.ContainsKey($modelKey)) { return }
 
@@ -4294,7 +4225,7 @@ function Update-DATBuildModalFromRegistry {
         }
         if (-not $alreadySkipped) {
             foreach ($s in $row.Stages) {
-                Update-DATBuildModalStage -OEM $oem -Model $modelDisplayName -Stage $s -State Skipped
+                Update-DATBuildModalStage -ModelKey $modelKey -Stage $s -State Skipped
             }
             # Update model label to show "No match found"
             if ($row.Label) {
@@ -4318,7 +4249,7 @@ function Update-DATBuildModalFromRegistry {
         }
         if (-not $alreadySkipped) {
             foreach ($s in $row.Stages) {
-                Update-DATBuildModalStage -OEM $oem -Model $modelDisplayName -Stage $s -State Skipped
+                Update-DATBuildModalStage -ModelKey $modelKey -Stage $s -State Skipped
             }
             if ($row.Label) {
                 $theme = Get-DATTheme -ThemeName $script:CurrentTheme
@@ -4340,18 +4271,18 @@ function Update-DATBuildModalFromRegistry {
             $failedModelIdx = $script:BuildProgressLastJob - 1
             if ($failedModelIdx -ge 0 -and $failedModelIdx -lt $global:SelectedModels.Count) {
                 $failedModel = $global:SelectedModels[$failedModelIdx]
+                $failedJob = $script:BuildProgressLastJob
                 $failedKeys = if ($script:BuildModalPackageType -eq 'All') {
-                    @("$($failedModel.OEM)|$($failedModel.Model) (Drivers)", "$($failedModel.OEM)|$($failedModel.Model) (BIOS)")
+                    @("$($failedModel.OEM)|$failedJob|$($failedModel.Model) (Drivers)", "$($failedModel.OEM)|$failedJob|$($failedModel.Model) (BIOS)")
                 } else {
-                    @("$($failedModel.OEM)|$($failedModel.Model)")
+                    @("$($failedModel.OEM)|$failedJob|$($failedModel.Model)")
                 }
                 foreach ($failedKey in $failedKeys) {
                     if ($script:BuildModalRows.ContainsKey($failedKey)) {
                         $failedRow = $script:BuildModalRows[$failedKey]
-                        $failedDisplayModel = ($failedKey -split '\|', 2)[1]
                         foreach ($s in $failedRow.Stages) {
                             if ($failedRow.Status[$s] -eq 'Active') {
-                                Update-DATBuildModalStage -OEM $failedModel.OEM -Model $failedDisplayModel -Stage $s -State Error
+                                Update-DATBuildModalStage -ModelKey $failedKey -Stage $s -State Error
                             }
                         }
                     }
@@ -4365,15 +4296,15 @@ function Update-DATBuildModalFromRegistry {
     # Mark all completed models as fully succeeded (skip models marked as Error or Skipped)
     for ($i = 0; $i -lt $modelIdx; $i++) {
         $prevModel = $global:SelectedModels[$i]
+        $prevJob = $i + 1
         $prevKeys = if ($script:BuildModalPackageType -eq 'All') {
-            @("$($prevModel.OEM)|$($prevModel.Model) (Drivers)", "$($prevModel.OEM)|$($prevModel.Model) (BIOS)")
+            @("$($prevModel.OEM)|$prevJob|$($prevModel.Model) (Drivers)", "$($prevModel.OEM)|$prevJob|$($prevModel.Model) (BIOS)")
         } else {
-            @("$($prevModel.OEM)|$($prevModel.Model)")
+            @("$($prevModel.OEM)|$prevJob|$($prevModel.Model)")
         }
         foreach ($prevKey in $prevKeys) {
             if ($script:BuildModalRows.ContainsKey($prevKey)) {
                 $prevRow = $script:BuildModalRows[$prevKey]
-                $prevDisplayModel = ($prevKey -split '\|', 2)[1]
                 # Skip rows that have any Error or Skipped stage
                 $skipRow = $false
                 foreach ($s in $prevRow.Stages) {
@@ -4382,8 +4313,23 @@ function Update-DATBuildModalFromRegistry {
                 if (-not $skipRow) {
                     foreach ($s in $prevRow.Stages) {
                         if ($prevRow.Status[$s] -ne 'Success') {
-                            Update-DATBuildModalStage -OEM $prevModel.OEM -Model $prevDisplayModel -Stage $s -State Success
+                            Update-DATBuildModalStage -ModelKey $prevKey -Stage $s -State Success
                         }
+                    }
+                    # Finalize subtitle for completed models that had assignment filter / deploy action
+                    if ($prevRow.Subtitle -and $prevRow.Subtitle.Text -match '(Creating assignment filter|Deploying to All Devices)') {
+                        $completedAction = if ($prevRow.Subtitle.Text -match 'assignment filter') {
+                            'Assignment filter applied'
+                        } else {
+                            'Deployed to All Devices'
+                        }
+                        if ($script:BuildModalPackageType -eq 'All') {
+                            $prevPhase = if ($prevKey -match '\(BIOS\)$') { 'BIOS' } else { 'Drivers' }
+                            $prevRow.Subtitle.Text = "$prevPhase -- $completedAction"
+                        } else {
+                            $prevRow.Subtitle.Text = $completedAction
+                        }
+                        $prevRow.Subtitle.FontStyle = [System.Windows.FontStyles]::Normal
                     }
                 }
             }
@@ -4392,7 +4338,7 @@ function Update-DATBuildModalFromRegistry {
 
     # When 'All' mode transitions from Drivers to BIOS for the same model, complete the Drivers row
     if ($script:BuildModalPackageType -eq 'All' -and $packagePhase -eq 'BIOS') {
-        $driversKey = "$oem|$modelName (Drivers)"
+        $driversKey = "$oem|$currentJob|$modelName (Drivers)"
         if ($script:BuildModalRows.ContainsKey($driversKey)) {
             $driversRow = $script:BuildModalRows[$driversKey]
             $skipDrivers = $false
@@ -4402,11 +4348,38 @@ function Update-DATBuildModalFromRegistry {
             if (-not $skipDrivers) {
                 foreach ($s in $driversRow.Stages) {
                     if ($driversRow.Status[$s] -ne 'Success') {
-                        Update-DATBuildModalStage -OEM $oem -Model "$modelName (Drivers)" -Stage $s -State Success
+                        Update-DATBuildModalStage -ModelKey $driversKey -Stage $s -State Success
                     }
                 }
             }
         }
+    }
+
+    # Handle post-upload actions (AssignmentFilter / Deploying) -- these happen after all pipeline stages
+    # are complete, so mark all stages as success and show subtitle text for the current action
+    if ($runningMode -in @('AssignmentFilter', 'Deploying')) {
+        $row = $script:BuildModalRows[$modelKey]
+        # Mark all pipeline stages as Success
+        foreach ($s in $row.Stages) {
+            if ($row.Status[$s] -notin @('Success', 'Error', 'Skipped')) {
+                Update-DATBuildModalStage -ModelKey $modelKey -Stage $s -State Success
+            }
+        }
+        # Show subtitle with current action
+        if ($row.Subtitle) {
+            $actionText = if ($runningMode -eq 'AssignmentFilter') {
+                'Creating assignment filter...'
+            } else {
+                'Deploying to All Devices...'
+            }
+            # In 'All' mode, the subtitle already shows the phase (Drivers/BIOS) -- append the action
+            $modelPhase = if ($script:BuildModalPackageType -eq 'All') {
+                if ($modelDisplayName -match '\(BIOS\)$') { 'BIOS' } else { 'Drivers' }
+            } else { '' }
+            $row.Subtitle.Text = if ($modelPhase) { "$modelPhase -- $actionText" } else { $actionText }
+            $row.Subtitle.Visibility = 'Visible'
+        }
+        return
     }
 
     # Map RunningMode to pipeline stage
@@ -4425,36 +4398,48 @@ function Update-DATBuildModalFromRegistry {
 
     # If RunningMode says "Download Completed", mark Download as success and set Extract as active
     if ($runningMode -eq 'Download Completed') {
-        Update-DATBuildModalStage -OEM $oem -Model $modelDisplayName -Stage 'Download' -State Success
+        Update-DATBuildModalStage -ModelKey $modelKey -Stage 'Download' -State Success
         $currentStage = 'Extract'
     }
     if ($runningMode -eq 'Extract Ready') {
-        Update-DATBuildModalStage -OEM $oem -Model $modelDisplayName -Stage 'Download' -State Success
-        Update-DATBuildModalStage -OEM $oem -Model $modelDisplayName -Stage 'Extract' -State Success
+        Update-DATBuildModalStage -ModelKey $modelKey -Stage 'Download' -State Success
+        Update-DATBuildModalStage -ModelKey $modelKey -Stage 'Extract' -State Success
         $currentStage = 'Package'
     }
 
     $row = $script:BuildModalRows[$modelKey]
+
+    # Reset subtitle if we're back in pipeline stages (subtitle may show filter/deploy action text)
+    if ($row.Subtitle -and $row.Subtitle.Text -match '(Creating assignment filter|Deploying to All Devices)') {
+        if ($script:BuildModalPackageType -eq 'All') {
+            # Restore the phase label
+            $modelPhase = if ($modelDisplayName -match '\(BIOS\)$') { 'BIOS' } else { 'Drivers' }
+            $row.Subtitle.Text = $modelPhase
+        } else {
+            $row.Subtitle.Text = ''
+            $row.Subtitle.Visibility = 'Collapsed'
+        }
+    }
 
     # Mark stages before the current one as success (for current model)
     $stageOrder = $row.Stages
     $currentStageIdx = [array]::IndexOf($stageOrder, $currentStage)
     for ($i = 0; $i -lt $currentStageIdx; $i++) {
         if ($row.Status[$stageOrder[$i]] -ne 'Success') {
-            Update-DATBuildModalStage -OEM $oem -Model $modelDisplayName -Stage $stageOrder[$i] -State Success
+            Update-DATBuildModalStage -ModelKey $modelKey -Stage $stageOrder[$i] -State Success
         }
     }
 
     # Set current stage to active
     if ($currentStageIdx -ge 0 -and $currentStageIdx -lt $stageOrder.Count) {
         if ($row.Status[$stageOrder[$currentStageIdx]] -ne 'Success' -and $row.Status[$stageOrder[$currentStageIdx]] -ne 'Error') {
-            Update-DATBuildModalStage -OEM $oem -Model $modelDisplayName -Stage $stageOrder[$currentStageIdx] -State Active
+            Update-DATBuildModalStage -ModelKey $modelKey -Stage $stageOrder[$currentStageIdx] -State Active
         }
     }
 
     # Handle error state
     if ($runningState -eq 'Error' -and $currentStageIdx -ge 0 -and $currentStageIdx -lt $stageOrder.Count) {
-        Update-DATBuildModalStage -OEM $oem -Model $modelDisplayName -Stage $stageOrder[$currentStageIdx] -State Error
+        Update-DATBuildModalStage -ModelKey $modelKey -Stage $stageOrder[$currentStageIdx] -State Error
     }
 }
 
@@ -4473,20 +4458,34 @@ function Close-DATBuildProgressModal {
 
     if ($script:BuildModalRows) {
         foreach ($key in $script:BuildModalRows.Keys) {
-            $parts = $key -split '\|', 2
             $row = $script:BuildModalRows[$key]
             if ($MarkAllSuccess) {
                 # All succeeded -- mark any remaining Pending/Active as Success
                 foreach ($s in $row.Stages) {
                     if ($row.Status[$s] -eq 'Pending' -or $row.Status[$s] -eq 'Active') {
-                        Update-DATBuildModalStage -OEM $parts[0] -Model $parts[1] -Stage $s -State Success
+                        Update-DATBuildModalStage -ModelKey $key -Stage $s -State Success
                     }
+                }
+                # Finalize subtitle for rows that had assignment filter / deploy action
+                if ($row.Subtitle -and $row.Subtitle.Text -match '(Creating assignment filter|Deploying to All Devices)') {
+                    $completedAction = if ($row.Subtitle.Text -match 'assignment filter') {
+                        'Assignment filter applied'
+                    } else {
+                        'Deployed to All Devices'
+                    }
+                    if ($script:BuildModalPackageType -eq 'All') {
+                        $rowPhase = if ($key -match '\(BIOS\)$') { 'BIOS' } else { 'Drivers' }
+                        $row.Subtitle.Text = "$rowPhase -- $completedAction"
+                    } else {
+                        $row.Subtitle.Text = $completedAction
+                    }
+                    $row.Subtitle.FontStyle = [System.Windows.FontStyles]::Normal
                 }
             } else {
                 # Errors occurred -- mark any Active stages as Error (these are the failed stages)
                 foreach ($s in $row.Stages) {
                     if ($row.Status[$s] -eq 'Active') {
-                        Update-DATBuildModalStage -OEM $parts[0] -Model $parts[1] -Stage $s -State Error
+                        Update-DATBuildModalStage -ModelKey $key -Stage $s -State Error
                     }
                 }
             }
@@ -4809,10 +4808,14 @@ function Get-DATSelectedOSes {
 }
 
 function Update-DATOSDisplayText {
-    $selected = Get-DATSelectedOSes
+    # Force [array] so that a single-OS result is never unwrapped to a bare string by PowerShell's
+    # pipeline. Without this, $selected[0] on a bare string returns the first character ('W'),
+    # causing the display to show "W" instead of the full OS name.
+    [array]$selected = Get-DATSelectedOSes
     if ($selected.Count -eq 0) {
         $txt_OSDisplay.Text = 'Select OS...'
     } elseif ($selected.Count -eq 1) {
+        # Show the full OS name for a single selection (e.g. "Windows 11 25H2")
         $txt_OSDisplay.Text = $selected[0]
     } else {
         $txt_OSDisplay.Text = "$($selected.Count) selected"
@@ -5119,12 +5122,6 @@ $cmb_PackageType.Add_SelectionChanged({
     if ($script:SuppressModelRefresh) { return }
     $selected = if ($null -ne $cmb_PackageType.SelectedItem) { $cmb_PackageType.SelectedItem.Content } else { 'Drivers' }
     Set-DATRegistryValue -Name "PackageType" -Value "$selected" -Type String
-
-    if ((Get-DATSelectedOEMs).Count -gt 0 -and (Get-DATSelectedOSes).Count -gt 0) {
-        # Save current selections so they can be restored after the refresh clears the grid
-        if ($script:ModelData.Count -gt 0) { Save-DATModelSelections }
-        Invoke-DATRefreshModelsClick
-    }
 })
 
 # Helper to programmatically invoke the Refresh Models button click
@@ -5178,8 +5175,8 @@ $btn_RefreshModels.Add_Click({
     $script:ModelData.Clear()
     Write-DATActivityLog "Starting model refresh..." -Level Info
 
-    # Show the Loading Sources modal
-    Show-DATLoadingSourcesModal -OEMs $selectedOEMs
+    # Show the Loading Sources modal -- OEMs sorted A-Z
+    Show-DATLoadingSourcesModal -OEMs ($selectedOEMs | Sort-Object)
 
     # Create background runspace with shared log queue
     $script:RefreshRunspace = [runspacefactory]::CreateRunspace()
@@ -5232,7 +5229,11 @@ $btn_RefreshModels.Add_Click({
         $OEMLinksCache = Join-Path $TempDir "OEMLinks.xml"
 
         try {
-            [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+            [Net.ServicePointManager]::SecurityProtocol = (
+                [Net.ServicePointManager]::SecurityProtocol -bor
+                [Net.SecurityProtocolType]::Tls12 -bor
+                ([Net.SecurityProtocolType]12288)
+            )
             $proxyParams = Get-DATWebRequestProxy
             if ($proxyParams -isnot [hashtable]) { $proxyParams = @{} }
 
@@ -6365,7 +6366,7 @@ $btn_Build.Add_Click({
     $script:BuildPS = [powershell]::Create()
     $script:BuildPS.Runspace = $script:BuildRunspace
     [void]$script:BuildPS.AddScript({
-        param($ModulePath, $ScriptDir, $RegPath, $RunningMode, $SelectedModels, $StoragePath, $PackagePath, $IntuneToken, $IntuneRefreshTok, $IntuneTokenExpSec, $DisableToast, $SiteServer, $SiteCode, $PackageType, $DPGroups, $DPs, $DistPriority, $EnableBDR, $DebugBuildPath, $CustomBrandingPath, $HPPasswordBinPath, $ToastTimeoutAction, $MaxDeferrals, $BIOSRestartDelayMinutes, $TeamsWebhookUrl, $TeamsNotificationsEnabled, $CustomToastTextsJson)
+        param($ModulePath, $ScriptDir, $RegPath, $RunningMode, $SelectedModels, $StoragePath, $PackagePath, $IntuneToken, $IntuneRefreshTok, $IntuneAuthClientIdParam, $IntuneTokenExpSec, $DisableToast, $SiteServer, $SiteCode, $PackageType, $DPGroups, $DPs, $DistPriority, $EnableBDR, $DebugBuildPath, $CustomBrandingPath, $HPPasswordBinPath, $ToastTimeoutAction, $MaxDeferrals, $BIOSRestartDelayMinutes, $TeamsWebhookUrl, $TeamsNotificationsEnabled, $CustomToastTextsJson)
         try {
         Import-Module $ModulePath -Force
         $procParams = @{
@@ -6378,6 +6379,7 @@ $btn_Build.Add_Click({
             IntuneAuthToken = $IntuneToken
         }
         if (-not [string]::IsNullOrEmpty($IntuneRefreshTok)) { $procParams['IntuneRefreshToken'] = $IntuneRefreshTok }
+        if (-not [string]::IsNullOrEmpty($IntuneAuthClientIdParam)) { $procParams['IntuneAuthClientId'] = $IntuneAuthClientIdParam }
         if ($IntuneTokenExpSec -gt 0) { $procParams['IntuneTokenExpiresInSec'] = $IntuneTokenExpSec }
         if ($DisableToast) { $procParams['DisableToast'] = $true }
         if ($ToastTimeoutAction -ne 'RemindMeLater') { $procParams['ToastTimeoutAction'] = $ToastTimeoutAction }
@@ -6411,9 +6413,19 @@ $btn_Build.Add_Click({
     $tempStoragePath = if ($regConfig -and -not [string]::IsNullOrEmpty($regConfig.TempStoragePath)) { $regConfig.TempStoragePath } else { Join-Path $global:ScriptDirectory 'Temp' }
     $packageStoragePath = if ($regConfig -and -not [string]::IsNullOrEmpty($regConfig.PackageStoragePath)) { $regConfig.PackageStoragePath } else { $null }
 
+    # Guard: Package Storage Path must be configured and valid
+    if ([string]::IsNullOrEmpty($packageStoragePath) -or -not (Test-Path $packageStoragePath)) {
+        Show-DATInfoDialog -Title 'Package Storage Path Required' `
+            -Message 'A valid Package Storage Path must be specified before building packages. Please configure it in Common Settings > Storage Path Configuration.' `
+            -Type Warning -ButtonLabel 'OK'
+        Write-DATActivityLog "Build blocked -- Package Storage Path is not configured or does not exist" -Level Warn
+        return
+    }
+
     # Pass Intune auth token, refresh token, and real expiry for Intune mode
     $intuneToken = $null
     $intuneRefreshToken = $null
+    $intuneAuthClientId = $null
     $intuneTokenExpSec = 0
     if ($selectedPlatform -eq 'Intune') {
         $authStatus = Get-DATIntuneAuthStatus
@@ -6422,6 +6434,7 @@ $btn_Build.Add_Click({
             if ($coreModule) {
                 $intuneToken = & $coreModule { $script:IntuneAuthToken }
                 $intuneRefreshToken = & $coreModule { $script:IntuneRefreshToken }
+                $intuneAuthClientId = & $coreModule { $script:IntuneAuthClientId }
                 $intuneTokenExpSec = [math]::Max(0, [int]($authStatus.MinutesRemaining * 60))
             }
         } else {
@@ -6470,6 +6483,7 @@ $btn_Build.Add_Click({
     [void]$script:BuildPS.AddArgument($packageStoragePath)
     [void]$script:BuildPS.AddArgument($intuneToken)
     [void]$script:BuildPS.AddArgument($intuneRefreshToken)
+    [void]$script:BuildPS.AddArgument($intuneAuthClientId)
     [void]$script:BuildPS.AddArgument($intuneTokenExpSec)
     [void]$script:BuildPS.AddArgument($disableToast)
     [void]$script:BuildPS.AddArgument($cmSiteServer)
@@ -7164,7 +7178,7 @@ function Invoke-DATConfigMgrConnect {
             # ConfigMgr Version
             try {
                 Write-DATActivityLog "[WMI] \\$SiteServer\root\SMS\Site_$($global:SiteCode) : SMS_Site" -Level Info
-                $cmVersion = Get-WmiObject -ComputerName $SiteServer -Namespace "root\SMS\Site_$($global:SiteCode)" -Class SMS_Site -ErrorAction Stop |
+                $cmVersion = Get-CimInstance -ComputerName $SiteServer -Namespace "root\SMS\Site_$($global:SiteCode)" -ClassName SMS_Site -ErrorAction Stop |
                     Select-Object -ExpandProperty Version
                 $txt_ServerCMVersion.Text = if ($cmVersion) { $cmVersion } else { 'Not available' }
                 Write-DATActivityLog "[WMI] ConfigMgr version: $cmVersion" -Level Info
@@ -7175,7 +7189,7 @@ function Invoke-DATConfigMgrConnect {
             # Server OS Version
             try {
                 Write-DATActivityLog "[WMI] \\$SiteServer\root\cimv2 : Win32_OperatingSystem" -Level Info
-                $osInfo = Get-WmiObject -ComputerName $SiteServer -Class Win32_OperatingSystem -ErrorAction Stop
+                $osInfo = Get-CimInstance -ComputerName $SiteServer -ClassName Win32_OperatingSystem -ErrorAction Stop
                 $txt_ServerOSVersion.Text = if ($osInfo) { "$($osInfo.Caption) ($($osInfo.Version))" } else { 'Not available' }
                 Write-DATActivityLog "[WMI] Site server OS: $($osInfo.Caption) ($($osInfo.Version))" -Level Info
             } catch {
@@ -7185,7 +7199,7 @@ function Invoke-DATConfigMgrConnect {
             # Package Count and Breakdown
             try {
                 Write-DATActivityLog "[WMI] \\$SiteServer\root\SMS\Site_$($global:SiteCode) : SMS_Package (all packages)" -Level Info
-                $allPackages = Get-WmiObject -ComputerName $SiteServer -Namespace "root\SMS\Site_$($global:SiteCode)" -Class SMS_Package -ErrorAction Stop
+                $allPackages = Get-CimInstance -ComputerName $SiteServer -Namespace "root\SMS\Site_$($global:SiteCode)" -ClassName SMS_Package -ErrorAction Stop
                 $packageCount = ($allPackages | Measure-Object).Count
                 $txt_ServerPackageCount.Text = $packageCount.ToString('N0')
 
@@ -8356,8 +8370,14 @@ function Invoke-DATPackageRefresh {
     [void]$script:PkgRefreshPS.AddScript({
         param($SiteServer, $SiteCode, $NamePrefix)
         try {
-            $wmiFilter = "Name LIKE '$($NamePrefix.Replace('*','%'))'"
-            $packages = Get-WmiObject -ComputerName $SiteServer -Namespace "root\SMS\Site_$SiteCode" -Class SMS_Package -Filter $wmiFilter -ErrorAction Stop
+            # Security fix #25: escape WQL LIKE special characters before interpolation.
+            # '  → ''   (WQL string delimiter — prevents filter breakout)
+            # [  → [[   (WQL character-class open bracket)
+            # _  → [_]  (WQL single-character wildcard)
+            # *  → %    (intentional multi-character wildcard — converted last)
+            $wqlSafe = $NamePrefix.Replace("'", "''").Replace('[', '[[').Replace('_', '[_]').Replace('*', '%')
+            $wmiFilter = "Name LIKE '$wqlSafe'"
+            $packages = Get-CimInstance -ComputerName $SiteServer -Namespace "root\SMS\Site_$SiteCode" -ClassName SMS_Package -Filter $wmiFilter -ErrorAction Stop
             $results = @()
             foreach ($pkg in $packages) {
                 $pkgModel = ''
@@ -8369,7 +8389,7 @@ function Invoke-DATPackageRefresh {
                     Name            = $pkg.Name
                     Version         = $pkg.Version
                     PackageID       = $pkg.PackageID
-                    SourceDate      = if ($pkg.SourceDate) { [Management.ManagementDateTimeConverter]::ToDateTime($pkg.SourceDate).ToString('yyyy-MM-dd HH:mm') } else { '' }
+                    SourceDate      = if ($pkg.SourceDate) { try { [Management.ManagementDateTimeConverter]::ToDateTime($pkg.SourceDate).ToString('yyyy-MM-dd HH:mm') } catch { '' } } else { '' }
                     Manufacturer    = if ($pkg.Manufacturer) { $pkg.Manufacturer } else { '' }
                     Model           = $pkgModel
                     OperatingSystem = if ($pkg.MIFVersion) { ($pkg.MIFVersion -replace '\s+(x64|Arm64)$','').Trim() } else { '' }
@@ -8464,7 +8484,15 @@ function Invoke-DATPackageRefresh {
 
 $btn_RefreshPkgs.Add_Click({ Invoke-DATPackageRefresh })
 
-$cmb_PkgPackageType.Add_SelectionChanged({ Invoke-DATPackageRefresh })
+$cmb_PkgPackageType.Add_SelectionChanged({
+    $pkgType = if ($null -ne $cmb_PkgPackageType.SelectedItem) { $cmb_PkgPackageType.SelectedItem.Content } else { 'Drivers' }
+    $isBios = ($pkgType -eq 'BIOS Update')
+    $osVisibility = if ($isBios) { 'Collapsed' } else { 'Visible' }
+    $cmb_CmPkgOS.Visibility = $osVisibility
+    $lbl_CmPkgOS.Visibility = $osVisibility
+    if ($isBios) { $cmb_CmPkgOS.SelectedIndex = 0 }
+    Invoke-DATPackageRefresh
+})
 $cmb_DeploymentState.Add_SelectionChanged({ Invoke-DATPackageRefresh })
 
 # Combined filter for ConfigMgr packages: OEM + OS + search text
@@ -8472,12 +8500,14 @@ function Update-DATCmPackageFilter {
     $view = [System.Windows.Data.CollectionViewSource]::GetDefaultView($grid_Packages.ItemsSource)
     if ($null -eq $view) { return }
 
+    $pkgType = if ($null -ne $cmb_PkgPackageType.SelectedItem) { $cmb_PkgPackageType.SelectedItem.Content } else { 'Drivers' }
     $oemFilter = if ($null -ne $cmb_CmPkgOEM.SelectedItem) { $cmb_CmPkgOEM.SelectedItem.Content } else { 'All' }
     $osFilter = if ($null -ne $cmb_CmPkgOS.SelectedItem) { $cmb_CmPkgOS.SelectedItem.Content } else { 'All' }
     $searchText = $txt_CmPkgSearch.Text
 
+    $isBios = ($pkgType -eq 'BIOS Update')
     $hasOem = ($oemFilter -ne 'All')
-    $hasOs = ($osFilter -ne 'All')
+    $hasOs = (-not $isBios -and $osFilter -ne 'All')
     $hasSearch = (-not [string]::IsNullOrEmpty($searchText))
 
     if (-not $hasOem -and -not $hasOs -and -not $hasSearch) {
@@ -8781,7 +8811,7 @@ $grid_Packages.Add_SelectionChanged({
         $siteServer = $global:SiteServer
         $siteCode = $global:SiteCode
         $pkgID = $selected.PackageID
-        $pkg = Get-WmiObject -ComputerName $siteServer -Namespace "root\SMS\Site_$siteCode" -Class SMS_Package -Filter "PackageID = '$pkgID'" -ErrorAction Stop
+        $pkg = Get-CimInstance -ComputerName $siteServer -Namespace "root\SMS\Site_$siteCode" -ClassName SMS_Package -Filter "PackageID = '$pkgID'" -ErrorAction Stop
 
         if ($null -ne $pkg) {
             $txt_PkgDetailName.Text = if ($pkg.Name) { $pkg.Name } else { [char]0x2014 }
@@ -8807,7 +8837,8 @@ $grid_Packages.Add_SelectionChanged({
 
             # Last updated date
             if ($pkg.LastRefreshTime) {
-                $txt_PkgDetailUpdated.Text = [Management.ManagementDateTimeConverter]::ToDateTime($pkg.LastRefreshTime).ToString('yyyy-MM-dd HH:mm')
+                try { $txt_PkgDetailUpdated.Text = [Management.ManagementDateTimeConverter]::ToDateTime($pkg.LastRefreshTime).ToString('yyyy-MM-dd HH:mm') }
+                catch { $txt_PkgDetailUpdated.Text = [char]0x2014 }
             } else {
                 $txt_PkgDetailUpdated.Text = [char]0x2014
             }
@@ -9198,11 +9229,11 @@ $cmb_PkgAction.Add_SelectionChanged({
                     Write-DATLogEntry -Value "- Package '$oldName' already targets $newOS -- skipped" -Severity 1
                     continue
                 }
-                $wmiPkg = Get-WmiObject -ComputerName $siteServer -Namespace "root\SMS\Site_$siteCode" `
-                    -Class SMS_Package -Filter "PackageID = '$($pkg.PackageID)'" -ErrorAction Stop
+                $wmiPkg = Get-CimInstance -ComputerName $siteServer -Namespace "root\SMS\Site_$siteCode" `
+                    -ClassName SMS_Package -Filter "PackageID = '$($pkg.PackageID)'" -ErrorAction Stop
                 if ($null -ne $wmiPkg) {
                     $wmiPkg.Name = $newName
-                    $wmiPkg.Put() | Out-Null
+                    Set-CimInstance -InputObject $wmiPkg -ErrorAction Stop
                     Write-DATLogEntry -Value "- Renamed package $($pkg.PackageID): '$oldName' -> '$newName'" -Severity 1
                     $pkg.Name = $newName
                     $successCount++
@@ -9258,11 +9289,11 @@ $cmb_PkgAction.Add_SelectionChanged({
                     continue
                 }
 
-                $wmiPkg = Get-WmiObject -ComputerName $siteServer -Namespace "root\SMS\Site_$siteCode" `
-                    -Class SMS_Package -Filter "PackageID = '$($pkg.PackageID)'" -ErrorAction Stop
+                $wmiPkg = Get-CimInstance -ComputerName $siteServer -Namespace "root\SMS\Site_$siteCode" `
+                    -ClassName SMS_Package -Filter "PackageID = '$($pkg.PackageID)'" -ErrorAction Stop
                 if ($null -ne $wmiPkg) {
                     $wmiPkg.Name = $newName
-                    $wmiPkg.Put() | Out-Null
+                    Set-CimInstance -InputObject $wmiPkg -ErrorAction Stop
                     Write-DATLogEntry -Value "- Renamed package $($pkg.PackageID): '$oldName' -> '$newName'" -Severity 1
                     $pkg.Name = $newName
                     $successCount++
@@ -9441,16 +9472,73 @@ $btn_TestTelemetry.Add_Click({
     $btn_TestTelemetry.IsEnabled = $true
 })
 
+# Log File Configuration - numeric up/down controls
+$btn_LogSizeDown = $Window.FindName('btn_LogSizeDown')
+$btn_LogSizeUp = $Window.FindName('btn_LogSizeUp')
+$txt_LogFileSize = $Window.FindName('txt_LogFileSize')
+$btn_LogRetainDown = $Window.FindName('btn_LogRetainDown')
+$btn_LogRetainUp = $Window.FindName('btn_LogRetainUp')
+$txt_LogRetainCount = $Window.FindName('txt_LogRetainCount')
+
+# Load saved values from registry
+$savedLogSize = (Get-ItemProperty -Path $global:RegPath -Name "LogFileSizeMB" -ErrorAction SilentlyContinue).LogFileSizeMB
+$savedLogRetain = (Get-ItemProperty -Path $global:RegPath -Name "LogRetainCount" -ErrorAction SilentlyContinue).LogRetainCount
+if ($savedLogSize -ge 1 -and $savedLogSize -le 10) { $txt_LogFileSize.Text = [string]$savedLogSize }
+if ($savedLogRetain -ge 1 -and $savedLogRetain -le 10) { $txt_LogRetainCount.Text = [string]$savedLogRetain }
+
+$btn_LogSizeDown.Add_Click({
+    $val = [int]$txt_LogFileSize.Text
+    if ($val -gt 1) {
+        $val--
+        $txt_LogFileSize.Text = [string]$val
+        Set-DATRegistryValue -Name "LogFileSizeMB" -Value $val -Type DWord
+    }
+})
+$btn_LogSizeUp.Add_Click({
+    $val = [int]$txt_LogFileSize.Text
+    if ($val -lt 10) {
+        $val++
+        $txt_LogFileSize.Text = [string]$val
+        Set-DATRegistryValue -Name "LogFileSizeMB" -Value $val -Type DWord
+    }
+})
+$btn_LogRetainDown.Add_Click({
+    $val = [int]$txt_LogRetainCount.Text
+    if ($val -gt 1) {
+        $val--
+        $txt_LogRetainCount.Text = [string]$val
+        Set-DATRegistryValue -Name "LogRetainCount" -Value $val -Type DWord
+    }
+})
+$btn_LogRetainUp.Add_Click({
+    $val = [int]$txt_LogRetainCount.Text
+    if ($val -lt 10) {
+        $val++
+        $txt_LogRetainCount.Text = [string]$val
+        Set-DATRegistryValue -Name "LogRetainCount" -Value $val -Type DWord
+    }
+})
+
 $btn_ExportConfig.Add_Click({
     $dialog = New-Object System.Windows.Forms.SaveFileDialog
     $dialog.Filter = "Registry Files (*.reg)|*.reg"
     $dialog.FileName = "DriverAutomationTool_Config.reg"
     if ($dialog.ShowDialog() -eq 'OK') {
         try {
-            $regExportPath = $global:RegPath -replace "HKLM:", "HKLM"
-            $cmd = "reg export `"$regExportPath`" `"$($dialog.FileName)`" /y"
-            Invoke-Expression -Command $cmd
-            $txt_Status.Text = "Configuration exported to $($dialog.FileName)"
+            # Security fix #6: use & reg.exe with an argument array instead of Invoke-Expression.
+            # Validate the destination is an absolute path with a .reg extension.
+            $exportDest = $dialog.FileName
+            if (-not [System.IO.Path]::IsPathRooted($exportDest)) {
+                throw "Export path must be an absolute path"
+            }
+            if ([System.IO.Path]::GetExtension($exportDest) -ine '.reg') {
+                throw "Export file must have a .reg extension"
+            }
+            $regExportPath = $global:RegPath -replace 'HKLM:', 'HKLM'
+            $regExe = Join-Path $env:SystemRoot 'System32\reg.exe'
+            & $regExe export $regExportPath $exportDest /y
+            if ($LASTEXITCODE -ne 0) { throw "reg.exe exited with code $LASTEXITCODE" }
+            $txt_Status.Text = "Configuration exported to $exportDest"
         } catch {
             $txt_Status.Text = "Export failed: $($_.Exception.Message)"
         }
@@ -9462,9 +9550,22 @@ $btn_ImportConfig.Add_Click({
     $dialog.Filter = "Registry Files (*.reg)|*.reg"
     if ($dialog.ShowDialog() -eq 'OK') {
         try {
-            $cmd = "reg import `"$($dialog.FileName)`""
-            Invoke-Expression -Command $cmd
-            $txt_Status.Text = "Configuration imported from $($dialog.FileName)"
+            # Security fix #6: use & reg.exe with an argument array instead of Invoke-Expression.
+            # Validate the source is an absolute path to an existing .reg file.
+            $importSrc = $dialog.FileName
+            if (-not [System.IO.Path]::IsPathRooted($importSrc)) {
+                throw "Import path must be an absolute path"
+            }
+            if ([System.IO.Path]::GetExtension($importSrc) -ine '.reg') {
+                throw "Import file must have a .reg extension"
+            }
+            if (-not (Test-Path -LiteralPath $importSrc -PathType Leaf)) {
+                throw "Import file not found: $importSrc"
+            }
+            $regExe = Join-Path $env:SystemRoot 'System32\reg.exe'
+            & $regExe import $importSrc
+            if ($LASTEXITCODE -ne 0) { throw "reg.exe exited with code $LASTEXITCODE" }
+            $txt_Status.Text = "Configuration imported from $importSrc"
         } catch {
             $txt_Status.Text = "Import failed: $($_.Exception.Message)"
         }
@@ -9749,13 +9850,45 @@ $btn_ScheduleRemove.Add_Click({
 
 # Purge Downloads handler
 $btn_PurgeDownloads.Add_Click({
-    $tempPath = $txt_TempStorage.Text
-    if ([string]::IsNullOrWhiteSpace($tempPath) -or -not (Test-Path $tempPath)) {
+    $rawPath = $txt_TempStorage.Text.Trim()
+    if ([string]::IsNullOrWhiteSpace($rawPath) -or -not (Test-Path $rawPath)) {
         $txt_PurgeStatus.Text = "Temporary storage path not set or does not exist."
         $txt_PurgeStatus.Foreground = [System.Windows.Media.SolidColorBrush]::new(
             [System.Windows.Media.ColorConverter]::ConvertFromString(
                 (Get-DATTheme -ThemeName $script:CurrentTheme)['StatusError']))
         return
+    }
+
+    # Security fix #11: canonicalise the path and block system/root directories
+    # to prevent deletion through junctions or symlinks planted inside the temp folder.
+    try {
+        $tempPath = [System.IO.Path]::GetFullPath($rawPath)
+    } catch {
+        $txt_PurgeStatus.Text = "Invalid path: $($_.Exception.Message)"
+        $txt_PurgeStatus.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+            [System.Windows.Media.ColorConverter]::ConvertFromString(
+                (Get-DATTheme -ThemeName $script:CurrentTheme)['StatusError']))
+        return
+    }
+
+    $blockedRoots = @(
+        $env:SystemRoot,
+        $env:ProgramFiles,
+        ${env:ProgramFiles(x86)},
+        $env:UserProfile,
+        [System.IO.Path]::GetPathRoot($tempPath)   # e.g. C:\
+    )
+    foreach ($blocked in $blockedRoots) {
+        if ([string]::IsNullOrEmpty($blocked)) { continue }
+        $resolvedBlocked = [System.IO.Path]::GetFullPath($blocked).TrimEnd('\')
+        if ($tempPath.TrimEnd('\') -ieq $resolvedBlocked) {
+            $txt_PurgeStatus.Text = "Refusing to purge a system or root directory."
+            $txt_PurgeStatus.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+                [System.Windows.Media.ColorConverter]::ConvertFromString(
+                    (Get-DATTheme -ThemeName $script:CurrentTheme)['StatusError']))
+            Write-DATActivityLog "Purge blocked: '$tempPath' is a protected path" -Level Warn
+            return
+        }
     }
 
     $confirmed = Show-DATConfirmDialog `
@@ -9777,14 +9910,20 @@ $btn_PurgeDownloads.Add_Click({
         $removedCount = 0
         foreach ($item in $items) {
             try {
-                Remove-Item -Path $item.FullName -Recurse -Force -ErrorAction Stop
+                # Security fix #11: handle reparse points (junctions/symlinks) without
+                # following them into their targets — delete the link itself only.
+                if ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) {
+                    Remove-Item -Path $item.FullName -Force -ErrorAction Stop
+                    Write-DATActivityLog "Removed reparse point (not followed): $($item.Name)" -Level Info
+                } else {
+                    Remove-Item -Path $item.FullName -Recurse -Force -ErrorAction Stop
+                }
                 $removedCount++
             } catch {
                 Write-DATActivityLog "Failed to remove: $($item.Name) -- $($_.Exception.Message)" -Level Warn
             }
         }
 
-        $freedMB = 0
         $txt_PurgeStatus.Text = "Purge complete -- $removedCount items removed."
         $txt_PurgeStatus.Foreground = [System.Windows.Media.SolidColorBrush]::new(
             [System.Windows.Media.ColorConverter]::ConvertFromString(
@@ -9839,8 +9978,10 @@ $txt_ProxyUsername.Add_LostFocus({
 $pwd_ProxyPassword.Add_LostFocus({
     $val = $pwd_ProxyPassword.Password
     if (-not [string]::IsNullOrEmpty($val)) {
-        $encoded = [System.Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($val))
-        Set-DATRegistryValue -Name 'ProxyPassword' -Value $encoded -Type String
+        # Security fix #7: encrypt with DPAPI instead of Base64
+        $ss        = ConvertTo-SecureString -String $val -AsPlainText -Force
+        $encrypted = ConvertFrom-SecureString -SecureString $ss
+        Set-DATRegistryValue -Name 'ProxyPassword' -Value $encrypted -Type String
     }
 })
 
@@ -11215,25 +11356,70 @@ $txt_DebugBuildPath.Add_LostFocus({
 
 #region Toast Behaviour
 
+$chk_DisableToastPrompt.Add_Checked({
+    $cmb_BIOSTimeoutAction.IsEnabled = $false
+    $cmb_BIOSTimeoutAction.Opacity = 0.4
+    Set-DATRegistryValue -Name "BIOSDisableToast" -Value 1 -Type DWord
+    Write-DATActivityLog "Toast-based installation prompt: Disabled" -Level Info
+})
+$chk_DisableToastPrompt.Add_Unchecked({
+    $cmb_BIOSTimeoutAction.IsEnabled = $true
+    $cmb_BIOSTimeoutAction.Opacity = 1.0
+    Set-DATRegistryValue -Name "BIOSDisableToast" -Value 0 -Type DWord
+    Write-DATActivityLog "Toast-based installation prompt: Enabled" -Level Info
+})
+
 $chk_EnableMaxDeferrals.Add_Checked({
     $txt_MaxDeferrals.IsEnabled = $true
+    $btn_DeferralsDown.IsEnabled = $true
+    $btn_DeferralsUp.IsEnabled = $true
+    $txt_BIOSRestartDelay.IsEnabled = $true
+    $btn_RestartDelayDown.IsEnabled = $true
+    $btn_RestartDelayUp.IsEnabled = $true
     Set-DATRegistryValue -Name "BIOSMaxDeferralsEnabled" -Value 1 -Type DWord
-    Write-DATActivityLog "Max deferral enforcement: Enabled" -Level Info
+    Write-DATActivityLog "Deferral settings: Enabled" -Level Info
 })
 
 $chk_EnableMaxDeferrals.Add_Unchecked({
     $txt_MaxDeferrals.IsEnabled = $false
+    $btn_DeferralsDown.IsEnabled = $false
+    $btn_DeferralsUp.IsEnabled = $false
+    $txt_BIOSRestartDelay.IsEnabled = $false
+    $btn_RestartDelayDown.IsEnabled = $false
+    $btn_RestartDelayUp.IsEnabled = $false
     Set-DATRegistryValue -Name "BIOSMaxDeferralsEnabled" -Value 0 -Type DWord
-    Write-DATActivityLog "Max deferral enforcement: Disabled" -Level Info
+    Write-DATActivityLog "Deferral settings: Disabled" -Level Info
 })
 
-$txt_MaxDeferrals.Add_LostFocus({
-    $val = $txt_MaxDeferrals.Text
-    if ($val -match '^\d+$' -and [int]$val -ge 1) {
-        Set-DATRegistryValue -Name "BIOSMaxDeferrals" -Value ([int]$val) -Type DWord
-    } else {
-        $txt_MaxDeferrals.Text = '3'
-        Set-DATRegistryValue -Name "BIOSMaxDeferrals" -Value 3 -Type DWord
+# Deferrals +/- buttons
+$btn_DeferralsDown.Add_Click({
+    $val = [int]$txt_MaxDeferrals.Text
+    if ($val -gt 1) {
+        $txt_MaxDeferrals.Text = ($val - 1).ToString()
+        Set-DATRegistryValue -Name "BIOSMaxDeferrals" -Value ($val - 1) -Type DWord
+    }
+})
+$btn_DeferralsUp.Add_Click({
+    $val = [int]$txt_MaxDeferrals.Text
+    if ($val -lt 99) {
+        $txt_MaxDeferrals.Text = ($val + 1).ToString()
+        Set-DATRegistryValue -Name "BIOSMaxDeferrals" -Value ($val + 1) -Type DWord
+    }
+})
+
+# Restart delay +/- buttons
+$btn_RestartDelayDown.Add_Click({
+    $val = [int]$txt_BIOSRestartDelay.Text
+    if ($val -gt 1) {
+        $txt_BIOSRestartDelay.Text = ($val - 1).ToString()
+        Set-DATRegistryValue -Name "BIOSRestartDelayMinutes" -Value ($val - 1) -Type DWord
+    }
+})
+$btn_RestartDelayUp.Add_Click({
+    $val = [int]$txt_BIOSRestartDelay.Text
+    if ($val -lt 120) {
+        $txt_BIOSRestartDelay.Text = ($val + 1).ToString()
+        Set-DATRegistryValue -Name "BIOSRestartDelayMinutes" -Value ($val + 1) -Type DWord
     }
 })
 
@@ -11241,16 +11427,6 @@ $cmb_BIOSTimeoutAction.Add_SelectionChanged({
     $action = if ($cmb_BIOSTimeoutAction.SelectedIndex -eq 1) { 'InstallNow' } else { 'RemindMeLater' }
     Set-DATRegistryValue -Name "BIOSToastTimeoutAction" -Value $action -Type String
     Write-DATActivityLog "Toast timeout action: $action" -Level Info
-})
-
-$txt_BIOSRestartDelay.Add_LostFocus({
-    $val = $txt_BIOSRestartDelay.Text
-    if ($val -match '^\d+$' -and [int]$val -ge 1) {
-        Set-DATRegistryValue -Name "BIOSRestartDelayMinutes" -Value ([int]$val) -Type DWord
-    } else {
-        $txt_BIOSRestartDelay.Text = '10'
-        Set-DATRegistryValue -Name "BIOSRestartDelayMinutes" -Value 10 -Type DWord
-    }
 })
 
 #endregion Toast Behaviour
@@ -11270,6 +11446,477 @@ $chk_DeployAllDevices.Add_Unchecked({
     $txt_DeployAllState.Text = 'Off'
     $txt_DeployAllState.Foreground = $Window.FindResource('InputPlaceholder')
     Write-DATActivityLog "Package Deployment: Deploy to All Devices disabled" -Level Info
+})
+
+# Assignment Filter settings
+$chk_AutoAssignmentFilter = $Window.FindName('chk_AutoAssignmentFilter')
+$txt_AutoFilterState = $Window.FindName('txt_AutoFilterState')
+$cmb_FilterMode = $Window.FindName('cmb_FilterMode')
+$txt_FilterCount = $Window.FindName('txt_FilterCount')
+$txt_FilterRemaining = $Window.FindName('txt_FilterRemaining')
+$txt_FilterWarning = $Window.FindName('txt_FilterWarning')
+$txt_FilterModeHint = $Window.FindName('txt_FilterModeHint')
+$txt_FilterPreview = $Window.FindName('txt_FilterPreview')
+$btn_RefreshFilterCount = $Window.FindName('btn_RefreshFilterCount')
+$btn_QueryFilters = $Window.FindName('btn_QueryFilters')
+$txt_FilterNameTemplate = $Window.FindName('txt_FilterNameTemplate')
+$btn_InsertMakeVar = $Window.FindName('btn_InsertMakeVar')
+$btn_InsertModelVar = $Window.FindName('btn_InsertModelVar')
+$txt_FilterNameExample = $Window.FindName('txt_FilterNameExample')
+$txt_FilterRuleExample = $Window.FindName('txt_FilterRuleExample')
+
+# Helper to update the example preview
+function Update-DATFilterExample {
+    $template = $txt_FilterNameTemplate.Text
+    $mode = 'Make'
+    $sel = $cmb_FilterMode.SelectedItem
+    if ($sel) { $mode = $sel.Tag }
+    if ($mode -eq 'Model') {
+        $exampleName = $template -replace '%MAKE%', 'Lenovo' -replace '%MODEL%', 'ThinkPad T14 Gen 5'
+        $txt_FilterNameExample.Text = "Name: $exampleName"
+        $txt_FilterRuleExample.Text = '(device.manufacturer -contains "Lenovo") and (device.model -contains "ThinkPad T14 Gen 5")'
+    } else {
+        $exampleName = $template -replace '%MAKE%', 'Lenovo' -replace '%MODEL%', ''
+        $exampleName = $exampleName.Trim()
+        $txt_FilterNameExample.Text = "Name: $exampleName"
+        $txt_FilterRuleExample.Text = '(device.manufacturer -startsWith "Lenovo")'
+    }
+}
+
+# Initial example
+Update-DATFilterExample
+
+$chk_AutoAssignmentFilter.Add_Checked({
+    # Skip the confirmation dialog during settings restoration (window not yet visible)
+    if ($Window.IsVisible) {
+        $permMsg = "Automatic assignment filter creation requires the additional Graph API permission:"
+        $permMsg += "`n`nDeviceManagementConfiguration.ReadWrite.All"
+        $permMsg += "`n`nPlease ensure this permission is granted to your app registration or user account before enabling this feature."
+        $confirmed = Show-DATConfirmDialog -Title 'Additional Permission Required' `
+            -Message $permMsg -Icon ([string][char]0xE8D7) -ConfirmLabel 'Enable'
+        if (-not $confirmed) {
+            $chk_AutoAssignmentFilter.IsChecked = $false
+            return
+        }
+    }
+    Set-DATRegistryValue -Name "AutoAssignmentFilter" -Value 1 -Type DWord
+    $txt_AutoFilterState.Text = 'On'
+    $txt_AutoFilterState.Foreground = $Window.FindResource('AccentColor')
+    Write-DATActivityLog "Assignment Filters: Auto-create enabled" -Level Info
+})
+$chk_AutoAssignmentFilter.Add_Unchecked({
+    Set-DATRegistryValue -Name "AutoAssignmentFilter" -Value 0 -Type DWord
+    $txt_AutoFilterState.Text = 'Off'
+    $txt_AutoFilterState.Foreground = $Window.FindResource('InputPlaceholder')
+    Write-DATActivityLog "Assignment Filters: Auto-create disabled" -Level Info
+})
+
+$cmb_FilterMode.Add_SelectionChanged({
+    $selected = $cmb_FilterMode.SelectedItem
+    if ($selected) {
+        $mode = $selected.Tag
+        Set-DATRegistryValue -Name "AssignmentFilterMode" -Value $mode -Type String
+        if ($mode -eq 'Make') {
+            $txt_FilterModeHint.Text = 'Fewer filters, broader targeting'
+            $btn_InsertModelVar.Visibility = 'Collapsed'
+            if ($txt_FilterNameTemplate.Text -eq 'DATFilter-%MAKE% %MODEL%') {
+                $txt_FilterNameTemplate.Text = 'DATFilter-%MAKE%'
+            }
+        } else {
+            $txt_FilterModeHint.Text = 'More filters, per-model targeting'
+            $btn_InsertModelVar.Visibility = 'Visible'
+            if ($txt_FilterNameTemplate.Text -eq 'DATFilter-%MAKE%') {
+                $txt_FilterNameTemplate.Text = 'DATFilter-%MAKE% %MODEL%'
+            }
+        }
+        Update-DATFilterExample
+        Write-DATActivityLog "Assignment filter mode set to: $mode" -Level Info
+    }
+})
+
+# Filter name template persistence and live preview
+$txt_FilterNameTemplate.Add_TextChanged({
+    Set-DATRegistryValue -Name "AssignmentFilterNameTemplate" -Value $txt_FilterNameTemplate.Text -Type String
+    Update-DATFilterExample
+})
+
+# Insert variable buttons
+$btn_InsertMakeVar.Add_Click({
+    $caretIndex = $txt_FilterNameTemplate.CaretIndex
+    $txt_FilterNameTemplate.Text = $txt_FilterNameTemplate.Text.Insert($caretIndex, '%MAKE%')
+    $txt_FilterNameTemplate.CaretIndex = $caretIndex + '%MAKE%'.Length
+    $txt_FilterNameTemplate.Focus()
+})
+$btn_InsertModelVar.Add_Click({
+    $caretIndex = $txt_FilterNameTemplate.CaretIndex
+    $txt_FilterNameTemplate.Text = $txt_FilterNameTemplate.Text.Insert($caretIndex, '%MODEL%')
+    $txt_FilterNameTemplate.CaretIndex = $caretIndex + '%MODEL%'.Length
+    $txt_FilterNameTemplate.Focus()
+})
+
+$btn_RefreshFilterCount.Add_Click({
+    try {
+        if (-not (Test-DATIntuneAuth)) {
+            $txt_FilterCount.Text = '--'
+            $txt_FilterRemaining.Text = '(authenticate first)'
+            $txt_FilterWarning.Visibility = 'Collapsed'
+            return
+        }
+        $counts = Get-DATIntuneAssignmentFilterCount
+        $txt_FilterCount.Text = "$($counts.Current)"
+        $txt_FilterRemaining.Text = "($($counts.Remaining) remaining)"
+        if ($counts.Current -gt 150) {
+            $txt_FilterCount.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+                [System.Windows.Media.ColorConverter]::ConvertFromString('#E8A035'))
+        } else {
+            $txt_FilterCount.Foreground = $Window.FindResource('AccentColor')
+        }
+        if ($counts.Remaining -le 0) {
+            $txt_FilterWarning.Text = "Limit reached: 200/200 assignment filters in use. Cannot create new filters."
+            $txt_FilterWarning.Visibility = 'Visible'
+        } elseif ($counts.Current -gt 150) {
+            $txt_FilterWarning.Text = "Warning: Assignment filter count is approaching the maximum Intune limit of 200. Currently using $($counts.Current)/200 ($($counts.Remaining) remaining)."
+            $txt_FilterWarning.Visibility = 'Visible'
+        } else {
+            $txt_FilterWarning.Visibility = 'Collapsed'
+        }
+        Write-DATActivityLog "Assignment filter count refreshed: $($counts.Current)/200" -Level Info
+    } catch {
+        $txt_FilterCount.Text = '--'
+        $txt_FilterRemaining.Text = '(error)'
+        Write-DATActivityLog "Failed to refresh filter count: $($_.Exception.Message)" -Level Error
+    }
+})
+
+# Query Filters modal
+$btn_QueryFilters.Add_Click({
+    try {
+        if (-not (Test-DATIntuneAuth)) {
+            Write-DATActivityLog "Cannot query filters: authenticate to Intune first" -Level Error
+            return
+        }
+
+        $theme = Get-DATTheme -ThemeName $script:CurrentTheme
+        $bgColor = [System.Windows.Media.ColorConverter]::ConvertFromString($theme['CardBackground'])
+
+        $dlg = [System.Windows.Window]::new()
+        $dlg.WindowStyle      = 'None'
+        $dlg.AllowsTransparency = $true
+        $dlg.Background       = [System.Windows.Media.Brushes]::Transparent
+        $dlg.WindowStartupLocation = 'CenterOwner'
+        $dlg.Owner            = $Window
+        $dlg.Width            = 620
+        $dlg.Height           = 500
+        $dlg.Topmost          = $true
+        $dlg.ResizeMode       = 'NoResize'
+        $dlg.ShowInTaskbar    = $false
+
+        $border = [System.Windows.Controls.Border]::new()
+        $border.Background    = [System.Windows.Media.SolidColorBrush]::new(
+            [System.Windows.Media.Color]::FromArgb(245, $bgColor.R, $bgColor.G, $bgColor.B))
+        $border.CornerRadius  = [System.Windows.CornerRadius]::new(20)
+        $border.Padding       = [System.Windows.Thickness]::new(28, 20, 28, 24)
+        $border.BorderBrush   = [System.Windows.Media.SolidColorBrush]::new(
+            [System.Windows.Media.ColorConverter]::ConvertFromString($theme['CardBorder']))
+        $border.BorderThickness = [System.Windows.Thickness]::new(1)
+        $shadow = [System.Windows.Media.Effects.DropShadowEffect]::new()
+        $shadow.BlurRadius    = 30; $shadow.ShadowDepth = 0; $shadow.Opacity = 0.5
+        $shadow.Color         = [System.Windows.Media.Colors]::Black
+        $border.Effect        = $shadow
+
+        $rootGrid = [System.Windows.Controls.Grid]::new()
+        $rootGrid.RowDefinitions.Add([System.Windows.Controls.RowDefinition]::new()) | Out-Null  # Header
+        $rootGrid.RowDefinitions[0].Height = [System.Windows.GridLength]::new(0, [System.Windows.GridUnitType]::Auto)
+        $rootGrid.RowDefinitions.Add([System.Windows.Controls.RowDefinition]::new()) | Out-Null  # Toolbar
+        $rootGrid.RowDefinitions[1].Height = [System.Windows.GridLength]::new(0, [System.Windows.GridUnitType]::Auto)
+        $rootGrid.RowDefinitions.Add([System.Windows.Controls.RowDefinition]::new()) | Out-Null  # List
+        $rootGrid.RowDefinitions[2].Height = [System.Windows.GridLength]::new(1, [System.Windows.GridUnitType]::Star)
+
+        # Header row with title and close button
+        $headerGrid = [System.Windows.Controls.Grid]::new()
+        $headerGrid.Margin = [System.Windows.Thickness]::new(0, 0, 0, 16)
+        [System.Windows.Controls.Grid]::SetRow($headerGrid, 0)
+
+        $titleText = [System.Windows.Controls.TextBlock]::new()
+        $titleText.FontSize   = 16
+        $titleText.FontWeight = [System.Windows.FontWeights]::Bold
+        $titleText.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+            [System.Windows.Media.ColorConverter]::ConvertFromString($theme['WindowForeground']))
+        $titleText.VerticalAlignment = 'Center'
+        $titleText.Inlines.Add([System.Windows.Documents.Run]::new([string][char]0xE71C))
+        $titleText.Inlines[0].FontFamily = [System.Windows.Media.FontFamily]::new('Segoe MDL2 Assets')
+        $titleText.Inlines[0].FontSize = 16
+        $titleText.Inlines.Add([System.Windows.Documents.Run]::new('  Assignment Filters'))
+        $headerGrid.Children.Add($titleText) | Out-Null
+
+        $btnCloseX = [System.Windows.Controls.Button]::new()
+        $btnCloseX.Content = [string][char]0xE8BB
+        $btnCloseX.FontFamily = [System.Windows.Media.FontFamily]::new('Segoe MDL2 Assets')
+        $btnCloseX.FontSize = 14
+        $btnCloseX.Width = 32
+        $btnCloseX.Height = 32
+        $btnCloseX.HorizontalAlignment = 'Right'
+        $btnCloseX.VerticalAlignment = 'Top'
+        $btnCloseX.Background = [System.Windows.Media.Brushes]::Transparent
+        $btnCloseX.BorderThickness = [System.Windows.Thickness]::new(0)
+        $btnCloseX.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+            [System.Windows.Media.ColorConverter]::ConvertFromString($theme['InputPlaceholder']))
+        $btnCloseX.Cursor = [System.Windows.Input.Cursors]::Hand
+        $btnCloseX.Add_Click({ $dlg.Close() })
+        $headerGrid.Children.Add($btnCloseX) | Out-Null
+
+        $rootGrid.Children.Add($headerGrid) | Out-Null
+
+        # Toolbar row with Delete Selected button
+        $toolbarPanel = [System.Windows.Controls.StackPanel]::new()
+        $toolbarPanel.Orientation = 'Horizontal'
+        $toolbarPanel.Margin = [System.Windows.Thickness]::new(0, 0, 0, 12)
+        [System.Windows.Controls.Grid]::SetRow($toolbarPanel, 1)
+
+        $btnDeleteFilters = [System.Windows.Controls.Button]::new()
+        $btnDeleteFilters.Height = 30
+        $btnDeleteFilters.Padding = [System.Windows.Thickness]::new(12, 4, 12, 4)
+        $btnDeleteFilters.Background = [System.Windows.Media.SolidColorBrush]::new(
+            [System.Windows.Media.ColorConverter]::ConvertFromString('#DC2626'))
+        $btnDeleteFilters.Foreground = [System.Windows.Media.Brushes]::White
+        $btnDeleteFilters.BorderThickness = [System.Windows.Thickness]::new(0)
+        $btnDeleteFilters.Cursor = [System.Windows.Input.Cursors]::Hand
+        $btnDeleteFilters.Visibility = 'Collapsed'
+        # Apply rounded corner template
+        $btnTemplate = [System.Windows.Markup.XamlReader]::Parse(@"
+<ControlTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" TargetType="Button">
+    <Border Background="{TemplateBinding Background}" CornerRadius="6" Padding="{TemplateBinding Padding}">
+        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+    </Border>
+</ControlTemplate>
+"@)
+        $btnDeleteFilters.Template = $btnTemplate
+        $deleteContent = [System.Windows.Controls.TextBlock]::new()
+        $deleteContent.Inlines.Add([System.Windows.Documents.Run]::new([string][char]0xE74D))
+        $deleteContent.Inlines[0].FontFamily = [System.Windows.Media.FontFamily]::new('Segoe MDL2 Assets')
+        $deleteContent.Inlines[0].FontSize = 11
+        $deleteContent.Inlines.Add([System.Windows.Documents.Run]::new('  Delete Selected Filter(s)'))
+        $deleteContent.Inlines[1].FontSize = 12
+        $btnDeleteFilters.Content = $deleteContent
+        $toolbarPanel.Children.Add($btnDeleteFilters) | Out-Null
+
+        $rootGrid.Children.Add($toolbarPanel) | Out-Null
+
+        # Scrollable list area
+        $scrollViewer = [System.Windows.Controls.ScrollViewer]::new()
+        $scrollViewer.VerticalScrollBarVisibility = 'Auto'
+        $scrollViewer.HorizontalScrollBarVisibility = 'Disabled'
+        [System.Windows.Controls.Grid]::SetRow($scrollViewer, 2)
+
+        $listPanel = [System.Windows.Controls.StackPanel]::new()
+
+        # Loading indicator
+        $loadingText = [System.Windows.Controls.TextBlock]::new()
+        $loadingText.Text = 'Loading filters...'
+        $loadingText.FontSize = 13
+        $loadingText.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+            [System.Windows.Media.ColorConverter]::ConvertFromString($theme['InputPlaceholder']))
+        $loadingText.HorizontalAlignment = 'Center'
+        $loadingText.Margin = [System.Windows.Thickness]::new(0, 20, 0, 0)
+        $listPanel.Children.Add($loadingText) | Out-Null
+
+        $scrollViewer.Content = $listPanel
+        $rootGrid.Children.Add($scrollViewer) | Out-Null
+
+        $border.Child = $rootGrid
+        $dlg.Content  = $border
+
+        # Load filters after dialog renders
+        $dlg.Add_ContentRendered({
+            try {
+                $filters = Get-DATIntuneAssignmentFilters
+                $listPanel.Children.Clear()
+
+                if (@($filters).Count -eq 0) {
+                    $emptyText = [System.Windows.Controls.TextBlock]::new()
+                    $emptyText.Text = 'No assignment filters found.'
+                    $emptyText.FontSize = 13
+                    $emptyText.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+                        [System.Windows.Media.ColorConverter]::ConvertFromString($theme['InputPlaceholder']))
+                    $emptyText.HorizontalAlignment = 'Center'
+                    $emptyText.Margin = [System.Windows.Thickness]::new(0, 20, 0, 0)
+                    $listPanel.Children.Add($emptyText) | Out-Null
+                    return
+                }
+
+                $countText = [System.Windows.Controls.TextBlock]::new()
+                $countText.Text = "$(@($filters).Count) filters found (200 max)"
+                $countText.FontSize = 12
+                $countText.FontWeight = [System.Windows.FontWeights]::SemiBold
+                $countText.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+                    [System.Windows.Media.ColorConverter]::ConvertFromString($theme['AccentColor']))
+                $countText.Margin = [System.Windows.Thickness]::new(0, 0, 0, 12)
+                $listPanel.Children.Add($countText) | Out-Null
+
+                foreach ($f in ($filters | Sort-Object -Property displayName)) {
+                    $card = [System.Windows.Controls.Border]::new()
+                    $card.Background = [System.Windows.Media.SolidColorBrush]::new(
+                        [System.Windows.Media.ColorConverter]::ConvertFromString($theme['InputBackground']))
+                    $card.CornerRadius = [System.Windows.CornerRadius]::new(8)
+                    $card.Padding = [System.Windows.Thickness]::new(12, 8, 12, 8)
+                    $card.Margin = [System.Windows.Thickness]::new(0, 0, 0, 6)
+
+                    $cardGrid = [System.Windows.Controls.Grid]::new()
+                    $cardGrid.ColumnDefinitions.Add([System.Windows.Controls.ColumnDefinition]::new()) | Out-Null
+                    $cardGrid.ColumnDefinitions[0].Width = [System.Windows.GridLength]::new(0, [System.Windows.GridUnitType]::Auto)
+                    $cardGrid.ColumnDefinitions.Add([System.Windows.Controls.ColumnDefinition]::new()) | Out-Null
+                    $cardGrid.ColumnDefinitions[1].Width = [System.Windows.GridLength]::new(1, [System.Windows.GridUnitType]::Star)
+
+                    $cb = [System.Windows.Controls.CheckBox]::new()
+                    $cb.Style = $Window.FindResource([System.Windows.Controls.CheckBox])
+                    $cb.VerticalAlignment = 'Center'
+                    $cb.Margin = [System.Windows.Thickness]::new(0, 0, 10, 0)
+                    $cb.Tag = $f.id
+                    $cb.Add_Checked({ $btnDeleteFilters.Visibility = 'Visible' })
+                    $cb.Add_Unchecked({
+                        $anyChecked = $false
+                        foreach ($child in $listPanel.Children) {
+                            if ($child -is [System.Windows.Controls.Border]) {
+                                $innerGrid = $child.Child
+                                if ($innerGrid -is [System.Windows.Controls.Grid] -and $innerGrid.Children.Count -gt 0) {
+                                    $chk = $innerGrid.Children[0]
+                                    if ($chk -is [System.Windows.Controls.CheckBox] -and $chk.IsChecked) { $anyChecked = $true; break }
+                                }
+                            }
+                        }
+                        if (-not $anyChecked) { $btnDeleteFilters.Visibility = 'Collapsed' }
+                    })
+                    [System.Windows.Controls.Grid]::SetColumn($cb, 0)
+                    $cardGrid.Children.Add($cb) | Out-Null
+
+                    $cardPanel = [System.Windows.Controls.StackPanel]::new()
+                    [System.Windows.Controls.Grid]::SetColumn($cardPanel, 1)
+
+                    $nameText = [System.Windows.Controls.TextBlock]::new()
+                    $nameText.Text = $f.displayName
+                    $nameText.FontSize = 13
+                    $nameText.FontWeight = [System.Windows.FontWeights]::SemiBold
+                    $nameText.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+                        [System.Windows.Media.ColorConverter]::ConvertFromString($theme['WindowForeground']))
+                    $cardPanel.Children.Add($nameText) | Out-Null
+
+                    $ruleText = [System.Windows.Controls.TextBlock]::new()
+                    $ruleText.Text = $f.rule
+                    $ruleText.FontSize = 11
+                    $ruleText.FontFamily = [System.Windows.Media.FontFamily]::new('Consolas')
+                    $ruleText.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+                        [System.Windows.Media.ColorConverter]::ConvertFromString($theme['InputPlaceholder']))
+                    $ruleText.TextWrapping = [System.Windows.TextWrapping]::Wrap
+                    $ruleText.Margin = [System.Windows.Thickness]::new(0, 2, 0, 0)
+                    $cardPanel.Children.Add($ruleText) | Out-Null
+
+                    if (-not [string]::IsNullOrEmpty($f.createdDateTime)) {
+                        $dateText = [System.Windows.Controls.TextBlock]::new()
+                        $dateText.Text = "Created: $($f.createdDateTime)"
+                        $dateText.FontSize = 10
+                        $dateText.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+                            [System.Windows.Media.ColorConverter]::ConvertFromString($theme['InputPlaceholder']))
+                        $dateText.Margin = [System.Windows.Thickness]::new(0, 2, 0, 0)
+                        $cardPanel.Children.Add($dateText) | Out-Null
+                    }
+
+                    $card.Child = $cardGrid
+                    $cardGrid.Children.Add($cardPanel) | Out-Null
+                    $listPanel.Children.Add($card) | Out-Null
+                }
+            } catch {
+                $listPanel.Children.Clear()
+                $errText = [System.Windows.Controls.TextBlock]::new()
+                $errText.Text = "Failed to load filters: $($_.Exception.Message)"
+                $errText.FontSize = 12
+                $errText.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+                    [System.Windows.Media.ColorConverter]::ConvertFromString('#E8A035'))
+                $errText.TextWrapping = [System.Windows.TextWrapping]::Wrap
+                $errText.Margin = [System.Windows.Thickness]::new(0, 20, 0, 0)
+                $listPanel.Children.Add($errText) | Out-Null
+            }
+        })
+
+        # Delete Selected Filters handler
+        $btnDeleteFilters.Add_Click({
+            $selectedIds = @()
+            $selectedNames = @()
+            foreach ($child in $listPanel.Children) {
+                if ($child -is [System.Windows.Controls.Border]) {
+                    $innerGrid = $child.Child
+                    if ($innerGrid -is [System.Windows.Controls.Grid] -and $innerGrid.Children.Count -gt 0) {
+                        $chk = $innerGrid.Children[0]
+                        if ($chk -is [System.Windows.Controls.CheckBox] -and $chk.IsChecked) {
+                            $selectedIds += $chk.Tag
+                            $namePanel = $innerGrid.Children[1]
+                            if ($namePanel -is [System.Windows.Controls.StackPanel] -and $namePanel.Children.Count -gt 0) {
+                                $selectedNames += $namePanel.Children[0].Text
+                            }
+                        }
+                    }
+                }
+            }
+            if ($selectedIds.Count -eq 0) { return }
+
+            $confirmMsg = "Delete $($selectedIds.Count) selected assignment filter(s)?`n`nThis action cannot be undone."
+            $confirm = Show-DATConfirmDialog -Title "Delete Filters" -Message $confirmMsg
+            if (-not $confirm) { return }
+
+            $btnDeleteFilters.IsEnabled = $false
+            $btnDeleteFilters.Opacity = 0.5
+            $deleteErrors = @()
+            foreach ($filterId in $selectedIds) {
+                try {
+                    Invoke-DATGraphRequest -Uri "/deviceManagement/assignmentFilters/$filterId" -Method DELETE
+                    Write-DATActivityLog "Deleted assignment filter: $filterId" -Level Success
+                } catch {
+                    $deleteErrors += $filterId
+                    Write-DATActivityLog "Failed to delete filter $filterId : $($_.Exception.Message)" -Level Error
+                }
+            }
+
+            # Remove deleted cards from the list
+            $toRemove = @()
+            foreach ($child in $listPanel.Children) {
+                if ($child -is [System.Windows.Controls.Border]) {
+                    $innerGrid = $child.Child
+                    if ($innerGrid -is [System.Windows.Controls.Grid] -and $innerGrid.Children.Count -gt 0) {
+                        $chk = $innerGrid.Children[0]
+                        if ($chk -is [System.Windows.Controls.CheckBox] -and $chk.Tag -in $selectedIds -and $chk.Tag -notin $deleteErrors) {
+                            $toRemove += $child
+                        }
+                    }
+                }
+            }
+            foreach ($item in $toRemove) { $listPanel.Children.Remove($item) }
+
+            # Update count text
+            $remaining = 0
+            foreach ($child in $listPanel.Children) {
+                if ($child -is [System.Windows.Controls.Border]) { $remaining++ }
+            }
+            $countCtrl = $listPanel.Children[0]
+            if ($countCtrl -is [System.Windows.Controls.TextBlock]) {
+                $countCtrl.Text = "$remaining filters found (200 max)"
+            }
+
+            # Refresh the assignment filter count in Common Settings
+            if ($null -ne $script:AssignmentFilterData) {
+                $script:AssignmentFilterData.ExistingCount = $remaining
+            }
+
+            if ($deleteErrors.Count -gt 0) {
+                Write-DATActivityLog "Failed to delete $($deleteErrors.Count) filter(s)" -Level Error
+            }
+        })
+
+        # Allow dragging the modal
+        $border.Add_MouseLeftButtonDown({ $dlg.DragMove() })
+
+        $dlg.ShowDialog() | Out-Null
+    } catch {
+        Write-DATActivityLog "Query filters failed: $($_.Exception.Message)" -Level Error
+    }
 })
 
 # Package Upload settings
@@ -11501,10 +12148,13 @@ $savedTitle = (Get-ItemProperty -Path $global:RegPath -Name "${initPrefix}_Title
 $savedBody  = (Get-ItemProperty -Path $global:RegPath -Name "${initPrefix}_Body" -ErrorAction SilentlyContinue)."${initPrefix}_Body"
 $savedGreeting  = (Get-ItemProperty -Path $global:RegPath -Name "${initPrefix}_Greeting" -ErrorAction SilentlyContinue)."${initPrefix}_Greeting"
 $savedSubtitle  = (Get-ItemProperty -Path $global:RegPath -Name "${initPrefix}_Subtitle" -ErrorAction SilentlyContinue)."${initPrefix}_Subtitle"
-if (-not [string]::IsNullOrEmpty($savedTitle)) { $script:ToastTextLoading = $true; $txt_CustomToastTitle.Text = $savedTitle; $script:ToastTextLoading = $false }
-if (-not [string]::IsNullOrEmpty($savedBody))  { $script:ToastTextLoading = $true; $txt_CustomToastBody.Text  = $savedBody;  $script:ToastTextLoading = $false }
-if (-not [string]::IsNullOrEmpty($savedGreeting))  { $script:ToastTextLoading = $true; $txt_CustomToastGreeting.Text = $savedGreeting; $script:ToastTextLoading = $false }
-if (-not [string]::IsNullOrEmpty($savedSubtitle))  { $script:ToastTextLoading = $true; $txt_CustomToastSubtitle.Text = $savedSubtitle; $script:ToastTextLoading = $false }
+$defaults = $script:ToastDefaults[$initPrefix]
+$script:ToastTextLoading = $true
+$txt_CustomToastTitle.Text    = if (-not [string]::IsNullOrEmpty($savedTitle))    { $savedTitle }    else { $defaults.Title }
+$txt_CustomToastBody.Text     = if (-not [string]::IsNullOrEmpty($savedBody))     { $savedBody }     else { $defaults.Body }
+$txt_CustomToastGreeting.Text = if (-not [string]::IsNullOrEmpty($savedGreeting)) { $savedGreeting } else { $defaults.Greeting }
+$txt_CustomToastSubtitle.Text = if (-not [string]::IsNullOrEmpty($savedSubtitle)) { $savedSubtitle } else { $defaults.Subtitle }
+$script:ToastTextLoading = $false
 
 $txt_CustomToastTitle.Add_TextChanged({
     if ($script:ToastTextLoading) { return }
@@ -11661,11 +12311,12 @@ $cmb_ToastPreviewType.Add_SelectionChanged({
     $savedBody  = (Get-ItemProperty -Path $global:RegPath -Name "${prefix}_Body" -ErrorAction SilentlyContinue)."${prefix}_Body"
     $savedGreeting  = (Get-ItemProperty -Path $global:RegPath -Name "${prefix}_Greeting" -ErrorAction SilentlyContinue)."${prefix}_Greeting"
     $savedSubtitle  = (Get-ItemProperty -Path $global:RegPath -Name "${prefix}_Subtitle" -ErrorAction SilentlyContinue)."${prefix}_Subtitle"
+    $defaults = $script:ToastDefaults[$prefix]
     $script:ToastTextLoading = $true
-    $txt_CustomToastTitle.Text = if (-not [string]::IsNullOrEmpty($savedTitle)) { $savedTitle } else { '' }
-    $txt_CustomToastBody.Text  = if (-not [string]::IsNullOrEmpty($savedBody))  { $savedBody  } else { '' }
-    $txt_CustomToastGreeting.Text  = if (-not [string]::IsNullOrEmpty($savedGreeting))  { $savedGreeting  } else { '' }
-    $txt_CustomToastSubtitle.Text  = if (-not [string]::IsNullOrEmpty($savedSubtitle))  { $savedSubtitle  } else { '' }
+    $txt_CustomToastTitle.Text    = if (-not [string]::IsNullOrEmpty($savedTitle))    { $savedTitle }    else { $defaults.Title }
+    $txt_CustomToastBody.Text     = if (-not [string]::IsNullOrEmpty($savedBody))     { $savedBody }     else { $defaults.Body }
+    $txt_CustomToastGreeting.Text = if (-not [string]::IsNullOrEmpty($savedGreeting)) { $savedGreeting } else { $defaults.Greeting }
+    $txt_CustomToastSubtitle.Text = if (-not [string]::IsNullOrEmpty($savedSubtitle)) { $savedSubtitle } else { $defaults.Subtitle }
     $script:ToastTextLoading = $false
     # Show variables panel only for BIOS Prestaged
     $panel_ToastBodyVariables.Visibility = if ($selectedType -eq 'BIOS Prestaged') { 'Visible' } else { 'Collapsed' }
@@ -11704,6 +12355,7 @@ $grid_IntuneApps.ContextMenu.Add_Opened({
     $canAssign = $hasSelection -and (Test-DATIntuneAuth)
     $ctx_AssignAvailable.IsEnabled = $canAssign
     $ctx_AssignRequired.IsEnabled = $canAssign
+    $ctx_UpdateRemoveFilter.IsEnabled = $canAssign
 })
 
 # --- Assignment progress modal helper ---
@@ -12006,6 +12658,333 @@ $ctx_AssignRequired.Add_Click({
     }
 })
 
+# Update / Remove Assignment Filter
+$ctx_UpdateRemoveFilter.Add_Click({
+    $checkedApps = @($script:IntuneAppsData | Where-Object { $_.Selected -eq $true })
+    if ($checkedApps.Count -eq 0) {
+        $highlighted = $grid_IntuneApps.SelectedItem
+        if ($null -eq $highlighted) { return }
+        $checkedApps = @($highlighted)
+    }
+
+    $theme = Get-DATTheme -ThemeName $script:CurrentTheme
+    $bgColor = [System.Windows.Media.ColorConverter]::ConvertFromString($theme['CardBackground'])
+    $fgBrush = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.ColorConverter]::ConvertFromString($theme['WindowForeground']))
+    $mutedBrush = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.ColorConverter]::ConvertFromString($theme['InputPlaceholder']))
+
+    $filterDlg = [System.Windows.Window]::new()
+    $filterDlg.WindowStyle      = 'None'
+    $filterDlg.AllowsTransparency = $true
+    $filterDlg.Background       = [System.Windows.Media.Brushes]::Transparent
+    $filterDlg.WindowStartupLocation = 'CenterOwner'
+    $filterDlg.Owner            = $Window
+    $filterDlg.Width            = 520
+    $filterDlg.SizeToContent    = 'Height'
+    $filterDlg.MaxHeight        = 420
+    $filterDlg.Topmost          = $true
+    $filterDlg.ResizeMode       = 'NoResize'
+    $filterDlg.ShowInTaskbar    = $false
+
+    $fBorder = [System.Windows.Controls.Border]::new()
+    $fBorder.Background    = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.Color]::FromArgb(250, $bgColor.R, $bgColor.G, $bgColor.B))
+    $fBorder.CornerRadius  = [System.Windows.CornerRadius]::new(16)
+    $fBorder.Padding       = [System.Windows.Thickness]::new(28, 24, 28, 24)
+    $fBorder.BorderBrush   = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.ColorConverter]::ConvertFromString($theme['CardBorder']))
+    $fBorder.BorderThickness = [System.Windows.Thickness]::new(1)
+    $fShadow = [System.Windows.Media.Effects.DropShadowEffect]::new()
+    $fShadow.BlurRadius = 30; $fShadow.ShadowDepth = 0; $fShadow.Opacity = 0.5
+    $fShadow.Color = [System.Windows.Media.Colors]::Black
+    $fBorder.Effect = $fShadow
+
+    $fPanel = [System.Windows.Controls.StackPanel]::new()
+
+    # Title
+    $fTitleGrid = [System.Windows.Controls.Grid]::new()
+    $fTitleGrid.Margin = [System.Windows.Thickness]::new(0, 0, 0, 16)
+    $fTitle = [System.Windows.Controls.TextBlock]::new()
+    $fTitle.FontSize = 15
+    $fTitle.FontWeight = [System.Windows.FontWeights]::Bold
+    $fTitle.Foreground = $fgBrush
+    $fTitle.VerticalAlignment = 'Center'
+    $ftr1 = [System.Windows.Documents.Run]::new([string][char]0xE71C)
+    $ftr1.FontFamily = [System.Windows.Media.FontFamily]::new('Segoe MDL2 Assets')
+    $ftr1.FontSize = 14
+    $fTitle.Inlines.Add($ftr1)
+    $fTitle.Inlines.Add([System.Windows.Documents.Run]::new('  Update / Remove Assignment Filter'))
+    $fTitleGrid.Children.Add($fTitle) | Out-Null
+
+    $fCloseBtn = [System.Windows.Controls.Button]::new()
+    $fCloseBtn.Content = [string][char]0xE8BB
+    $fCloseBtn.FontFamily = [System.Windows.Media.FontFamily]::new('Segoe MDL2 Assets')
+    $fCloseBtn.FontSize = 14
+    $fCloseBtn.Width = 32; $fCloseBtn.Height = 32
+    $fCloseBtn.HorizontalAlignment = 'Right'
+    $fCloseBtn.VerticalAlignment = 'Top'
+    $fCloseBtn.Foreground = $mutedBrush
+    $fCloseBtn.Cursor = [System.Windows.Input.Cursors]::Hand
+    $fCloseBtnXaml = '<ControlTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" TargetType="Button"><Border Background="Transparent" Padding="0" BorderThickness="0"><ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/></Border></ControlTemplate>'
+    $fCloseBtn.Template = [System.Windows.Markup.XamlReader]::Parse($fCloseBtnXaml)
+    $fCloseBtn.Add_Click({ $filterDlg.Close() })
+    $fTitleGrid.Children.Add($fCloseBtn) | Out-Null
+    $fPanel.Children.Add($fTitleGrid) | Out-Null
+
+    # App name label
+    $appLabel = if ($checkedApps.Count -eq 1) { $checkedApps[0].DisplayName } else { "$($checkedApps.Count) selected packages" }
+    $fAppLabel = [System.Windows.Controls.TextBlock]::new()
+    $fAppLabel.Text = $appLabel
+    $fAppLabel.FontSize = 12
+    $fAppLabel.Foreground = $mutedBrush
+    $fAppLabel.Margin = [System.Windows.Thickness]::new(0, 0, 0, 16)
+    $fAppLabel.TextWrapping = [System.Windows.TextWrapping]::Wrap
+    $fPanel.Children.Add($fAppLabel) | Out-Null
+
+    # Filter dropdown label
+    $fFilterLabel = [System.Windows.Controls.TextBlock]::new()
+    $fFilterLabel.Text = 'Select Assignment Filter'
+    $fFilterLabel.FontSize = 12
+    $fFilterLabel.FontWeight = [System.Windows.FontWeights]::SemiBold
+    $fFilterLabel.Foreground = $fgBrush
+    $fFilterLabel.Margin = [System.Windows.Thickness]::new(0, 0, 0, 8)
+    $fPanel.Children.Add($fFilterLabel) | Out-Null
+
+    # Filter dropdown
+    $fCombo = [System.Windows.Controls.ComboBox]::new()
+    $fCombo.Height = 36
+    $fCombo.FontSize = 12
+    $fCombo.Margin = [System.Windows.Thickness]::new(0, 0, 0, 16)
+
+    # Load filters into dropdown
+    $loadingItem = [System.Windows.Controls.ComboBoxItem]::new()
+    $loadingItem.Content = 'Loading filters...'
+    $loadingItem.IsEnabled = $false
+    $fCombo.Items.Add($loadingItem) | Out-Null
+    $fCombo.SelectedIndex = 0
+    $fPanel.Children.Add($fCombo) | Out-Null
+
+    # Buttons row
+    $fBtnPanel = [System.Windows.Controls.StackPanel]::new()
+    $fBtnPanel.Orientation = 'Horizontal'
+    $fBtnPanel.HorizontalAlignment = 'Right'
+    $fBtnPanel.Margin = [System.Windows.Thickness]::new(0, 8, 0, 0)
+
+    # Clear Filter button
+    $fClearBtn = [System.Windows.Controls.Button]::new()
+    $fClearBtn.Height = 34
+    $fClearBtn.Cursor = [System.Windows.Input.Cursors]::Hand
+    $fClearBtn.Margin = [System.Windows.Thickness]::new(0, 0, 10, 0)
+    $fClearBtn.Style = $Window.FindResource('DangerButton')
+    $fClearContent = [System.Windows.Controls.TextBlock]::new()
+    $fClearContent.Foreground = [System.Windows.Media.Brushes]::White
+    $fClearContent.Inlines.Add([System.Windows.Documents.Run]::new([string][char]0xE74D))
+    $fClearContent.Inlines[0].FontFamily = [System.Windows.Media.FontFamily]::new('Segoe MDL2 Assets')
+    $fClearContent.Inlines[0].FontSize = 11
+    $fClearContent.Inlines.Add([System.Windows.Documents.Run]::new('  Clear Filter'))
+    $fClearContent.Inlines[1].FontSize = 12
+    $fClearBtn.Content = $fClearContent
+    $fBtnPanel.Children.Add($fClearBtn) | Out-Null
+
+    # Apply Filter button
+    $fApplyBtn = [System.Windows.Controls.Button]::new()
+    $fApplyBtn.Height = 34
+    $fApplyBtn.Cursor = [System.Windows.Input.Cursors]::Hand
+    $fApplyBtn.IsEnabled = $false
+    $fApplyBtn.Opacity = 0.5
+    $fApplyBtn.Style = $Window.FindResource('RoundedButton')
+    $fApplyContent = [System.Windows.Controls.TextBlock]::new()
+    $fApplyContent.Foreground = [System.Windows.Media.Brushes]::White
+    $fApplyContent.Inlines.Add([System.Windows.Documents.Run]::new([string][char]0xE73E))
+    $fApplyContent.Inlines[0].FontFamily = [System.Windows.Media.FontFamily]::new('Segoe MDL2 Assets')
+    $fApplyContent.Inlines[0].FontSize = 11
+    $fApplyContent.Inlines.Add([System.Windows.Documents.Run]::new('  Apply Filter'))
+    $fApplyContent.Inlines[1].FontSize = 12
+    $fApplyBtn.Content = $fApplyContent
+    $fBtnPanel.Children.Add($fApplyBtn) | Out-Null
+
+    $fPanel.Children.Add($fBtnPanel) | Out-Null
+
+    # Status text
+    $fStatusText = [System.Windows.Controls.TextBlock]::new()
+    $fStatusText.FontSize = 12
+    $fStatusText.Margin = [System.Windows.Thickness]::new(0, 12, 0, 0)
+    $fStatusText.TextWrapping = [System.Windows.TextWrapping]::Wrap
+    $fStatusText.Visibility = 'Collapsed'
+    $fPanel.Children.Add($fStatusText) | Out-Null
+
+    $fBorder.Child = $fPanel
+    # Merge main window resources so ComboBox pill style is inherited
+    $filterDlg.Resources.MergedDictionaries.Add($Window.Resources)
+    $filterDlg.Content = $fBorder
+
+    # Load filters after dialog renders
+    $filterDlg.Add_ContentRendered({
+        try {
+            $filters = Get-DATIntuneAssignmentFilters
+            $fCombo.Items.Clear()
+            if (@($filters).Count -eq 0) {
+                $emptyItem = [System.Windows.Controls.ComboBoxItem]::new()
+                $emptyItem.Content = 'No filters available'
+                $emptyItem.IsEnabled = $false
+                $fCombo.Items.Add($emptyItem) | Out-Null
+                $fCombo.SelectedIndex = 0
+            } else {
+                foreach ($f in ($filters | Sort-Object -Property displayName)) {
+                    $fItem = [System.Windows.Controls.ComboBoxItem]::new()
+                    $fItem.Content = $f.displayName
+                    $fItem.Tag = $f.id
+                    $fCombo.Items.Add($fItem) | Out-Null
+                }
+                $fCombo.SelectedIndex = 0
+                $fApplyBtn.IsEnabled = $true
+                $fApplyBtn.Opacity = 1.0
+            }
+        } catch {
+            $fCombo.Items.Clear()
+            $errItem = [System.Windows.Controls.ComboBoxItem]::new()
+            $errItem.Content = "Error loading filters"
+            $errItem.IsEnabled = $false
+            $fCombo.Items.Add($errItem) | Out-Null
+            $fCombo.SelectedIndex = 0
+        }
+    })
+
+    # Apply Filter click handler
+    $fApplyBtn.Add_Click({
+        $selectedFilter = $fCombo.SelectedItem
+        if ($null -eq $selectedFilter -or [string]::IsNullOrEmpty($selectedFilter.Tag)) { return }
+        $filterId = $selectedFilter.Tag
+        $filterName = $selectedFilter.Content
+
+        $fApplyBtn.IsEnabled = $false
+        $fClearBtn.IsEnabled = $false
+        $fStatusText.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+            [System.Windows.Media.ColorConverter]::ConvertFromString($theme['StatusInfo']))
+        $fStatusText.Text = "Applying filter '$filterName'..."
+        $fStatusText.Visibility = 'Visible'
+
+        $errors = @()
+        foreach ($app in $checkedApps) {
+            try {
+                # Get current assignments
+                $assignResponse = Invoke-DATGraphRequest -Uri "/deviceAppManagement/mobileApps/$($app.AppId)/assignments"
+                $assignments = @($assignResponse)
+
+                if ($assignments.Count -eq 0) {
+                    $errors += "$($app.DisplayName): No assignments found to apply filter to"
+                    continue
+                }
+
+                # Rebuild assignments as hashtables with filter applied
+                $updatedAssignments = @()
+                foreach ($assignment in $assignments) {
+                    if ($null -eq $assignment.target) { continue }
+                    $targetHash = @{ '@odata.type' = $assignment.target.'@odata.type' }
+                    if ($assignment.target.groupId) { $targetHash['groupId'] = $assignment.target.groupId }
+                    $targetHash['deviceAndAppManagementAssignmentFilterId'] = $filterId
+                    $targetHash['deviceAndAppManagementAssignmentFilterType'] = 'include'
+                    $entry = @{
+                        '@odata.type' = '#microsoft.graph.mobileAppAssignment'
+                        intent        = $assignment.intent
+                        target        = $targetHash
+                    }
+                    if ($null -ne $assignment.settings) { $entry['settings'] = $assignment.settings }
+                    $updatedAssignments += $entry
+                }
+
+                $body = @{ mobileAppAssignments = $updatedAssignments }
+                Invoke-DATGraphRequest -Uri "/deviceAppManagement/mobileApps/$($app.AppId)/assign" -Method POST -Body $body
+                Write-DATActivityLog "Applied filter '$filterName' to app: $($app.DisplayName)" -Level Success
+            } catch {
+                $errors += "$($app.DisplayName): $($_.Exception.Message)"
+                Write-DATActivityLog "Failed to apply filter to $($app.DisplayName): $($_.Exception.Message)" -Level Error
+            }
+        }
+
+        if ($errors.Count -eq 0) {
+            $fStatusText.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+                [System.Windows.Media.ColorConverter]::ConvertFromString($theme['StatusSuccess']))
+            $fStatusText.Text = "Filter '$filterName' applied to $($checkedApps.Count) package(s)"
+        } else {
+            $fStatusText.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+                [System.Windows.Media.ColorConverter]::ConvertFromString('#E8A035'))
+            $fStatusText.Text = "Completed with $($errors.Count) error(s): $($errors[0])"
+        }
+        $fApplyBtn.IsEnabled = $true
+        $fClearBtn.IsEnabled = $true
+    })
+
+    # Clear Filter click handler
+    $fClearBtn.Add_Click({
+        $confirm = Show-DATConfirmDialog -Title "Clear Assignment Filter" -Message "Remove the assignment filter from $($checkedApps.Count) selected package(s)?`n`nThe group assignment will remain but the filter will be cleared."
+        if (-not $confirm) { return }
+
+        $fApplyBtn.IsEnabled = $false
+        $fClearBtn.IsEnabled = $false
+        $fStatusText.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+            [System.Windows.Media.ColorConverter]::ConvertFromString($theme['StatusInfo']))
+        $fStatusText.Text = "Removing filter..."
+        $fStatusText.Visibility = 'Visible'
+
+        $errors = @()
+        foreach ($app in $checkedApps) {
+            try {
+                # Get current assignments
+                $assignResponse = Invoke-DATGraphRequest -Uri "/deviceAppManagement/mobileApps/$($app.AppId)/assignments"
+                $assignments = @($assignResponse)
+
+                if ($assignments.Count -eq 0) {
+                    $errors += "$($app.DisplayName): No assignments found"
+                    continue
+                }
+
+                # Rebuild assignments as hashtables with filter cleared
+                $updatedAssignments = @()
+                foreach ($assignment in $assignments) {
+                    if ($null -eq $assignment.target) { continue }
+                    $targetHash = @{ '@odata.type' = $assignment.target.'@odata.type' }
+                    if ($assignment.target.groupId) { $targetHash['groupId'] = $assignment.target.groupId }
+                    $targetHash['deviceAndAppManagementAssignmentFilterId'] = $null
+                    $targetHash['deviceAndAppManagementAssignmentFilterType'] = 'none'
+                    $entry = @{
+                        '@odata.type' = '#microsoft.graph.mobileAppAssignment'
+                        intent        = $assignment.intent
+                        target        = $targetHash
+                    }
+                    if ($null -ne $assignment.settings) { $entry['settings'] = $assignment.settings }
+                    $updatedAssignments += $entry
+                }
+
+                $body = @{ mobileAppAssignments = $updatedAssignments }
+                Invoke-DATGraphRequest -Uri "/deviceAppManagement/mobileApps/$($app.AppId)/assign" -Method POST -Body $body
+                Write-DATActivityLog "Cleared assignment filter from app: $($app.DisplayName)" -Level Success
+            } catch {
+                $errors += "$($app.DisplayName): $($_.Exception.Message)"
+                Write-DATActivityLog "Failed to clear filter from $($app.DisplayName): $($_.Exception.Message)" -Level Error
+            }
+        }
+
+        if ($errors.Count -eq 0) {
+            $fStatusText.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+                [System.Windows.Media.ColorConverter]::ConvertFromString($theme['StatusSuccess']))
+            $fStatusText.Text = "Filter cleared from $($checkedApps.Count) package(s)"
+        } else {
+            $fStatusText.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+                [System.Windows.Media.ColorConverter]::ConvertFromString('#E8A035'))
+            $fStatusText.Text = "Completed with $($errors.Count) error(s): $($errors[0])"
+        }
+        $fApplyBtn.IsEnabled = $true
+        $fClearBtn.IsEnabled = $true
+    })
+
+    # Allow dragging
+    $fBorder.Add_MouseLeftButtonDown({ $filterDlg.DragMove() })
+
+    $filterDlg.ShowDialog() | Out-Null
+})
+
 # Row-click checkbox toggle for IntuneApps grid
 $grid_IntuneApps.Add_PreviewMouseLeftButtonDown({
     param($s, $e)
@@ -12036,15 +13015,39 @@ $grid_IntuneApps.Add_PreviewKeyDown({
     $e.Handled = $true
 })
 
-# Auth mode toggle - show/hide app credential fields
+# Auth mode toggle - show/hide app credential fields and interactive app selection panel
+$cmb_IntuneAuthMode = $Window.FindName('cmb_IntuneAuthMode')
+$cmb_InteractiveAppSource = $Window.FindName('cmb_InteractiveAppSource')
+$panel_CustomInteractiveAppId = $Window.FindName('panel_CustomInteractiveAppId')
+$panel_InteractiveAppSelection = $Window.FindName('panel_InteractiveAppSelection')
+$txt_InteractiveAppId = $Window.FindName('txt_InteractiveAppId')
+
 $cmb_IntuneAuthMode.Add_SelectionChanged({
     if ($cmb_IntuneAuthMode.SelectedIndex -eq 2) {
         # App Registration mode
         $panel_AppCredentials.Visibility = 'Visible'
+        $panel_InteractiveAppSelection.Visibility = 'Collapsed'
     } else {
         # Interactive modes (Browser or Device Code)
         $panel_AppCredentials.Visibility = 'Collapsed'
+        $panel_InteractiveAppSelection.Visibility = 'Visible'
     }
+    Set-DATRegistryValue -Name 'IntuneAuthMode' -Value $cmb_IntuneAuthMode.SelectedIndex -Type DWord
+})
+
+# Show/hide custom App ID textbox based on app source selection
+$cmb_InteractiveAppSource.Add_SelectionChanged({
+    if ($cmb_InteractiveAppSource.SelectedIndex -eq 1) {
+        $panel_CustomInteractiveAppId.Visibility = 'Visible'
+    } else {
+        $panel_CustomInteractiveAppId.Visibility = 'Collapsed'
+    }
+    Set-DATRegistryValue -Name 'IntuneInteractiveAppSource' -Value $cmb_InteractiveAppSource.SelectedIndex -Type DWord
+})
+
+$txt_InteractiveAppId.Add_LostFocus({
+    $val = $txt_InteractiveAppId.Text.Trim()
+    Set-DATRegistryValue -Name 'IntuneInteractiveAppId' -Value $val -Type String
 })
 
 # Auth status update helper
@@ -12077,6 +13080,27 @@ function Update-DATIntuneAuthUI {
                 Invoke-DATIntuneKnownModelLookup
             }
         }
+        # Auto-refresh assignment filter count
+        try {
+            $counts = Get-DATIntuneAssignmentFilterCount
+            $txt_FilterCount.Text = "$($counts.Current)"
+            $txt_FilterRemaining.Text = "($($counts.Remaining) remaining)"
+            if ($counts.Current -gt 150) {
+                $txt_FilterCount.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+                    [System.Windows.Media.ColorConverter]::ConvertFromString('#E8A035'))
+            } else {
+                $txt_FilterCount.Foreground = $Window.FindResource('AccentColor')
+            }
+            if ($counts.Remaining -le 0) {
+                $txt_FilterWarning.Text = "Limit reached: 200/200 assignment filters in use. Cannot create new filters."
+                $txt_FilterWarning.Visibility = 'Visible'
+            } elseif ($counts.Current -gt 150) {
+                $txt_FilterWarning.Text = "Warning: Assignment filter count is approaching the maximum Intune limit of 200. Currently using $($counts.Current)/200 ($($counts.Remaining) remaining)."
+                $txt_FilterWarning.Visibility = 'Visible'
+            } else {
+                $txt_FilterWarning.Visibility = 'Collapsed'
+            }
+        } catch { }
     } else {
         $indicator_IntuneAuth.Fill = [System.Windows.Media.SolidColorBrush]::new(
             [System.Windows.Media.ColorConverter]::ConvertFromString(
@@ -12143,10 +13167,12 @@ function Update-DATIntunePermissionUI {
         $r1 = [System.Windows.Documents.Run]::new($perm.Name)
         $r1.FontWeight = [System.Windows.FontWeights]::SemiBold
         $r1.Foreground = [System.Windows.Media.SolidColorBrush]::new(
-            [System.Windows.Media.ColorConverter]::ConvertFromString('#F8FAFC'))
+            [System.Windows.Media.ColorConverter]::ConvertFromString(
+                (Get-DATTheme -ThemeName $script:CurrentTheme)['WindowForeground']))
         $r2 = [System.Windows.Documents.Run]::new("  --  $($perm.Description)")
         $r2.Foreground = [System.Windows.Media.SolidColorBrush]::new(
-            [System.Windows.Media.ColorConverter]::ConvertFromString('#94A3B8'))
+            [System.Windows.Media.ColorConverter]::ConvertFromString(
+                (Get-DATTheme -ThemeName $script:CurrentTheme)['InputPlaceholder']))
         $label.Inlines.Add($r1)
         $label.Inlines.Add($r2)
         [System.Windows.Controls.Grid]::SetColumn($label, 1)
@@ -12407,8 +13433,15 @@ function Update-DATIntuneAppFilter {
         default       { 'Drivers ' }
     }
 
+    $isBios = ($pkgType -eq 'BIOS Update')
     $hasOem = ($oemFilter -ne 'All')
-    $hasOs = ($osFilter -ne 'All')
+    $hasOs = (-not $isBios -and $osFilter -ne 'All')
+
+    # Hide OS filter for BIOS packages (not OS-specific)
+    $osVisibility = if ($isBios) { 'Collapsed' } else { 'Visible' }
+    $cmb_IntunePkgOS.Visibility = $osVisibility
+    $lbl_IntunePkgOS.Visibility = $osVisibility
+    if ($isBios) { $cmb_IntunePkgOS.SelectedIndex = 0 }
 
     $view.Filter = [System.Predicate[object]]{
         param($item)
@@ -12416,7 +13449,7 @@ function Update-DATIntuneAppFilter {
         if (-not $item.DisplayName.StartsWith($typePrefix, [System.StringComparison]::OrdinalIgnoreCase)) { return $false }
         # OEM filter
         if ($hasOem -and $item.Publisher -ne $oemFilter) { return $false }
-        # OS filter
+        # OS filter (skipped for BIOS)
         if ($hasOs -and $item.OperatingSystem -ne $osFilter) { return $false }
         # Search text filter
         if (-not [string]::IsNullOrEmpty($searchText)) {
@@ -12457,6 +13490,22 @@ $btn_ConnectIntune.Add_Click({
         [System.Windows.Media.ColorConverter]::ConvertFromString(
             (Get-DATTheme -ThemeName $script:CurrentTheme)['StatusInfo']))
 
+    # Resolve the client ID to use for interactive flows
+    $interactiveClientId = if ($cmb_InteractiveAppSource.SelectedIndex -eq 1) {
+        $customId = $txt_InteractiveAppId.Text.Trim()
+        if ([string]::IsNullOrEmpty($customId)) {
+            $txt_IntuneStatus.Text = "Custom App Registration selected but no App ID entered."
+            $txt_IntuneStatus.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+                [System.Windows.Media.ColorConverter]::ConvertFromString(
+                    (Get-DATTheme -ThemeName $script:CurrentTheme)['StatusError']))
+            $btn_ConnectIntune.IsEnabled = $true
+            return
+        }
+        $customId
+    } else {
+        $null   # let the function use the built-in default
+    }
+
     if ($cmb_IntuneAuthMode.SelectedIndex -eq 0) {
         # --- Interactive (Browser) - Auth Code + PKCE ---
         $txt_IntuneStatus.Text = "Opening browser for sign-in..."
@@ -12469,7 +13518,14 @@ $btn_ConnectIntune.Add_Click({
         Write-DATActivityLog "Initiating browser-based interactive authentication (Auth Code + PKCE)" -Level Info
 
         # Phase 1 -- setup listener + open browser (non-blocking)
-        $setupResult = Connect-DATIntuneGraphInteractive
+        # Custom apps must use a fixed port so the redirect URI is predictable and
+        # can be registered once in Entra ID as http://localhost:38400/
+        $browserParams = @{}
+        if ($null -ne $interactiveClientId) {
+            $browserParams['ClientId']   = $interactiveClientId
+            $browserParams['FixedPort']  = 38400
+        }
+        $setupResult = Connect-DATIntuneGraphInteractive @browserParams
 
         if (-not $setupResult.Success) {
             $txt_IntuneStatus.Text = "Failed to start browser auth: $($setupResult.Error)"
@@ -12611,7 +13667,9 @@ $btn_ConnectIntune.Add_Click({
         $panel_DeviceCode.Visibility = 'Collapsed'
         Write-DATActivityLog "Initiating Intune Graph device code authentication" -Level Info
 
-        $dcResult = Connect-DATIntuneGraph
+        $dcParams = @{}
+        if ($null -ne $interactiveClientId) { $dcParams['ClientId'] = $interactiveClientId }
+        $dcResult = Connect-DATIntuneGraph @dcParams
 
         if (-not $dcResult.Success) {
             $txt_IntuneStatus.Text = "Failed to request device code: $($dcResult.Error)"
@@ -12958,16 +14016,21 @@ $btn_ResetIntuneAuth.Add_Click({
     }
 
     # Remove saved credential values from registry
-    Remove-ItemProperty -Path $global:RegPath -Name 'IntuneTenantId' -Force -ErrorAction SilentlyContinue
-    Remove-ItemProperty -Path $global:RegPath -Name 'IntuneAppId' -Force -ErrorAction SilentlyContinue
-    Remove-ItemProperty -Path $global:RegPath -Name 'IntuneClientSecret' -Force -ErrorAction SilentlyContinue
-    Remove-ItemProperty -Path $global:RegPath -Name 'IntuneAuthMode' -Force -ErrorAction SilentlyContinue
+    Remove-ItemProperty -Path $global:RegPath -Name 'IntuneTenantId'            -Force -ErrorAction SilentlyContinue
+    Remove-ItemProperty -Path $global:RegPath -Name 'IntuneAppId'               -Force -ErrorAction SilentlyContinue
+    Remove-ItemProperty -Path $global:RegPath -Name 'IntuneClientSecret'        -Force -ErrorAction SilentlyContinue
+    Remove-ItemProperty -Path $global:RegPath -Name 'IntuneAuthMode'            -Force -ErrorAction SilentlyContinue
+    Remove-ItemProperty -Path $global:RegPath -Name 'IntuneInteractiveAppSource' -Force -ErrorAction SilentlyContinue
+    Remove-ItemProperty -Path $global:RegPath -Name 'IntuneInteractiveAppId'    -Force -ErrorAction SilentlyContinue
 
     # Clear UI fields
     $txt_IntuneTenantId.Text = ''
     $txt_IntuneAppId.Text = ''
     $txt_IntuneClientSecret.Password = ''
+    $txt_InteractiveAppId.Text = ''
     $cmb_IntuneAuthMode.SelectedIndex = 0
+    $cmb_InteractiveAppSource.SelectedIndex = 0
+    $panel_CustomInteractiveAppId.Visibility = 'Collapsed'
 
     # Reset auth status UI
     Update-DATIntuneAuthUI
@@ -13052,13 +14115,14 @@ function Invoke-DATIntuneAppRefresh {
                     DisplayName     = $app.displayName
                     Publisher       = $app.publisher
                     Version         = if ($app.displayVersion) { $app.displayVersion } else { "-" }
+                    Assigned        = if ($app.isAssigned) { 'Yes' } else { 'No' }
                     CreatedDate     = $createdDate
                     AppId           = $app.id
                     LastModified    = $lastModified
                     Description     = if ($app.description) { $app.description } else { "-" }
                     InstallCmd      = if ($app.installCommandLine) { $app.installCommandLine } else { "-" }
                     Model           = if ($app.displayName -match '^(?:Drivers|Bios Update)\s*-\s*(.+)$') { $Matches[1].Trim() } else { $app.displayName }
-                    OperatingSystem = if ($app.displayName -match '-\s*(Windows\s+\d+)\s') { $Matches[1] } else { '' }
+                    OperatingSystem = if ($app.displayName -match '-\s*(Windows\s+\d+\s+\d+H\d+)') { $Matches[1] } else { '' }
                 })
             }
             Write-DATActivityLog "Loaded $($script:IntuneAppsData.Count) DAT-created Win32 apps" -Level Success
@@ -13510,6 +14574,14 @@ $btn_ExportBIOSRemediation.Add_Click({
         return
     }
 
+    # Reject characters that cannot be safely embedded in a single-quoted PS string literal.
+    # CR/LF would break the line, NUL is not representable, and we keep the value on one line.
+    if ($password -match "[`r`n`0]") {
+        $txt_BIOSPasswordStatus.Text = "BIOS password must not contain newline or null characters."
+        $txt_BIOSPasswordStatus.Foreground = [System.Windows.Media.Brushes]::OrangeRed
+        return
+    }
+
     $dialog = New-Object System.Windows.Forms.FolderBrowserDialog
     $dialog.Description = "Select folder to export BIOS remediation scripts"
     $dialog.ShowNewFolderButton = $true
@@ -13519,9 +14591,18 @@ $btn_ExportBIOSRemediation.Add_Click({
             $exportPath = $dialog.SelectedPath
             $templatePath = Join-Path -Path $PSScriptRoot -ChildPath '..\Modules\DriverAutomationToolCore\Templates'
 
-            # Read and update remediation script with the entered password
+            # Read and update remediation script with the entered password.
+            # NOTE: Use [string]::Replace (literal) -- NOT the -replace operator -- because:
+            #   1. -replace's replacement string treats $ as a regex back-reference (Pa$$word -> Pa$word).
+            #   2. The previous implementation also omitted the trailing closing single-quote,
+            #      producing a malformed script and (with crafted passwords) an injection sink.
+            # Single-quote PS string literals only require ' -> '' escaping; no other escapes apply.
+            $escapedPassword = $password -replace "'", "''"
             $remediationTemplate = Get-Content -Path (Join-Path $templatePath 'Deploy-BIOSPassword-Remediation.ps1') -Raw
-            $remediationScript = $remediationTemplate -replace [regex]::Escape("`$BIOSPassword = 'CHANGE_ME'"), "`$BIOSPassword = '$($password -replace "'","''")"
+            $remediationScript = $remediationTemplate.Replace(
+                "`$BIOSPassword = 'CHANGE_ME'",
+                "`$BIOSPassword = '$escapedPassword'"
+            )
 
             # Copy detection script as-is
             $detectionScript = Get-Content -Path (Join-Path $templatePath 'Deploy-BIOSPassword-Detection.ps1') -Raw
@@ -13543,6 +14624,16 @@ $btn_ExportBIOSRemediation.Add_Click({
 # Peek button -- show password while mouse is held down
 $btn_PeekBIOSPassword = $Window.FindName('btn_PeekBIOSPassword')
 $txt_BIOSPasswordPlain = $Window.FindName('txt_BIOSPasswordPlain')
+
+# Persist BIOS password via DPAPI when the PasswordBox loses focus
+$txt_BIOSPassword.Add_LostFocus({
+    $pw = $txt_BIOSPassword.Password
+    if ([string]::IsNullOrEmpty($pw)) {
+        Remove-DATBIOSPassword -ErrorAction SilentlyContinue
+    } else {
+        try { Set-DATBIOSPassword -Password $pw } catch { }
+    }
+})
 
 $btn_PeekBIOSPassword.Add_PreviewMouseLeftButtonDown({
     $txt_BIOSPasswordPlain.Text = $txt_BIOSPassword.Password
@@ -14441,39 +15532,50 @@ try {
             $panel_TelemetryGuid.Visibility = 'Visible'
             Write-Host "Opted in (ID: $existingGuid)" -ForegroundColor Green
 
-            # Pre-fetch remote telemetry config in the background so it doesn't block startup
-            $telemetryJob = Start-Job -ScriptBlock {
-                param($ModulePath)
-                Import-Module $ModulePath -Force -ErrorAction Stop
-                $cfg = Get-DATTelemetryConfig
-                if ($null -ne $cfg) { return $cfg.apiBaseUrl } else { return $null }
-            } -ArgumentList $CoreModulePath
+            # Pre-fetch remote telemetry config in the background so it doesn't block startup.
+            # Wrapped in try/catch because Start-Job fails under WDAC / Constrained Language Mode
+            # ("The language mode for this session is incompatible with the system-wide language mode").
+            # Pre-fetch is non-critical -- the config will be loaded on first telemetry send instead.
+            $telemetryJob = $null
+            try {
+                $telemetryJob = Start-Job -ScriptBlock {
+                    param($ModulePath)
+                    Import-Module $ModulePath -Force -ErrorAction Stop
+                    $cfg = Get-DATTelemetryConfig
+                    if ($null -ne $cfg) { return $cfg.apiBaseUrl } else { return $null }
+                } -ArgumentList $CoreModulePath -ErrorAction Stop
+            } catch {
+                Write-Host "  Telemetry API : " -NoNewline -ForegroundColor DarkGray
+                Write-Host "Deferred (background pre-fetch unavailable: $($_.Exception.Message.Split([Environment]::NewLine)[0]))" -ForegroundColor DarkYellow
+            }
 
-            # Poll for completion via DispatcherTimer (non-blocking)
-            $script:telemetryTimer = [System.Windows.Threading.DispatcherTimer]::new()
-            $script:telemetryTimer.Interval = [TimeSpan]::FromMilliseconds(500)
-            $script:telemetryTimer.Tag = $telemetryJob
-            $script:telemetryTimer.Add_Tick({
-                $job = $script:telemetryTimer.Tag
-                if ($job.State -ne 'Running') {
-                    $script:telemetryTimer.Stop()
-                    try {
-                        $apiUrl = Receive-Job -Job $job -ErrorAction Stop
-                        Remove-Job -Job $job -Force -ErrorAction SilentlyContinue
-                        if (-not [string]::IsNullOrEmpty($apiUrl)) {
-                            # Cache the config in the main session now that we know it works
-                            try { $null = Get-DATTelemetryConfig } catch { }
+            # Poll for completion via DispatcherTimer (non-blocking) -- only if the job started
+            if ($null -ne $telemetryJob) {
+                $script:telemetryTimer = [System.Windows.Threading.DispatcherTimer]::new()
+                $script:telemetryTimer.Interval = [TimeSpan]::FromMilliseconds(500)
+                $script:telemetryTimer.Tag = $telemetryJob
+                $script:telemetryTimer.Add_Tick({
+                    $job = $script:telemetryTimer.Tag
+                    if ($job.State -ne 'Running') {
+                        $script:telemetryTimer.Stop()
+                        try {
+                            $apiUrl = Receive-Job -Job $job -ErrorAction Stop
+                            Remove-Job -Job $job -Force -ErrorAction SilentlyContinue
+                            if (-not [string]::IsNullOrEmpty($apiUrl)) {
+                                # Cache the config in the main session now that we know it works
+                                try { $null = Get-DATTelemetryConfig } catch { }
+                                Write-Host "  Telemetry API : " -NoNewline -ForegroundColor DarkGray
+                                Write-Host $apiUrl -ForegroundColor Green
+                            }
+                        } catch {
+                            Remove-Job -Job $job -Force -ErrorAction SilentlyContinue
                             Write-Host "  Telemetry API : " -NoNewline -ForegroundColor DarkGray
-                            Write-Host $apiUrl -ForegroundColor Green
+                            Write-Host "Unavailable" -ForegroundColor DarkYellow
                         }
-                    } catch {
-                        Remove-Job -Job $job -Force -ErrorAction SilentlyContinue
-                        Write-Host "  Telemetry API : " -NoNewline -ForegroundColor DarkGray
-                        Write-Host "Unavailable" -ForegroundColor DarkYellow
                     }
-                }
-            })
-            $script:telemetryTimer.Start()
+                })
+                $script:telemetryTimer.Start()
+            }
         } else {
             Write-Host "Not opted in" -ForegroundColor DarkYellow
         }
@@ -14489,6 +15591,35 @@ try {
             $txt_DeployAllState.Text = 'Off'
             Write-Host "Disabled" -ForegroundColor DarkYellow
         }
+
+        # Restore Assignment Filter settings
+        Write-Host "  Auto Filters  : " -NoNewline -ForegroundColor DarkGray
+        if ($null -ne $savedConfig.AutoAssignmentFilter -and $savedConfig.AutoAssignmentFilter -eq 1) {
+            $chk_AutoAssignmentFilter.IsChecked = $true
+            $txt_AutoFilterState.Text = 'On'
+            $txt_AutoFilterState.Foreground = $Window.FindResource('AccentColor')
+            Write-Host "Enabled" -ForegroundColor Green
+        } else {
+            $txt_AutoFilterState.Text = 'Off'
+            Write-Host "Disabled" -ForegroundColor DarkYellow
+        }
+        if (-not [string]::IsNullOrEmpty($savedConfig.AssignmentFilterMode)) {
+            foreach ($item in $cmb_FilterMode.Items) {
+                if ($item.Tag -eq $savedConfig.AssignmentFilterMode) { $item.IsSelected = $true; break }
+            }
+            $btn_InsertModelVar.Visibility = if ($savedConfig.AssignmentFilterMode -eq 'Model') { 'Visible' } else { 'Collapsed' }
+            Write-Host "  Filter Mode   : " -NoNewline -ForegroundColor DarkGray
+            Write-Host $savedConfig.AssignmentFilterMode -ForegroundColor Cyan
+        } else {
+            # Default is Make — hide Model variable button
+            $btn_InsertModelVar.Visibility = 'Collapsed'
+        }
+        if (-not [string]::IsNullOrEmpty($savedConfig.AssignmentFilterNameTemplate)) {
+            $txt_FilterNameTemplate.Text = $savedConfig.AssignmentFilterNameTemplate
+            Write-Host "  Filter Name   : " -NoNewline -ForegroundColor DarkGray
+            Write-Host $savedConfig.AssignmentFilterNameTemplate -ForegroundColor Cyan
+        }
+        Update-DATFilterExample
 
         # Restore Package Retention
         Write-Host "  Pkg Retention : " -NoNewline -ForegroundColor DarkGray
@@ -14560,6 +15691,20 @@ try {
             Write-Host "$($savedConfig.BIOSRestartDelayMinutes) minute(s)" -ForegroundColor White
         } else {
             Write-Host "3 minutes (Default)" -ForegroundColor White
+        }
+
+        # Restore BIOS password from DPAPI-encrypted registry store
+        Write-Host "  BIOS Password : " -NoNewline -ForegroundColor DarkGray
+        try {
+            $savedBIOSPw = Get-DATBIOSPassword -ErrorAction SilentlyContinue
+            if (-not [string]::IsNullOrEmpty($savedBIOSPw)) {
+                $txt_BIOSPassword.Password = $savedBIOSPw
+                Write-Host "(restored)" -ForegroundColor White
+            } else {
+                Write-Host "(not set)" -ForegroundColor DarkYellow
+            }
+        } catch {
+            Write-Host "(restore failed)" -ForegroundColor DarkYellow
         }
 
         # Restore Upload Chunk Size
@@ -14766,6 +15911,22 @@ try {
             }
             Write-Host $authModeLabel -ForegroundColor White
         }
+
+        # Restore interactive app source selection (built-in vs custom)
+        if ($null -ne $savedConfig.IntuneInteractiveAppSource) {
+            $cmb_InteractiveAppSource.SelectedIndex = [int]$savedConfig.IntuneInteractiveAppSource
+            if ([int]$savedConfig.IntuneInteractiveAppSource -eq 1) {
+                $panel_CustomInteractiveAppId.Visibility = 'Visible'
+                Write-Host "  Auth App      : Custom App Registration" -ForegroundColor White
+            } else {
+                Write-Host "  Auth App      : Microsoft Graph PowerShell SDK (Built-in)" -ForegroundColor White
+            }
+        }
+        if (-not [string]::IsNullOrEmpty($savedConfig.IntuneInteractiveAppId)) {
+            $txt_InteractiveAppId.Text = $savedConfig.IntuneInteractiveAppId
+            Write-Host "  Custom App ID : " -NoNewline -ForegroundColor DarkGray
+            Write-Host $savedConfig.IntuneInteractiveAppId -ForegroundColor White
+        }
         if (-not [string]::IsNullOrEmpty($savedConfig.IntuneTenantId)) {
             $txt_IntuneTenantId.Text = $savedConfig.IntuneTenantId
             Write-Host "  Tenant ID     : " -NoNewline -ForegroundColor DarkGray
@@ -14923,8 +16084,12 @@ try {
         }
         if (-not [string]::IsNullOrEmpty($savedConfig.ProxyPassword)) {
             try {
-                $pwd_ProxyPassword.Password = [System.Text.Encoding]::UTF8.GetString(
-                    [System.Convert]::FromBase64String($savedConfig.ProxyPassword))
+                # Security fix #7: DPAPI-encrypted value; falls back silently if the stored
+                # value is still the old Base64 format (user just re-enters the password).
+                $ss   = ConvertTo-SecureString -String $savedConfig.ProxyPassword -ErrorAction Stop
+                $bstr = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($ss)
+                try   { $pwd_ProxyPassword.Password = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($bstr) }
+                finally { [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr) }
             } catch { }
         }
 
@@ -14969,7 +16134,7 @@ if (Test-Path $logoPath) {
 
 # Read version from module manifest
 $manifestPath = Join-Path $AppRoot "Modules\DriverAutomationToolCore\DriverAutomationToolCore.psd1"
-$script:versionString = "v10.0.26"
+$script:versionString = "v10.0.27"
 if (Test-Path $manifestPath) {
     $manifestData = Import-PowerShellDataFile $manifestPath
     $ver = [version]$manifestData.ModuleVersion

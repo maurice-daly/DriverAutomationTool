@@ -3,8 +3,34 @@ Release Notes
 IMPORTANT
 - DAT Downloads have been moved to GitHub - https://github.com/maurice-daly/DriverAutomationTool
 
+Version 10.0.27
+New Additions
+- Assignment filters created and assigned automatically, based either on the make or make + model
+- Fully customisable text for toast notifications
+- Right click menu for changing assignment filters
+- UI Tweaks for BIOS / Driver selection
+- Log file max size and quantity configuration
+- Additional Toast deferral configuration
+- Interactive auth supports custom app configurations and now uses Microsoft Graph PowerShell SDK by default
+Fixes
+- Security related fixes for storage of credentials
+
+Version 10.0.26
+New Additions
+- Multiple OS selection to allow you to see all models
+- BIOS highlighting in the UI for non available devices
+- Toast notifications are now fully customisable
+- Restart delay now customisable
+- BIOS/Driver script will defer if the device is in focus mode, even if the max deferrals have been reached.
+
+Version 10.0.25
+Bug Fixes
+- Additional Lenovo fixes for extraction
+- Auth token refresh update
+
+
 Version 10.0.24
-Bug Fix(s)
+Bug Fixes
 - Updated Lenovo BIOS extraction to poll after two seconds for the BIOS extracted files. Users are having issues with files not being included in the package. Unfortunately there is no silent extract without the Flash being initiated.
 
 Version 10.0.23
