@@ -4975,18 +4975,16 @@ $grid_Models.Add_SelectionChanged({
     $gridModel = ConvertTo-DATNormalizedModel -Make $item.OEM -Model $item.Model
     if ($script:IntuneKnownDevices -and @($script:IntuneKnownDevices).Count -gt 0) {
         foreach ($device in $script:IntuneKnownDevices) {
-            $normMake = ConvertTo-DATNormalizedMake -Make $device.Make
-            $normModel = ConvertTo-DATNormalizedModel -Make $device.Make -Model $device.Model
-            if ($gridModel -eq $normModel -or "$gridMake|$gridModel" -eq "$normMake|$normModel") {
+            if (Test-DATKnownDeviceMatch -GridMake $gridMake -GridModel $gridModel -GridBaseboards $item.Baseboards `
+                    -DeviceMake $device.Make -DeviceModel $device.Model -DeviceBaseboard $device.Baseboard) {
                 $isKnown = $true; break
             }
         }
     }
     if (-not $isKnown -and $script:ConfigMgrKnownDevices -and @($script:ConfigMgrKnownDevices).Count -gt 0) {
         foreach ($device in $script:ConfigMgrKnownDevices) {
-            $normMake = ConvertTo-DATNormalizedMake -Make $device.Make
-            $normModel = ConvertTo-DATNormalizedModel -Make $device.Make -Model $device.Model
-            if ($gridModel -eq $normModel -or "$gridMake|$gridModel" -eq "$normMake|$normModel") {
+            if (Test-DATKnownDeviceMatch -GridMake $gridMake -GridModel $gridModel -GridBaseboards $item.Baseboards `
+                    -DeviceMake $device.Make -DeviceModel $device.Model -DeviceBaseboard $device.Baseboard) {
                 $isKnown = $true; break
             }
         }
@@ -5970,6 +5968,40 @@ function ConvertTo-DATNormalizedModel {
     return $m.Trim()
 }
 
+function Test-DATKnownDeviceMatch {
+    <#
+    .SYNOPSIS
+        Returns $true when a catalog grid item matches a known device.
+        Baseboard is the primary match when available on both sides;
+        name-based matching is used as a fallback.
+    #>
+    param (
+        [string]$GridMake,
+        [string]$GridModel,
+        [string]$GridBaseboards,   # comma-separated catalog baseboard IDs
+        [string]$DeviceMake,
+        [string]$DeviceModel,
+        [string]$DeviceBaseboard   # single baseboard value from inventory ($null if not collected)
+    )
+
+    # --- Baseboard-primary match ---
+    # Only attempt if the inventory device has a baseboard value AND the catalog
+    # entry has at least one baseboard value. Both sides must be non-empty.
+    if (-not [string]::IsNullOrWhiteSpace($DeviceBaseboard) -and -not [string]::IsNullOrWhiteSpace($GridBaseboards)) {
+        $normDeviceMake = ConvertTo-DATNormalizedMake -Make $DeviceMake
+        if ($normDeviceMake -eq $GridMake) {
+            $devBoard = $DeviceBaseboard.Trim().ToUpper()
+            $catalogBoards = $GridBaseboards -split '[,;\s]+' | ForEach-Object { $_.Trim().ToUpper() } | Where-Object { $_ }
+            if ($catalogBoards -contains $devBoard) { return $true }
+        }
+    }
+
+    # --- Name-based fallback ---
+    $normDeviceMake  = ConvertTo-DATNormalizedMake  -Make $DeviceMake
+    $normDeviceModel = ConvertTo-DATNormalizedModel -Make $DeviceMake -Model $DeviceModel
+    return ($GridModel -eq $normDeviceModel -or "$GridMake|$GridModel" -eq "$normDeviceMake|$normDeviceModel")
+}
+
 function Update-DATSelectKnownModelsVisibility {
     <#
     .SYNOPSIS
@@ -5987,39 +6019,29 @@ $btn_SelectKnownModels.Add_Click({
 
     # Apply Intune known model selection
     if ($script:IntuneKnownDevices -and @($script:IntuneKnownDevices).Count -gt 0) {
-        $knownModels = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
-        $knownMakeModel = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
-        foreach ($device in $script:IntuneKnownDevices) {
-            $normMake = ConvertTo-DATNormalizedMake -Make $device.Make
-            $normModel = ConvertTo-DATNormalizedModel -Make $device.Make -Model $device.Model
-            [void]$knownModels.Add($normModel)
-            [void]$knownMakeModel.Add("$normMake|$normModel")
-        }
         foreach ($item in $script:ModelData) {
-            $gridMake = ConvertTo-DATNormalizedMake -Make $item.OEM
+            $gridMake  = ConvertTo-DATNormalizedMake  -Make $item.OEM
             $gridModel = ConvertTo-DATNormalizedModel -Make $item.OEM -Model $item.Model
-            if ($knownModels.Contains($gridModel) -or $knownMakeModel.Contains("$gridMake|$gridModel")) {
-                $item.Selected = $true
+            foreach ($device in $script:IntuneKnownDevices) {
+                if (Test-DATKnownDeviceMatch -GridMake $gridMake -GridModel $gridModel -GridBaseboards $item.Baseboards `
+                        -DeviceMake $device.Make -DeviceModel $device.Model -DeviceBaseboard $device.Baseboard) {
+                    $item.Selected = $true; break
+                }
             }
         }
     }
 
     # Apply ConfigMgr known model selection
     if ($script:ConfigMgrKnownDevices -and @($script:ConfigMgrKnownDevices).Count -gt 0) {
-        $knownModels = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
-        $knownMakeModel = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
-        foreach ($device in $script:ConfigMgrKnownDevices) {
-            $normMake = ConvertTo-DATNormalizedMake -Make $device.Make
-            $normModel = ConvertTo-DATNormalizedModel -Make $device.Make -Model $device.Model
-            [void]$knownModels.Add($normModel)
-            [void]$knownMakeModel.Add("$normMake|$normModel")
-        }
         foreach ($item in $script:ModelData) {
             if (-not $item.Selected) {
-                $gridMake = ConvertTo-DATNormalizedMake -Make $item.OEM
+                $gridMake  = ConvertTo-DATNormalizedMake  -Make $item.OEM
                 $gridModel = ConvertTo-DATNormalizedModel -Make $item.OEM -Model $item.Model
-                if ($knownModels.Contains($gridModel) -or $knownMakeModel.Contains("$gridMake|$gridModel")) {
-                    $item.Selected = $true
+                foreach ($device in $script:ConfigMgrKnownDevices) {
+                    if (Test-DATKnownDeviceMatch -GridMake $gridMake -GridModel $gridModel -GridBaseboards $item.Baseboards `
+                            -DeviceMake $device.Make -DeviceModel $device.Model -DeviceBaseboard $device.Baseboard) {
+                        $item.Selected = $true; break
+                    }
                 }
             }
         }
@@ -6470,7 +6492,7 @@ $btn_Build.Add_Click({
     $cmSiteServer = if ($regConfig -and -not [string]::IsNullOrEmpty($regConfig.SiteServer)) { $regConfig.SiteServer } else { $null }
     $cmSiteCode = $global:SiteCode
     $cmPackageType = if ($null -ne $cmb_PackageType -and $null -ne $cmb_PackageType.SelectedItem) { $cmb_PackageType.SelectedItem.Content } else { 'Drivers' }
-    $cmDPGroups = if ($regConfig -and -not [string]::IsNullOrEmpty($regConfig.SelectedDPGroups)) { @($regConfig.SelectedDPGroups -split '\|') } else { @() }
+    $cmDPGroups = if ($regConfig -and -not [string]::IsNullOrEmpty($regConfig.SelectedDPGroups)) { @($regConfig.SelectedDPGroups -split ';;') } else { @() }
     $cmDPs = if ($regConfig -and -not [string]::IsNullOrEmpty($regConfig.SelectedDPs)) { @($regConfig.SelectedDPs -split '\|') } else { @() }
     $cmDistPriority = if ($null -ne $cmb_DistPriority -and $null -ne $cmb_DistPriority.SelectedItem) { $cmb_DistPriority.SelectedItem.Content } else { 'Normal' }
 
@@ -7239,7 +7261,12 @@ function Invoke-DATConfigMgrConnect {
                     $savedDPs = @($dpConfig.SelectedDPs -split '\|')
                 }
                 if (-not [string]::IsNullOrEmpty($dpConfig.SelectedDPGroups)) {
-                    $savedDPGroups = @($dpConfig.SelectedDPGroups -split '\|')
+                    # Support both old '|' delimiter and new ';;' delimiter for backwards compatibility
+                    $savedDPGroups = if ($dpConfig.SelectedDPGroups -match ';;') {
+                        @($dpConfig.SelectedDPGroups -split ';;')
+                    } else {
+                        @($dpConfig.SelectedDPGroups -split [regex]::Escape('|'))
+                    }
                 }
             } catch { }
 
@@ -7316,27 +7343,17 @@ function Update-DATConfigMgrKnownModelSelection {
     #>
     if (-not $script:ConfigMgrKnownDevices -or $script:ModelData.Count -eq 0) { return }
 
-    # Build normalized lookup sets from ConfigMgr known devices
-    $knownModels = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
-    $knownMakeModel = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
-    foreach ($device in $script:ConfigMgrKnownDevices) {
-        $normMake = ConvertTo-DATNormalizedMake -Make $device.Make
-        $normModel = ConvertTo-DATNormalizedModel -Make $device.Make -Model $device.Model
-        [void]$knownModels.Add($normModel)
-        [void]$knownMakeModel.Add("$normMake|$normModel")
-    }
-
     $matchCount = 0
     foreach ($item in $script:ModelData) {
-        $gridMake = ConvertTo-DATNormalizedMake -Make $item.OEM
+        $gridMake  = ConvertTo-DATNormalizedMake  -Make $item.OEM
         $gridModel = ConvertTo-DATNormalizedModel -Make $item.OEM -Model $item.Model
-        if ($knownModels.Contains($gridModel)) {
-            $item.Selected = $true
-            $matchCount++
-        }
-        elseif ($knownMakeModel.Contains("$gridMake|$gridModel")) {
-            $item.Selected = $true
-            $matchCount++
+        foreach ($device in $script:ConfigMgrKnownDevices) {
+            if (Test-DATKnownDeviceMatch -GridMake $gridMake -GridModel $gridModel -GridBaseboards $item.Baseboards `
+                    -DeviceMake $device.Make -DeviceModel $device.Model -DeviceBaseboard $device.Baseboard) {
+                $item.Selected = $true
+                $matchCount++
+                break
+            }
         }
     }
 
@@ -8143,7 +8160,8 @@ function Save-DATDPSelections {
 
 function Save-DATDPGroupSelections {
     $selectedGroups = @($script:DPGroupData | Where-Object { $_.Selected } | ForEach-Object { $_.Name })
-    Set-DATRegistryValue -Name 'SelectedDPGroups' -Value ($selectedGroups -join '|') -Type String
+    # Use ';;' as delimiter -- pipe '|' is a valid character in ConfigMgr DP group names
+    Set-DATRegistryValue -Name 'SelectedDPGroups' -Value ($selectedGroups -join ';;') -Type String
 }
 
 $grid_DPs.Add_CurrentCellChanged({
@@ -11062,6 +11080,11 @@ $btn_CustomBuild.Add_Click({
                 if (-not [string]::IsNullOrEmpty($CustomBrandingPath)) { $intuneCreateParams['CustomBrandingPath'] = $CustomBrandingPath }
                 $packageResult = Invoke-DATIntunePackageCreation @intuneCreateParams
                 Write-DATLogEntry -Value "- [Intune] - Package uploaded successfully" -Severity 1
+                # Remove the staging WIM folder now that the Intune package has been created
+                if (Test-Path $pkgFolder) {
+                    Remove-Item $pkgFolder -Recurse -Force -ErrorAction SilentlyContinue
+                    Write-DATLogEntry -Value "- [Intune] - Removed staging WIM folder: $pkgFolder" -Severity 1
+                }
                 Set-Phase -Phase "Complete" -Percent 100 `
                           -Message "Intune package uploaded successfully" `
                           -Step "Step 3 of 3 -- Package uploaded to Intune"
@@ -11078,6 +11101,11 @@ $btn_CustomBuild.Add_Click({
                         -DistributionPointGroups $DPGroups -DistributionPoints $DPs -Priority $DistPriority
                     if ($cmResult) {
                         Write-DATLogEntry -Value "- [ConfigMgr] - Package created successfully" -Severity 1
+                        # Remove the staging WIM folder now that the ConfigMgr package has been created
+                        if (Test-Path $pkgFolder) {
+                            Remove-Item $pkgFolder -Recurse -Force -ErrorAction SilentlyContinue
+                            Write-DATLogEntry -Value "- [ConfigMgr] - Removed staging WIM folder: $pkgFolder" -Severity 1
+                        }
                         Set-Phase -Phase "Complete" -Percent 100 `
                                   -Message "ConfigMgr package created successfully" `
                                   -Step "Step 3 of 3 -- Package created in Configuration Manager"
@@ -11150,7 +11178,7 @@ $btn_CustomBuild.Add_Click({
     [void]$script:CustomBuildPS.AddArgument($method)
     [void]$script:CustomBuildPS.AddArgument($driverFolderPath)
     # ConfigMgr DP group, individual DP, and priority settings
-    $customDPGroups = if ($regConfig -and -not [string]::IsNullOrEmpty($regConfig.SelectedDPGroups)) { @($regConfig.SelectedDPGroups -split '\|') } else { @() }
+    $customDPGroups = if ($regConfig -and -not [string]::IsNullOrEmpty($regConfig.SelectedDPGroups)) { @($regConfig.SelectedDPGroups -split ';;') } else { @() }
     $customDPs = if ($regConfig -and -not [string]::IsNullOrEmpty($regConfig.SelectedDPs)) { @($regConfig.SelectedDPs -split '\|') } else { @() }
     $customDistPriority = if ($null -ne $cmb_DistPriority -and $null -ne $cmb_DistPriority.SelectedItem) { $cmb_DistPriority.SelectedItem.Content } else { 'Normal' }
     [void]$script:CustomBuildPS.AddArgument($customDPGroups)
@@ -16134,7 +16162,7 @@ if (Test-Path $logoPath) {
 
 # Read version from module manifest
 $manifestPath = Join-Path $AppRoot "Modules\DriverAutomationToolCore\DriverAutomationToolCore.psd1"
-$script:versionString = "v10.0.27"
+$script:versionString = "v10.0.28"
 if (Test-Path $manifestPath) {
     $manifestData = Import-PowerShellDataFile $manifestPath
     $ver = [version]$manifestData.ModuleVersion

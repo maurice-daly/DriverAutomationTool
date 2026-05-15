@@ -8,5 +8,6 @@
     "summary": "telemetry/summary"
   },
   "telemetryEnabled": true,
-  "minimumDatVersion": "10.0.0.0"
+  "minimumDatVersion": "10.0.0.0",
+  "hmacSecret": "bb659ddb-dc59-4615-b889-14edf97350e2"
 }

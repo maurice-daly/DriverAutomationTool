@@ -4,7 +4,7 @@
      Organization:  MSEndpointMgr / Patch My PC
      Filename:      DriverAutomationToolCore.psm1
      Purpose:       Core functions for Driver Automation Tool v2.0
-     Version:       10.0.27.0
+     Version:       10.0.28.0
     ===========================================================================
 #>
 
@@ -27,7 +27,7 @@ if ($PSVersionTable.PSVersion.Major -le 5) {
 
 #region Variables
 
-[version]$global:ScriptRelease = "10.0.27.0"
+[version]$global:ScriptRelease = "10.0.28.0"
 $global:ScriptBuildDate = "01-05-2026"
 $global:ReleaseNotesURL = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/DriverAutomationToolNotes.txt"
 $OEMLinksURL = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/OEMLinks.xml"
@@ -2073,7 +2073,7 @@ function Get-DATConfigMgrKnownModels {
             },
             @{
                 OEM   = 'Dell'
-                Query = "SELECT DISTINCT Manufacturer, Model FROM SMS_G_System_COMPUTER_SYSTEM WHERE Manufacturer = 'Dell Inc.' AND (Model LIKE '%Optiplex%' OR Model LIKE '%PRO%' OR Model LIKE '%Latitude%' OR Model LIKE '%Precision%' OR Model LIKE '%XPS%' OR Model LIKE '%Vostro%' OR Model LIKE '%Inspiron%')"
+                Query = "SELECT DISTINCT Manufacturer, Model FROM SMS_G_System_COMPUTER_SYSTEM WHERE Manufacturer = 'Dell Inc.'"
                 MakeProp  = 'Manufacturer'
                 ModelProp = 'Model'
                 NormalizeMake  = 'Dell'
@@ -2105,6 +2105,42 @@ function Get-DATConfigMgrKnownModels {
             }
         )
 
+        # --- Supplemental baseboard queries (optional classes; silently ignored if not collected) ---
+        # HP: SMS_G_System_BASE_BOARD.Product holds the 4-char system ID (e.g. 8B4F).
+        #     Keyed by ResourceID so it can be joined to COMPUTER_SYSTEM results.
+        $hpBaseboardMap = @{}   # ResourceID -> Product
+        try {
+            $hpBBResults = @(Get-CimInstance -CimSession $cimSession -Namespace $namespace `
+                -Query "SELECT ResourceID, Product FROM SMS_G_System_BASE_BOARD WHERE Manufacturer LIKE 'HP%' OR Manufacturer LIKE 'Hewlett%'" `
+                -ErrorAction Stop)
+            foreach ($r in $hpBBResults) {
+                if (-not [string]::IsNullOrWhiteSpace($r.Product)) {
+                    $hpBaseboardMap[[string]$r.ResourceID] = $r.Product.Trim().ToUpper()
+                }
+            }
+            Write-DATLogEntry -Value "[ConfigMgr Known Models] HP BASE_BOARD: $($hpBaseboardMap.Count) entries" -Severity 1
+        } catch {
+            Write-DATLogEntry -Value "[ConfigMgr Known Models] HP BASE_BOARD query skipped (class not collected): $($_.Exception.Message)" -Severity 1
+        }
+
+        # Dell: SystemSKUNumber lives in SMS_G_System_COMPUTER_SYSTEM (same class, extra property).
+        #       Keyed by Model name so it can be joined during the main loop.
+        $dellSkuMap = @{}   # Model -> SystemSKUNumber
+        try {
+            $dellSkuResults = @(Get-CimInstance -CimSession $cimSession -Namespace $namespace `
+                -Query "SELECT DISTINCT Model, SystemSKUNumber FROM SMS_G_System_COMPUTER_SYSTEM WHERE Manufacturer = 'Dell Inc.' AND SystemSKUNumber IS NOT NULL" `
+                -ErrorAction Stop)
+            foreach ($r in $dellSkuResults) {
+                $sku = [string]$r.SystemSKUNumber
+                if (-not [string]::IsNullOrWhiteSpace($sku) -and -not [string]::IsNullOrWhiteSpace($r.Model)) {
+                    $dellSkuMap[$r.Model.Trim()] = $sku.Trim().ToUpper()
+                }
+            }
+            Write-DATLogEntry -Value "[ConfigMgr Known Models] Dell SystemSKUNumber: $($dellSkuMap.Count) entries" -Severity 1
+        } catch {
+            Write-DATLogEntry -Value "[ConfigMgr Known Models] Dell SystemSKUNumber query skipped (property not collected): $($_.Exception.Message)" -Severity 1
+        }
+
         foreach ($oem in $oemQueries) {
             if ($OnProgress) { & $OnProgress "Querying $($oem.OEM) models..." }
             Write-DATLogEntry -Value "[ConfigMgr Known Models] Querying $($oem.OEM): $($oem.Query)" -Severity 1
@@ -2118,8 +2154,9 @@ function Get-DATConfigMgrKnownModels {
                     $model = $item.($oem.ModelProp)
                     if ([string]::IsNullOrWhiteSpace($model)) { continue }
                     $model = $model.Trim()
+                    $baseboard = $null
 
-                    # HP model name normalization
+                    # HP model name normalization + baseboard lookup
                     if ($oem.NormalizeModel) {
                         $model = $model -replace '^(HP|Hewlett-Packard|COMPAQ|Hp|Compaq)\s*', ''
                         $model = $model -replace '\sSFF\b', ' Small Form Factor'
@@ -2128,23 +2165,41 @@ function Get-DATConfigMgrKnownModels {
                         $model = $model -replace '\s*35W$', ''
                         $model = $model -replace '\s+PC$', ''
                         $model = $model.Trim()
+                        # Resolve baseboard from BASE_BOARD map if available
+                        $resId = [string]$item.ResourceID
+                        if ($hpBaseboardMap.ContainsKey($resId)) {
+                            $baseboard = $hpBaseboardMap[$resId]
+                        }
                     }
 
-                    # Lenovo: resolve machine type to friendly model name
+                    # Lenovo: resolve machine type to friendly model name; machine type IS the baseboard
                     if ($oem.OEM -eq 'Lenovo' -and $model.Length -ge 4) {
                         # WMI Model is typically a 4-char machine type (e.g. 21G2) or
                         # a 10-char MTM (e.g. 21G2001EUS); extract the 4-char type prefix
                         $machineType = $model.Substring(0, 4)
+                        $baseboard = $machineType.ToUpper()
                         $friendlyName = Find-DATLenovoModelType -ModelType $machineType
                         if (-not [string]::IsNullOrEmpty($friendlyName)) {
                             $model = $friendlyName.Trim()
                         }
                     }
 
+                    # Dell: look up SystemSKUNumber by model name
+                    if ($oem.OEM -eq 'Dell' -and $dellSkuMap.ContainsKey($model)) {
+                        $baseboard = $dellSkuMap[$model]
+                    }
+
                     if (-not [string]::IsNullOrEmpty($model)) {
                         $key = "$make|$model"
                         if (-not $devicePairs.ContainsKey($key)) {
-                            $devicePairs[$key] = [PSCustomObject]@{ Make = $make; Model = $model }
+                            $devicePairs[$key] = [PSCustomObject]@{
+                                Make      = $make
+                                Model     = $model
+                                Baseboard = $baseboard   # $null if class not collected
+                            }
+                        } elseif ($null -ne $baseboard -and $null -eq $devicePairs[$key].Baseboard) {
+                            # Enrich existing entry with baseboard if we now have one
+                            $devicePairs[$key].Baseboard = $baseboard
                         }
                     }
                 }
@@ -2373,9 +2428,18 @@ function New-DATConfigMgrPkg {
         # --- Stage 3: Create package via WMI ---
         Write-DATLogEntry -Value "- [ConfigMgr] Creating new package: $CMPackage" -Severity 1
 
+        # Convert local drive paths to UNC admin-share paths so ConfigMgr stores a UNC source path
+        # and the console does not show "<Directory on site server>" as a prefix.
+        $pkgSourcePath = $DestPath
+        if ($DestPath -notmatch '^\\\\' -and -not [string]::IsNullOrEmpty($SiteServer)) {
+            $driveLetter = $DestPath[0]
+            $pkgSourcePath = "\\$SiteServer\${driveLetter}`$\$($DestPath.Substring(3))"
+            Write-DATLogEntry -Value "- [ConfigMgr] Local path converted to UNC for package source: $pkgSourcePath" -Severity 1
+        }
+
         $newPkg = ([WmiClass]"\\$SiteServer\$($smsNamespace):SMS_Package").CreateInstance()
         $newPkg.Name = $CMPackage
-        $newPkg.PkgSourcePath = $DestPath
+        $newPkg.PkgSourcePath = $pkgSourcePath
         $newPkg.Manufacturer = $OEM
         $newPkg.Description = $pkgDescription
         $newPkg.Version = $Version
@@ -4807,7 +4871,7 @@ $script:GraphClientId = "14d82eec-204b-4c2f-b7e8-296a70dab67e"  # Microsoft Grap
 $script:GraphScopes = @(
     "DeviceManagementApps.ReadWrite.All"
     "DeviceManagementManagedDevices.Read.All"
-    "Group.Read.All"
+    "GroupMember.Read.All"
 )
 $script:GraphBaseUrl = "https://graph.microsoft.com/beta"
 
@@ -6604,13 +6668,11 @@ try {
     if (-not [string]::IsNullOrEmpty(`$logoBase64)) {
         Write-ToastLog "Decoding and writing branding logo..."
         `$imgBytes = [Convert]::FromBase64String(`$logoBase64)
-        `$imgPath = Join-Path `$env:ProgramData "DriverAutomationTool\DATLogo_Wide.png"
-        if (-not (Test-Path `$imgPath)) {
-            [System.IO.File]::WriteAllBytes(`$imgPath, `$imgBytes)
-            Write-ToastLog "Logo written to `$imgPath"
-        } else {
-            Write-ToastLog "Logo already exists at `$imgPath"
-        }
+        `$imgDir = Join-Path `$env:ProgramData "DriverAutomationTool"
+        if (-not (Test-Path `$imgDir)) { New-Item -Path `$imgDir -ItemType Directory -Force | Out-Null }
+        `$imgPath = Join-Path `$imgDir "DATLogo_Wide.png"
+        [System.IO.File]::WriteAllBytes(`$imgPath, `$imgBytes)
+        Write-ToastLog "Logo written to `$imgPath"
     } else {
         Write-ToastLog "No branding logo embedded in script" 'WARN'
     }
@@ -8768,11 +8830,33 @@ function Get-DATBiosCatalog {
         Write-DATLogEntry -Value "[BIOS] Catalog cache path: $cachePath" -Severity 1
         Set-DATRegistryValue -Name "RunningMessage" -Value "Downloading BIOS catalog..." -Type String
 
+        # HMAC-SHA256 request signing for GET (softfail-safe -- skipped if secret is absent or computation fails)
+        $hmacHeaders = @{}
+        try {
+            $telConfig = Get-DATTelemetryConfig
+            $hmacSecret = $null
+            if ($telConfig -and $telConfig.PSObject.Properties['hmacSecret']) {
+                $hmacSecret = $telConfig.hmacSecret
+            }
+            if (-not [string]::IsNullOrEmpty($hmacSecret)) {
+                $timestamp = (Get-Date).ToUniversalTime().ToString('o')
+                $keyBytes  = [System.Text.Encoding]::UTF8.GetBytes($hmacSecret)
+                $hmac      = [System.Security.Cryptography.HMACSHA256]::new($keyBytes)
+                $sigBytes  = $hmac.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($timestamp))
+                $signature = -join ($sigBytes | ForEach-Object { $_.ToString('x2') })
+                $hmac.Dispose()
+                $hmacHeaders['x-dat-signature'] = $signature
+                $hmacHeaders['x-dat-timestamp'] = $timestamp
+            }
+        } catch {
+            Write-DATLogEntry -Value "[BIOS] HMAC signing skipped: $($_.Exception.Message)" -Severity 2
+        }
+
         $downloaded = $false
         for ($i = 1; $i -le 3; $i++) {
             try {
                 $proxyParams = Get-DATWebRequestProxy
-                Invoke-WebRequest -Uri $catalogURL -OutFile $cachePath -UseBasicParsing -TimeoutSec 60 -ErrorAction Stop @proxyParams
+                Invoke-WebRequest -Uri $catalogURL -OutFile $cachePath -Headers $hmacHeaders -UseBasicParsing -TimeoutSec 60 -ErrorAction Stop @proxyParams
                 $downloaded = $true
                 break
             } catch {
@@ -9550,11 +9634,32 @@ function Send-DATTelemetry {
     $url = "$($config.apiBaseUrl)/$Endpoint"
     $json = $Body | ConvertTo-Json -Depth 5 -Compress
 
+    # HMAC-SHA256 request signing (softfail-safe -- skipped if secret is absent or computation fails)
+    $headers = @{}
+    try {
+        $hmacSecret = $null
+        if ($config -and $config.PSObject.Properties['hmacSecret']) {
+            $hmacSecret = $config.hmacSecret
+        }
+        if (-not [string]::IsNullOrEmpty($hmacSecret)) {
+            $timestamp = (Get-Date).ToUniversalTime().ToString('o')
+            $keyBytes  = [System.Text.Encoding]::UTF8.GetBytes($hmacSecret)
+            $hmac      = [System.Security.Cryptography.HMACSHA256]::new($keyBytes)
+            $sigBytes  = $hmac.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($json))
+            $signature = -join ($sigBytes | ForEach-Object { $_.ToString('x2') })
+            $hmac.Dispose()
+            $headers['x-dat-signature'] = $signature
+            $headers['x-dat-timestamp'] = $timestamp
+        }
+    } catch {
+        Write-DATLogEntry -Value "[Telemetry] HMAC signing skipped: $($_.Exception.Message)" -Severity 2
+    }
+
     try {
         $proxyParams = Get-DATWebRequestProxy
         if ($proxyParams -isnot [hashtable]) { $proxyParams = @{} }
         $null = Invoke-RestMethod -Uri $url -Method POST -Body $json -ContentType 'application/json' `
-            -UseBasicParsing -TimeoutSec 30 -ErrorAction Stop @proxyParams
+            -Headers $headers -UseBasicParsing -TimeoutSec 30 -ErrorAction Stop @proxyParams
         Write-DATLogEntry -Value "[Telemetry] POST $Endpoint -- success" -Severity 1
         Write-DATLogEntry -Value "[Telemetry] Payload: $json" -Severity 1
         if ($global:ExecutionMode -eq 'Scheduled Task') {
@@ -9923,9 +10028,15 @@ function Repair-DATBiosPackageNames {
             Write-DATLogEntry -Value "[BIOS Repair] Scanning ConfigMgr for old-format BIOS package names..." -Severity 1
             try {
                 $smsNamespace = "root\SMS\Site_$SiteCode"
+
+                # ConfigMgr's SMS WMI namespace requires DCOM protocol -- WSMAN returns deserialized
+                # ManagementObject instances that have no live methods, causing 'Get'/'Put' errors.
+                $cimSessionOpt = New-CimSessionOption -Protocol Dcom
+                $cimSession = New-CimSession -ComputerName $SiteServer -SessionOption $cimSessionOpt -ErrorAction Stop
+
                 # Old format: "BIOS Update - OEM Model" (no architecture suffix)
                 $wmiQuery = "SELECT PackageID, Name, Version, MIFVersion FROM SMS_Package WHERE Name LIKE 'BIOS Update -%'"
-                $cmPackages = Get-CimInstance -ComputerName $SiteServer -Namespace $smsNamespace `
+                $cmPackages = Get-CimInstance -CimSession $cimSession -Namespace $smsNamespace `
                     -Query $wmiQuery -ErrorAction Stop
 
                 # Filter to packages missing architecture suffix (old format)
@@ -9966,8 +10077,18 @@ function Repair-DATBiosPackageNames {
                     $newMif = $arch
 
                     try {
-                        Set-CimInstance -ComputerName $SiteServer -Namespace $smsNamespace `
+                        # Fetch a live CimInstance via the DCOM session so Set-CimInstance
+                        # receives a live object (not a deserialized ManagementObject) and
+                        # can invoke ModifyInstance without calling the WMI .Get() method.
+                        $livePkg = Get-CimInstance -CimSession $cimSession -Namespace $smsNamespace `
                             -Query "SELECT * FROM SMS_Package WHERE PackageID = '$($pkg.PackageID)'" `
+                            -ErrorAction Stop | Select-Object -First 1
+
+                        if (-not $livePkg) {
+                            throw "Package '$($pkg.PackageID)' not found during live fetch"
+                        }
+
+                        Set-CimInstance -CimSession $cimSession -InputObject $livePkg `
                             -Property @{ Name = $newName; MIFVersion = $newMif } -ErrorAction Stop
 
                         Write-DATLogEntry -Value "[BIOS Repair] ConfigMgr: '$oldName' -> '$newName' (MIFVersion: '$oldMif' -> '$newMif')" -Severity 1
@@ -9989,6 +10110,8 @@ function Repair-DATBiosPackageNames {
                         }
                     }
                 }
+
+                Remove-CimSession -CimSession $cimSession -ErrorAction SilentlyContinue
             } catch {
                 Write-DATLogEntry -Value "[BIOS Repair] ConfigMgr scan failed: $($_.Exception.Message)" -Severity 3
                 [void]$results.Add([PSCustomObject]@{

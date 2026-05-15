@@ -902,7 +902,7 @@
                                    Foreground="{DynamicResource AccentColor}" VerticalAlignment="Center" Margin="0,0,8,0"/>
                         <TextBlock Text="Driver Automation Tool" FontSize="13" FontWeight="SemiBold"
                                    Foreground="{DynamicResource WindowForeground}" VerticalAlignment="Center"/>
-                        <TextBlock x:Name="txt_Version" Text=" Version 10.0.27" FontSize="11"
+                        <TextBlock x:Name="txt_Version" Text=" Version 10.0.28" FontSize="11"
                                    Foreground="{DynamicResource InputPlaceholder}" VerticalAlignment="Center" Margin="4,0"/>
                     </StackPanel>
 
@@ -2534,7 +2534,7 @@
                                                             <TextBlock FontSize="13" Foreground="{DynamicResource InputPlaceholder}"
                                                                        TextWrapping="Wrap" Margin="8,0,0,0">
                                                                 <Run Text="4."/>
-                                                                <Run Text=" API Permissions: DeviceManagementApps.ReadWrite.All, DeviceManagementManagedDevices.Read.All, Group.Read.All"/>
+                                                                <Run Text=" API Permissions: DeviceManagementApps.ReadWrite.All, DeviceManagementManagedDevices.Read.All, GroupMember.Read.All"/>
                                                             </TextBlock>
                                                             <TextBlock FontSize="13" Foreground="{DynamicResource InputPlaceholder}"
                                                                        TextWrapping="Wrap" Margin="8,0,0,0">
@@ -2568,7 +2568,7 @@
                                                     <Run Text="&#x2022;"/><Run Text="  DeviceManagementManagedDevices.Read.All"/>
                                                 </TextBlock>
                                                 <TextBlock FontSize="11" Foreground="{DynamicResource InputPlaceholder}" Margin="0,2">
-                                                    <Run Text="&#x2022;"/><Run Text="  Group.Read.All"/>
+                                                    <Run Text="&#x2022;"/><Run Text="  GroupMember.Read.All"/>
                                                 </TextBlock>
                                             </StackPanel>
                                             <Grid>
@@ -5191,7 +5191,7 @@
                                     <StackPanel>
                                         <TextBlock Text="Driver Automation Tool" FontSize="22" FontWeight="Bold"
                                                    Foreground="{DynamicResource AccentColor}" Margin="0,0,0,4"/>
-                                        <TextBlock x:Name="txt_AboutVersion" Text="Version 10.0.27" FontSize="14"
+                                        <TextBlock x:Name="txt_AboutVersion" Text="Version 10.0.28" FontSize="14"
                                                    Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,16"/>
 
                                         <TextBlock TextWrapping="Wrap" FontSize="13"
