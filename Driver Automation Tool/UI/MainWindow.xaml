@@ -902,12 +902,18 @@
                                    Foreground="{DynamicResource AccentColor}" VerticalAlignment="Center" Margin="0,0,8,0"/>
                         <TextBlock Text="Driver Automation Tool" FontSize="13" FontWeight="SemiBold"
                                    Foreground="{DynamicResource WindowForeground}" VerticalAlignment="Center"/>
-                        <TextBlock x:Name="txt_Version" Text=" Version 10.0.28" FontSize="11"
+                        <TextBlock x:Name="txt_Version" Text=" Version 10.0.29" FontSize="11"
                                    Foreground="{DynamicResource InputPlaceholder}" VerticalAlignment="Center" Margin="4,0"/>
                     </StackPanel>
 
                     <!-- Window Controls -->
                     <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,8,0">
+                        <Button x:Name="btn_FeedbackUp" Content="&#xE8E1;"
+                                Style="{StaticResource WindowControlButton}" Width="36" Height="28"
+                                FontSize="12" ToolTip="Send Positive Feedback"/>
+                        <Button x:Name="btn_FeedbackDown" Content="&#xE19E;"
+                                Style="{StaticResource WindowControlButton}" Width="36" Height="28"
+                                FontSize="12" ToolTip="Send Negative Feedback"/>
                         <Button x:Name="btn_ThemeToggle" Content="&#xE793;"
                                 Style="{StaticResource WindowControlButton}" Width="36" Height="28"
                                 FontSize="12" ToolTip="Toggle Theme"/>
@@ -1007,6 +1013,10 @@
                                 <Button x:Name="nav_IntunePackageMgmt"
                                         Style="{StaticResource SubNavButton}">
                                     <TextBlock><Run Text="&#xE7B8;" FontFamily="Segoe MDL2 Assets"/><Run Text="  Package Management"/></TextBlock>
+                                </Button>
+                                <Button x:Name="nav_ToastNotifications"
+                                        Style="{StaticResource SubNavButton}">
+                                    <TextBlock><Run Text="&#xE8BD;" FontFamily="Segoe MDL2 Assets"/><Run Text="  Toast Notifications"/></TextBlock>
                                 </Button>
                                 <Button x:Name="nav_BIOSSecurity"
                                         Style="{StaticResource SubNavButton}">
@@ -1943,85 +1953,6 @@
                             <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
                             <StackPanel>
 
-                            <Border Style="{StaticResource CardPanel}" Margin="0,0,0,16">
-                                <StackPanel>
-                                    <TextBlock TextWrapping="Wrap" FontSize="12"
-                                               Foreground="{DynamicResource InputPlaceholder}" Margin="0,0,0,12" LineHeight="18">
-                                        To communicate with Configuration Manager, specify the primary site server below. 
-                                        The account running this tool must have sufficient rights to read and create packages in the ConfigMgr environment.
-                                    </TextBlock>
-                                    <TextBlock Text="Site Server" FontSize="11"
-                                               Foreground="{DynamicResource InputPlaceholder}" Margin="0,0,0,4"/>
-                                    <Grid>
-                                        <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="*"/>
-                                            <ColumnDefinition Width="Auto"/>
-                                        </Grid.ColumnDefinitions>
-                                        <TextBox x:Name="txt_SiteServer" Grid.Column="0"
-                                                 Style="{StaticResource RoundedTextBox}" Height="34"
-                                                 Tag="Enter your server details here"/>
-                                        <Button x:Name="btn_ConnectConfigMgr" Grid.Column="1"
-                                                Style="{StaticResource RoundedButton}" Height="34" Margin="8,0,0,0"
-                                                IsEnabled="False">
-                                            <TextBlock><Run Text="&#xE71B;" FontFamily="Segoe MDL2 Assets"/><Run Text="  Connect"/></TextBlock>
-                                        </Button>
-                                    </Grid>
-
-                                    <CheckBox x:Name="chk_WinRMSSL" Content="Use WinRM over SSL"
-                                              Foreground="{DynamicResource WindowForeground}"
-                                              FontSize="13" Margin="0,12,0,0"/>
-
-                                    <TextBlock x:Name="txt_SiteCode" Text="" FontSize="13"
-                                               Foreground="{DynamicResource StatusInfo}" Margin="0,12,0,0"/>
-                                </StackPanel>
-                            </Border>
-
-                            <!-- Known Model Lookup -->
-                            <Border Style="{StaticResource CardPanel}" Margin="0,0,0,16">
-                                <StackPanel>
-                                    <TextBlock FontSize="14" FontWeight="SemiBold"
-                                               Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,4">
-                                        <Run Text="&#xE7B8;" FontFamily="Segoe MDL2 Assets" FontSize="14"/><Run Text="  Known Model Lookup"/>
-                                    </TextBlock>
-                                    <TextBlock TextWrapping="Wrap" FontSize="12"
-                                               Foreground="{DynamicResource InputPlaceholder}" Margin="0,0,0,16" LineHeight="18">
-                                        When enabled, the tool queries Configuration Manager for hardware inventory data to identify 
-                                        models actively deployed in your environment. These known models are automatically highlighted 
-                                        in the model selection list, making it easy to target only the devices you manage.
-                                    </TextBlock>
-                                    <Grid>
-                                        <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="Auto"/>
-                                            <ColumnDefinition Width="Auto"/>
-                                            <ColumnDefinition Width="*"/>
-                                            <ColumnDefinition Width="Auto"/>
-                                            <ColumnDefinition Width="Auto"/>
-                                        </Grid.ColumnDefinitions>
-                                        <CheckBox x:Name="chk_KnownModels"
-                                                  Style="{StaticResource ToggleSwitch}"
-                                                  VerticalAlignment="Center"
-                                                  Margin="0,0,12,0"/>
-                                        <TextBlock x:Name="txt_KnownModelsState" Grid.Column="1"
-                                                   Text="Off" FontSize="12" FontWeight="SemiBold"
-                                                   Foreground="{DynamicResource InputPlaceholder}"
-                                                   VerticalAlignment="Center"/>
-                                        <Button x:Name="btn_ConfigMgrViewModels" Grid.Column="3"
-                                                Style="{StaticResource SecondaryButton}" Height="34"
-                                                Margin="0,0,8,0" IsEnabled="False">
-                                            <TextBlock><Run Text="&#xE8A7;" FontFamily="Segoe MDL2 Assets"/><Run Text="  View Makes / Models"/></TextBlock>
-                                        </Button>
-                                        <Button x:Name="btn_ConfigMgrKnownModelLookup" Grid.Column="4"
-                                                Style="{StaticResource RoundedButton}" Height="34"
-                                                IsEnabled="False">
-                                            <TextBlock><Run Text="&#xE721;" FontFamily="Segoe MDL2 Assets"/><Run Text="  Query Inventory"/></TextBlock>
-                                        </Button>
-                                    </Grid>
-                                    <TextBlock x:Name="txt_ConfigMgrKnownModelStatus" Text="" FontSize="12"
-                                               Foreground="{DynamicResource StatusInfo}" Margin="0,8,0,0"
-                                               TextWrapping="Wrap"/>
-                                </StackPanel>
-                            </Border>
-
                             <!-- Site Server Information Panel -->
                             <Border x:Name="panel_SiteServerInfo" Style="{StaticResource CardPanel}" Margin="0,0,0,16" Visibility="Collapsed">
                                 <StackPanel>
@@ -2044,27 +1975,27 @@
 
                                         <TextBlock Grid.Row="0" Grid.Column="0" Text="IP Address" FontSize="12"
                                                    Foreground="{DynamicResource InputPlaceholder}" Margin="0,0,0,8"/>
-                                        <TextBlock x:Name="txt_ServerIP" Grid.Row="0" Grid.Column="1" Text="—" FontSize="12"
+                                        <TextBlock x:Name="txt_ServerIP" Grid.Row="0" Grid.Column="1" Text="--" FontSize="12"
                                                    Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,8"/>
 
                                         <TextBlock Grid.Row="1" Grid.Column="0" Text="Site Code" FontSize="12"
                                                    Foreground="{DynamicResource InputPlaceholder}" Margin="0,0,0,8"/>
-                                        <TextBlock x:Name="txt_ServerSiteCode" Grid.Row="1" Grid.Column="1" Text="—" FontSize="12"
+                                        <TextBlock x:Name="txt_ServerSiteCode" Grid.Row="1" Grid.Column="1" Text="--" FontSize="12"
                                                    Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,8"/>
 
                                         <TextBlock Grid.Row="2" Grid.Column="0" Text="ConfigMgr Version" FontSize="12"
                                                    Foreground="{DynamicResource InputPlaceholder}" Margin="0,0,0,8"/>
-                                        <TextBlock x:Name="txt_ServerCMVersion" Grid.Row="2" Grid.Column="1" Text="—" FontSize="12"
+                                        <TextBlock x:Name="txt_ServerCMVersion" Grid.Row="2" Grid.Column="1" Text="--" FontSize="12"
                                                    Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,8"/>
 
                                         <TextBlock Grid.Row="3" Grid.Column="0" Text="Server OS Version" FontSize="12"
                                                    Foreground="{DynamicResource InputPlaceholder}" Margin="0,0,0,8"/>
-                                        <TextBlock x:Name="txt_ServerOSVersion" Grid.Row="3" Grid.Column="1" Text="—" FontSize="12"
+                                        <TextBlock x:Name="txt_ServerOSVersion" Grid.Row="3" Grid.Column="1" Text="--" FontSize="12"
                                                    Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,8"/>
 
                                         <TextBlock Grid.Row="4" Grid.Column="0" Text="Total Packages" FontSize="12"
                                                    Foreground="{DynamicResource InputPlaceholder}" Margin="0,0,0,0"/>
-                                        <TextBlock x:Name="txt_ServerPackageCount" Grid.Row="4" Grid.Column="1" Text="—" FontSize="12"
+                                        <TextBlock x:Name="txt_ServerPackageCount" Grid.Row="4" Grid.Column="1" Text="--" FontSize="12"
                                                    Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,0"/>
                                     </Grid>
                                 </StackPanel>
@@ -2199,6 +2130,86 @@
                                     </StackPanel>
                                 </Grid>
                             </Border>
+
+                            <Border Style="{StaticResource CardPanel}" Margin="0,0,0,16">
+                                <StackPanel>
+                                    <TextBlock TextWrapping="Wrap" FontSize="12"
+                                               Foreground="{DynamicResource InputPlaceholder}" Margin="0,0,0,12" LineHeight="18">
+                                        To communicate with Configuration Manager, specify the primary site server below. 
+                                        The account running this tool must have sufficient rights to read and create packages in the ConfigMgr environment.
+                                    </TextBlock>
+                                    <TextBlock Text="Site Server" FontSize="11"
+                                               Foreground="{DynamicResource InputPlaceholder}" Margin="0,0,0,4"/>
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <TextBox x:Name="txt_SiteServer" Grid.Column="0"
+                                                 Style="{StaticResource RoundedTextBox}" Height="34"
+                                                 Tag="Enter your server details here"/>
+                                        <Button x:Name="btn_ConnectConfigMgr" Grid.Column="1"
+                                                Style="{StaticResource RoundedButton}" Height="34" Margin="8,0,0,0"
+                                                IsEnabled="False">
+                                            <TextBlock><Run Text="&#xE71B;" FontFamily="Segoe MDL2 Assets"/><Run Text="  Connect"/></TextBlock>
+                                        </Button>
+                                    </Grid>
+
+                                    <CheckBox x:Name="chk_WinRMSSL" Content="Use WinRM over SSL"
+                                              Foreground="{DynamicResource WindowForeground}"
+                                              FontSize="13" Margin="0,12,0,0"/>
+
+                                    <TextBlock x:Name="txt_SiteCode" Text="" FontSize="13"
+                                               Foreground="{DynamicResource StatusInfo}" Margin="0,12,0,0"/>
+                                </StackPanel>
+                            </Border>
+
+                            <!-- Known Model Lookup -->
+                            <Border Style="{StaticResource CardPanel}" Margin="0,0,0,16">
+                                <StackPanel>
+                                    <TextBlock FontSize="14" FontWeight="SemiBold"
+                                               Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,4">
+                                        <Run Text="&#xE7B8;" FontFamily="Segoe MDL2 Assets" FontSize="14"/><Run Text="  Known Model Lookup"/>
+                                    </TextBlock>
+                                    <TextBlock TextWrapping="Wrap" FontSize="12"
+                                               Foreground="{DynamicResource InputPlaceholder}" Margin="0,0,0,16" LineHeight="18">
+                                        When enabled, the tool queries Configuration Manager for hardware inventory data to identify 
+                                        models actively deployed in your environment. These known models are automatically highlighted 
+                                        in the model selection list, making it easy to target only the devices you manage.
+                                    </TextBlock>
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <CheckBox x:Name="chk_KnownModels"
+                                                  Style="{StaticResource ToggleSwitch}"
+                                                  VerticalAlignment="Center"
+                                                  Margin="0,0,12,0"/>
+                                        <TextBlock x:Name="txt_KnownModelsState" Grid.Column="1"
+                                                   Text="Off" FontSize="12" FontWeight="SemiBold"
+                                                   Foreground="{DynamicResource InputPlaceholder}"
+                                                   VerticalAlignment="Center"/>
+                                        <Button x:Name="btn_ConfigMgrViewModels" Grid.Column="3"
+                                                Style="{StaticResource SecondaryButton}" Height="34"
+                                                Margin="0,0,8,0" IsEnabled="False">
+                                            <TextBlock><Run Text="&#xE8A7;" FontFamily="Segoe MDL2 Assets"/><Run Text="  View Makes / Models"/></TextBlock>
+                                        </Button>
+                                        <Button x:Name="btn_ConfigMgrKnownModelLookup" Grid.Column="4"
+                                                Style="{StaticResource RoundedButton}" Height="34"
+                                                IsEnabled="False">
+                                            <TextBlock><Run Text="&#xE721;" FontFamily="Segoe MDL2 Assets"/><Run Text="  Query Inventory"/></TextBlock>
+                                        </Button>
+                                    </Grid>
+                                    <TextBlock x:Name="txt_ConfigMgrKnownModelStatus" Text="" FontSize="12"
+                                               Foreground="{DynamicResource StatusInfo}" Margin="0,8,0,0"
+                                               TextWrapping="Wrap"/>
+                                </StackPanel>
+                            </Border>
+
                             </StackPanel>
                             </ScrollViewer>
                         </Grid>
@@ -2353,6 +2364,136 @@
 
                             <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
                             <StackPanel>
+
+                            <!-- Intune Package Breakdown Donut Charts -->
+                            <Border x:Name="panel_IntuneChart" Style="{StaticResource CardPanel}" Margin="0,0,0,16" Visibility="Collapsed">
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+
+                                    <!-- Package Type Donut -->
+                                    <StackPanel Grid.Column="0" Margin="0,0,12,0">
+                                        <TextBlock FontSize="13" FontWeight="SemiBold"
+                                                   Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,12">
+                                            <Run Text="&#xE9D9;" FontFamily="Segoe MDL2 Assets" FontSize="13"/><Run Text="  By Package Type"/>
+                                        </TextBlock>
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="Auto"/>
+                                                <ColumnDefinition Width="*"/>
+                                            </Grid.ColumnDefinitions>
+
+                                            <Viewbox Grid.Column="0" Width="120" Height="120" Margin="0,0,24,0">
+                                                <Canvas Width="120" Height="120">
+                                                    <Ellipse Width="100" Height="100" Canvas.Left="10" Canvas.Top="10"
+                                                             Stroke="{DynamicResource SidebarActive}" StrokeThickness="16" Fill="Transparent"/>
+                                                    <Path x:Name="arc_IntuneDrivers" Stroke="#3B82F6" StrokeThickness="16"
+                                                          StrokeStartLineCap="Flat" StrokeEndLineCap="Flat" Fill="Transparent"/>
+                                                    <Path x:Name="arc_IntuneBios" Stroke="#F59E0B" StrokeThickness="16"
+                                                          StrokeStartLineCap="Flat" StrokeEndLineCap="Flat" Fill="Transparent"/>
+                                                    <Path x:Name="arc_IntuneOther" Stroke="#6B7280" StrokeThickness="16"
+                                                          StrokeStartLineCap="Flat" StrokeEndLineCap="Flat" Fill="Transparent"/>
+                                                </Canvas>
+                                            </Viewbox>
+
+                                            <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                                <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
+                                                    <Border Width="14" Height="14" CornerRadius="3" Background="#3B82F6" Margin="0,0,10,0" VerticalAlignment="Center"/>
+                                                    <TextBlock Text="Drivers" FontSize="13" Foreground="{DynamicResource WindowForeground}" VerticalAlignment="Center"/>
+                                                    <TextBlock x:Name="txt_IntuneChartDriverCount" FontSize="13" FontWeight="SemiBold"
+                                                               Foreground="{DynamicResource WindowForeground}" Margin="8,0,0,0" VerticalAlignment="Center" Text="0"/>
+                                                </StackPanel>
+                                                <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
+                                                    <Border Width="14" Height="14" CornerRadius="3" Background="#F59E0B" Margin="0,0,10,0" VerticalAlignment="Center"/>
+                                                    <TextBlock Text="BIOS Updates" FontSize="13" Foreground="{DynamicResource WindowForeground}" VerticalAlignment="Center"/>
+                                                    <TextBlock x:Name="txt_IntuneChartBiosCount" FontSize="13" FontWeight="SemiBold"
+                                                               Foreground="{DynamicResource WindowForeground}" Margin="8,0,0,0" VerticalAlignment="Center" Text="0"/>
+                                                </StackPanel>
+                                                <StackPanel Orientation="Horizontal">
+                                                    <Border Width="14" Height="14" CornerRadius="3" Background="#6B7280" Margin="0,0,10,0" VerticalAlignment="Center"/>
+                                                    <TextBlock Text="Other" FontSize="13" Foreground="{DynamicResource WindowForeground}" VerticalAlignment="Center"/>
+                                                    <TextBlock x:Name="txt_IntuneChartOtherCount" FontSize="13" FontWeight="SemiBold"
+                                                               Foreground="{DynamicResource WindowForeground}" Margin="8,0,0,0" VerticalAlignment="Center" Text="0"/>
+                                                </StackPanel>
+                                            </StackPanel>
+                                        </Grid>
+                                    </StackPanel>
+
+                                    <!-- Manufacturer Donut -->
+                                    <StackPanel Grid.Column="1" Margin="12,0,0,0">
+                                        <TextBlock FontSize="13" FontWeight="SemiBold"
+                                                   Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,12">
+                                            <Run Text="&#xE968;" FontFamily="Segoe MDL2 Assets" FontSize="13"/><Run Text="  By Manufacturer"/>
+                                        </TextBlock>
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="Auto"/>
+                                                <ColumnDefinition Width="*"/>
+                                            </Grid.ColumnDefinitions>
+
+                                            <Viewbox Grid.Column="0" Width="120" Height="120" Margin="0,0,24,0">
+                                                <Canvas Width="120" Height="120">
+                                                    <Ellipse Width="100" Height="100" Canvas.Left="10" Canvas.Top="10"
+                                                             Stroke="{DynamicResource SidebarActive}" StrokeThickness="16" Fill="Transparent"/>
+                                                    <Path x:Name="arc_IntuneMfr_Dell" Stroke="#3B82F6" StrokeThickness="16"
+                                                          StrokeStartLineCap="Flat" StrokeEndLineCap="Flat" Fill="Transparent"/>
+                                                    <Path x:Name="arc_IntuneMfr_HP" Stroke="#10B981" StrokeThickness="16"
+                                                          StrokeStartLineCap="Flat" StrokeEndLineCap="Flat" Fill="Transparent"/>
+                                                    <Path x:Name="arc_IntuneMfr_Lenovo" Stroke="#F59E0B" StrokeThickness="16"
+                                                          StrokeStartLineCap="Flat" StrokeEndLineCap="Flat" Fill="Transparent"/>
+                                                    <Path x:Name="arc_IntuneMfr_Microsoft" Stroke="#8B5CF6" StrokeThickness="16"
+                                                          StrokeStartLineCap="Flat" StrokeEndLineCap="Flat" Fill="Transparent"/>
+                                                    <Path x:Name="arc_IntuneMfr_Acer" Stroke="#EF4444" StrokeThickness="16"
+                                                          StrokeStartLineCap="Flat" StrokeEndLineCap="Flat" Fill="Transparent"/>
+                                                    <Path x:Name="arc_IntuneMfr_Other" Stroke="#6B7280" StrokeThickness="16"
+                                                          StrokeStartLineCap="Flat" StrokeEndLineCap="Flat" Fill="Transparent"/>
+                                                </Canvas>
+                                            </Viewbox>
+
+                                            <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                                <StackPanel Orientation="Horizontal" Margin="0,0,0,6">
+                                                    <Border Width="14" Height="14" CornerRadius="3" Background="#3B82F6" Margin="0,0,10,0" VerticalAlignment="Center"/>
+                                                    <TextBlock Text="Dell" FontSize="13" Foreground="{DynamicResource WindowForeground}" VerticalAlignment="Center"/>
+                                                    <TextBlock x:Name="txt_IntuneMfrDellCount" FontSize="13" FontWeight="SemiBold"
+                                                               Foreground="{DynamicResource WindowForeground}" Margin="8,0,0,0" VerticalAlignment="Center" Text="0"/>
+                                                </StackPanel>
+                                                <StackPanel Orientation="Horizontal" Margin="0,0,0,6">
+                                                    <Border Width="14" Height="14" CornerRadius="3" Background="#10B981" Margin="0,0,10,0" VerticalAlignment="Center"/>
+                                                    <TextBlock Text="HP" FontSize="13" Foreground="{DynamicResource WindowForeground}" VerticalAlignment="Center"/>
+                                                    <TextBlock x:Name="txt_IntuneMfrHPCount" FontSize="13" FontWeight="SemiBold"
+                                                               Foreground="{DynamicResource WindowForeground}" Margin="8,0,0,0" VerticalAlignment="Center" Text="0"/>
+                                                </StackPanel>
+                                                <StackPanel Orientation="Horizontal" Margin="0,0,0,6">
+                                                    <Border Width="14" Height="14" CornerRadius="3" Background="#F59E0B" Margin="0,0,10,0" VerticalAlignment="Center"/>
+                                                    <TextBlock Text="Lenovo" FontSize="13" Foreground="{DynamicResource WindowForeground}" VerticalAlignment="Center"/>
+                                                    <TextBlock x:Name="txt_IntuneMfrLenovoCount" FontSize="13" FontWeight="SemiBold"
+                                                               Foreground="{DynamicResource WindowForeground}" Margin="8,0,0,0" VerticalAlignment="Center" Text="0"/>
+                                                </StackPanel>
+                                                <StackPanel Orientation="Horizontal" Margin="0,0,0,6">
+                                                    <Border Width="14" Height="14" CornerRadius="3" Background="#8B5CF6" Margin="0,0,10,0" VerticalAlignment="Center"/>
+                                                    <TextBlock Text="Microsoft" FontSize="13" Foreground="{DynamicResource WindowForeground}" VerticalAlignment="Center"/>
+                                                    <TextBlock x:Name="txt_IntuneMfrMicrosoftCount" FontSize="13" FontWeight="SemiBold"
+                                                               Foreground="{DynamicResource WindowForeground}" Margin="8,0,0,0" VerticalAlignment="Center" Text="0"/>
+                                                </StackPanel>
+                                                <StackPanel Orientation="Horizontal" Margin="0,0,0,6">
+                                                    <Border Width="14" Height="14" CornerRadius="3" Background="#EF4444" Margin="0,0,10,0" VerticalAlignment="Center"/>
+                                                    <TextBlock Text="Acer" FontSize="13" Foreground="{DynamicResource WindowForeground}" VerticalAlignment="Center"/>
+                                                    <TextBlock x:Name="txt_IntuneMfrAcerCount" FontSize="13" FontWeight="SemiBold"
+                                                               Foreground="{DynamicResource WindowForeground}" Margin="8,0,0,0" VerticalAlignment="Center" Text="0"/>
+                                                </StackPanel>
+                                                <StackPanel Orientation="Horizontal">
+                                                    <Border Width="14" Height="14" CornerRadius="3" Background="#6B7280" Margin="0,0,10,0" VerticalAlignment="Center"/>
+                                                    <TextBlock Text="Other" FontSize="13" Foreground="{DynamicResource WindowForeground}" VerticalAlignment="Center"/>
+                                                    <TextBlock x:Name="txt_IntuneMfrOtherCount" FontSize="13" FontWeight="SemiBold"
+                                                               Foreground="{DynamicResource WindowForeground}" Margin="8,0,0,0" VerticalAlignment="Center" Text="0"/>
+                                                </StackPanel>
+                                            </StackPanel>
+                                        </Grid>
+                                    </StackPanel>
+                                </Grid>
+                            </Border>
 
                             <!-- Authentication Card (collapsible) -->
                             <Border Style="{StaticResource CardPanel}" Margin="0,0,0,12">
@@ -2824,6 +2965,292 @@
                             <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
                             <StackPanel>
 
+                            <!-- Package Deployment -->
+                            <Border Style="{StaticResource CardPanel}" Margin="0,0,0,12">
+                                <StackPanel>
+                                    <TextBlock FontSize="14" FontWeight="SemiBold"
+                                               Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,4">
+                                        <Run Text="&#xE724;" FontFamily="Segoe MDL2 Assets" FontSize="14"/><Run Text="  Package Deployment"/>
+                                    </TextBlock>
+                                    <TextBlock Text="Configure automatic deployment behaviour for newly created driver and BIOS packages."
+                                               FontSize="12" Foreground="{DynamicResource InputPlaceholder}" Margin="0,0,0,12" TextWrapping="Wrap"/>
+
+                                    <!-- Deploy All sub-section -->
+                                    <TextBlock Text="Deploy all created driver and BIOS packages to 'All Devices'" FontSize="13" FontWeight="SemiBold"
+                                               Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,6"/>
+                                    <TextBlock Text="When enabled, each driver and BIOS package built will be automatically assigned to the built-in All Devices group. If assignment filters are configured below, the matching filter for each package will also be applied."
+                                               FontSize="13" Foreground="{DynamicResource InputPlaceholder}"
+                                               TextWrapping="Wrap" Margin="0,0,0,12" LineHeight="20"/>
+
+                                    <!-- Toggle row -->
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <CheckBox x:Name="chk_DeployAllDevices"
+                                                  Style="{StaticResource ToggleSwitch}"
+                                                  VerticalAlignment="Center"
+                                                  Margin="0,0,12,0"/>
+                                        <TextBlock x:Name="txt_DeployAllState" Grid.Column="1"
+                                                   Text="Off" FontSize="12" FontWeight="SemiBold"
+                                                   Foreground="{DynamicResource InputPlaceholder}"
+                                                   VerticalAlignment="Center"/>
+                                    </Grid>
+
+                                    <!-- Assignment Filters sub-section -->
+                                    <Border BorderBrush="{DynamicResource InputBorder}" BorderThickness="0,1,0,0" Margin="0,20,0,0" Padding="0,16,0,0">
+                                        <StackPanel>
+                                            <TextBlock FontSize="14" FontWeight="SemiBold"
+                                                       Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,4">
+                                                <Run Text="&#xE71C;" FontFamily="Segoe MDL2 Assets" FontSize="14"/><Run Text="  Assignment Filters"/>
+                                            </TextBlock>
+                                            <TextBlock Text="Automatically create and assign Intune assignment filters based on device manufacturer or model. Filters are applied to 'All Devices' in include mode so only matching hardware receives the package. Intune supports a maximum of 200 assignment filters per tenant."
+                                                       FontSize="12" Foreground="{DynamicResource InputPlaceholder}" Margin="0,0,0,12" TextWrapping="Wrap" LineHeight="18"/>
+
+                                            <!-- Filter count indicator -->
+                                            <Grid Margin="0,0,0,12">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="Auto"/>
+                                                    <ColumnDefinition Width="*"/>
+                                                </Grid.ColumnDefinitions>
+                                                <TextBlock Grid.Column="0" Text="Current Filters:" FontSize="12" FontWeight="SemiBold"
+                                                           Foreground="{DynamicResource WindowForeground}" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                                                <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                                                    <TextBlock x:Name="txt_FilterCount" Text="--" FontSize="12" FontWeight="SemiBold"
+                                                               Foreground="{DynamicResource AccentColor}" VerticalAlignment="Center"/>
+                                                    <TextBlock Text=" / 200" FontSize="12" Foreground="{DynamicResource InputPlaceholder}" VerticalAlignment="Center"/>
+                                                    <TextBlock x:Name="txt_FilterRemaining" Text="" FontSize="11"
+                                                               Foreground="{DynamicResource InputPlaceholder}" Margin="12,0,0,0" VerticalAlignment="Center"/>
+                                                    <Button x:Name="btn_RefreshFilterCount" Height="24" Width="24" Margin="12,0,0,0"
+                                                            Background="Transparent" BorderThickness="0" Cursor="Hand" ToolTip="Refresh filter count"
+                                                            VerticalAlignment="Center">
+                                                        <TextBlock Text="&#xE72C;" FontFamily="Segoe MDL2 Assets" FontSize="12"
+                                                                   Foreground="{DynamicResource AccentColor}"/>
+                                                    </Button>
+                                                    <Button x:Name="btn_QueryFilters" Style="{StaticResource RoundedButton}" Height="32" Margin="12,0,0,0"
+                                                            Cursor="Hand" ToolTip="View all assignment filters" Padding="10,4"
+                                                            VerticalAlignment="Center">
+                                                        <TextBlock FontSize="11" Foreground="{DynamicResource WindowForeground}">
+                                                            <Run Text="&#xE8A7;" FontFamily="Segoe MDL2 Assets" FontSize="10"/><Run Text="  Query Filters"/>
+                                                        </TextBlock>
+                                                    </Button>
+                                                </StackPanel>
+                                            </Grid>
+
+                                            <!-- Filter warning -->
+                                            <TextBlock x:Name="txt_FilterWarning" FontSize="12" FontWeight="SemiBold"
+                                                       Foreground="#E8A035" Visibility="Collapsed" Margin="0,0,0,12" TextWrapping="Wrap"/>
+
+                                            <!-- Enable toggle -->
+                                            <TextBlock Text="Auto-create assignment filters during package build" FontSize="13" FontWeight="SemiBold"
+                                                       Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,6"/>
+                                            <TextBlock Text="When enabled, an assignment filter matching the device manufacturer (or model) will be created automatically after each package is uploaded and assigned to 'All Devices' with the filter applied."
+                                                       FontSize="12" Foreground="{DynamicResource InputPlaceholder}" TextWrapping="Wrap" Margin="0,0,0,12" LineHeight="18"/>
+                                            <Grid Margin="0,0,0,16">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="Auto"/>
+                                                    <ColumnDefinition Width="Auto"/>
+                                                </Grid.ColumnDefinitions>
+                                                <CheckBox x:Name="chk_AutoAssignmentFilter"
+                                                          Style="{StaticResource ToggleSwitch}"
+                                                          VerticalAlignment="Center"
+                                                          Margin="0,0,12,0"/>
+                                                <TextBlock x:Name="txt_AutoFilterState" Grid.Column="1"
+                                                           Text="Off" FontSize="12" FontWeight="SemiBold"
+                                                           Foreground="{DynamicResource InputPlaceholder}"
+                                                           VerticalAlignment="Center"/>
+                                            </Grid>
+
+                                            <!-- Filter mode dropdown -->
+                                            <TextBlock Text="Filter Scope" FontSize="13" FontWeight="SemiBold"
+                                                       Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,4"/>
+                                            <TextBlock Text="Choose whether to create one filter per manufacturer (fewer filters) or one filter per device model (more granular targeting)."
+                                                       FontSize="12" Foreground="{DynamicResource InputPlaceholder}" Margin="0,0,0,8" TextWrapping="Wrap" LineHeight="18"/>
+                                            <Grid Margin="0,0,0,16">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="200"/>
+                                                    <ColumnDefinition Width="Auto"/>
+                                                </Grid.ColumnDefinitions>
+                                                <ComboBox x:Name="cmb_FilterMode" Grid.Column="0" Height="34">
+                                                    <ComboBoxItem Content="Make (Manufacturer)" Tag="Make" IsSelected="True"/>
+                                                    <ComboBoxItem Content="Make + Model" Tag="Model"/>
+                                                </ComboBox>
+                                                <TextBlock x:Name="txt_FilterModeHint" Grid.Column="1" FontSize="11"
+                                                           Foreground="{DynamicResource InputPlaceholder}"
+                                                           VerticalAlignment="Center" Margin="12,0,0,0"
+                                                           Text="Fewer filters, broader targeting"/>
+                                            </Grid>
+
+                                            <!-- Filter naming convention -->
+                                            <TextBlock Text="Filter Name" FontSize="13" FontWeight="SemiBold"
+                                                       Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,4"/>
+                                            <TextBlock Text="Customise the display name used when creating assignment filters. Use the variable buttons below to insert placeholders."
+                                                       FontSize="12" Foreground="{DynamicResource InputPlaceholder}" Margin="0,0,0,8" TextWrapping="Wrap" LineHeight="18"/>
+                                            <TextBox x:Name="txt_FilterNameTemplate" Style="{StaticResource RoundedTextBox}" Height="34"
+                                                     Text="DATFilter-%MAKE%"
+                                                     ToolTip="Template for assignment filter display names. Use %MAKE% and %MODEL% as placeholders."/>
+                                            <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
+                                                <TextBlock Text="Variables:" FontSize="11" FontWeight="SemiBold"
+                                                           Foreground="{DynamicResource InputPlaceholder}" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                                                <Button x:Name="btn_InsertMakeVar" Style="{StaticResource RoundedButton}" Height="30" Cursor="Hand"
+                                                        ToolTip="Insert manufacturer variable" Padding="8,4" Margin="0,0,6,0">
+                                                    <TextBlock FontSize="11" Foreground="{DynamicResource WindowForeground}">
+                                                        <Run Text="&#xE121;" FontFamily="Segoe MDL2 Assets" FontSize="10"/><Run Text="  %MAKE%"/>
+                                                    </TextBlock>
+                                                </Button>
+                                                <Button x:Name="btn_InsertModelVar" Style="{StaticResource RoundedButton}" Height="30" Cursor="Hand"
+                                                        ToolTip="Insert model variable" Padding="8,4">
+                                                    <TextBlock FontSize="11" Foreground="{DynamicResource WindowForeground}">
+                                                        <Run Text="&#xE121;" FontFamily="Segoe MDL2 Assets" FontSize="10"/><Run Text="  %MODEL%"/>
+                                                    </TextBlock>
+                                                </Button>
+                                            </StackPanel>
+
+                                            <!-- Example rule preview -->
+                                            <Border Background="{DynamicResource InputBackground}" CornerRadius="6" Padding="12,8" Margin="0,12,0,0">
+                                                <StackPanel>
+                                                    <TextBlock Text="Example" FontSize="11" FontWeight="SemiBold"
+                                                               Foreground="{DynamicResource InputPlaceholder}" Margin="0,0,0,4"/>
+                                                    <TextBlock x:Name="txt_FilterNameExample" FontSize="12" FontFamily="Consolas"
+                                                               Foreground="{DynamicResource WindowForeground}" TextWrapping="Wrap"/>
+                                                    <TextBlock x:Name="txt_FilterRuleExample" FontSize="11" FontFamily="Consolas"
+                                                               Foreground="{DynamicResource InputPlaceholder}" Margin="0,4,0,0" TextWrapping="Wrap"/>
+                                                </StackPanel>
+                                            </Border>
+
+                                            <!-- Required filters preview -->
+                                            <TextBlock x:Name="txt_FilterPreview" FontSize="12" FontStyle="Italic"
+                                                       Foreground="{DynamicResource InputPlaceholder}" Margin="0,12,0,0" TextWrapping="Wrap"/>
+                                        </StackPanel>
+                                    </Border>
+
+                                    <!-- Package Uploads sub-section -->
+                                    <Border BorderBrush="{DynamicResource InputBorder}" BorderThickness="0,1,0,0" Margin="0,20,0,0" Padding="0,16,0,0">
+                                        <StackPanel>
+                                            <TextBlock FontSize="14" FontWeight="SemiBold"
+                                                       Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,4">
+                                                <Run Text="&#xE898;" FontFamily="Segoe MDL2 Assets" FontSize="14"/><Run Text="  Package Uploads"/>
+                                            </TextBlock>
+                                            <TextBlock Text="Tune upload performance for Intune Win32 app packages. Larger chunks and more parallel uploads can significantly reduce upload times for large driver packages."
+                                                       FontSize="12" Foreground="{DynamicResource InputPlaceholder}" Margin="0,0,0,16" TextWrapping="Wrap" LineHeight="18"/>
+
+                                            <!-- Chunk Size -->
+                                            <TextBlock Text="Chunk Size" FontSize="13" FontWeight="SemiBold"
+                                                       Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,4"/>
+                                            <TextBlock Text="Size of each block uploaded to Azure Blob Storage. Larger chunks reduce HTTP overhead and round-trips but use more memory per upload. Default: 50 MB."
+                                                       FontSize="12" Foreground="{DynamicResource InputPlaceholder}" Margin="0,0,0,8" TextWrapping="Wrap" LineHeight="18"/>
+                                            <Grid Margin="0,0,0,16">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="200"/>
+                                                    <ColumnDefinition Width="Auto"/>
+                                                </Grid.ColumnDefinitions>
+                                                <ComboBox x:Name="cmb_IntuneChunkSize" Grid.Column="0" Height="34">
+                                                    <ComboBoxItem Content="4 MB" Tag="4"/>
+                                                    <ComboBoxItem Content="6 MB" Tag="6"/>
+                                                    <ComboBoxItem Content="10 MB" Tag="10"/>
+                                                    <ComboBoxItem Content="25 MB" Tag="25"/>
+                                                    <ComboBoxItem Content="50 MB (Default)" Tag="50" IsSelected="True"/>
+                                                    <ComboBoxItem Content="100 MB" Tag="100"/>
+                                                </ComboBox>
+                                                <TextBlock Grid.Column="1" x:Name="txt_ChunkSizeHint" FontSize="11"
+                                                           Foreground="{DynamicResource InputPlaceholder}"
+                                                           VerticalAlignment="Center" Margin="12,0,0,0"
+                                                           Text="Recommended: 25 MB+ for packages over 500 MB"/>
+                                            </Grid>
+
+                                            <!-- Parallel Uploads -->
+                                            <TextBlock Text="Parallel Uploads" FontSize="13" FontWeight="SemiBold"
+                                                       Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,4"/>
+                                            <TextBlock Text="Number of chunks uploaded simultaneously. Higher values improve throughput but increase network and memory usage. Values above 4 may trigger Azure throttling on slower connections."
+                                                       FontSize="12" Foreground="{DynamicResource InputPlaceholder}" Margin="0,0,0,8" TextWrapping="Wrap" LineHeight="18"/>
+                                            <Grid>
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="200"/>
+                                                    <ColumnDefinition Width="Auto"/>
+                                                </Grid.ColumnDefinitions>
+                                                <ComboBox x:Name="cmb_IntuneParallelUploads" Grid.Column="0" Height="34">
+                                                    <ComboBoxItem Content="1 (Sequential)" Tag="1"/>
+                                                    <ComboBoxItem Content="2 threads (Default)" Tag="2" IsSelected="True"/>
+                                                    <ComboBoxItem Content="4 threads" Tag="4"/>
+                                                    <ComboBoxItem Content="8 threads" Tag="8"/>
+                                                </ComboBox>
+                                                <TextBlock Grid.Column="1" x:Name="txt_ParallelHint" FontSize="11"
+                                                           Foreground="{DynamicResource InputPlaceholder}"
+                                                           VerticalAlignment="Center" Margin="12,0,0,0"
+                                                           Text="Recommended: 2–4 threads for most connections"/>
+                                            </Grid>
+                                        </StackPanel>
+                                    </Border>
+                                </StackPanel>
+                            </Border>
+
+                            <!-- Debug Package Build -->
+                            <Border Style="{StaticResource CardPanel}" Margin="0,0,0,12">
+                                <StackPanel>
+                                    <TextBlock FontSize="14" FontWeight="SemiBold"
+                                               Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,4">
+                                        <Run Text="&#xEBE8;" FontFamily="Segoe MDL2 Assets" FontSize="14"/><Run Text="  Debug Package Build"/>
+                                    </TextBlock>
+                                    <TextBlock Text="Output pre-IntuneWin staging files (install scripts, WIM, toast scripts) to a local folder for validation and troubleshooting before uploading to Intune."
+                                               FontSize="12" Foreground="{DynamicResource InputPlaceholder}" Margin="0,0,0,12" TextWrapping="Wrap" LineHeight="18"/>
+
+                                    <!-- Toggle row -->
+                                    <Grid Margin="0,0,0,12">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <CheckBox x:Name="chk_DebugPackageBuild"
+                                                  Style="{StaticResource ToggleSwitch}"
+                                                  VerticalAlignment="Center"
+                                                  Margin="0,0,12,0"/>
+                                        <TextBlock x:Name="txt_DebugBuildState" Grid.Column="1"
+                                                   Text="Off" FontSize="12" FontWeight="SemiBold"
+                                                   Foreground="{DynamicResource InputPlaceholder}"
+                                                   VerticalAlignment="Center"/>
+                                    </Grid>
+
+                                    <!-- Output path -->
+                                    <StackPanel x:Name="panel_DebugBuildPath" Visibility="Collapsed" Margin="0,4,0,0">
+                                        <TextBlock Text="Debug Output Path" FontSize="11" FontWeight="SemiBold"
+                                                   Foreground="{DynamicResource InputPlaceholder}" Margin="0,0,0,6"/>
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*"/>
+                                                <ColumnDefinition Width="Auto"/>
+                                            </Grid.ColumnDefinitions>
+                                            <TextBox x:Name="txt_DebugBuildPath" Style="{StaticResource RoundedTextBox}" Height="34"
+                                                     Tag="Select a folder for debug output" VerticalContentAlignment="Center"/>
+                                            <Button x:Name="btn_BrowseDebugBuild" Grid.Column="1"
+                                                    Style="{StaticResource SecondaryButton}"
+                                                    Height="34" Margin="8,0,0,0">
+                                                <TextBlock><Run Text="&#xED25;" FontFamily="Segoe MDL2 Assets"/><Run Text="  Browse"/></TextBlock>
+                                            </Button>
+                                        </Grid>
+                                        <TextBlock Text="Staging content will be copied to: {path}\{Make}\{Model}"
+                                                   FontSize="11" Foreground="{DynamicResource InputPlaceholder}" Margin="0,6,0,0" FontStyle="Italic"/>
+                                    </StackPanel>
+                                </StackPanel>
+                            </Border>
+
+                            </StackPanel>
+                            </ScrollViewer>
+                        </Grid>
+                        <!-- View: Toast Notifications -->
+                        <Grid x:Name="view_ToastNotifications" Visibility="Collapsed">
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="*"/>
+                            </Grid.RowDefinitions>
+
+                            <TextBlock Grid.Row="0" Style="{StaticResource SectionHeader}">
+                                <Run Text="&#xE8BD;" FontFamily="Segoe MDL2 Assets" FontSize="20"/><Run Text="  Toast Notifications"/>
+                            </TextBlock>
+
+                            <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
+                            <StackPanel>
+
                             <!-- Toast Notification Preview -->
                             <Border Style="{StaticResource CardPanel}" Margin="0,0,0,12">
                                 <StackPanel>
@@ -2846,6 +3273,19 @@
                                             <ComboBoxItem Content="Driver Issues"/>
                                             <ComboBoxItem Content="BIOS Issues"/>
                                         </ComboBox>
+                                        <Button x:Name="btn_ShowToastPreview" Content="Show Preview" Height="30" Margin="12,0,0,0"
+                                                Padding="12,0" FontSize="11" VerticalAlignment="Center" Cursor="Hand"
+                                                Background="{DynamicResource InputBackground}" Foreground="{DynamicResource WindowForeground}"
+                                                BorderBrush="{DynamicResource CardBorder}" BorderThickness="1">
+                                            <Button.Template>
+                                                <ControlTemplate TargetType="Button">
+                                                    <Border Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}"
+                                                            BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="6" Padding="{TemplateBinding Padding}">
+                                                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                                    </Border>
+                                                </ControlTemplate>
+                                            </Button.Template>
+                                        </Button>
                                     </StackPanel>
 
                                     <!-- Update toast mockup (Driver / BIOS) -->
@@ -3173,275 +3613,6 @@
                                         </StackPanel>
                                     </Border>
 
-                                </StackPanel>
-                            </Border>
-
-                            <!-- Debug Package Build -->
-                            <Border Style="{StaticResource CardPanel}" Margin="0,0,0,12">
-                                <StackPanel>
-                                    <TextBlock FontSize="14" FontWeight="SemiBold"
-                                               Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,4">
-                                        <Run Text="&#xEBE8;" FontFamily="Segoe MDL2 Assets" FontSize="14"/><Run Text="  Debug Package Build"/>
-                                    </TextBlock>
-                                    <TextBlock Text="Output pre-IntuneWin staging files (install scripts, WIM, toast scripts) to a local folder for validation and troubleshooting before uploading to Intune."
-                                               FontSize="12" Foreground="{DynamicResource InputPlaceholder}" Margin="0,0,0,12" TextWrapping="Wrap" LineHeight="18"/>
-
-                                    <!-- Toggle row -->
-                                    <Grid Margin="0,0,0,12">
-                                        <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="Auto"/>
-                                            <ColumnDefinition Width="Auto"/>
-                                        </Grid.ColumnDefinitions>
-                                        <CheckBox x:Name="chk_DebugPackageBuild"
-                                                  Style="{StaticResource ToggleSwitch}"
-                                                  VerticalAlignment="Center"
-                                                  Margin="0,0,12,0"/>
-                                        <TextBlock x:Name="txt_DebugBuildState" Grid.Column="1"
-                                                   Text="Off" FontSize="12" FontWeight="SemiBold"
-                                                   Foreground="{DynamicResource InputPlaceholder}"
-                                                   VerticalAlignment="Center"/>
-                                    </Grid>
-
-                                    <!-- Output path -->
-                                    <StackPanel x:Name="panel_DebugBuildPath" Visibility="Collapsed" Margin="0,4,0,0">
-                                        <TextBlock Text="Debug Output Path" FontSize="11" FontWeight="SemiBold"
-                                                   Foreground="{DynamicResource InputPlaceholder}" Margin="0,0,0,6"/>
-                                        <Grid>
-                                            <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="*"/>
-                                                <ColumnDefinition Width="Auto"/>
-                                            </Grid.ColumnDefinitions>
-                                            <TextBox x:Name="txt_DebugBuildPath" Style="{StaticResource RoundedTextBox}" Height="34"
-                                                     Tag="Select a folder for debug output" VerticalContentAlignment="Center"/>
-                                            <Button x:Name="btn_BrowseDebugBuild" Grid.Column="1"
-                                                    Style="{StaticResource SecondaryButton}"
-                                                    Height="34" Margin="8,0,0,0">
-                                                <TextBlock><Run Text="&#xED25;" FontFamily="Segoe MDL2 Assets"/><Run Text="  Browse"/></TextBlock>
-                                            </Button>
-                                        </Grid>
-                                        <TextBlock Text="Staging content will be copied to: {path}\{Make}\{Model}"
-                                                   FontSize="11" Foreground="{DynamicResource InputPlaceholder}" Margin="0,6,0,0" FontStyle="Italic"/>
-                                    </StackPanel>
-                                </StackPanel>
-                            </Border>
-
-                            <!-- Package Deployment -->
-                            <Border Style="{StaticResource CardPanel}" Margin="0,0,0,12">
-                                <StackPanel>
-                                    <TextBlock FontSize="14" FontWeight="SemiBold"
-                                               Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,4">
-                                        <Run Text="&#xE724;" FontFamily="Segoe MDL2 Assets" FontSize="14"/><Run Text="  Package Deployment"/>
-                                    </TextBlock>
-                                    <TextBlock Text="Configure automatic deployment behaviour for newly created driver and BIOS packages."
-                                               FontSize="12" Foreground="{DynamicResource InputPlaceholder}" Margin="0,0,0,12" TextWrapping="Wrap"/>
-
-                                    <!-- Deploy All sub-section -->
-                                    <TextBlock Text="Deploy all created driver and BIOS packages to 'All Devices'" FontSize="13" FontWeight="SemiBold"
-                                               Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,6"/>
-                                    <TextBlock Text="When enabled, each driver and BIOS package built will be automatically assigned to the built-in All Devices group. If assignment filters are configured below, the matching filter for each package will also be applied."
-                                               FontSize="13" Foreground="{DynamicResource InputPlaceholder}"
-                                               TextWrapping="Wrap" Margin="0,0,0,12" LineHeight="20"/>
-
-                                    <!-- Toggle row -->
-                                    <Grid>
-                                        <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="Auto"/>
-                                            <ColumnDefinition Width="Auto"/>
-                                        </Grid.ColumnDefinitions>
-                                        <CheckBox x:Name="chk_DeployAllDevices"
-                                                  Style="{StaticResource ToggleSwitch}"
-                                                  VerticalAlignment="Center"
-                                                  Margin="0,0,12,0"/>
-                                        <TextBlock x:Name="txt_DeployAllState" Grid.Column="1"
-                                                   Text="Off" FontSize="12" FontWeight="SemiBold"
-                                                   Foreground="{DynamicResource InputPlaceholder}"
-                                                   VerticalAlignment="Center"/>
-                                    </Grid>
-
-                                    <!-- Assignment Filters sub-section -->
-                                    <Border BorderBrush="{DynamicResource InputBorder}" BorderThickness="0,1,0,0" Margin="0,20,0,0" Padding="0,16,0,0">
-                                        <StackPanel>
-                                            <TextBlock FontSize="14" FontWeight="SemiBold"
-                                                       Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,4">
-                                                <Run Text="&#xE71C;" FontFamily="Segoe MDL2 Assets" FontSize="14"/><Run Text="  Assignment Filters"/>
-                                            </TextBlock>
-                                            <TextBlock Text="Automatically create and assign Intune assignment filters based on device manufacturer or model. Filters are applied to 'All Devices' in include mode so only matching hardware receives the package. Intune supports a maximum of 200 assignment filters per tenant."
-                                                       FontSize="12" Foreground="{DynamicResource InputPlaceholder}" Margin="0,0,0,12" TextWrapping="Wrap" LineHeight="18"/>
-
-                                            <!-- Filter count indicator -->
-                                            <Grid Margin="0,0,0,12">
-                                                <Grid.ColumnDefinitions>
-                                                    <ColumnDefinition Width="Auto"/>
-                                                    <ColumnDefinition Width="*"/>
-                                                </Grid.ColumnDefinitions>
-                                                <TextBlock Grid.Column="0" Text="Current Filters:" FontSize="12" FontWeight="SemiBold"
-                                                           Foreground="{DynamicResource WindowForeground}" VerticalAlignment="Center" Margin="0,0,8,0"/>
-                                                <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
-                                                    <TextBlock x:Name="txt_FilterCount" Text="--" FontSize="12" FontWeight="SemiBold"
-                                                               Foreground="{DynamicResource AccentColor}" VerticalAlignment="Center"/>
-                                                    <TextBlock Text=" / 200" FontSize="12" Foreground="{DynamicResource InputPlaceholder}" VerticalAlignment="Center"/>
-                                                    <TextBlock x:Name="txt_FilterRemaining" Text="" FontSize="11"
-                                                               Foreground="{DynamicResource InputPlaceholder}" Margin="12,0,0,0" VerticalAlignment="Center"/>
-                                                    <Button x:Name="btn_RefreshFilterCount" Height="24" Width="24" Margin="12,0,0,0"
-                                                            Background="Transparent" BorderThickness="0" Cursor="Hand" ToolTip="Refresh filter count"
-                                                            VerticalAlignment="Center">
-                                                        <TextBlock Text="&#xE72C;" FontFamily="Segoe MDL2 Assets" FontSize="12"
-                                                                   Foreground="{DynamicResource AccentColor}"/>
-                                                    </Button>
-                                                    <Button x:Name="btn_QueryFilters" Style="{StaticResource RoundedButton}" Height="32" Margin="12,0,0,0"
-                                                            Cursor="Hand" ToolTip="View all assignment filters" Padding="10,4"
-                                                            VerticalAlignment="Center">
-                                                        <TextBlock FontSize="11" Foreground="{DynamicResource WindowForeground}">
-                                                            <Run Text="&#xE8A7;" FontFamily="Segoe MDL2 Assets" FontSize="10"/><Run Text="  Query Filters"/>
-                                                        </TextBlock>
-                                                    </Button>
-                                                </StackPanel>
-                                            </Grid>
-
-                                            <!-- Filter warning -->
-                                            <TextBlock x:Name="txt_FilterWarning" FontSize="12" FontWeight="SemiBold"
-                                                       Foreground="#E8A035" Visibility="Collapsed" Margin="0,0,0,12" TextWrapping="Wrap"/>
-
-                                            <!-- Enable toggle -->
-                                            <TextBlock Text="Auto-create assignment filters during package build" FontSize="13" FontWeight="SemiBold"
-                                                       Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,6"/>
-                                            <TextBlock Text="When enabled, an assignment filter matching the device manufacturer (or model) will be created automatically after each package is uploaded and assigned to 'All Devices' with the filter applied."
-                                                       FontSize="12" Foreground="{DynamicResource InputPlaceholder}" TextWrapping="Wrap" Margin="0,0,0,12" LineHeight="18"/>
-                                            <Grid Margin="0,0,0,16">
-                                                <Grid.ColumnDefinitions>
-                                                    <ColumnDefinition Width="Auto"/>
-                                                    <ColumnDefinition Width="Auto"/>
-                                                </Grid.ColumnDefinitions>
-                                                <CheckBox x:Name="chk_AutoAssignmentFilter"
-                                                          Style="{StaticResource ToggleSwitch}"
-                                                          VerticalAlignment="Center"
-                                                          Margin="0,0,12,0"/>
-                                                <TextBlock x:Name="txt_AutoFilterState" Grid.Column="1"
-                                                           Text="Off" FontSize="12" FontWeight="SemiBold"
-                                                           Foreground="{DynamicResource InputPlaceholder}"
-                                                           VerticalAlignment="Center"/>
-                                            </Grid>
-
-                                            <!-- Filter mode dropdown -->
-                                            <TextBlock Text="Filter Scope" FontSize="13" FontWeight="SemiBold"
-                                                       Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,4"/>
-                                            <TextBlock Text="Choose whether to create one filter per manufacturer (fewer filters) or one filter per device model (more granular targeting)."
-                                                       FontSize="12" Foreground="{DynamicResource InputPlaceholder}" Margin="0,0,0,8" TextWrapping="Wrap" LineHeight="18"/>
-                                            <Grid Margin="0,0,0,16">
-                                                <Grid.ColumnDefinitions>
-                                                    <ColumnDefinition Width="200"/>
-                                                    <ColumnDefinition Width="Auto"/>
-                                                </Grid.ColumnDefinitions>
-                                                <ComboBox x:Name="cmb_FilterMode" Grid.Column="0" Height="34">
-                                                    <ComboBoxItem Content="Make (Manufacturer)" Tag="Make" IsSelected="True"/>
-                                                    <ComboBoxItem Content="Make + Model" Tag="Model"/>
-                                                </ComboBox>
-                                                <TextBlock x:Name="txt_FilterModeHint" Grid.Column="1" FontSize="11"
-                                                           Foreground="{DynamicResource InputPlaceholder}"
-                                                           VerticalAlignment="Center" Margin="12,0,0,0"
-                                                           Text="Fewer filters, broader targeting"/>
-                                            </Grid>
-
-                                            <!-- Filter naming convention -->
-                                            <TextBlock Text="Filter Name" FontSize="13" FontWeight="SemiBold"
-                                                       Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,4"/>
-                                            <TextBlock Text="Customise the display name used when creating assignment filters. Use the variable buttons below to insert placeholders."
-                                                       FontSize="12" Foreground="{DynamicResource InputPlaceholder}" Margin="0,0,0,8" TextWrapping="Wrap" LineHeight="18"/>
-                                            <TextBox x:Name="txt_FilterNameTemplate" Style="{StaticResource RoundedTextBox}" Height="34"
-                                                     Text="DATFilter-%MAKE%"
-                                                     ToolTip="Template for assignment filter display names. Use %MAKE% and %MODEL% as placeholders."/>
-                                            <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
-                                                <TextBlock Text="Variables:" FontSize="11" FontWeight="SemiBold"
-                                                           Foreground="{DynamicResource InputPlaceholder}" VerticalAlignment="Center" Margin="0,0,8,0"/>
-                                                <Button x:Name="btn_InsertMakeVar" Style="{StaticResource RoundedButton}" Height="30" Cursor="Hand"
-                                                        ToolTip="Insert manufacturer variable" Padding="8,4" Margin="0,0,6,0">
-                                                    <TextBlock FontSize="11" Foreground="{DynamicResource WindowForeground}">
-                                                        <Run Text="&#xE121;" FontFamily="Segoe MDL2 Assets" FontSize="10"/><Run Text="  %MAKE%"/>
-                                                    </TextBlock>
-                                                </Button>
-                                                <Button x:Name="btn_InsertModelVar" Style="{StaticResource RoundedButton}" Height="30" Cursor="Hand"
-                                                        ToolTip="Insert model variable" Padding="8,4">
-                                                    <TextBlock FontSize="11" Foreground="{DynamicResource WindowForeground}">
-                                                        <Run Text="&#xE121;" FontFamily="Segoe MDL2 Assets" FontSize="10"/><Run Text="  %MODEL%"/>
-                                                    </TextBlock>
-                                                </Button>
-                                            </StackPanel>
-
-                                            <!-- Example rule preview -->
-                                            <Border Background="{DynamicResource InputBackground}" CornerRadius="6" Padding="12,8" Margin="0,12,0,0">
-                                                <StackPanel>
-                                                    <TextBlock Text="Example" FontSize="11" FontWeight="SemiBold"
-                                                               Foreground="{DynamicResource InputPlaceholder}" Margin="0,0,0,4"/>
-                                                    <TextBlock x:Name="txt_FilterNameExample" FontSize="12" FontFamily="Consolas"
-                                                               Foreground="{DynamicResource WindowForeground}" TextWrapping="Wrap"/>
-                                                    <TextBlock x:Name="txt_FilterRuleExample" FontSize="11" FontFamily="Consolas"
-                                                               Foreground="{DynamicResource InputPlaceholder}" Margin="0,4,0,0" TextWrapping="Wrap"/>
-                                                </StackPanel>
-                                            </Border>
-
-                                            <!-- Required filters preview -->
-                                            <TextBlock x:Name="txt_FilterPreview" FontSize="12" FontStyle="Italic"
-                                                       Foreground="{DynamicResource InputPlaceholder}" Margin="0,12,0,0" TextWrapping="Wrap"/>
-                                        </StackPanel>
-                                    </Border>
-
-                                    <!-- Package Uploads sub-section -->
-                                    <Border BorderBrush="{DynamicResource InputBorder}" BorderThickness="0,1,0,0" Margin="0,20,0,0" Padding="0,16,0,0">
-                                        <StackPanel>
-                                            <TextBlock FontSize="14" FontWeight="SemiBold"
-                                                       Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,4">
-                                                <Run Text="&#xE898;" FontFamily="Segoe MDL2 Assets" FontSize="14"/><Run Text="  Package Uploads"/>
-                                            </TextBlock>
-                                            <TextBlock Text="Tune upload performance for Intune Win32 app packages. Larger chunks and more parallel uploads can significantly reduce upload times for large driver packages."
-                                                       FontSize="12" Foreground="{DynamicResource InputPlaceholder}" Margin="0,0,0,16" TextWrapping="Wrap" LineHeight="18"/>
-
-                                            <!-- Chunk Size -->
-                                            <TextBlock Text="Chunk Size" FontSize="13" FontWeight="SemiBold"
-                                                       Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,4"/>
-                                            <TextBlock Text="Size of each block uploaded to Azure Blob Storage. Larger chunks reduce HTTP overhead and round-trips but use more memory per upload. Default: 50 MB."
-                                                       FontSize="12" Foreground="{DynamicResource InputPlaceholder}" Margin="0,0,0,8" TextWrapping="Wrap" LineHeight="18"/>
-                                            <Grid Margin="0,0,0,16">
-                                                <Grid.ColumnDefinitions>
-                                                    <ColumnDefinition Width="200"/>
-                                                    <ColumnDefinition Width="Auto"/>
-                                                </Grid.ColumnDefinitions>
-                                                <ComboBox x:Name="cmb_IntuneChunkSize" Grid.Column="0" Height="34">
-                                                    <ComboBoxItem Content="4 MB" Tag="4"/>
-                                                    <ComboBoxItem Content="6 MB" Tag="6"/>
-                                                    <ComboBoxItem Content="10 MB" Tag="10"/>
-                                                    <ComboBoxItem Content="25 MB" Tag="25"/>
-                                                    <ComboBoxItem Content="50 MB (Default)" Tag="50" IsSelected="True"/>
-                                                    <ComboBoxItem Content="100 MB" Tag="100"/>
-                                                </ComboBox>
-                                                <TextBlock Grid.Column="1" x:Name="txt_ChunkSizeHint" FontSize="11"
-                                                           Foreground="{DynamicResource InputPlaceholder}"
-                                                           VerticalAlignment="Center" Margin="12,0,0,0"
-                                                           Text="Recommended: 25 MB+ for packages over 500 MB"/>
-                                            </Grid>
-
-                                            <!-- Parallel Uploads -->
-                                            <TextBlock Text="Parallel Uploads" FontSize="13" FontWeight="SemiBold"
-                                                       Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,4"/>
-                                            <TextBlock Text="Number of chunks uploaded simultaneously. Higher values improve throughput but increase network and memory usage. Values above 4 may trigger Azure throttling on slower connections."
-                                                       FontSize="12" Foreground="{DynamicResource InputPlaceholder}" Margin="0,0,0,8" TextWrapping="Wrap" LineHeight="18"/>
-                                            <Grid>
-                                                <Grid.ColumnDefinitions>
-                                                    <ColumnDefinition Width="200"/>
-                                                    <ColumnDefinition Width="Auto"/>
-                                                </Grid.ColumnDefinitions>
-                                                <ComboBox x:Name="cmb_IntuneParallelUploads" Grid.Column="0" Height="34">
-                                                    <ComboBoxItem Content="1 (Sequential)" Tag="1"/>
-                                                    <ComboBoxItem Content="2 threads (Default)" Tag="2" IsSelected="True"/>
-                                                    <ComboBoxItem Content="4 threads" Tag="4"/>
-                                                    <ComboBoxItem Content="8 threads" Tag="8"/>
-                                                </ComboBox>
-                                                <TextBlock Grid.Column="1" x:Name="txt_ParallelHint" FontSize="11"
-                                                           Foreground="{DynamicResource InputPlaceholder}"
-                                                           VerticalAlignment="Center" Margin="12,0,0,0"
-                                                           Text="Recommended: 2–4 threads for most connections"/>
-                                            </Grid>
-                                        </StackPanel>
-                                    </Border>
                                 </StackPanel>
                             </Border>
 
@@ -5191,7 +5362,7 @@
                                     <StackPanel>
                                         <TextBlock Text="Driver Automation Tool" FontSize="22" FontWeight="Bold"
                                                    Foreground="{DynamicResource AccentColor}" Margin="0,0,0,4"/>
-                                        <TextBlock x:Name="txt_AboutVersion" Text="Version 10.0.28" FontSize="14"
+                                        <TextBlock x:Name="txt_AboutVersion" Text="Version 10.0.29" FontSize="14"
                                                    Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,16"/>
 
                                         <TextBlock TextWrapping="Wrap" FontSize="13"

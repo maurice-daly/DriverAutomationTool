@@ -4,7 +4,7 @@
      Organization:  MSEndpointMgr / Patch My PC
      Filename:      DriverAutomationToolCore.psm1
      Purpose:       Core functions for Driver Automation Tool v2.0
-     Version:       10.0.28.0
+     Version:       10.0.29.0
     ===========================================================================
 #>
 
@@ -27,7 +27,7 @@ if ($PSVersionTable.PSVersion.Major -le 5) {
 
 #region Variables
 
-[version]$global:ScriptRelease = "10.0.28.0"
+[version]$global:ScriptRelease = "10.0.29.0"
 $global:ScriptBuildDate = "01-05-2026"
 $global:ReleaseNotesURL = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/DriverAutomationToolNotes.txt"
 $OEMLinksURL = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/OEMLinks.xml"
@@ -6811,8 +6811,17 @@ try {
                 $adDisplayName = ($adResult.Properties['displayName'] | Select-Object -First 1) -as [string]
                 if (-not [string]::IsNullOrWhiteSpace($givenName) -and -not [string]::IsNullOrWhiteSpace($sn)) {
                     $adName = "$givenName $sn"
+                } elseif (-not [string]::IsNullOrWhiteSpace($givenName)) {
+                    $adName = $givenName
+                } elseif (-not [string]::IsNullOrWhiteSpace($sn)) {
+                    $adName = $sn
                 } elseif (-not [string]::IsNullOrWhiteSpace($adDisplayName)) {
-                    $adName = $adDisplayName
+                    # Split CamelCase names that lack spaces (e.g. "TestUser" -> "Test User")
+                    if ($adDisplayName -notmatch '\s' -and $adDisplayName -cmatch '[a-z][A-Z]') {
+                        $adName = $adDisplayName -creplace '([a-z])([A-Z])', '$1 $2'
+                    } else {
+                        $adName = $adDisplayName
+                    }
                 }
                 Write-ToastLog "AD lookup result: givenName='$givenName' sn='$sn' displayName='$adDisplayName'"
             }
@@ -9671,6 +9680,81 @@ function Send-DATTelemetry {
         if ($global:ExecutionMode -eq 'Scheduled Task') {
             Write-Host "[Telemetry] POST $Endpoint -- failed: $($_.Exception.Message)"
         }
+    }
+}
+
+function Send-DATFeedback {
+    <#
+    .SYNOPSIS
+        Submits user feedback (thumbs up/down) to the DAT API.
+    .PARAMETER Rating
+        'Positive' or 'Negative'.
+    .PARAMETER Comment
+        Optional comment text (used with negative feedback).
+    #>
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory)]
+        [ValidateSet('Positive', 'Negative')]
+        [string]$Rating,
+
+        [AllowEmptyString()]
+        [string]$Comment = ''
+    )
+
+    $telemetryId = Get-DATTelemetryId
+    if ([string]::IsNullOrEmpty($telemetryId)) {
+        # Generate a one-time GUID if telemetry is not configured
+        $telemetryId = [guid]::NewGuid().ToString()
+    }
+
+    $body = @{
+        installId   = $telemetryId
+        rating      = $Rating
+        comment     = $Comment
+        submittedAt = (Get-Date).ToUniversalTime().ToString('o')
+        appVersion  = $global:ScriptRelease
+    }
+
+    $config = Get-DATTelemetryConfig
+    if ($null -eq $config -or [string]::IsNullOrEmpty($config.apiBaseUrl)) {
+        Write-DATLogEntry -Value "[Feedback] Cannot submit -- API config unavailable" -Severity 2
+        return
+    }
+
+    $url = "$($config.apiBaseUrl)/feedback"
+    $json = $body | ConvertTo-Json -Depth 5 -Compress
+
+    # HMAC-SHA256 request signing (softfail-safe -- skipped if secret is absent or computation fails)
+    $headers = @{}
+    try {
+        $hmacSecret = $null
+        if ($config -and $config.PSObject.Properties['hmacSecret']) {
+            $hmacSecret = $config.hmacSecret
+        }
+        if (-not [string]::IsNullOrEmpty($hmacSecret)) {
+            $timestamp = (Get-Date).ToUniversalTime().ToString('o')
+            $keyBytes  = [System.Text.Encoding]::UTF8.GetBytes($hmacSecret)
+            $hmac      = [System.Security.Cryptography.HMACSHA256]::new($keyBytes)
+            $sigBytes  = $hmac.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($json))
+            $signature = -join ($sigBytes | ForEach-Object { $_.ToString('x2') })
+            $hmac.Dispose()
+            $headers['x-dat-signature'] = $signature
+            $headers['x-dat-timestamp'] = $timestamp
+        }
+    } catch {
+        Write-DATLogEntry -Value "[Feedback] HMAC signing skipped: $($_.Exception.Message)" -Severity 2
+    }
+
+    try {
+        $proxyParams = Get-DATWebRequestProxy
+        if ($proxyParams -isnot [hashtable]) { $proxyParams = @{} }
+        $null = Invoke-RestMethod -Uri $url -Method POST -Body $json -ContentType 'application/json' `
+            -Headers $headers -UseBasicParsing -TimeoutSec 30 -ErrorAction Stop @proxyParams
+        Write-DATLogEntry -Value "[Feedback] Submitted $Rating feedback successfully" -Severity 1
+    } catch {
+        Write-DATLogEntry -Value "[Feedback] Submit failed: $($_.Exception.Message)" -Severity 2
+        throw
     }
 }
 

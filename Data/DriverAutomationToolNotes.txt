@@ -3,6 +3,27 @@ Release Notes
 IMPORTANT
 - DAT Downloads have been moved to GitHub - https://github.com/maurice-daly/DriverAutomationTool
 
+Version 10.0.29
+Updates
+- Added report to Intune environment upon connection
+- Changed placements of reports
+- Added preview for Toast notifications
+- Moved toast notifications to new configuration item
+- Added feedback buttons and associated API / table / reports
+- Added cancel button during bulk deletion
+Fixes
+- Configuration Manager package distribution and last update time fixed
+- Select all buttons now context/filter aware
+- User name on the toast display fixed
+
+Version 10.0.28
+Updates
+- Removed model restrictions on querying Dell models in WMI for Configuration Manager
+- Added HMAC requirement for communications from the Driver Automation Tool to the API for additional validation
+Bug Fixes
+- Distribution point group naming escape character handling
+
+
 Version 10.0.27
 New Additions
 - Assignment filters created and assigned automatically, based either on the make or make + model
