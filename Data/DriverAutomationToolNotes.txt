@@ -9,6 +9,7 @@ Updates
 - De-duplication of Dell models due to the OEM's inclusion of duplicates showing only shortened number only names, for example "OptiPlex 5060" and "5060" being two unique XML entries with the same baseboard product values
 - Pilot packages 
 - Code signing of PowerShell scripts 
+- Internet access pre-check added with base URL output if blocked
 Fixes
 - Authentication code fix for Acer downloads
 
