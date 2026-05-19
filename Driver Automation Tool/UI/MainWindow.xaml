@@ -902,7 +902,7 @@
                                    Foreground="{DynamicResource AccentColor}" VerticalAlignment="Center" Margin="0,0,8,0"/>
                         <TextBlock Text="Driver Automation Tool" FontSize="13" FontWeight="SemiBold"
                                    Foreground="{DynamicResource WindowForeground}" VerticalAlignment="Center"/>
-                        <TextBlock x:Name="txt_Version" Text=" Version 10.0.29" FontSize="11"
+                        <TextBlock x:Name="txt_Version" Text=" Version 10.0.30" FontSize="11"
                                    Foreground="{DynamicResource InputPlaceholder}" VerticalAlignment="Center" Margin="4,0"/>
                     </StackPanel>
 
@@ -994,7 +994,7 @@
                                 </Button>
                                 <Button x:Name="nav_Distribution"
                                         Style="{StaticResource SubNavButton}">
-                                    <TextBlock><Run Text="&#xE753;" FontFamily="Segoe MDL2 Assets"/><Run Text="  Distribution Points"/></TextBlock>
+                                    <TextBlock><Run Text="&#xE7B8;" FontFamily="Segoe MDL2 Assets"/><Run Text="  Package Options"/></TextBlock>
                                 </Button>
                             </StackPanel>
                             <Button x:Name="nav_IntuneSettings"
@@ -1291,6 +1291,9 @@
                                         <ComboBoxItem Content="Drivers" IsSelected="True"/>
                                         <ComboBoxItem Content="BIOS"/>
                                         <ComboBoxItem Content="All"/>
+                                        <ComboBoxItem Content="Drivers Pilot"/>
+                                        <ComboBoxItem Content="BIOS Pilot"/>
+                                        <ComboBoxItem Content="All Pilot"/>
                                     </ComboBox>
                                     <Button x:Name="btn_RefreshModels" Grid.Column="5" Grid.Row="1"
                                             Style="{StaticResource SecondaryButton}"
@@ -1778,6 +1781,9 @@
                                     <ComboBox x:Name="cmb_PkgPackageType" Grid.Column="0" Grid.Row="1" Margin="0,0,8,0" Height="34">
                                         <ComboBoxItem Content="Drivers" IsSelected="True"/>
                                         <ComboBoxItem Content="BIOS Update"/>
+                                        <ComboBoxItem Content="Drivers Pilot"/>
+                                        <ComboBoxItem Content="BIOS Pilot"/>
+                                        <ComboBoxItem Content="All Pilot"/>
                                     </ComboBox>
                                     <ComboBox x:Name="cmb_DeploymentState" Grid.Column="1" Grid.Row="1" Margin="8,0,8,0" Height="34">
                                         <ComboBoxItem Content="Production" IsSelected="True"/>
@@ -2218,16 +2224,62 @@
                         <Grid x:Name="view_Distribution" Visibility="Collapsed">
                             <Grid.RowDefinitions>
                                 <RowDefinition Height="Auto"/>
-                                <RowDefinition Height="Auto"/>
-                                <RowDefinition Height="*"/>
                                 <RowDefinition Height="*"/>
                             </Grid.RowDefinitions>
 
                             <TextBlock Grid.Row="0" Style="{StaticResource SectionHeader}">
-                                <Run Text="&#xE753;" FontFamily="Segoe MDL2 Assets" FontSize="20"/><Run Text="  Distribution Points"/>
+                                <Run Text="&#xE7B8;" FontFamily="Segoe MDL2 Assets" FontSize="20"/><Run Text="  Package Options"/>
                             </TextBlock>
 
-                            <Border Grid.Row="1" Style="{StaticResource CardPanel}" Margin="0,0,0,12">
+                            <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                            <StackPanel>
+
+                            <!-- Package Console Folder -->
+                            <Border Style="{StaticResource CardPanel}" Margin="0,0,0,12">
+                                <StackPanel>
+                                    <TextBlock FontSize="13" FontWeight="SemiBold"
+                                               Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,8">
+                                        <Run Text="&#xE8B7;" FontFamily="Segoe MDL2 Assets" FontSize="13"/><Run Text="  Package Console Folder"/>
+                                    </TextBlock>
+                                    <TextBlock TextWrapping="Wrap" FontSize="12"
+                                               Foreground="{DynamicResource InputPlaceholder}" Margin="0,0,0,16" LineHeight="20">
+                                        By default, packages are placed in auto-created folders (Driver Packages\OEM or BIOS Packages\OEM). Enable the option below to choose a custom console folder path for all packages created during this build.
+                                    </TextBlock>
+
+                                    <Grid Margin="0,0,0,0">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                            <ColumnDefinition Width="*"/>
+                                        </Grid.ColumnDefinitions>
+                                        <CheckBox x:Name="chk_CustomConsoleFolder"
+                                                  Style="{StaticResource ToggleSwitch}"
+                                                  VerticalAlignment="Center"
+                                                  Margin="0,0,12,0"/>
+                                        <TextBlock x:Name="txt_CustomConsoleFolderState" Grid.Column="1"
+                                                   Text="Use Default" FontSize="12" FontWeight="SemiBold"
+                                                   Foreground="{DynamicResource InputPlaceholder}"
+                                                   VerticalAlignment="Center" Margin="0,0,16,0"/>
+                                    </Grid>
+
+                                    <Grid x:Name="panel_ConsoleFolderPicker" Margin="0,12,0,0" Visibility="Collapsed">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <TextBox x:Name="txt_ConsoleFolderPath" Grid.Column="0"
+                                                 Style="{StaticResource RoundedTextBox}"
+                                                 IsReadOnly="True" Height="34"
+                                                 VerticalContentAlignment="Center" Margin="0,0,8,0"
+                                                 FontSize="12"/>
+                                        <Button x:Name="btn_BrowseConsoleFolder" Grid.Column="1"
+                                                Content="Browse..." Height="34" MinWidth="90"
+                                                Style="{StaticResource SecondaryButton}"/>
+                                    </Grid>
+                                </StackPanel>
+                            </Border>
+
+                            <Border Style="{StaticResource CardPanel}" Margin="0,0,0,12">
                                 <StackPanel>
                                     <TextBlock FontSize="13" FontWeight="SemiBold"
                                                Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,8">
@@ -2298,7 +2350,7 @@
                                 </StackPanel>
                             </Border>
 
-                            <Border Grid.Row="2" Style="{StaticResource CardPanel}" Margin="0,0,0,12">
+                            <Border Style="{StaticResource CardPanel}" Margin="0,0,0,12">
                                 <Grid>
                                     <Grid.RowDefinitions>
                                         <RowDefinition Height="Auto"/>
@@ -2308,7 +2360,7 @@
                                                Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,8">
                                         <Run Text="&#xE968;" FontFamily="Segoe MDL2 Assets" FontSize="13"/><Run Text="  Distribution Point Groups"/>
                                     </TextBlock>
-                                    <DataGrid x:Name="grid_DPGroups" Grid.Row="1" Style="{StaticResource ModernDataGrid}">
+                                    <DataGrid x:Name="grid_DPGroups" Grid.Row="1" Style="{StaticResource ModernDataGrid}" MaxHeight="200">
                                         <DataGrid.Columns>
                                             <DataGridTemplateColumn Header="&#x2611;" Width="40" CanUserSort="False">
                                                 <DataGridTemplateColumn.CellTemplate>
@@ -2324,7 +2376,7 @@
                                 </Grid>
                             </Border>
 
-                            <Border Grid.Row="3" Style="{StaticResource CardPanel}">
+                            <Border Style="{StaticResource CardPanel}" Margin="0,0,0,12">
                                 <Grid>
                                     <Grid.RowDefinitions>
                                         <RowDefinition Height="Auto"/>
@@ -2332,9 +2384,9 @@
                                     </Grid.RowDefinitions>
                                     <TextBlock FontSize="13" FontWeight="SemiBold"
                                                Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,8">
-                                        <Run Text="&#xE753;" FontFamily="Segoe MDL2 Assets" FontSize="13"/><Run Text="  Distribution Points"/>
+                                        <Run Text="&#xE7B8;" FontFamily="Segoe MDL2 Assets" FontSize="13"/><Run Text="  Package Options"/>
                                     </TextBlock>
-                                    <DataGrid x:Name="grid_DPs" Grid.Row="1" Style="{StaticResource ModernDataGrid}">
+                                    <DataGrid x:Name="grid_DPs" Grid.Row="1" Style="{StaticResource ModernDataGrid}" MaxHeight="200">
                                         <DataGrid.Columns>
                                             <DataGridTemplateColumn Header="&#x2611;" Width="40" CanUserSort="False">
                                                 <DataGridTemplateColumn.CellTemplate>
@@ -2349,6 +2401,8 @@
                                     </DataGrid>
                                 </Grid>
                             </Border>
+                            </StackPanel>
+                            </ScrollViewer>
                         </Grid>
 
                         <!-- View: Intune Settings -->
@@ -3185,6 +3239,87 @@
                                 </StackPanel>
                             </Border>
 
+                            <!-- Code Signing -->
+                            <Border Style="{StaticResource CardPanel}" Margin="0,0,0,12">
+                                <StackPanel>
+                                    <TextBlock FontSize="14" FontWeight="SemiBold"
+                                               Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,4">
+                                        <Run Text="&#xEB95;" FontFamily="Segoe MDL2 Assets" FontSize="14"/><Run Text="  Code Signing"/>
+                                    </TextBlock>
+                                    <TextBlock Text="Digitally sign all PowerShell scripts generated during Intune package creation (install, detection, requirement, and toast scripts) using an Authenticode certificate."
+                                               FontSize="12" Foreground="{DynamicResource InputPlaceholder}" Margin="0,0,0,12" TextWrapping="Wrap" LineHeight="18"/>
+
+                                    <!-- Toggle row -->
+                                    <Grid Margin="0,0,0,12">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <CheckBox x:Name="chk_CodeSigning"
+                                                  Style="{StaticResource ToggleSwitch}"
+                                                  VerticalAlignment="Center"
+                                                  Margin="0,0,12,0"/>
+                                        <TextBlock x:Name="txt_CodeSigningState" Grid.Column="1"
+                                                   Text="Off" FontSize="12" FontWeight="SemiBold"
+                                                   Foreground="{DynamicResource InputPlaceholder}"
+                                                   VerticalAlignment="Center"/>
+                                    </Grid>
+
+                                    <!-- Certificate config -->
+                                    <StackPanel x:Name="panel_CodeSigningConfig" Visibility="Collapsed" Margin="0,4,0,0">
+                                        <TextBlock Text="Certificate Thumbprint" FontSize="11" FontWeight="SemiBold"
+                                                   Foreground="{DynamicResource InputPlaceholder}" Margin="0,0,0,6"/>
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*"/>
+                                                <ColumnDefinition Width="Auto"/>
+                                            </Grid.ColumnDefinitions>
+                                            <TextBox x:Name="txt_CodeSigningThumbprint" Style="{StaticResource RoundedTextBox}" Height="34"
+                                                     Tag="Enter certificate thumbprint or click Browse" VerticalContentAlignment="Center"
+                                                     CharacterCasing="Upper"/>
+                                            <Button x:Name="btn_BrowseCodeSigningCert" Grid.Column="1"
+                                                    Style="{StaticResource SecondaryButton}"
+                                                    Height="34" Margin="8,0,0,0">
+                                                <TextBlock><Run Text="&#xED25;" FontFamily="Segoe MDL2 Assets"/><Run Text="  Browse"/></TextBlock>
+                                            </Button>
+                                        </Grid>
+                                        <!-- Certificate details panel -->
+                                        <Border x:Name="panel_CodeSigningCertDetails" Visibility="Collapsed"
+                                                Background="{DynamicResource InputBackground}" CornerRadius="8"
+                                                BorderBrush="{DynamicResource InputBorder}" BorderThickness="1"
+                                                Padding="12,10" Margin="0,10,0,0">
+                                            <Grid>
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*"/>
+                                                    <ColumnDefinition Width="Auto"/>
+                                                </Grid.ColumnDefinitions>
+                                                <StackPanel Grid.Column="0">
+                                                    <TextBlock x:Name="txt_CodeSigningCertSubject" Text="" FontSize="12" FontWeight="SemiBold"
+                                                               Foreground="{DynamicResource WindowForeground}" TextTrimming="CharacterEllipsis"/>
+                                                    <TextBlock x:Name="txt_CodeSigningCertIssuer" Text="" FontSize="11"
+                                                               Foreground="{DynamicResource InputPlaceholder}" Margin="0,3,0,0" TextTrimming="CharacterEllipsis"/>
+                                                    <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
+                                                        <TextBlock x:Name="txt_CodeSigningCertExpiry" Text="" FontSize="11"
+                                                                   Foreground="{DynamicResource InputPlaceholder}"/>
+                                                        <TextBlock x:Name="txt_CodeSigningCertStatus" Text="" FontSize="11" FontWeight="SemiBold"
+                                                                   Margin="10,0,0,0"/>
+                                                    </StackPanel>
+                                                </StackPanel>
+                                                <Button x:Name="btn_ViewCodeSigningCert" Grid.Column="1"
+                                                        Style="{StaticResource SecondaryButton}"
+                                                        Height="34" Width="34" Padding="0"
+                                                        VerticalAlignment="Center" ToolTip="View certificate and chain">
+                                                    <TextBlock Text="&#xEB95;" FontFamily="Segoe MDL2 Assets" FontSize="16"
+                                                               HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                                </Button>
+                                            </Grid>
+                                        </Border>
+                                        <TextBlock x:Name="txt_CodeSigningCertInfo" Text=""
+                                                   FontSize="11" Foreground="{DynamicResource InputPlaceholder}" Margin="0,6,0,0" FontStyle="Italic"/>
+                                    </StackPanel>
+                                </StackPanel>
+                            </Border>
+
                             <!-- Debug Package Build -->
                             <Border Style="{StaticResource CardPanel}" Margin="0,0,0,12">
                                 <StackPanel>
@@ -3651,6 +3786,8 @@
                                     <ComboBox x:Name="cmb_IntunePkgType" Grid.Column="0" Grid.Row="1" Margin="0,0,8,0" Height="34">
                                         <ComboBoxItem Content="Drivers" IsSelected="True"/>
                                         <ComboBoxItem Content="BIOS Update"/>
+                                        <ComboBoxItem Content="Drivers Pilot"/>
+                                        <ComboBoxItem Content="BIOS Pilot"/>
                                     </ComboBox>
                                     <Button x:Name="btn_RefreshIntuneApps" Grid.Column="1" Grid.Row="1"
                                             Style="{StaticResource SecondaryButton}" Height="34" Margin="0,0,0,0"
@@ -5362,7 +5499,7 @@
                                     <StackPanel>
                                         <TextBlock Text="Driver Automation Tool" FontSize="22" FontWeight="Bold"
                                                    Foreground="{DynamicResource AccentColor}" Margin="0,0,0,4"/>
-                                        <TextBlock x:Name="txt_AboutVersion" Text="Version 10.0.29" FontSize="14"
+                                        <TextBlock x:Name="txt_AboutVersion" Text="Version 10.0.30" FontSize="14"
                                                    Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,16"/>
 
                                         <TextBlock TextWrapping="Wrap" FontSize="13"
@@ -5395,10 +5532,16 @@
                                             <Run Text="License: CC BY-NC 4.0 — "/><Hyperlink x:Name="link_License" NavigateUri="https://creativecommons.org/licenses/by-nc/4.0/" Foreground="{DynamicResource AccentColor}">View License</Hyperlink>
                                         </TextBlock>
 
+                                        <StackPanel Orientation="Horizontal">
                                         <Button x:Name="btn_CheckUpdate" Style="{StaticResource RoundedButton}"
                                                 HorizontalAlignment="Left" Height="36">
                                             <TextBlock><Run Text="&#xE895;" FontFamily="Segoe MDL2 Assets"/><Run Text="  Check for Updates"/></TextBlock>
                                         </Button>
+                                        <Button x:Name="btn_ReleaseNotes" Style="{StaticResource RoundedButton}"
+                                                HorizontalAlignment="Left" Height="36" Margin="8,0,0,0">
+                                            <TextBlock><Run Text="&#xE7C3;" FontFamily="Segoe MDL2 Assets"/><Run Text="  Release Notes"/></TextBlock>
+                                        </Button>
+                                        </StackPanel>
                                         <Button x:Name="btn_ApplyUpdate" Style="{StaticResource RoundedButton}"
                                                 HorizontalAlignment="Left" Height="36" Margin="0,8,0,0"
                                                 Visibility="Collapsed">
@@ -5581,23 +5724,6 @@ BY USING THIS TOOL, YOU ACKNOWLEDGE AND AGREE THAT:
                                         <TextBlock x:Name="txt_EulaStatus" FontSize="13" VerticalAlignment="Center"
                                                    Foreground="{DynamicResource InputPlaceholder}"/>
                                     </StackPanel>
-                                </Grid>
-                            </Border>
-
-                            <!-- Release Notes -->
-                            <Border Style="{StaticResource CardPanel}" VerticalAlignment="Stretch" Margin="0,8,0,0">
-                                <Grid>
-                                    <Grid.RowDefinitions>
-                                        <RowDefinition Height="Auto"/>
-                                        <RowDefinition Height="*"/>
-                                    </Grid.RowDefinitions>
-                                    <TextBlock Grid.Row="0" Text="Release Notes" FontSize="18" FontWeight="Bold"
-                                               Foreground="{DynamicResource AccentColor}" Margin="0,0,0,12"/>
-                                    <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" MaxHeight="300">
-                                        <TextBlock x:Name="txt_ReleaseNotes" TextWrapping="Wrap" FontSize="12"
-                                                   Foreground="{DynamicResource WindowForeground}"
-                                                   Text="Loading release notes..."/>
-                                    </ScrollViewer>
                                 </Grid>
                             </Border>
 

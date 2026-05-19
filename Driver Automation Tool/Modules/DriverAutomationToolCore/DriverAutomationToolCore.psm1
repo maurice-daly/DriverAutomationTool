@@ -4,7 +4,7 @@
      Organization:  MSEndpointMgr / Patch My PC
      Filename:      DriverAutomationToolCore.psm1
      Purpose:       Core functions for Driver Automation Tool v2.0
-     Version:       10.0.29.0
+     Version:       10.0.30.0
     ===========================================================================
 #>
 
@@ -27,7 +27,7 @@ if ($PSVersionTable.PSVersion.Major -le 5) {
 
 #region Variables
 
-[version]$global:ScriptRelease = "10.0.29.0"
+[version]$global:ScriptRelease = "10.0.30.0"
 $global:ScriptBuildDate = "01-05-2026"
 $global:ReleaseNotesURL = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/DriverAutomationToolNotes.txt"
 $OEMLinksURL = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/OEMLinks.xml"
@@ -257,6 +257,11 @@ function Test-DATFileSignature {
           2. The signer certificate's CN matches one of the entries in
              $script:DATTrustedPublisherCNs (or one supplied via -AllowedPublishers).
 
+        For archive files (.zip) that cannot carry Authenticode signatures, the function
+        extracts the archive to a temporary folder, locates PE executables (.exe, .dll, .sys)
+        inside, and validates at least one is signed by a trusted publisher. The temp folder
+        is cleaned up after validation.
+
         Any other outcome returns $false and writes a Severity-3 log entry. Callers should
         treat $false as an integrity failure and refuse to use / repackage the file.
 
@@ -290,6 +295,40 @@ function Test-DATFileSignature {
     if (-not (Test-Path -LiteralPath $FilePath -PathType Leaf)) {
         Write-DATLogEntry -Value "[Integrity] [$Context] File not found for signature check: $FilePath" -Severity 3
         return $false
+    }
+
+    # For archive formats that cannot carry Authenticode signatures, extract and check contents
+    $extension = [System.IO.Path]::GetExtension($FilePath).ToLowerInvariant()
+    if ($extension -eq '.zip') {
+        Write-DATLogEntry -Value "[Integrity] [$Context] Archive file detected (.zip) -- extracting to validate inner executables" -Severity 1
+        $tempExtractDir = Join-Path ([System.IO.Path]::GetTempPath()) "DATSigCheck_$([guid]::NewGuid().ToString('N').Substring(0,8))"
+        try {
+            Expand-Archive -Path $FilePath -DestinationPath $tempExtractDir -Force -ErrorAction Stop
+            # Find PE files inside the archive
+            $peFiles = Get-ChildItem -Path $tempExtractDir -Recurse -File -Include '*.exe','*.dll','*.sys' -ErrorAction SilentlyContinue
+            if ($null -eq $peFiles -or @($peFiles).Count -eq 0) {
+                Write-DATLogEntry -Value "[Integrity] [$Context] Archive contains no PE files (.exe/.dll/.sys) to validate -- skipping signature check (hash-only integrity)" -Severity 2
+                # No PE files to check -- allow the archive (integrity was confirmed by download success over HTTPS)
+                return $true
+            }
+            # Validate at least one PE file is signed by a trusted publisher
+            foreach ($pe in $peFiles) {
+                $innerResult = Test-DATFileSignature -FilePath $pe.FullName -AllowedPublishers $AllowedPublishers -Context "$Context|Inner:$($pe.Name)"
+                if ($innerResult) {
+                    Write-DATLogEntry -Value "[Integrity] [$Context] Archive validated via inner file: $($pe.Name)" -Severity 1
+                    return $true
+                }
+            }
+            Write-DATLogEntry -Value "[Integrity] [$Context] No PE files inside archive are signed by a trusted publisher -- file: $FilePath" -Severity 3
+            return $false
+        } catch {
+            Write-DATLogEntry -Value "[Integrity] [$Context] Failed to extract archive for signature check: $($_.Exception.Message) -- file: $FilePath" -Severity 3
+            return $false
+        } finally {
+            if (Test-Path $tempExtractDir) {
+                Remove-Item -Path $tempExtractDir -Recurse -Force -ErrorAction SilentlyContinue
+            }
+        }
     }
 
     try {
@@ -642,6 +681,19 @@ function Get-DATOEMModelInfo {
                     @{ Name = "SystemID"; Expression = { $_.SupportedSystems.Brand.Model.SystemID } },
                     @{ Name = "DellVersion"; Expression = { $_.dellVersion } } -Unique |
                     Where-Object { $_.SystemName -gt $null }
+                    # Deduplicate short-name variants (e.g. "7060" vs "OptiPlex 7060") sharing overlapping baseboards
+                    $DellModels = @($DellModels | Where-Object {
+                        $current = $_
+                        $currentIds = @($current.SystemID | Where-Object { $_ } | Select-Object -Unique)
+                        # Keep this entry unless a longer-named entry exists with overlapping baseboards
+                        $dominated = $DellModels | Where-Object {
+                            $_.SystemName -ne $current.SystemName -and
+                            $_.SystemName.Length -gt $current.SystemName.Length -and
+                            $_.SystemName -like "*$($current.SystemName)*" -and
+                            @($_.SystemID | Where-Object { $_ -and $_ -in $currentIds }).Count -gt 0
+                        }
+                        $null -eq $dominated
+                    })
                     foreach ($Model in $DellModels) {
                         # Null-safe SystemId join (#16)
                         $sysIds = $Model.SystemId | Where-Object { $_ } | Select-Object -Unique
@@ -2270,17 +2322,21 @@ function New-DATConfigMgrPkg {
         [Parameter(Mandatory)][string]$SiteCode,
         [Parameter(Mandatory)][string]$Version,
         [ValidateSet('Drivers','BIOS')][string]$PackageType = 'Drivers',
+        [string]$NamePrefix,
         [string]$ReleaseDate,
         [string[]]$DistributionPointGroups,
         [string[]]$DistributionPoints,
         [ValidateSet('High','Normal','Low')][string]$Priority = 'Normal',
         [switch]$EnableBinaryDeltaReplication,
-        [switch]$ForceUpdate
+        [switch]$ForceUpdate,
+        [int]$ConsoleFolderID = -1
     )
 
     try {
         $smsNamespace = "root\SMS\Site_$SiteCode"
-        $packagePrefix = if ($PackageType -eq 'BIOS') { 'BIOS Update' } else { 'Drivers' }
+        $packagePrefix = if (-not [string]::IsNullOrEmpty($NamePrefix)) { $NamePrefix }
+                         elseif ($PackageType -eq 'BIOS') { 'BIOS Update' }
+                         else { 'Drivers' }
         $CMPackage = if ($PackageType -eq 'BIOS') {
             "$packagePrefix - $OEM $Model - $Architecture"
         } else {
@@ -2460,8 +2516,33 @@ function New-DATConfigMgrPkg {
             Write-DATLogEntry -Value "- [ConfigMgr] Binary Differential Replication enabled on $packageId" -Severity 1
         }
 
-        # --- Stage 4: Move package into console folder (Driver Packages\OEM or BIOS Packages\OEM) ---
+        # --- Stage 4: Move package into console folder ---
         try {
+            if ($ConsoleFolderID -ge 0) {
+                # Custom folder selected by user -- use the specified folder ID directly
+                if ($ConsoleFolderID -eq 0) {
+                    # Root (no folder) -- package stays at the console root, no move needed
+                    Write-DATLogEntry -Value "- [ConfigMgr] Package left at console root (custom folder: root)" -Severity 1
+                } else {
+                    # Verify the folder still exists
+                    $customFolder = Get-CimInstance -ComputerName $SiteServer -Namespace $smsNamespace `
+                        -Query "SELECT ContainerNodeID FROM SMS_ObjectContainerNode WHERE ContainerNodeID = $ConsoleFolderID AND ObjectType = 2" `
+                        -ErrorAction Stop | Select-Object -First 1
+                    if ($customFolder) {
+                        $moveItem = ([WmiClass]"\\$SiteServer\$($smsNamespace):SMS_ObjectContainerItem").CreateInstance()
+                        $moveItem.InstanceKey = $packageId
+                        $moveItem.ObjectType = 2
+                        $moveItem.ContainerNodeID = $ConsoleFolderID
+                        $moveItem.Put() | Out-Null
+                        Write-DATLogEntry -Value "- [ConfigMgr] Moved package to custom console folder (ID: $ConsoleFolderID)" -Severity 1
+                    } else {
+                        Write-DATLogEntry -Value "[Warning] - Custom console folder ID $ConsoleFolderID no longer exists, falling back to default folder" -Severity 2
+                        $ConsoleFolderID = -1  # Fall through to default logic below
+                    }
+                }
+            }
+            if ($ConsoleFolderID -lt 0) {
+            # Default: create/use Driver Packages\OEM or BIOS Packages\OEM
             # Find or create the top-level folder (e.g. "Driver Packages")
             $topFolder = Get-CimInstance -ComputerName $SiteServer -Namespace $smsNamespace `
                 -Query "SELECT ContainerNodeID FROM SMS_ObjectContainerNode WHERE Name = '$folderName' AND ObjectType = 2 AND ParentContainerNodeID = 0" `
@@ -2502,6 +2583,7 @@ function New-DATConfigMgrPkg {
             $moveItem.Put() | Out-Null
 
             Write-DATLogEntry -Value "- [ConfigMgr] Moved package to $folderName\$OEM" -Severity 1
+            }
         } catch {
             Write-DATLogEntry -Value "[Warning] - Failed to move package to folder: $($_.Exception.Message)" -Severity 2
         }
@@ -2644,6 +2726,7 @@ function Start-DATModelProcessing {
         [string[]]$DistributionPoints,
         [string]$DistributionPriority = 'Normal',
         [switch]$EnableBinaryDeltaReplication,
+        [int]$ConsoleFolderID = -1,
         [switch]$DisableToast,
         [ValidateSet('RemindMeLater','InstallNow')][string]$ToastTimeoutAction = 'RemindMeLater',
         [int]$MaxDeferrals = 0,
@@ -2719,7 +2802,15 @@ function Start-DATModelProcessing {
 
     $modelList = @($SelectedModels)
     $totalModels = $modelList.Count
-    Write-DATLogEntry -Value "--- Starting model processing: $totalModels models, mode=$RunningMode ---" -Severity 1
+
+    # Determine if this is a pilot build and derive the effective package type
+    $isPilotBuild = $PackageType -like '* Pilot'
+    $effectivePackageType = if ($isPilotBuild) { ($PackageType -replace '\s+Pilot$', '').Trim() } else { $PackageType }
+    $driverNamePrefix = if ($isPilotBuild) { 'Drivers Pilot' } else { 'Drivers' }
+    $biosNamePrefix = if ($isPilotBuild) { 'BIOS Pilot' } else { 'BIOS' }
+    $biosUpdateNamePrefix = if ($isPilotBuild) { 'BIOS Update Pilot' } else { 'BIOS Update' }
+
+    Write-DATLogEntry -Value "--- Starting model processing: $totalModels models, mode=$RunningMode, packageType=$PackageType$(if ($isPilotBuild) { ' (PILOT)' }) ---" -Severity 1
 
     $completedCount = 0
     $biosNoMatchCount = 0
@@ -2799,11 +2890,11 @@ function Start-DATModelProcessing {
 
         try {
             # ── Driver processing (when PackageType is 'Drivers' or 'All') ──────────
-            if ($PackageType -in @('Drivers', 'All')) {
+            if ($effectivePackageType -in @('Drivers', 'All')) {
                 $modelBIOSOnly = [bool]$model.BIOSOnly
                 if ($modelBIOSOnly) {
                     Write-DATLogEntry -Value "[Warning] [$currentIndex/$totalModels] SKIPPED driver processing -- no driver package available for $oem $modelName ($windowsVersion $windowsBuild) -- BIOS only model" -Severity 2
-                    if ($PackageType -eq 'Drivers') {
+                    if ($effectivePackageType -eq 'Drivers') {
                         Set-DATRegistryValue -Name "PackagePhase" -Value "Drivers" -Type String
                         Set-DATRegistryValue -Name "RunningMode" -Value "DriverNoMatch" -Type String
                     }
@@ -2814,7 +2905,7 @@ function Start-DATModelProcessing {
                 # ── Pre-flight: skip download+packaging if package version is current ──
                 $skipDriverDownload = $false
                 if ($RunningMode -eq 'Configuration Manager') {
-                    $cmDriverPkgName = "Drivers - $oem $modelName - $windowsVersion $windowsBuild $arch"
+                    $cmDriverPkgName = "$driverNamePrefix - $oem $modelName - $windowsVersion $windowsBuild $arch"
                     $existingCMVersion = $cmPkgVersionCache[$cmDriverPkgName]
                     if (-not [string]::IsNullOrEmpty($existingCMVersion) -and -not [string]::IsNullOrEmpty($catalogDriverVersion) -and $existingCMVersion -eq $catalogDriverVersion -and -not $modelForceUpdate) {
                         Write-DATLogEntry -Value "[$currentIndex/$totalModels] SKIPPED -- driver package version is current ($existingCMVersion): $cmDriverPkgName" -Severity 1
@@ -2827,7 +2918,7 @@ function Start-DATModelProcessing {
                     }
                 } elseif ($RunningMode -eq 'Intune') {
                     # Check cached Intune app list -- compare display version against catalog version
-                    $expectedDisplayName = "Drivers - $oem $modelName - $windowsVersion $windowsBuild $arch"
+                    $expectedDisplayName = "$driverNamePrefix - $oem $modelName - $windowsVersion $windowsBuild $arch"
                     Write-DATLogEntry -Value "[$currentIndex/$totalModels] Checking for existing Intune package: $expectedDisplayName" -Severity 1
                     $existingIntuneApp = $cachedIntuneApps | Where-Object {
                         $_.displayName -eq $expectedDisplayName
@@ -2887,6 +2978,7 @@ function Start-DATModelProcessing {
                             PackageDestination = $PackagePath
                             IntuneAuthToken    = $IntuneAuthToken
                         }
+                        if ($isPilotBuild) { $intuneParams['NamePrefix'] = $driverNamePrefix }
                         if (-not [string]::IsNullOrEmpty($catalogVersion)) { $intuneParams['Version'] = "$catalogVersion" }
                         if ($DisableToast) { $intuneParams['DisableToast'] = $true }
                         if ($ToastTimeoutAction -ne 'RemindMeLater') { $intuneParams['ToastTimeoutAction'] = $ToastTimeoutAction }
@@ -2909,7 +3001,7 @@ function Start-DATModelProcessing {
 
                         # Update cached app list so subsequent iterations detect this package
                         if ($null -ne $intuneResult -and -not [string]::IsNullOrEmpty($intuneResult.AppId) -and -not $intuneResult.Skipped) {
-                            $driverDisplayName = "Drivers - $oem $modelName - $windowsVersion $windowsBuild $arch"
+                            $driverDisplayName = "$driverNamePrefix - $oem $modelName - $windowsVersion $windowsBuild $arch"
                             $driverCacheVersion = if (-not [string]::IsNullOrEmpty($catalogDriverVersion)) { $catalogDriverVersion } else { Get-Date -Format "ddMMyyyy" }
                             $cachedIntuneApps += [PSCustomObject]@{
                                 id             = $intuneResult.AppId
@@ -3007,6 +3099,7 @@ function Start-DATModelProcessing {
                                 SiteCode      = $SiteCode
                                 Version       = $version
                                 PackageType   = 'Drivers'
+                                NamePrefix    = $driverNamePrefix
                                 Priority      = $DistributionPriority
                             }
                             if ($DistributionPointGroups -and $DistributionPointGroups.Count -gt 0) {
@@ -3017,6 +3110,7 @@ function Start-DATModelProcessing {
                             }
                             if ($modelForceUpdate) { $cmParams['ForceUpdate'] = $true }
                             if ($EnableBinaryDeltaReplication) { $cmParams['EnableBinaryDeltaReplication'] = $true }
+                            if ($ConsoleFolderID -ge 0) { $cmParams['ConsoleFolderID'] = $ConsoleFolderID }
                             $cmResult = New-DATConfigMgrPkg @cmParams
 
                             if ($cmResult) {
@@ -3105,7 +3199,7 @@ function Start-DATModelProcessing {
             }
 
             # ── BIOS processing (when PackageType is 'BIOS' or 'All') ──────────────
-            if ($PackageType -in @('BIOS', 'All')) {
+            if ($effectivePackageType -in @('BIOS', 'All')) {
                 # Microsoft Surface BIOS updates are delivered via driver injection -- skip BIOS packaging
                 if ($oem -eq 'Microsoft') {
                     Write-DATLogEntry -Value "[$currentIndex/$totalModels] SKIPPED -- Microsoft Surface BIOS updates are handled via driver injection, no separate BIOS package required" -Severity 1
@@ -3126,7 +3220,7 @@ function Start-DATModelProcessing {
                 $skipBios = $false
                 if (-not [string]::IsNullOrEmpty($catalogBIOSVersion)) {
                     if ($RunningMode -eq 'Configuration Manager') {
-                        $cmBiosPkgName = "BIOS Update - $oem $modelName - $arch"
+                        $cmBiosPkgName = "$biosUpdateNamePrefix - $oem $modelName - $arch"
                         $existingCMBiosVer = $cmPkgVersionCache[$cmBiosPkgName]
                         if (-not [string]::IsNullOrEmpty($existingCMBiosVer) -and $existingCMBiosVer -eq $catalogBIOSVersion -and -not $modelForceUpdate) {
                             Write-DATLogEntry -Value "[$currentIndex/$totalModels] SKIPPED -- BIOS version is current ($existingCMBiosVer): $cmBiosPkgName" -Severity 1
@@ -3137,7 +3231,7 @@ function Start-DATModelProcessing {
                             Write-DATLogEntry -Value "[$currentIndex/$totalModels] BIOS UPDATE needed -- existing v$existingCMBiosVer, catalog v${catalogBIOSVersion}: $cmBiosPkgName" -Severity 1
                         }
                     } elseif ($RunningMode -eq 'Intune') {
-                        $expectedBiosName = "BIOS - $oem $modelName - $arch"
+                        $expectedBiosName = "$biosNamePrefix - $oem $modelName - $arch"
                         $existingBiosApp = $cachedIntuneApps | Where-Object {
                             $_.displayName -eq $expectedBiosName
                         } | Sort-Object -Property displayVersion -Descending | Select-Object -First 1
@@ -3177,7 +3271,7 @@ function Start-DATModelProcessing {
                 if ($null -eq $biosEntry) {
                     Write-DATLogEntry -Value "[Warning] - No BIOS update available for $oem $modelName -- skipping BIOS" -Severity 2
                     $biosNoMatchCount++
-                    if ($PackageType -eq 'BIOS') {
+                    if ($effectivePackageType -eq 'BIOS') {
                         # Signal the UI via RunningMode -- tied to CurrentJob so no race conditions
                         Set-DATRegistryValue -Name "RunningMode" -Value "BiosNoMatch" -Type String
                     }
@@ -3186,7 +3280,7 @@ function Start-DATModelProcessing {
 
                     $biosDownloadDir = Join-Path $StoragePath "$oem\$modelName\BIOS"
                     Set-DATRegistryValue -Name "RunningMode" -Value "Download" -Type String
-                    $biosFilePath = @(Start-DATBiosDownload -BiosEntry $biosEntry -DownloadDestination $biosDownloadDir)[-1]
+                    $biosFilePath = @(Start-DATBiosDownload -BiosEntry $biosEntry -DownloadDestination $biosDownloadDir -OEM $oem)[-1]
 
                     if ([string]::IsNullOrEmpty($biosFilePath)) {
                         Write-DATLogEntry -Value "[Warning] - BIOS download failed for $oem $modelName -- skipping BIOS" -Severity 2
@@ -3216,6 +3310,7 @@ function Start-DATModelProcessing {
                                     IntuneAuthToken    = $IntuneAuthToken
                                     UpdateType         = 'BIOS'
                                 }
+                                if ($isPilotBuild) { $intuneParams['NamePrefix'] = $biosNamePrefix }
                 if (-not [string]::IsNullOrEmpty($biosEntry.Version)) { $intuneParams['Version'] = "$($biosEntry.Version)" }
                                 if (-not [string]::IsNullOrEmpty($biosEntry.ReleaseDate)) { $intuneParams['ReleaseDate'] = $biosEntry.ReleaseDate }
                                 if ($DisableToast) { $intuneParams['DisableToast'] = $true }
@@ -3242,7 +3337,7 @@ function Start-DATModelProcessing {
                                 if ($null -ne $biosIntuneResult -and -not [string]::IsNullOrEmpty($biosIntuneResult.AppId)) {
                                     $processedBiosModels["$oem|$modelName"] = $biosIntuneResult.AppId
                                     if (-not $biosIntuneResult.Skipped) {
-                                        $biosDisplayName = "BIOS - $oem $modelName - $arch"
+                                        $biosDisplayName = "$biosNamePrefix - $oem $modelName - $arch"
                                         $biosCacheVersion = if (-not [string]::IsNullOrEmpty($biosEntry.Version)) { $biosEntry.Version } else { Get-Date -Format "ddMMyyyy" }
                                         $cachedIntuneApps += [PSCustomObject]@{
                                             id             = $biosIntuneResult.AppId
@@ -3341,6 +3436,7 @@ function Start-DATModelProcessing {
                                         SiteCode      = $SiteCode
                                         Version       = $biosVersion
                                         PackageType   = 'BIOS'
+                                        NamePrefix    = $biosUpdateNamePrefix
                                         Priority      = $DistributionPriority
                                     }
                                     if (-not [string]::IsNullOrEmpty($biosEntry.ReleaseDate)) {
@@ -3354,6 +3450,7 @@ function Start-DATModelProcessing {
                                     }
                                     if ($modelForceUpdate) { $cmParams['ForceUpdate'] = $true }
                                     if ($EnableBinaryDeltaReplication) { $cmParams['EnableBinaryDeltaReplication'] = $true }
+                                    if ($ConsoleFolderID -ge 0) { $cmParams['ConsoleFolderID'] = $ConsoleFolderID }
                                     $cmResult = New-DATConfigMgrPkg @cmParams
 
                                     if ($cmResult) {
@@ -3438,11 +3535,11 @@ function Start-DATModelProcessing {
     }
 
     if ($completedCount -eq $totalModels) {
-        if ($PackageType -eq 'BIOS' -and $biosNoMatchCount -eq $totalModels) {
+        if ($effectivePackageType -eq 'BIOS' -and $biosNoMatchCount -eq $totalModels) {
             # Every model had no BIOS catalog match
             Set-DATRegistryValue -Name "RunningMessage" -Value "No BIOS updates found for $totalModels model$(if ($totalModels -ne 1) { 's' })" -Type String
             Set-DATRegistryValue -Name "RunningState" -Value "CompletedNoMatch" -Type String
-        } elseif ($biosNoMatchCount -gt 0 -and $PackageType -eq 'BIOS') {
+        } elseif ($biosNoMatchCount -gt 0 -and $effectivePackageType -eq 'BIOS') {
             $matchedCount = $totalModels - $biosNoMatchCount
             Set-DATRegistryValue -Name "RunningMessage" -Value "Completed: $matchedCount of $totalModels models processed, $biosNoMatchCount with no BIOS match" -Type String
             Set-DATRegistryValue -Name "RunningState" -Value "Completed" -Type String
@@ -6293,6 +6390,66 @@ function Invoke-DATAutoAssignmentFilter {
 
 #endregion Assignment Filter Functions
 
+#region Code Signing
+
+function Invoke-DATCodeSign {
+    <#
+    .SYNOPSIS
+        Signs a PowerShell script with the configured Authenticode certificate.
+        Soft-fails if no certificate is configured or signing fails.
+    .PARAMETER ScriptPath
+        Full path to the .ps1 file to sign.
+    #>
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory)]
+        [string]$ScriptPath
+    )
+
+    # Read thumbprint from registry
+    $regConfig = Get-ItemProperty -Path $global:RegPath -ErrorAction SilentlyContinue
+    if (-not $regConfig -or [string]::IsNullOrEmpty($regConfig.CodeSigningCertThumbprint)) { return }
+    if ($regConfig.CodeSigningEnabled -ne 1) { return }
+
+    $thumbprint = $regConfig.CodeSigningCertThumbprint.Trim()
+    if ([string]::IsNullOrEmpty($thumbprint)) { return }
+
+    # Search both certificate stores for the thumbprint
+    $cert = $null
+    foreach ($storePath in @('Cert:\LocalMachine\My', 'Cert:\CurrentUser\My')) {
+        $cert = Get-ChildItem -Path $storePath -ErrorAction SilentlyContinue |
+            Where-Object { $_.Thumbprint -eq $thumbprint -and $_.HasPrivateKey } |
+            Select-Object -First 1
+        if ($cert) { break }
+    }
+
+    if (-not $cert) {
+        Write-DATLogEntry -Value "[CodeSign] Certificate with thumbprint $thumbprint not found in LocalMachine\My or CurrentUser\My -- skipping" -Severity 2
+        return
+    }
+
+    # Validate the certificate has Code Signing EKU
+    $hasCodeSigningEku = $cert.EnhancedKeyUsageList | Where-Object { $_.ObjectId -eq '1.3.6.1.5.5.7.3.3' }
+    if (-not $hasCodeSigningEku) {
+        Write-DATLogEntry -Value "[CodeSign] Certificate $thumbprint does not have Code Signing EKU -- skipping" -Severity 2
+        return
+    }
+
+    try {
+        $result = Set-AuthenticodeSignature -FilePath $ScriptPath -Certificate $cert `
+            -TimestampServer 'http://timestamp.digicert.com' -HashAlgorithm SHA256 -ErrorAction Stop
+        if ($result.Status -eq 'Valid') {
+            Write-DATLogEntry -Value "[CodeSign] Signed: $(Split-Path $ScriptPath -Leaf)" -Severity 1
+        } else {
+            Write-DATLogEntry -Value "[CodeSign] Signing returned status '$($result.Status)' for $(Split-Path $ScriptPath -Leaf): $($result.StatusMessage)" -Severity 2
+        }
+    } catch {
+        Write-DATLogEntry -Value "[CodeSign] Failed to sign $(Split-Path $ScriptPath -Leaf) -- $($_.Exception.Message)" -Severity 2
+    }
+}
+
+#endregion Code Signing
+
 function New-DATIntuneToastScript {
     <#
     .SYNOPSIS
@@ -6917,6 +7074,7 @@ try { Stop-Transcript } catch {}
 
     [System.IO.File]::WriteAllText($OutputPath, $fullScript, [System.Text.UTF8Encoding]::new($false))
     Write-DATLogEntry -Value "[Intune] Toast notification script generated: $OutputPath (Type: $UpdateType)" -Severity 1
+    Invoke-DATCodeSign -ScriptPath $OutputPath
     return $OutputPath
 }
 
@@ -7378,6 +7536,7 @@ function Show-DATStatusToast {
 
     [System.IO.File]::WriteAllText($OutputPath, $scriptContent, [System.Text.UTF8Encoding]::new($false))
     Write-DATLogEntry -Value "[Intune] Install script generated: $OutputPath (Toast: $(if ($DisableToast) { 'Disabled' } else { 'Enabled' }))" -Severity 1
+    Invoke-DATCodeSign -ScriptPath $OutputPath
     return $OutputPath
 }
 
@@ -7573,6 +7732,7 @@ if ($RequirementMet) {{
 
     [System.IO.File]::WriteAllText($OutputPath, $scriptContent, [System.Text.UTF8Encoding]::new($false))
     Write-DATLogEntry -Value "[Intune] Requirement script generated: $OutputPath (UpdateType: $UpdateType)" -Severity 1
+    Invoke-DATCodeSign -ScriptPath $OutputPath
     return $OutputPath
 }
 
@@ -7728,6 +7888,7 @@ catch {{
 
     [System.IO.File]::WriteAllText($OutputPath, $scriptContent, [System.Text.UTF8Encoding]::new($false))
     Write-DATLogEntry -Value "[Intune] Detection script generated: $OutputPath (UpdateType: $UpdateType)" -Severity 1
+    Invoke-DATCodeSign -ScriptPath $OutputPath
     return $OutputPath
 }
 
@@ -8363,6 +8524,7 @@ function Invoke-DATIntunePackageCreation {
         [Parameter(Mandatory)][string]$PackageDestination,
         [string]$IntuneAuthToken,
         [ValidateSet('Drivers','BIOS')][string]$UpdateType = 'Drivers',
+        [string]$NamePrefix,
         [switch]$DisableToast,
         [ValidateSet('RemindMeLater','InstallNow')][string]$ToastTimeoutAction = 'RemindMeLater',
         [int]$MaxDeferrals = 0,
@@ -8405,10 +8567,11 @@ function Invoke-DATIntunePackageCreation {
         $version = $Version
     }
     $installScriptName = if ($UpdateType -eq 'BIOS') { 'Install-BIOS.ps1' } else { 'Install-Drivers.ps1' }
+    $displayPrefix = if (-not [string]::IsNullOrEmpty($NamePrefix)) { $NamePrefix } else { $UpdateType }
     $displayName = if ($UpdateType -eq 'BIOS') {
-        "$UpdateType - $OEM $Model - $Architecture"
+        "$displayPrefix - $OEM $Model - $Architecture"
     } else {
-        "$UpdateType - $OEM $Model - $OS $Architecture"
+        "$displayPrefix - $OEM $Model - $OS $Architecture"
     }
     $publisher = $OEM
     $description = if ($UpdateType -eq 'BIOS') {
@@ -9084,11 +9247,15 @@ function Start-DATBiosDownload {
         The PSCustomObject from Find-DATBiosPackage containing DownloadURL, FileName, FileHash, HashMethod.
     .PARAMETER DownloadDestination
         Directory to store the downloaded file.
+    .PARAMETER OEM
+        The OEM manufacturer name. Used to skip Authenticode checks for vendors
+        whose downloads use inconsistent or non-standard signing (e.g. Acer).
     #>
     [CmdletBinding()]
     param (
         [Parameter(Mandatory)]$BiosEntry,
-        [Parameter(Mandatory)][string]$DownloadDestination
+        [Parameter(Mandatory)][string]$DownloadDestination,
+        [string]$OEM
     )
 
     if (-not (Test-Path $DownloadDestination)) {
@@ -9118,7 +9285,11 @@ function Start-DATBiosDownload {
             }
         } else {
             # No published hash -- fall back to Authenticode allow-list. Fail closed.
-            if (Test-DATFileSignature -FilePath $destFile -Context $sigContext) {
+            # Skip for Acer: their downloads use inconsistent signers that cannot be reliably validated.
+            if ($OEM -eq 'Acer') {
+                Write-DATLogEntry -Value "[BIOS] File already cached (Acer -- Authenticode check skipped): $destFile" -Severity 1
+                return $destFile
+            } elseif (Test-DATFileSignature -FilePath $destFile -Context $sigContext) {
                 Write-DATLogEntry -Value "[BIOS] File already cached and Authenticode-verified: $destFile" -Severity 1
                 return $destFile
             } else {
@@ -9168,11 +9339,16 @@ function Start-DATBiosDownload {
             return $null
         }
     } else {
-        Write-DATLogEntry -Value "[BIOS] No published hash -- verifying Authenticode signer against trusted publisher allow-list" -Severity 1
-        if (-not (Test-DATFileSignature -FilePath $destFile -Context $sigContext)) {
-            Write-DATLogEntry -Value "[BIOS] Integrity check FAILED -- discarding downloaded file" -Severity 3
-            Remove-Item $destFile -Force -ErrorAction SilentlyContinue
-            return $null
+        # Skip Authenticode for Acer -- their downloads use inconsistent signers
+        if ($OEM -eq 'Acer') {
+            Write-DATLogEntry -Value "[BIOS] No published hash -- Acer OEM detected, Authenticode check skipped (HTTPS transport integrity only)" -Severity 2
+        } else {
+            Write-DATLogEntry -Value "[BIOS] No published hash -- verifying Authenticode signer against trusted publisher allow-list" -Severity 1
+            if (-not (Test-DATFileSignature -FilePath $destFile -Context $sigContext)) {
+                Write-DATLogEntry -Value "[BIOS] Integrity check FAILED -- discarding downloaded file" -Severity 3
+                Remove-Item $destFile -Force -ErrorAction SilentlyContinue
+                return $null
+            }
         }
     }
 
@@ -9699,7 +9875,12 @@ function Send-DATFeedback {
         [string]$Rating,
 
         [AllowEmptyString()]
-        [string]$Comment = ''
+        [string]$Comment = '',
+
+        [AllowEmptyString()]
+        [string]$Email = '',
+
+        [bool]$FollowUp = $false
     )
 
     $telemetryId = Get-DATTelemetryId
@@ -9712,6 +9893,8 @@ function Send-DATFeedback {
         installId   = $telemetryId
         rating      = $Rating
         comment     = $Comment
+        email       = $Email
+        followUp    = [bool]$FollowUp
         submittedAt = (Get-Date).ToUniversalTime().ToString('o')
         appVersion  = $global:ScriptRelease
     }

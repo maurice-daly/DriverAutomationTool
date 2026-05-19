@@ -292,7 +292,15 @@ $btn_FeedbackDown.Add_Click({
     $bgColor = [System.Windows.Media.ColorConverter]::ConvertFromString($theme['CardBackground'])
 
     # Shared state hashtable for nested event handler closures (PS 5.1 scoping)
-    $feedbackState = [hashtable]::Synchronized(@{ Dialog = $null; TextBox = $null })
+    $feedbackState = [hashtable]::Synchronized(@{
+        Dialog        = $null
+        TextBox       = $null
+        EmailBox      = $null
+        EmailHint     = $null
+        EmailLabel    = $null
+        FollowUpCheck = $null
+        SubmitButton  = $null
+    })
 
     $dlg = [System.Windows.Window]::new()
     $dlg.WindowStyle = 'None'
@@ -354,6 +362,29 @@ $btn_FeedbackDown.Add_Click({
     $subtitleText.Margin = [System.Windows.Thickness]::new(0, 0, 0, 16)
     $panel.Children.Add($subtitleText) | Out-Null
 
+    # Rounded TextBox template (WPF TextBox doesn't honor CornerRadius natively)
+    $roundedTextBoxTemplate = [System.Windows.Markup.XamlReader]::Parse(@"
+<ControlTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                 xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                 TargetType="TextBox">
+    <Border x:Name="bd" Background="{TemplateBinding Background}"
+            BorderBrush="{TemplateBinding BorderBrush}"
+            BorderThickness="{TemplateBinding BorderThickness}"
+            CornerRadius="8" SnapsToDevicePixels="True">
+        <ScrollViewer x:Name="PART_ContentHost"
+                      Margin="{TemplateBinding Padding}"
+                      VerticalAlignment="{TemplateBinding VerticalContentAlignment}"
+                      HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                      Background="Transparent" Focusable="False"/>
+    </Border>
+    <ControlTemplate.Triggers>
+        <Trigger Property="IsEnabled" Value="False">
+            <Setter TargetName="bd" Property="Opacity" Value="0.55"/>
+        </Trigger>
+    </ControlTemplate.Triggers>
+</ControlTemplate>
+"@)
+
     # TextBox for feedback
     $feedbackBox = [System.Windows.Controls.TextBox]::new()
     $feedbackBox.Height = 120
@@ -369,9 +400,158 @@ $btn_FeedbackDown.Add_Click({
     $feedbackBox.BorderBrush = [System.Windows.Media.SolidColorBrush]::new(
         [System.Windows.Media.ColorConverter]::ConvertFromString($theme['InputBorder']))
     $feedbackBox.BorderThickness = [System.Windows.Thickness]::new(1)
-    $feedbackBox.Margin = [System.Windows.Thickness]::new(0, 0, 0, 20)
+    $feedbackBox.Margin = [System.Windows.Thickness]::new(0, 0, 0, 16)
+    $feedbackBox.Template = $roundedTextBoxTemplate
     $panel.Children.Add($feedbackBox) | Out-Null
     $feedbackState.TextBox = $feedbackBox
+
+    # "Follow up with me" toggle row -- matches ToggleSwitch style
+    $followUpCheck = [System.Windows.Controls.CheckBox]::new()
+    $followUpCheck.VerticalAlignment = 'Center'
+    $followUpCheck.Cursor = [System.Windows.Input.Cursors]::Hand
+    $followUpCheck.Margin = [System.Windows.Thickness]::new(0, 0, 0, 10)
+
+    $trackOffBg  = $theme['InputBackground']
+    $trackBorder = $theme['CardBorder']
+    $thumbOffFg  = $theme['InputPlaceholder']
+    $trackOnBg   = $theme['ButtonPrimary']
+    $followToggleTemplate = [System.Windows.Markup.XamlReader]::Parse(@"
+<ControlTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                 xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                 TargetType="CheckBox">
+    <Grid>
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="Auto"/>
+            <ColumnDefinition Width="*"/>
+        </Grid.ColumnDefinitions>
+        <Border x:Name="switchTrack" Grid.Column="0"
+                Width="40" Height="20" CornerRadius="10"
+                Background="$trackOffBg"
+                BorderBrush="$trackBorder" BorderThickness="1"
+                VerticalAlignment="Center" SnapsToDevicePixels="True">
+            <Border x:Name="switchThumb"
+                    Width="16" Height="16" CornerRadius="8"
+                    Background="$thumbOffFg"
+                    HorizontalAlignment="Left" Margin="2,0,0,0"
+                    VerticalAlignment="Center"/>
+        </Border>
+        <ContentPresenter Grid.Column="1" Margin="10,0,0,0"
+                          VerticalAlignment="Center" RecognizesAccessKey="True"/>
+    </Grid>
+    <ControlTemplate.Triggers>
+        <Trigger Property="IsChecked" Value="True">
+            <Setter TargetName="switchTrack" Property="Background" Value="$trackOnBg"/>
+            <Setter TargetName="switchThumb" Property="Background" Value="#FFFFFF"/>
+            <Setter TargetName="switchThumb" Property="HorizontalAlignment" Value="Right"/>
+            <Setter TargetName="switchThumb" Property="Margin" Value="0,0,2,0"/>
+        </Trigger>
+        <Trigger Property="IsMouseOver" Value="True">
+            <Setter TargetName="switchTrack" Property="Opacity" Value="0.85"/>
+        </Trigger>
+    </ControlTemplate.Triggers>
+</ControlTemplate>
+"@)
+    $followUpCheck.Template = $followToggleTemplate
+
+    $followUpLabel = [System.Windows.Controls.TextBlock]::new()
+    $followUpLabel.Text = "Follow up with me"
+    $followUpLabel.FontSize = 13
+    $followUpLabel.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.ColorConverter]::ConvertFromString($theme['WindowForeground']))
+    $followUpLabel.VerticalAlignment = 'Center'
+    $followUpCheck.Content = $followUpLabel
+    $panel.Children.Add($followUpCheck) | Out-Null
+    $feedbackState.FollowUpCheck = $followUpCheck
+
+    # Email label (visibility tied to toggle)
+    $emailLabel = [System.Windows.Controls.TextBlock]::new()
+    $emailLabel.Text = "Please enter a valid email address below:"
+    $emailLabel.FontSize = 12
+    $emailLabel.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.ColorConverter]::ConvertFromString($theme['InputPlaceholder']))
+    $emailLabel.Margin = [System.Windows.Thickness]::new(0, 0, 0, 4)
+    $emailLabel.Visibility = 'Collapsed'
+    $panel.Children.Add($emailLabel) | Out-Null
+    $feedbackState.EmailLabel = $emailLabel
+
+    # Email TextBox (disabled until toggle is on)
+    $emailBox = [System.Windows.Controls.TextBox]::new()
+    $emailBox.MinHeight = 36
+    $emailBox.FontSize = 13
+    $emailBox.IsEnabled = $false
+    $emailBox.Visibility = 'Collapsed'
+    $emailBox.VerticalContentAlignment = 'Center'
+    $emailBox.Padding = [System.Windows.Thickness]::new(10, 4, 10, 4)
+    $emailBox.Background = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.ColorConverter]::ConvertFromString($theme['InputBackground']))
+    $emailBox.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.ColorConverter]::ConvertFromString($theme['WindowForeground']))
+    $emailBox.BorderBrush = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.ColorConverter]::ConvertFromString($theme['InputBorder']))
+    $emailBox.BorderThickness = [System.Windows.Thickness]::new(1)
+    $emailBox.Margin = [System.Windows.Thickness]::new(0, 0, 0, 6)
+    $emailBox.ToolTip = "Enter your email so we can follow up"
+    $emailBox.Template = $roundedTextBoxTemplate
+    $panel.Children.Add($emailBox) | Out-Null
+    $feedbackState.EmailBox = $emailBox
+
+    # Inline validation hint
+    $emailHint = [System.Windows.Controls.TextBlock]::new()
+    $emailHint.Text = ""
+    $emailHint.FontSize = 11
+    $emailHint.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.ColorConverter]::ConvertFromString($theme['DriverNoPackForeground']))
+    $emailHint.Margin = [System.Windows.Thickness]::new(0, 0, 0, 20)
+    $emailHint.Visibility = 'Collapsed'
+    $panel.Children.Add($emailHint) | Out-Null
+    $feedbackState.EmailHint = $emailHint
+
+    # Spacer before the action buttons
+    $buttonSpacer = [System.Windows.Controls.Border]::new()
+    $buttonSpacer.Height = 12
+    $panel.Children.Add($buttonSpacer) | Out-Null
+
+    # Email format validator (RFC 5322 simplified)
+    $emailRegex = '^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$'
+
+    $followUpCheck.Tag = $feedbackState
+    $followUpCheck.Add_Checked({
+        $state = $this.Tag
+        $state.EmailLabel.Visibility = 'Visible'
+        $state.EmailBox.Visibility = 'Visible'
+        $state.EmailBox.IsEnabled = $true
+        # Disable submit until a valid email is provided
+        $state.SubmitButton.IsEnabled = $false
+        $state.EmailBox.Focus() | Out-Null
+    })
+    $followUpCheck.Add_Unchecked({
+        $state = $this.Tag
+        $state.EmailBox.IsEnabled = $false
+        $state.EmailBox.Visibility = 'Collapsed'
+        $state.EmailBox.Text = ''
+        $state.EmailLabel.Visibility = 'Collapsed'
+        $state.EmailHint.Visibility = 'Collapsed'
+        # Re-enable submit -- email no longer required
+        $state.SubmitButton.IsEnabled = $true
+    })
+
+    $emailBox.Tag = @{ State = $feedbackState; Regex = $emailRegex }
+    $emailBox.Add_TextChanged({
+        $ctx = $this.Tag
+        $state = $ctx.State
+        $text = $this.Text
+        if ([string]::IsNullOrWhiteSpace($text)) {
+            $state.EmailHint.Visibility = 'Collapsed'
+            $state.SubmitButton.IsEnabled = $false
+        } elseif ($text -notmatch $ctx.Regex) {
+            $state.EmailHint.Text = "Email address format validation issue."
+            $state.EmailHint.Visibility = 'Visible'
+            $state.SubmitButton.IsEnabled = $false
+        } else {
+            $state.EmailHint.Visibility = 'Collapsed'
+            $state.SubmitButton.IsEnabled = $true
+        }
+    })
 
     # Button row
     $btnGrid = [System.Windows.Controls.Grid]::new()
@@ -388,11 +568,15 @@ $btn_FeedbackDown.Add_Click({
     $submitTemplate = [System.Windows.Markup.XamlReader]::Parse(@"
 <ControlTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" TargetType="Button">
     <Border x:Name="bd" Background="$($theme['ButtonPrimary'])" CornerRadius="8" Padding="16,8">
-        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+        <ContentPresenter x:Name="cp" HorizontalAlignment="Center" VerticalAlignment="Center"/>
     </Border>
     <ControlTemplate.Triggers>
         <Trigger Property="IsMouseOver" Value="True">
             <Setter TargetName="bd" Property="Background" Value="$($theme['ButtonPrimaryHover'])"/>
+        </Trigger>
+        <Trigger Property="IsEnabled" Value="False">
+            <Setter TargetName="bd" Property="Opacity" Value="0.4"/>
+            <Setter TargetName="cp" Property="Opacity" Value="0.5"/>
         </Trigger>
     </ControlTemplate.Triggers>
 </ControlTemplate>
@@ -405,12 +589,26 @@ $btn_FeedbackDown.Add_Click({
     $btnSubmit.Content = "Submit Feedback"
     [System.Windows.Controls.Grid]::SetColumn($btnSubmit, 0)
     $btnSubmit.Tag = $feedbackState
+    $feedbackState.SubmitButton = $btnSubmit
     $btnSubmit.Add_Click({
         $state = $this.Tag
         $comment = $state.TextBox.Text
+        $followUp = [bool]$state.FollowUpCheck.IsChecked
+        $email = if ($followUp) { $state.EmailBox.Text.Trim() } else { '' }
+
+        if ($followUp) {
+            $emailRegex = '^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$'
+            if ([string]::IsNullOrWhiteSpace($email) -or $email -notmatch $emailRegex) {
+                $state.EmailHint.Text = "Email address format validation issue."
+                $state.EmailHint.Visibility = 'Visible'
+                $state.EmailBox.Focus() | Out-Null
+                return
+            }
+        }
+
         $state.Dialog.Close()
         try {
-            Send-DATFeedback -Rating 'Negative' -Comment $comment
+            Send-DATFeedback -Rating 'Negative' -Comment $comment -Email $email -FollowUp $followUp
             Show-DATInfoDialog -Title "Feedback Sent" -Message "Thank you for your feedback. We'll use it to improve the tool." -Type Success -ButtonLabel "OK"
         } catch {
             Write-DATLogEntry -Value "[Feedback] Submit failed: $($_.Exception.Message)" -Severity 2
@@ -890,6 +1088,357 @@ function Show-DATInfoDialog {
     $btnOk.Content = $ButtonLabel
     $btnOk.Add_Click({ $dlg.Close() })
     $panel.Children.Add($btnOk) | Out-Null
+
+    $border.Child = $panel
+    $dlg.Content = $border
+    $dlg.ShowDialog() | Out-Null
+}
+
+function Test-DATConnectivity {
+    <#
+    .SYNOPSIS
+        Tests connectivity to required external URLs. Returns an array of
+        [PSCustomObject] with URL, Description, and Reachable properties.
+        Any HTTP response (including 4xx/5xx) counts as reachable -- only
+        DNS failures, TCP timeouts, and TLS errors are treated as unreachable.
+    .PARAMETER OnProgress
+        Optional scriptblock called after each endpoint test with params:
+        (int $current, int $total, string $url, bool $reachable)
+    #>
+    [OutputType([PSCustomObject[]])]
+    param(
+        [scriptblock]$OnProgress
+    )
+
+    # Ensure TLS 1.2 is available (PS 5.1 defaults to TLS 1.0)
+    [System.Net.ServicePointManager]::SecurityProtocol =
+        [System.Net.ServicePointManager]::SecurityProtocol -bor [System.Net.SecurityProtocolType]::Tls12
+
+    $endpoints = @(
+        @{ URL = 'https://raw.githubusercontent.com'; Description = 'GitHub Raw Content (OEM catalogs, updates, release notes)' }
+        @{ URL = 'https://github.com';                Description = 'GitHub (self-update, Intune packaging tools)' }
+        @{ URL = 'https://api.driverautomationtool.com'; Description = 'DAT API (BIOS catalog, health checks)' }
+        @{ URL = 'https://downloads.dell.com';         Description = 'Dell driver downloads' }
+        @{ URL = 'https://dl.dell.com';                Description = 'Dell BIOS utilities' }
+        @{ URL = 'https://ftp.hp.com';                 Description = 'HP driver catalog and SoftPaqs' }
+        @{ URL = 'https://download.lenovo.com';        Description = 'Lenovo driver catalog' }
+        @{ URL = 'https://global-download.acer.com';   Description = 'Acer driver and BIOS catalog' }
+        @{ URL = 'https://login.microsoftonline.com';  Description = 'Microsoft Entra ID (Intune authentication)' }
+        @{ URL = 'https://graph.microsoft.com';        Description = 'Microsoft Graph API (Intune management)' }
+    )
+
+    $total = $endpoints.Count
+    $current = 0
+    $results = foreach ($ep in $endpoints) {
+        $current++
+        $reachable = $false
+        try {
+            $request = [System.Net.HttpWebRequest]::Create($ep.URL)
+            $request.Method = 'HEAD'
+            $request.Timeout = 8000
+            $request.AllowAutoRedirect = $true
+            try {
+                $response = $request.GetResponse()
+                $response.Close()
+                $reachable = $true
+            } catch [System.Net.WebException] {
+                # A WebException with an HTTP response means the server IS reachable
+                # (e.g. 400, 403, 404, 500) -- only connection/DNS failures are truly unreachable
+                if ($null -ne $_.Exception.Response) {
+                    $reachable = $true
+                    $_.Exception.Response.Close()
+                } else {
+                    $reachable = $false
+                }
+            }
+        } catch {
+            $reachable = $false
+        }
+        if ($null -ne $OnProgress) {
+            try { & $OnProgress $current $total $ep.URL $reachable } catch { }
+        }
+        [PSCustomObject]@{
+            URL         = $ep.URL
+            Description = $ep.Description
+            Reachable   = $reachable
+        }
+    }
+    $results
+}
+
+function Show-DATConnectivityWarningDialog {
+    <#
+    .SYNOPSIS
+        Displays a themed modal listing unreachable URLs and advising about proxy settings.
+    #>
+    param (
+        [PSCustomObject[]]$FailedEndpoints
+    )
+
+    $theme = Get-DATTheme -ThemeName $script:CurrentTheme
+    $bgColor = [System.Windows.Media.ColorConverter]::ConvertFromString($theme['CardBackground'])
+
+    $dlg = [System.Windows.Window]::new()
+    $dlg.WindowStyle = 'None'
+    $dlg.AllowsTransparency = $true
+    $dlg.Background = [System.Windows.Media.Brushes]::Transparent
+    $dlg.WindowStartupLocation = 'CenterOwner'
+    $dlg.Owner = $Window
+    $dlg.Width = 560
+    $dlg.SizeToContent = 'Height'
+    $dlg.MaxHeight = 600
+    $dlg.Topmost = $true
+    $dlg.ResizeMode = 'NoResize'
+    $dlg.ShowInTaskbar = $false
+
+    $border = [System.Windows.Controls.Border]::new()
+    $border.Background = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.Color]::FromArgb(245, $bgColor.R, $bgColor.G, $bgColor.B))
+    $border.CornerRadius = [System.Windows.CornerRadius]::new(16)
+    $border.Padding = [System.Windows.Thickness]::new(28, 24, 28, 24)
+    $border.BorderBrush = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.ColorConverter]::ConvertFromString($theme['CardBorder']))
+    $border.BorderThickness = [System.Windows.Thickness]::new(1)
+    $shadow = [System.Windows.Media.Effects.DropShadowEffect]::new()
+    $shadow.BlurRadius = 30; $shadow.ShadowDepth = 0; $shadow.Opacity = 0.5
+    $shadow.Color = [System.Windows.Media.Colors]::Black
+    $border.Effect = $shadow
+
+    $panel = [System.Windows.Controls.StackPanel]::new()
+
+    # Warning icon
+    $iconText = [System.Windows.Controls.TextBlock]::new()
+    $iconText.Text = [string][char]0xE7BA
+    $iconText.FontFamily = [System.Windows.Media.FontFamily]::new('Segoe MDL2 Assets')
+    $iconText.FontSize = 28
+    $iconText.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.ColorConverter]::ConvertFromString($theme['StatusWarning']))
+    $iconText.HorizontalAlignment = 'Center'
+    $iconText.Margin = [System.Windows.Thickness]::new(0, 0, 0, 12)
+    $panel.Children.Add($iconText) | Out-Null
+
+    # Title
+    $titleText = [System.Windows.Controls.TextBlock]::new()
+    $titleText.Text = 'Internet Connectivity Issues Detected'
+    $titleText.FontSize = 16
+    $titleText.FontWeight = [System.Windows.FontWeights]::Bold
+    $titleText.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.ColorConverter]::ConvertFromString($theme['WindowForeground']))
+    $titleText.HorizontalAlignment = 'Center'
+    $titleText.Margin = [System.Windows.Thickness]::new(0, 0, 0, 8)
+    $panel.Children.Add($titleText) | Out-Null
+
+    # Description
+    $descText = [System.Windows.Controls.TextBlock]::new()
+    $descText.Text = "The following required URLs could not be reached. This may affect the tool's ability to download driver catalogs, BIOS updates, or connect to management services."
+    $descText.FontSize = 12.5
+    $descText.TextWrapping = [System.Windows.TextWrapping]::Wrap
+    $descText.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.ColorConverter]::ConvertFromString($theme['InputPlaceholder']))
+    $descText.TextAlignment = [System.Windows.TextAlignment]::Center
+    $descText.Margin = [System.Windows.Thickness]::new(0, 0, 0, 16)
+    $panel.Children.Add($descText) | Out-Null
+
+    # Scrollable URL list
+    $scrollViewer = [System.Windows.Controls.ScrollViewer]::new()
+    $scrollViewer.MaxHeight = 240
+    $scrollViewer.VerticalScrollBarVisibility = 'Auto'
+    $scrollViewer.Margin = [System.Windows.Thickness]::new(0, 0, 0, 12)
+
+    $listBorder = [System.Windows.Controls.Border]::new()
+    $listBorder.Background = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.ColorConverter]::ConvertFromString($theme['InputBackground']))
+    $listBorder.CornerRadius = [System.Windows.CornerRadius]::new(8)
+    $listBorder.Padding = [System.Windows.Thickness]::new(12, 8, 12, 8)
+    $listBorder.BorderBrush = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.ColorConverter]::ConvertFromString($theme['InputBorder']))
+    $listBorder.BorderThickness = [System.Windows.Thickness]::new(1)
+
+    $listPanel = [System.Windows.Controls.StackPanel]::new()
+
+    foreach ($ep in $FailedEndpoints) {
+        $itemPanel = [System.Windows.Controls.StackPanel]::new()
+        $itemPanel.Margin = [System.Windows.Thickness]::new(0, 4, 0, 4)
+
+        # URL line with status icon
+        $urlRow = [System.Windows.Controls.StackPanel]::new()
+        $urlRow.Orientation = 'Horizontal'
+
+        $statusIcon = [System.Windows.Controls.TextBlock]::new()
+        $statusIcon.FontFamily = [System.Windows.Media.FontFamily]::new('Segoe MDL2 Assets')
+        $statusIcon.FontSize = 11
+        $statusIcon.VerticalAlignment = 'Center'
+        $statusIcon.Margin = [System.Windows.Thickness]::new(0, 0, 6, 0)
+        if ($ep.Reachable) {
+            $statusIcon.Text = [string][char]0xE73E  # Checkmark
+            $statusIcon.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+                [System.Windows.Media.ColorConverter]::ConvertFromString($theme['StatusSuccess']))
+        } else {
+            $statusIcon.Text = [string][char]0xEA39  # Error X
+            $statusIcon.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+                [System.Windows.Media.ColorConverter]::ConvertFromString($theme['StatusError']))
+        }
+        $urlRow.Children.Add($statusIcon) | Out-Null
+
+        $urlText = [System.Windows.Controls.TextBlock]::new()
+        $urlText.Text = $ep.URL
+        $urlText.FontSize = 12.5
+        $urlText.FontWeight = [System.Windows.FontWeights]::SemiBold
+        $urlText.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+            [System.Windows.Media.ColorConverter]::ConvertFromString($theme['WindowForeground']))
+        $urlRow.Children.Add($urlText) | Out-Null
+
+        $itemPanel.Children.Add($urlRow) | Out-Null
+
+        # Description
+        $descBlock = [System.Windows.Controls.TextBlock]::new()
+        $descBlock.Text = $ep.Description
+        $descBlock.FontSize = 11.5
+        $descBlock.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+            [System.Windows.Media.ColorConverter]::ConvertFromString($theme['InputPlaceholder']))
+        $descBlock.Margin = [System.Windows.Thickness]::new(17, 0, 0, 0)
+        $itemPanel.Children.Add($descBlock) | Out-Null
+
+        $listPanel.Children.Add($itemPanel) | Out-Null
+    }
+
+    $listBorder.Child = $listPanel
+    $scrollViewer.Content = $listBorder
+    $panel.Children.Add($scrollViewer) | Out-Null
+
+    # Proxy hint
+    $proxyHint = [System.Windows.Controls.TextBlock]::new()
+    $proxyHint.TextWrapping = [System.Windows.TextWrapping]::Wrap
+    $proxyHint.FontSize = 12
+    $proxyHint.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.ColorConverter]::ConvertFromString($theme['InputPlaceholder']))
+    $proxyHint.TextAlignment = [System.Windows.TextAlignment]::Center
+    $proxyHint.Margin = [System.Windows.Thickness]::new(0, 0, 0, 16)
+
+    $proxyRun1 = [System.Windows.Documents.Run]::new("If you are behind a proxy server, configure your proxy settings under ")
+    $proxyBold = [System.Windows.Documents.Run]::new("Settings > Proxy Configuration")
+    $proxyBold.FontWeight = [System.Windows.FontWeights]::SemiBold
+    $proxyBold.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.ColorConverter]::ConvertFromString($theme['AccentColor']))
+    $proxyRun2 = [System.Windows.Documents.Run]::new(".")
+    $proxyHint.Inlines.Add($proxyRun1) | Out-Null
+    $proxyHint.Inlines.Add($proxyBold) | Out-Null
+    $proxyHint.Inlines.Add($proxyRun2) | Out-Null
+    $panel.Children.Add($proxyHint) | Out-Null
+
+    # Button row: Save to File | Close
+    $btnPanel = [System.Windows.Controls.Grid]::new()
+    $col1 = [System.Windows.Controls.ColumnDefinition]::new()
+    $col1.Width = [System.Windows.GridLength]::new(1, [System.Windows.GridUnitType]::Star)
+    $col2 = [System.Windows.Controls.ColumnDefinition]::new()
+    $col2.Width = [System.Windows.GridLength]::new(1, [System.Windows.GridUnitType]::Star)
+    $btnPanel.ColumnDefinitions.Add($col1)
+    $btnPanel.ColumnDefinitions.Add($col2)
+
+    # Save to File button (secondary)
+    $btnSave = [System.Windows.Controls.Button]::new()
+    $btnSave.Height = 36
+    $btnSave.Cursor = [System.Windows.Input.Cursors]::Hand
+    $btnSave.Margin = [System.Windows.Thickness]::new(0, 0, 6, 0)
+    $saveTemplate = [System.Windows.Markup.XamlReader]::Parse(@"
+<ControlTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" TargetType="Button">
+    <Border x:Name="bd" Background="$($theme['ButtonSecondary'])" CornerRadius="8" Padding="16,8">
+        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+    </Border>
+    <ControlTemplate.Triggers>
+        <Trigger Property="IsMouseOver" Value="True">
+            <Setter TargetName="bd" Property="Background" Value="$($theme['ButtonSecondaryHover'])"/>
+        </Trigger>
+    </ControlTemplate.Triggers>
+</ControlTemplate>
+"@)
+    $btnSave.Template = $saveTemplate
+    $btnSave.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.ColorConverter]::ConvertFromString($theme['ButtonSecondaryForeground']))
+    $btnSave.FontSize = 13
+    $btnSave.FontWeight = [System.Windows.FontWeights]::SemiBold
+
+    # Button content with icon
+    $saveBtnPanel = [System.Windows.Controls.StackPanel]::new()
+    $saveBtnPanel.Orientation = 'Horizontal'
+    $saveBtnPanel.HorizontalAlignment = 'Center'
+    $saveIcon = [System.Windows.Controls.TextBlock]::new()
+    $saveIcon.Text = [string][char]0xE74E  # Save icon
+    $saveIcon.FontFamily = [System.Windows.Media.FontFamily]::new('Segoe MDL2 Assets')
+    $saveIcon.FontSize = 13
+    $saveIcon.VerticalAlignment = 'Center'
+    $saveIcon.Margin = [System.Windows.Thickness]::new(0, 0, 6, 0)
+    $saveBtnPanel.Children.Add($saveIcon) | Out-Null
+    $saveBtnLabel = [System.Windows.Controls.TextBlock]::new()
+    $saveBtnLabel.Text = 'Save to File'
+    $saveBtnLabel.VerticalAlignment = 'Center'
+    $saveBtnPanel.Children.Add($saveBtnLabel) | Out-Null
+    $btnSave.Content = $saveBtnPanel
+
+    # Capture failed endpoints for the closure
+    $failedList = $FailedEndpoints
+    $btnSave.Add_Click({
+        $sfd = [System.Windows.Forms.SaveFileDialog]::new()
+        $sfd.Title = 'Save Required URLs'
+        $sfd.Filter = 'Text Files (*.txt)|*.txt|All Files (*.*)|*.*'
+        $sfd.FileName = 'DAT-Required-URLs.txt'
+        if ($sfd.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+            $lines = @()
+            $lines += "Driver Automation Tool -- Required URLs"
+            $lines += "Generated: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
+            $lines += ""
+            $lines += "The following URLs are required for the Driver Automation Tool to function."
+            $lines += "Please ensure these are accessible from your network or allowed through"
+            $lines += "your proxy/firewall configuration."
+            $lines += ""
+            $lines += "STATUS  URL                                      DESCRIPTION"
+            $lines += "------  ---                                      -----------"
+            foreach ($ep in $failedList) {
+                $status = if ($ep.Reachable) { '[OK]  ' } else { '[FAIL]' }
+                $lines += "$status  $($ep.URL.PadRight(40)) $($ep.Description)"
+            }
+            $lines += ""
+            $lines += "Proxy Configuration:"
+            $lines += "If you are behind a proxy server, configure proxy settings in the"
+            $lines += "Driver Automation Tool under Settings > Proxy Configuration."
+            $lines += "Options: System Proxy (default), Manual Proxy, or No Proxy."
+            $lines | Out-File -FilePath $sfd.FileName -Encoding utf8 -Force
+            try {
+                Start-Process $sfd.FileName
+            } catch { }
+        }
+    }.GetNewClosure())
+    [System.Windows.Controls.Grid]::SetColumn($btnSave, 0)
+    $btnPanel.Children.Add($btnSave) | Out-Null
+
+    # Close button (primary)
+    $btnClose = [System.Windows.Controls.Button]::new()
+    $btnClose.Height = 36
+    $btnClose.Cursor = [System.Windows.Input.Cursors]::Hand
+    $btnClose.Margin = [System.Windows.Thickness]::new(6, 0, 0, 0)
+    $closeTemplate = [System.Windows.Markup.XamlReader]::Parse(@"
+<ControlTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" TargetType="Button">
+    <Border x:Name="bd" Background="$($theme['ButtonPrimary'])" CornerRadius="8" Padding="16,8">
+        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+    </Border>
+    <ControlTemplate.Triggers>
+        <Trigger Property="IsMouseOver" Value="True">
+            <Setter TargetName="bd" Property="Background" Value="$($theme['ButtonPrimaryHover'])"/>
+        </Trigger>
+    </ControlTemplate.Triggers>
+</ControlTemplate>
+"@)
+    $btnClose.Template = $closeTemplate
+    $btnClose.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.ColorConverter]::ConvertFromString($theme['ButtonPrimaryForeground']))
+    $btnClose.FontSize = 13
+    $btnClose.FontWeight = [System.Windows.FontWeights]::SemiBold
+    $btnClose.Content = 'Close'
+    $btnClose.Add_Click({ $dlg.Close() }.GetNewClosure())
+    [System.Windows.Controls.Grid]::SetColumn($btnClose, 1)
+    $btnPanel.Children.Add($btnClose) | Out-Null
+
+    $panel.Children.Add($btnPanel) | Out-Null
 
     $border.Child = $panel
     $dlg.Content = $border
@@ -1500,8 +2049,8 @@ function Show-DATBuildSummaryDialog {
 
     # Build rows based on package type
     $rows = @()
-    $showDrivers = $PackageType -in @('Drivers', 'All')
-    $showBios = $PackageType -in @('BIOS', 'All')
+    $showDrivers = $PackageType -in @('Drivers', 'All', 'Drivers Pilot', 'All Pilot')
+    $showBios = $PackageType -in @('BIOS', 'All', 'BIOS Pilot', 'All Pilot')
     if ($showDrivers) {
         $driverFailed = [math]::Max(0, $TotalModels - $DriverSuccess)
         $rows += @{ Label = 'Driver Packages'; Success = $DriverSuccess; Failed = $driverFailed }
@@ -5576,6 +6125,18 @@ $btn_RefreshModels.Add_Click({
                             @{ Name = "SystemID"; Expression = { $_.SupportedSystems.Brand.Model.SystemID } },
                             @{ Name = "DellVersion"; Expression = { $_.dellVersion } } -Unique |
                             Where-Object { $_.SystemName -gt $null }
+                            # Deduplicate short-name variants (e.g. "7060" vs "OptiPlex 7060") sharing overlapping baseboards
+                            $DellModels = @($DellModels | Where-Object {
+                                $current = $_
+                                $currentIds = @($current.SystemID | Where-Object { $_ } | Select-Object -Unique)
+                                $dominated = $DellModels | Where-Object {
+                                    $_.SystemName -ne $current.SystemName -and
+                                    $_.SystemName.Length -gt $current.SystemName.Length -and
+                                    $_.SystemName -like "*$($current.SystemName)*" -and
+                                    @($_.SystemID | Where-Object { $_ -and $_ -in $currentIds }).Count -gt 0
+                                }
+                                $null -eq $dominated
+                            })
                             $count = @($DellModels).Count
                             Write-Log "Dell: Found $count matching models for $SingleOS." -Level Success
                             foreach ($Model in $DellModels) {
@@ -5768,7 +6329,7 @@ $btn_RefreshModels.Add_Click({
                         # Acer BIOS lives in the Acer XML catalog (not the JSON BIOS catalog).
                         # When BIOS or All is selected, include all Acer models from the XML catalog
                         # that don't already have a driver pack for any selected OS/build.
-                        if ($PackageType -in @('BIOS', 'All')) {
+                        if ($PackageType -in @('BIOS', 'All', 'BIOS Pilot', 'All Pilot')) {
                             $existingAcerNames = @($allAcerDriverModels) | Select-Object -Unique
                             $allAcerNames = ($AcerDrivers | Where-Object { $_.Name -gt $null } | Sort-Object).Name | Select-Object -Unique
                             # Use the first OS for BIOS-only entries (BIOS is OS-agnostic)
@@ -5893,7 +6454,7 @@ $btn_RefreshModels.Add_Click({
             # ── BIOS-only models (BIOS or All package type only) ──
             # BIOS packages are OS-agnostic. Add an entry for every BIOS catalog model
             # that isn't already represented in the driver-pack-derived list.
-            if ($PackageType -in @('BIOS', 'All') -and -not $biosCatalogFailed -and @($biosCatalog).Count -gt 0) {
+            if ($PackageType -in @('BIOS', 'All', 'BIOS Pilot', 'All Pilot') -and -not $biosCatalogFailed -and @($biosCatalog).Count -gt 0) {
                 # Build a set of OEM|Model keys already present (case-insensitive).
                 # Also build a normalised-key set for fuzzy HP matching (HP driver
                 # catalog strips manufacturer prefix AND common suffixes like
@@ -5949,6 +6510,28 @@ $btn_RefreshModels.Add_Click({
                         }
                     }
                     $boardsCsv = ($allBoards | Select-Object -Unique) -join ','
+
+                    # Skip if a longer-named model already exists with overlapping baseboards
+                    # (e.g. BIOS catalog has "7060" but driver catalog already has "OptiPlex 7060")
+                    $biosBoards = @($allBoards | Select-Object -Unique | ForEach-Object { $_.ToUpper() } | Sort-Object)
+                    $isDuplicate = $false
+                    if ($biosBoards.Count -gt 0) {
+                        foreach ($existing in $OEMSupportedModels) {
+                            if ($existing.OEM -ne $latest.Manufacturer) { continue }
+                            if ($existing.Model.Length -le $displayName.Length) { continue }
+                            if ($existing.Model -notlike "*$displayName*") { continue }
+                            # Check if any BIOS board appears in the existing model's boards
+                            $existBoards = @($existing.Baseboards -split ',' | ForEach-Object { $_.Trim().ToUpper() } | Where-Object { $_ })
+                            if ($existBoards.Count -gt 0) {
+                                $overlap = $biosBoards | Where-Object { $_ -in $existBoards }
+                                if (@($overlap).Count -gt 0) {
+                                    $isDuplicate = $true
+                                    break
+                                }
+                            }
+                        }
+                    }
+                    if ($isDuplicate) { continue }
 
                     $OEMSupportedModels += [PSCustomObject]@{
                         OEM         = $latest.Manufacturer
@@ -6408,7 +6991,7 @@ $btn_Build.Add_Click({
     $buildPackageType = if ($null -ne $cmb_PackageType -and $null -ne $cmb_PackageType.SelectedItem) { $cmb_PackageType.SelectedItem.Content } else { 'Drivers' }
 
     # Guard: Microsoft models do not support standalone BIOS packages
-    if ($buildPackageType -eq 'BIOS') {
+    if ($buildPackageType -in @('BIOS', 'BIOS Pilot')) {
         $msModels = @($selectedModels | Where-Object { $_.OEM -eq 'Microsoft' })
         if ($msModels.Count -eq $selectedModels.Count) {
             # All selected models are Microsoft -- block the build entirely
@@ -6569,7 +7152,7 @@ $btn_Build.Add_Click({
     $script:BuildPS = [powershell]::Create()
     $script:BuildPS.Runspace = $script:BuildRunspace
     [void]$script:BuildPS.AddScript({
-        param($ModulePath, $ScriptDir, $RegPath, $RunningMode, $SelectedModels, $StoragePath, $PackagePath, $IntuneToken, $IntuneRefreshTok, $IntuneAuthClientIdParam, $IntuneTokenExpSec, $DisableToast, $SiteServer, $SiteCode, $PackageType, $DPGroups, $DPs, $DistPriority, $EnableBDR, $DebugBuildPath, $CustomBrandingPath, $HPPasswordBinPath, $ToastTimeoutAction, $MaxDeferrals, $BIOSRestartDelayMinutes, $TeamsWebhookUrl, $TeamsNotificationsEnabled, $CustomToastTextsJson)
+        param($ModulePath, $ScriptDir, $RegPath, $RunningMode, $SelectedModels, $StoragePath, $PackagePath, $IntuneToken, $IntuneRefreshTok, $IntuneAuthClientIdParam, $IntuneTokenExpSec, $DisableToast, $SiteServer, $SiteCode, $PackageType, $DPGroups, $DPs, $DistPriority, $EnableBDR, $DebugBuildPath, $CustomBrandingPath, $HPPasswordBinPath, $ToastTimeoutAction, $MaxDeferrals, $BIOSRestartDelayMinutes, $TeamsWebhookUrl, $TeamsNotificationsEnabled, $CustomToastTextsJson, $ConsoleFolderID)
         try {
         Import-Module $ModulePath -Force
         $procParams = @{
@@ -6599,6 +7182,7 @@ $btn_Build.Add_Click({
         if ($DPs -and $DPs.Count -gt 0) { $procParams['DistributionPoints'] = $DPs }
         if (-not [string]::IsNullOrEmpty($DistPriority)) { $procParams['DistributionPriority'] = $DistPriority }
         if ($EnableBDR) { $procParams['EnableBinaryDeltaReplication'] = $true }
+        if ($null -ne $ConsoleFolderID -and $ConsoleFolderID -ge 0) { $procParams['ConsoleFolderID'] = $ConsoleFolderID }
         if ($TeamsNotificationsEnabled -and -not [string]::IsNullOrEmpty($TeamsWebhookUrl)) {
             $procParams['TeamsNotificationsEnabled'] = $true
             $procParams['TeamsWebhookUrl'] = $TeamsWebhookUrl
@@ -6730,6 +7314,14 @@ $btn_Build.Add_Click({
         }
     }
     [void]$script:BuildPS.AddArgument($customToastTextsJson)
+
+    # Console Folder ID -- read from registry if custom folder is enabled
+    $cmConsoleFolderID = [int]-1
+    if ($chk_CustomConsoleFolder.IsChecked -eq $true) {
+        $folderIdVal = (Get-ItemProperty -Path $global:RegPath -Name 'ConsoleFolderID' -ErrorAction SilentlyContinue).ConsoleFolderID
+        if ($null -ne $folderIdVal) { $cmConsoleFolderID = [int]$folderIdVal }
+    }
+    [void]$script:BuildPS.AddArgument($cmConsoleFolderID)
 
     $script:BuildAsyncResult = $script:BuildPS.BeginInvoke()
 
@@ -8469,6 +9061,13 @@ $txt_BdrState = $Window.FindName('txt_BdrState')
 $link_DPScheduling = $Window.FindName('link_DPScheduling')
 $link_ContentManagement = $Window.FindName('link_ContentManagement')
 
+# Custom Console Folder controls
+$chk_CustomConsoleFolder = $Window.FindName('chk_CustomConsoleFolder')
+$txt_CustomConsoleFolderState = $Window.FindName('txt_CustomConsoleFolderState')
+$panel_ConsoleFolderPicker = $Window.FindName('panel_ConsoleFolderPicker')
+$txt_ConsoleFolderPath = $Window.FindName('txt_ConsoleFolderPath')
+$btn_BrowseConsoleFolder = $Window.FindName('btn_BrowseConsoleFolder')
+
 $link_DPScheduling.Add_RequestNavigate({
     param($s, $e)
     Start-Process $e.Uri.AbsoluteUri
@@ -8493,6 +9092,666 @@ $chk_BinaryDiffReplication.Add_Unchecked({
 $cmb_DistPriority.Add_SelectionChanged({
     if ($null -ne $cmb_DistPriority.SelectedItem) {
         Set-DATRegistryValue -Name 'DistributionPriority' -Value $cmb_DistPriority.SelectedItem.Content -Type String
+    }
+})
+
+# --- Custom Console Folder toggle and browse ---
+$chk_CustomConsoleFolder.Add_Checked({
+    Set-DATRegistryValue -Name 'CustomConsoleFolderEnabled' -Value 1 -Type DWord
+    if ($null -ne $txt_CustomConsoleFolderState) {
+        $txt_CustomConsoleFolderState.Text = 'Custom Folder'
+        $txt_CustomConsoleFolderState.Foreground = $Window.FindResource('AccentColor')
+    }
+    if ($null -ne $panel_ConsoleFolderPicker) { $panel_ConsoleFolderPicker.Visibility = 'Visible' }
+})
+$chk_CustomConsoleFolder.Add_Unchecked({
+    Set-DATRegistryValue -Name 'CustomConsoleFolderEnabled' -Value 0 -Type DWord
+    if ($null -ne $txt_CustomConsoleFolderState) {
+        $txt_CustomConsoleFolderState.Text = 'Use Default'
+        $txt_CustomConsoleFolderState.Foreground = $Window.FindResource('InputPlaceholder')
+    }
+    if ($null -ne $panel_ConsoleFolderPicker) { $panel_ConsoleFolderPicker.Visibility = 'Collapsed' }
+})
+
+function Show-DATConsoleFolderBrowseDialog {
+    param (
+        [Parameter(Mandatory)][string]$SiteServer,
+        [Parameter(Mandatory)][string]$SiteCode
+    )
+
+    $theme = Get-DATTheme -ThemeName $script:CurrentTheme
+    $bgColor = [System.Windows.Media.ColorConverter]::ConvertFromString($theme['CardBackground'])
+    $smsNamespace = "root\SMS\Site_$SiteCode"
+
+    # Query all package folders (ObjectType=2)
+    try {
+        $allFolders = @(Get-CimInstance -ComputerName $SiteServer -Namespace $smsNamespace `
+            -Query "SELECT ContainerNodeID, Name, ParentContainerNodeID FROM SMS_ObjectContainerNode WHERE ObjectType = 2" `
+            -ErrorAction Stop)
+    } catch {
+        Show-DATInfoDialog -Title 'Connection Error' `
+            -Message "Failed to query ConfigMgr console folders: $($_.Exception.Message)" `
+            -Type Error -ButtonLabel 'OK'
+        return $null
+    }
+
+    # Build a lookup table: ID -> folder info (cast keys to [int] for consistent lookups)
+    $folderMap = @{}
+    foreach ($f in $allFolders) {
+        $folderMap[[int]$f.ContainerNodeID] = @{
+            Name     = $f.Name
+            ParentID = [int]$f.ParentContainerNodeID
+            ID       = [int]$f.ContainerNodeID
+        }
+    }
+
+    # Build full path for a folder
+    $getPath = {
+        param([int]$folderId)
+        $parts = [System.Collections.Generic.List[string]]::new()
+        $current = $folderId
+        while ($current -ne 0 -and $folderMap.ContainsKey($current)) {
+            $parts.Insert(0, $folderMap[$current].Name)
+            $current = $folderMap[$current].ParentID
+        }
+        return ($parts -join '\')
+    }
+
+    # Create the dialog
+    $dlg = [System.Windows.Window]::new()
+    $dlg.WindowStyle = 'None'
+    $dlg.AllowsTransparency = $true
+    $dlg.Background = [System.Windows.Media.Brushes]::Transparent
+    $dlg.WindowStartupLocation = 'CenterOwner'
+    $dlg.Owner = $Window
+    $dlg.Width = 500
+    $dlg.Height = 480
+    $dlg.Topmost = $true
+    $dlg.ResizeMode = 'NoResize'
+    $dlg.ShowInTaskbar = $false
+
+    $border = [System.Windows.Controls.Border]::new()
+    $border.Background = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.Color]::FromArgb(245, $bgColor.R, $bgColor.G, $bgColor.B))
+    $border.CornerRadius = [System.Windows.CornerRadius]::new(16)
+    $border.Padding = [System.Windows.Thickness]::new(28, 24, 28, 24)
+    $border.BorderBrush = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.ColorConverter]::ConvertFromString($theme['CardBorder']))
+    $border.BorderThickness = [System.Windows.Thickness]::new(1)
+    $shadow = [System.Windows.Media.Effects.DropShadowEffect]::new()
+    $shadow.BlurRadius = 30; $shadow.ShadowDepth = 0; $shadow.Opacity = 0.5
+    $shadow.Color = [System.Windows.Media.Colors]::Black
+    $border.Effect = $shadow
+
+    $mainPanel = [System.Windows.Controls.DockPanel]::new()
+    $mainPanel.LastChildFill = $true
+
+    # Title
+    $titleText = [System.Windows.Controls.TextBlock]::new()
+    $titleText.FontSize = 16
+    $titleText.FontWeight = [System.Windows.FontWeights]::Bold
+    $titleText.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.ColorConverter]::ConvertFromString($theme['WindowForeground']))
+    $titleText.Margin = [System.Windows.Thickness]::new(0, 0, 0, 4)
+    $iconRun = [System.Windows.Documents.Run]::new([string][char]0xED43)
+    $iconRun.FontFamily = [System.Windows.Media.FontFamily]::new('Segoe MDL2 Assets')
+    $titleText.Inlines.Add($iconRun)
+    $titleText.Inlines.Add([System.Windows.Documents.Run]::new('  Select Console Folder'))
+    [System.Windows.Controls.DockPanel]::SetDock($titleText, [System.Windows.Controls.Dock]::Top)
+    $mainPanel.Children.Add($titleText) | Out-Null
+
+    # Subtitle
+    $subText = [System.Windows.Controls.TextBlock]::new()
+    $subText.Text = 'Choose a folder in the ConfigMgr console where packages will be placed.'
+    $subText.FontSize = 12
+    $subText.TextWrapping = [System.Windows.TextWrapping]::Wrap
+    $subText.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.ColorConverter]::ConvertFromString($theme['InputPlaceholder']))
+    $subText.Margin = [System.Windows.Thickness]::new(0, 0, 0, 16)
+    [System.Windows.Controls.DockPanel]::SetDock($subText, [System.Windows.Controls.Dock]::Top)
+    $mainPanel.Children.Add($subText) | Out-Null
+
+    # Button panel at bottom
+    $btnPanel = [System.Windows.Controls.StackPanel]::new()
+    $btnPanel.Orientation = 'Horizontal'
+    $btnPanel.HorizontalAlignment = 'Right'
+    $btnPanel.Margin = [System.Windows.Thickness]::new(0, 16, 0, 0)
+    [System.Windows.Controls.DockPanel]::SetDock($btnPanel, [System.Windows.Controls.Dock]::Bottom)
+
+    # Cancel button
+    $btnCancel = [System.Windows.Controls.Button]::new()
+    $btnCancel.Height = 36
+    $btnCancel.MinWidth = 90
+    $btnCancel.Cursor = [System.Windows.Input.Cursors]::Hand
+    $cancelTemplate = [System.Windows.Markup.XamlReader]::Parse(@"
+<ControlTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" TargetType="Button">
+    <Border Name="bd" Background="Transparent" CornerRadius="8" Padding="16,8"
+            BorderBrush="$($theme['CardBorder'])" BorderThickness="1">
+        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+    </Border>
+    <ControlTemplate.Triggers>
+        <Trigger Property="IsMouseOver" Value="True">
+            <Setter TargetName="bd" Property="Background" Value="$($theme['ButtonSecondaryHover'])"/>
+        </Trigger>
+    </ControlTemplate.Triggers>
+</ControlTemplate>
+"@)
+    $btnCancel.Template = $cancelTemplate
+    $btnCancel.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.ColorConverter]::ConvertFromString($theme['WindowForeground']))
+    $btnCancel.FontSize = 13
+    $btnCancel.Content = 'Cancel'
+    $btnCancel.Add_Click({ $dlg.DialogResult = $false; $dlg.Close() })
+    $btnPanel.Children.Add($btnCancel) | Out-Null
+
+    # Select button
+    $btnSelect = [System.Windows.Controls.Button]::new()
+    $btnSelect.Height = 36
+    $btnSelect.MinWidth = 90
+    $btnSelect.Margin = [System.Windows.Thickness]::new(8, 0, 0, 0)
+    $btnSelect.Cursor = [System.Windows.Input.Cursors]::Hand
+    $btnSelect.IsEnabled = $false
+    $selectTemplate = [System.Windows.Markup.XamlReader]::Parse(@"
+<ControlTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" TargetType="Button">
+    <Border Name="bd" Background="$($theme['ButtonPrimary'])" CornerRadius="8" Padding="16,8">
+        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+    </Border>
+    <ControlTemplate.Triggers>
+        <Trigger Property="IsMouseOver" Value="True">
+            <Setter TargetName="bd" Property="Background" Value="$($theme['ButtonPrimaryHover'])"/>
+        </Trigger>
+    </ControlTemplate.Triggers>
+</ControlTemplate>
+"@)
+    $btnSelect.Template = $selectTemplate
+    $btnSelect.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.ColorConverter]::ConvertFromString($theme['ButtonPrimaryForeground']))
+    $btnSelect.FontSize = 13
+    $btnSelect.FontWeight = [System.Windows.FontWeights]::SemiBold
+    $btnSelect.Content = 'Select'
+    $btnPanel.Children.Add($btnSelect) | Out-Null
+    $mainPanel.Children.Add($btnPanel) | Out-Null
+
+    # TreeView for folder hierarchy - wrap in rounded border
+    $treeBorder = [System.Windows.Controls.Border]::new()
+    $treeBorder.CornerRadius = [System.Windows.CornerRadius]::new(10)
+    $treeBorder.BorderBrush = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.ColorConverter]::ConvertFromString($theme['InputBorder']))
+    $treeBorder.BorderThickness = [System.Windows.Thickness]::new(1)
+    $treeBorder.Background = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.ColorConverter]::ConvertFromString($theme['InputBackground']))
+    $treeBorder.ClipToBounds = $true
+
+    $treeView = [System.Windows.Controls.TreeView]::new()
+    $treeView.Background = [System.Windows.Media.Brushes]::Transparent
+    $treeView.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.ColorConverter]::ConvertFromString($theme['WindowForeground']))
+    $treeView.BorderThickness = [System.Windows.Thickness]::new(0)
+    $treeView.Padding = [System.Windows.Thickness]::new(8, 6, 8, 6)
+
+    # Custom TreeViewItem style for readable selection highlighting
+    $treeItemStyle = [System.Windows.Markup.XamlReader]::Parse(@"
+<Style xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" TargetType="TreeViewItem">
+    <Setter Property="Background" Value="Transparent"/>
+    <Setter Property="Foreground" Value="$($theme['WindowForeground'])"/>
+    <Setter Property="Padding" Value="4,2,4,2"/>
+    <Setter Property="Template">
+        <Setter.Value>
+            <ControlTemplate TargetType="TreeViewItem">
+                <StackPanel>
+                    <Border Name="Bd" Background="{TemplateBinding Background}"
+                            Padding="{TemplateBinding Padding}" CornerRadius="4"
+                            Margin="0,1,0,1" SnapsToDevicePixels="True">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <ToggleButton Name="Expander" Grid.Column="0"
+                                          IsChecked="{Binding IsExpanded, RelativeSource={RelativeSource TemplatedParent}}"
+                                          ClickMode="Press" Width="16" Margin="0,0,4,0"
+                                          Background="Transparent" BorderThickness="0"
+                                          Foreground="$($theme['InputPlaceholder'])" FontSize="10"
+                                          VerticalAlignment="Center" HorizontalAlignment="Center">
+                                <ToggleButton.Style>
+                                    <Style TargetType="ToggleButton">
+                                        <Setter Property="Focusable" Value="False"/>
+                                        <Setter Property="Template">
+                                            <Setter.Value>
+                                                <ControlTemplate TargetType="ToggleButton">
+                                                    <Border Background="Transparent" Padding="2">
+                                                        <TextBlock Name="Arrow" Text="&#xE76C;" FontFamily="Segoe MDL2 Assets"
+                                                                   FontSize="10" Foreground="$($theme['InputPlaceholder'])"
+                                                                   RenderTransformOrigin="0.5,0.5"
+                                                                   VerticalAlignment="Center" HorizontalAlignment="Center">
+                                                            <TextBlock.RenderTransform>
+                                                                <RotateTransform Angle="0"/>
+                                                            </TextBlock.RenderTransform>
+                                                        </TextBlock>
+                                                    </Border>
+                                                    <ControlTemplate.Triggers>
+                                                        <Trigger Property="IsChecked" Value="True">
+                                                            <Setter TargetName="Arrow" Property="RenderTransform">
+                                                                <Setter.Value>
+                                                                    <RotateTransform Angle="90"/>
+                                                                </Setter.Value>
+                                                            </Setter>
+                                                        </Trigger>
+                                                    </ControlTemplate.Triggers>
+                                                </ControlTemplate>
+                                            </Setter.Value>
+                                        </Setter>
+                                    </Style>
+                                </ToggleButton.Style>
+                            </ToggleButton>
+                            <ContentPresenter Name="PART_Header" Grid.Column="1"
+                                              ContentSource="Header" VerticalAlignment="Center"/>
+                        </Grid>
+                    </Border>
+                    <ItemsPresenter Name="ItemsHost" Margin="20,0,0,0"/>
+                </StackPanel>
+                <ControlTemplate.Triggers>
+                    <Trigger Property="IsSelected" Value="True">
+                        <Setter TargetName="Bd" Property="Background" Value="$($theme['AccentColor'])"/>
+                    </Trigger>
+                    <Trigger Property="HasItems" Value="False">
+                        <Setter TargetName="Expander" Property="Visibility" Value="Hidden"/>
+                    </Trigger>
+                    <Trigger Property="IsExpanded" Value="False">
+                        <Setter TargetName="ItemsHost" Property="Visibility" Value="Collapsed"/>
+                    </Trigger>
+                </ControlTemplate.Triggers>
+            </ControlTemplate>
+        </Setter.Value>
+    </Setter>
+</Style>
+"@)
+    $treeView.ItemContainerStyle = $treeItemStyle
+
+    # Shared state for selection tracking (accessible from all event handlers)
+    $dialogState = [hashtable]::Synchronized(@{
+        SelectedFolderID   = -1
+        SelectedFolderPath = ''
+        FolderMap          = $folderMap
+        SelectButton       = $btnSelect
+    })
+
+    # White brush for selected item text (readable on accent background)
+    $selectedFgBrush = [System.Windows.Media.SolidColorBrush]::new([System.Windows.Media.Colors]::White)
+    $normalFgBrush = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.ColorConverter]::ConvertFromString($theme['WindowForeground']))
+    $accentBrush = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.ColorConverter]::ConvertFromString($theme['AccentColor']))
+
+    # Selection handler on the TreeView itself (more reliable than per-item handlers)
+    $treeView.Add_SelectedItemChanged({
+        param($sender, $e)
+        # Restore previous item's text colors
+        $old = $e.OldValue
+        if ($null -ne $old -and $null -ne $old.Header) {
+            $panel = $old.Header
+            if ($panel -is [System.Windows.Controls.StackPanel]) {
+                foreach ($child in $panel.Children) {
+                    if ($child -is [System.Windows.Controls.TextBlock]) {
+                        if ($child.Text -match '^\p{Co}') {
+                            $child.Foreground = $accentBrush  # icon
+                        } else {
+                            $child.Foreground = $normalFgBrush  # name
+                        }
+                    }
+                }
+            }
+        }
+        # Set selected item's text to white
+        $selected = $e.NewValue
+        if ($null -ne $selected) {
+            if ($null -ne $selected.Header -and $selected.Header -is [System.Windows.Controls.StackPanel]) {
+                foreach ($child in $selected.Header.Children) {
+                    if ($child -is [System.Windows.Controls.TextBlock]) {
+                        $child.Foreground = $selectedFgBrush
+                    }
+                }
+            }
+            $dialogState.SelectedFolderID = $selected.Tag
+            # Build path inline using the folder map
+            $parts = [System.Collections.Generic.List[string]]::new()
+            $current = [int]$selected.Tag
+            $map = $dialogState.FolderMap
+            while ($current -ne 0 -and $map.ContainsKey($current)) {
+                $parts.Insert(0, $map[$current].Name)
+                $current = $map[$current].ParentID
+            }
+            $dialogState.SelectedFolderPath = $parts -join '\'
+            $dialogState.SelectButton.IsEnabled = $true
+        }
+    }.GetNewClosure())
+
+    # Build tree items recursively
+    $buildChildren = {
+        param([int]$parentId, [System.Windows.Controls.ItemsControl]$parentItem)
+        $children = @($allFolders | Where-Object { $_.ParentContainerNodeID -eq $parentId } | Sort-Object -Property Name)
+        foreach ($child in $children) {
+            $item = [System.Windows.Controls.TreeViewItem]::new()
+            $itemPanel = [System.Windows.Controls.StackPanel]::new()
+            $itemPanel.Orientation = 'Horizontal'
+            $folderIcon = [System.Windows.Controls.TextBlock]::new()
+            $folderIcon.Text = [string][char]0xED43
+            $folderIcon.FontFamily = [System.Windows.Media.FontFamily]::new('Segoe MDL2 Assets')
+            $folderIcon.FontSize = 14
+            $folderIcon.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+                [System.Windows.Media.ColorConverter]::ConvertFromString($theme['AccentColor']))
+            $folderIcon.Margin = [System.Windows.Thickness]::new(0, 0, 8, 0)
+            $folderIcon.VerticalAlignment = 'Center'
+            $itemPanel.Children.Add($folderIcon) | Out-Null
+            $nameBlock = [System.Windows.Controls.TextBlock]::new()
+            $nameBlock.Text = $child.Name
+            $nameBlock.FontSize = 13
+            $nameBlock.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+                [System.Windows.Media.ColorConverter]::ConvertFromString($theme['WindowForeground']))
+            $nameBlock.VerticalAlignment = 'Center'
+            $itemPanel.Children.Add($nameBlock) | Out-Null
+            $item.Header = $itemPanel
+            $item.Tag = [int]$child.ContainerNodeID
+            $item.Padding = [System.Windows.Thickness]::new(4, 2, 4, 2)
+            $parentItem.Items.Add($item) | Out-Null
+            & $buildChildren ([int]$child.ContainerNodeID) $item
+        }
+    }
+
+    # Add a "Root (no folder)" option
+    $rootItem = [System.Windows.Controls.TreeViewItem]::new()
+    $rootPanel = [System.Windows.Controls.StackPanel]::new()
+    $rootPanel.Orientation = 'Horizontal'
+    $rootIcon = [System.Windows.Controls.TextBlock]::new()
+    $rootIcon.Text = [string][char]0xED43
+    $rootIcon.FontFamily = [System.Windows.Media.FontFamily]::new('Segoe MDL2 Assets')
+    $rootIcon.FontSize = 14
+    $rootIcon.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.ColorConverter]::ConvertFromString($theme['AccentColor']))
+    $rootIcon.Margin = [System.Windows.Thickness]::new(0, 0, 8, 0)
+    $rootIcon.VerticalAlignment = 'Center'
+    $rootPanel.Children.Add($rootIcon) | Out-Null
+    $rootName = [System.Windows.Controls.TextBlock]::new()
+    $rootName.Text = 'Packages (root)'
+    $rootName.FontSize = 13
+    $rootName.FontWeight = [System.Windows.FontWeights]::SemiBold
+    $rootName.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.ColorConverter]::ConvertFromString($theme['WindowForeground']))
+    $rootName.VerticalAlignment = 'Center'
+    $rootPanel.Children.Add($rootName) | Out-Null
+    $rootItem.Header = $rootPanel
+    $rootItem.Tag = [int]0
+    $rootItem.IsExpanded = $true
+    $rootItem.Padding = [System.Windows.Thickness]::new(4, 2, 4, 2)
+    $treeView.Items.Add($rootItem) | Out-Null
+
+    # Build the tree from root-level folders
+    & $buildChildren 0 $rootItem
+
+    if ($allFolders.Count -eq 0) {
+        $emptyText = [System.Windows.Controls.TextBlock]::new()
+        $emptyText.Text = 'No package folders found. Packages will be created at the root.'
+        $emptyText.FontSize = 12
+        $emptyText.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+            [System.Windows.Media.ColorConverter]::ConvertFromString($theme['InputPlaceholder']))
+        $emptyText.Margin = [System.Windows.Thickness]::new(8, 8, 8, 8)
+        $emptyText.TextWrapping = [System.Windows.TextWrapping]::Wrap
+    }
+
+    $treeBorder.Child = $treeView
+
+    # New Folder button (docked Bottom, added before treeBorder so tree fills remaining space)
+    $btnNewFolder = [System.Windows.Controls.Button]::new()
+    $btnNewFolder.Height = 32
+    $btnNewFolder.HorizontalAlignment = 'Left'
+    $btnNewFolder.Cursor = [System.Windows.Input.Cursors]::Hand
+    $btnNewFolder.Margin = [System.Windows.Thickness]::new(0, 12, 0, 0)
+    $newFolderTemplate = [System.Windows.Markup.XamlReader]::Parse(@"
+<ControlTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" TargetType="Button">
+    <Border Name="bd" Background="$($theme['ButtonSecondary'])" CornerRadius="6" Padding="12,4">
+        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+    </Border>
+    <ControlTemplate.Triggers>
+        <Trigger Property="IsMouseOver" Value="True">
+            <Setter TargetName="bd" Property="Background" Value="$($theme['ButtonSecondaryHover'])"/>
+        </Trigger>
+    </ControlTemplate.Triggers>
+</ControlTemplate>
+"@)
+    $btnNewFolder.Template = $newFolderTemplate
+    $nfContent = [System.Windows.Controls.TextBlock]::new()
+    $nfIconRun = [System.Windows.Documents.Run]::new([string][char]0xE8F4)
+    $nfIconRun.FontFamily = [System.Windows.Media.FontFamily]::new('Segoe MDL2 Assets')
+    $nfIconRun.FontSize = 11
+    $nfContent.Inlines.Add($nfIconRun) | Out-Null
+    $nfContent.Inlines.Add([System.Windows.Documents.Run]::new('  New Folder')) | Out-Null
+    $nfContent.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.ColorConverter]::ConvertFromString($theme['ButtonSecondaryForeground']))
+    $nfContent.FontSize = 12
+    $btnNewFolder.Content = $nfContent
+    [System.Windows.Controls.DockPanel]::SetDock($btnNewFolder, [System.Windows.Controls.Dock]::Bottom)
+    $mainPanel.Children.Add($btnNewFolder) | Out-Null
+
+    # TreeBorder is last child so it fills remaining space in DockPanel
+    $mainPanel.Children.Add($treeBorder) | Out-Null
+
+    $btnNewFolder.Add_Click({
+        # Determine parent folder for new folder creation
+        $parentID = if ($dialogState.SelectedFolderID -ge 0) { $dialogState.SelectedFolderID } else { 0 }
+
+        # Prompt for folder name
+        $inputDlg = [System.Windows.Window]::new()
+        $inputDlg.WindowStyle = 'None'
+        $inputDlg.AllowsTransparency = $true
+        $inputDlg.Background = [System.Windows.Media.Brushes]::Transparent
+        $inputDlg.WindowStartupLocation = 'CenterOwner'
+        $inputDlg.Owner = $dlg
+        $inputDlg.Width = 380
+        $inputDlg.SizeToContent = 'Height'
+        $inputDlg.Topmost = $true
+        $inputDlg.ResizeMode = 'NoResize'
+        $inputDlg.ShowInTaskbar = $false
+
+        $iBorder = [System.Windows.Controls.Border]::new()
+        $iBorder.Background = [System.Windows.Media.SolidColorBrush]::new(
+            [System.Windows.Media.Color]::FromArgb(250, $bgColor.R, $bgColor.G, $bgColor.B))
+        $iBorder.CornerRadius = [System.Windows.CornerRadius]::new(12)
+        $iBorder.Padding = [System.Windows.Thickness]::new(24, 20, 24, 20)
+        $iBorder.BorderBrush = [System.Windows.Media.SolidColorBrush]::new(
+            [System.Windows.Media.ColorConverter]::ConvertFromString($theme['CardBorder']))
+        $iBorder.BorderThickness = [System.Windows.Thickness]::new(1)
+        $iShadow = [System.Windows.Media.Effects.DropShadowEffect]::new()
+        $iShadow.BlurRadius = 20; $iShadow.ShadowDepth = 0; $iShadow.Opacity = 0.4
+        $iShadow.Color = [System.Windows.Media.Colors]::Black
+        $iBorder.Effect = $iShadow
+
+        $iPanel = [System.Windows.Controls.StackPanel]::new()
+        $iTitle = [System.Windows.Controls.TextBlock]::new()
+        $iTitle.Text = 'Create New Folder'
+        $iTitle.FontSize = 14
+        $iTitle.FontWeight = [System.Windows.FontWeights]::Bold
+        $iTitle.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+            [System.Windows.Media.ColorConverter]::ConvertFromString($theme['WindowForeground']))
+        $iTitle.Margin = [System.Windows.Thickness]::new(0, 0, 0, 12)
+        $iPanel.Children.Add($iTitle) | Out-Null
+
+        $iTextBox = [System.Windows.Controls.TextBox]::new()
+        $iTextBox.Text = 'New Folder'
+        $iTextBox.FontSize = 13
+        $iTextBox.Height = 34
+        $iTextBox.VerticalContentAlignment = 'Center'
+        $iTextBox.Padding = [System.Windows.Thickness]::new(8, 0, 8, 0)
+        $iTextBox.Background = [System.Windows.Media.SolidColorBrush]::new(
+            [System.Windows.Media.ColorConverter]::ConvertFromString($theme['InputBackground']))
+        $iTextBox.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+            [System.Windows.Media.ColorConverter]::ConvertFromString($theme['InputForeground']))
+        $iTextBox.BorderBrush = [System.Windows.Media.SolidColorBrush]::new(
+            [System.Windows.Media.ColorConverter]::ConvertFromString($theme['InputBorder']))
+        $iPanel.Children.Add($iTextBox) | Out-Null
+
+        $iBtnPanel = [System.Windows.Controls.StackPanel]::new()
+        $iBtnPanel.Orientation = 'Horizontal'
+        $iBtnPanel.HorizontalAlignment = 'Right'
+        $iBtnPanel.Margin = [System.Windows.Thickness]::new(0, 16, 0, 0)
+
+        $iBtnCancel = [System.Windows.Controls.Button]::new()
+        $iBtnCancel.Content = 'Cancel'
+        $iBtnCancel.Height = 32; $iBtnCancel.MinWidth = 70
+        $iBtnCancel.FontSize = 12
+        $iBtnCancel.Cursor = [System.Windows.Input.Cursors]::Hand
+        $iBtnCancel.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+            [System.Windows.Media.ColorConverter]::ConvertFromString($theme['WindowForeground']))
+        $iBtnCancelTpl = [System.Windows.Markup.XamlReader]::Parse(@"
+<ControlTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" TargetType="Button">
+    <Border Name="bd" Background="Transparent" CornerRadius="6" Padding="12,4"
+            BorderBrush="$($theme['CardBorder'])" BorderThickness="1">
+        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+    </Border>
+    <ControlTemplate.Triggers>
+        <Trigger Property="IsMouseOver" Value="True">
+            <Setter TargetName="bd" Property="Background" Value="$($theme['ButtonSecondaryHover'])"/>
+        </Trigger>
+    </ControlTemplate.Triggers>
+</ControlTemplate>
+"@)
+        $iBtnCancel.Template = $iBtnCancelTpl
+        $iBtnCancel.Add_Click({ $inputDlg.DialogResult = $false; $inputDlg.Close() })
+        $iBtnPanel.Children.Add($iBtnCancel) | Out-Null
+
+        $iBtnCreate = [System.Windows.Controls.Button]::new()
+        $iBtnCreate.Content = 'Create'
+        $iBtnCreate.Height = 32; $iBtnCreate.MinWidth = 70
+        $iBtnCreate.FontSize = 12
+        $iBtnCreate.FontWeight = [System.Windows.FontWeights]::SemiBold
+        $iBtnCreate.Margin = [System.Windows.Thickness]::new(8, 0, 0, 0)
+        $iBtnCreate.Cursor = [System.Windows.Input.Cursors]::Hand
+        $iBtnCreate.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+            [System.Windows.Media.ColorConverter]::ConvertFromString($theme['ButtonPrimaryForeground']))
+        $iBtnCreateTpl = [System.Windows.Markup.XamlReader]::Parse(@"
+<ControlTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" TargetType="Button">
+    <Border Name="bd" Background="$($theme['ButtonPrimary'])" CornerRadius="6" Padding="12,4">
+        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+    </Border>
+    <ControlTemplate.Triggers>
+        <Trigger Property="IsMouseOver" Value="True">
+            <Setter TargetName="bd" Property="Background" Value="$($theme['ButtonPrimaryHover'])"/>
+        </Trigger>
+    </ControlTemplate.Triggers>
+</ControlTemplate>
+"@)
+        $iBtnCreate.Template = $iBtnCreateTpl
+        $iBtnCreate.Add_Click({ $inputDlg.DialogResult = $true; $inputDlg.Close() })
+        $iBtnPanel.Children.Add($iBtnCreate) | Out-Null
+        $iPanel.Children.Add($iBtnPanel) | Out-Null
+
+        $iBorder.Child = $iPanel
+        $inputDlg.Content = $iBorder
+
+        # Select all text on load
+        $inputDlg.Add_ContentRendered({ $iTextBox.SelectAll(); $iTextBox.Focus() })
+
+        $inputResult = $inputDlg.ShowDialog()
+        if ($inputResult -eq $true -and -not [string]::IsNullOrWhiteSpace($iTextBox.Text)) {
+            $folderName = $iTextBox.Text.Trim()
+            try {
+                # Create folder in ConfigMgr via WMI
+                $newFolder = New-CimInstance -ComputerName $SiteServer `
+                    -Namespace "root\SMS\Site_$SiteCode" `
+                    -ClassName SMS_ObjectContainerNode `
+                    -Property @{
+                        Name                  = $folderName
+                        ObjectType            = [uint32]2
+                        ParentContainerNodeID = [uint32]$parentID
+                    } -ErrorAction Stop
+
+                # Add to tree
+                $newItem = [System.Windows.Controls.TreeViewItem]::new()
+                $newItemPanel = [System.Windows.Controls.StackPanel]::new()
+                $newItemPanel.Orientation = 'Horizontal'
+                $newFolderIcon = [System.Windows.Controls.TextBlock]::new()
+                $newFolderIcon.Text = [string][char]0xED43
+                $newFolderIcon.FontFamily = [System.Windows.Media.FontFamily]::new('Segoe MDL2 Assets')
+                $newFolderIcon.FontSize = 14
+                $newFolderIcon.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+                    [System.Windows.Media.ColorConverter]::ConvertFromString($theme['AccentColor']))
+                $newFolderIcon.Margin = [System.Windows.Thickness]::new(0, 0, 8, 0)
+                $newFolderIcon.VerticalAlignment = 'Center'
+                $newItemPanel.Children.Add($newFolderIcon) | Out-Null
+                $newNameBlock = [System.Windows.Controls.TextBlock]::new()
+                $newNameBlock.Text = $folderName
+                $newNameBlock.FontSize = 13
+                $newNameBlock.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+                    [System.Windows.Media.ColorConverter]::ConvertFromString($theme['WindowForeground']))
+                $newNameBlock.VerticalAlignment = 'Center'
+                $newItemPanel.Children.Add($newNameBlock) | Out-Null
+                $newItem.Header = $newItemPanel
+                $newItem.Tag = $newFolder.ContainerNodeID
+                $newItem.Padding = [System.Windows.Thickness]::new(4, 2, 4, 2)
+
+                # Add under currently selected parent
+                $selectedItem = $treeView.SelectedItem
+                if ($null -ne $selectedItem) {
+                    $selectedItem.Items.Add($newItem) | Out-Null
+                    $selectedItem.IsExpanded = $true
+                } else {
+                    $rootItem.Items.Add($newItem) | Out-Null
+                }
+                $newItem.IsSelected = $true
+
+                # Update folder map for path resolution
+                $dialogState.FolderMap[$newFolder.ContainerNodeID] = @{
+                    Name     = $folderName
+                    ParentID = $parentID
+                    ID       = $newFolder.ContainerNodeID
+                }
+            } catch {
+                Show-DATInfoDialog -Title 'Create Folder Failed' `
+                    -Message "Failed to create folder: $($_.Exception.Message)" `
+                    -Type Error -ButtonLabel 'OK'
+            }
+        }
+    }.GetNewClosure())
+
+    $border.Child = $mainPanel
+    $dlg.Content = $border
+
+    # Select button click
+    $btnSelect.Add_Click({
+        $dlg.DialogResult = $true
+        $dlg.Close()
+    }.GetNewClosure())
+
+    $result = $dlg.ShowDialog()
+    if ($result -eq $true) {
+        return [PSCustomObject]@{
+            FolderID   = $dialogState.SelectedFolderID
+            FolderPath = $dialogState.SelectedFolderPath
+        }
+    }
+    return $null
+}
+
+$btn_BrowseConsoleFolder.Add_Click({
+    $regConfig = Get-ItemProperty -Path $global:RegPath -ErrorAction SilentlyContinue
+    $siteServer = if ($regConfig) { $regConfig.SiteServer } else { $null }
+    $siteCode = $global:SiteCode
+
+    if ([string]::IsNullOrEmpty($siteServer) -or [string]::IsNullOrEmpty($siteCode)) {
+        Show-DATInfoDialog -Title 'ConfigMgr Not Connected' `
+            -Message 'Please connect to a Configuration Manager site server first (Common Settings > ConfigMgr).' `
+            -Type Warning -ButtonLabel 'OK'
+        return
+    }
+
+    $selection = Show-DATConsoleFolderBrowseDialog -SiteServer $siteServer -SiteCode $siteCode
+    if ($null -ne $selection) {
+        if ($selection.FolderID -eq 0) {
+            $txt_ConsoleFolderPath.Text = 'Packages (Root)'
+        } else {
+            $txt_ConsoleFolderPath.Text = "Packages (Root)\$($selection.FolderPath)"
+        }
+        Set-DATRegistryValue -Name 'ConsoleFolderID' -Value $selection.FolderID -Type DWord
+        Set-DATRegistryValue -Name 'ConsoleFolderPath' -Value $selection.FolderPath -Type String
     }
 })
 
@@ -8652,15 +9911,28 @@ function Invoke-DATPackageRefresh {
 
     # Build the name prefix: "Drivers -", "Drivers Pilot -", "BIOS Update Retired -", etc.
     $typePrefix = switch ($pkgType) {
-        'BIOS Update' { 'BIOS Update' }
-        default       { 'Drivers' }
+        'BIOS Update'    { 'BIOS Update' }
+        'Drivers Pilot'  { 'Drivers Pilot' }
+        'BIOS Pilot'     { 'BIOS Update Pilot' }
+        default          { 'Drivers' }
     }
-    $stateInfix = switch ($deployState) {
-        'Pilot'   { ' Pilot' }
-        'Retired' { ' Retired' }
-        default   { '' }
+    # For pilot package types, skip the deployment state infix (pilot is already in the type)
+    $isPilotType = $pkgType -like '* Pilot'
+    $stateInfix = if ($isPilotType) { '' } else {
+        switch ($deployState) {
+            'Pilot'   { ' Pilot' }
+            'Retired' { ' Retired' }
+            default   { '' }
+        }
     }
-    $namePrefix = "$typePrefix$stateInfix -*"
+    # Handle "All Pilot" - query both prefixes
+    if ($pkgType -eq 'All Pilot') {
+        $namePrefix = $null  # Signal to query both
+        $namePrefixes = @('Drivers Pilot -*', 'BIOS Update Pilot -*')
+    } else {
+        $namePrefix = "$typePrefix$stateInfix -*"
+        $namePrefixes = @($namePrefix)
+    }
     $displayLabel = if ($stateInfix) { "$pkgType ($deployState)" } else { $pkgType }
 
     $txt_PkgStatus.Foreground = $Window.FindResource('StatusInfo')
@@ -8676,8 +9948,10 @@ function Invoke-DATPackageRefresh {
     $script:PkgRefreshPS = [powershell]::Create()
     $script:PkgRefreshPS.Runspace = $script:PkgRefreshRunspace
     [void]$script:PkgRefreshPS.AddScript({
-        param($SiteServer, $SiteCode, $NamePrefix)
+        param($SiteServer, $SiteCode, $NamePrefixes)
         try {
+            $results = @()
+            foreach ($NamePrefix in $NamePrefixes) {
             # Security fix #25: escape WQL LIKE special characters before interpolation.
             # '  → ''   (WQL string delimiter — prevents filter breakout)
             # [  → [[   (WQL character-class open bracket)
@@ -8686,7 +9960,6 @@ function Invoke-DATPackageRefresh {
             $wqlSafe = $NamePrefix.Replace("'", "''").Replace('[', '[[').Replace('_', '[_]').Replace('*', '%')
             $wmiFilter = "Name LIKE '$wqlSafe'"
             $packages = Get-CimInstance -ComputerName $SiteServer -Namespace "root\SMS\Site_$SiteCode" -ClassName SMS_Package -Filter $wmiFilter -ErrorAction Stop
-            $results = @()
             foreach ($pkg in $packages) {
                 $pkgModel = ''
                 if ($pkg.Name -match '^(?:Drivers|BIOS Update)(?:\s+(?:Pilot|Retired))?\s*-\s*(.+)$') {
@@ -8703,6 +9976,7 @@ function Invoke-DATPackageRefresh {
                     OperatingSystem = if ($pkg.MIFVersion) { ($pkg.MIFVersion -replace '\s+(x64|Arm64)$','').Trim() } else { '' }
                 }
             }
+            }
             return $results
         } catch {
             return [PSCustomObject]@{ _Error = $_.Exception.Message }
@@ -8710,7 +9984,7 @@ function Invoke-DATPackageRefresh {
     })
     [void]$script:PkgRefreshPS.AddArgument($global:SiteServer)
     [void]$script:PkgRefreshPS.AddArgument($global:SiteCode)
-    [void]$script:PkgRefreshPS.AddArgument($namePrefix)
+    [void]$script:PkgRefreshPS.AddArgument($namePrefixes)
 
     $script:PkgRefreshAsyncResult = $script:PkgRefreshPS.BeginInvoke()
 
@@ -11715,6 +12989,254 @@ $btn_CustomAbort.Add_Click({
 
 #endregion Custom Driver Pack
 
+#region Code Signing
+
+$chk_CodeSigning           = $Window.FindName('chk_CodeSigning')
+$txt_CodeSigningState      = $Window.FindName('txt_CodeSigningState')
+$panel_CodeSigningConfig   = $Window.FindName('panel_CodeSigningConfig')
+$txt_CodeSigningThumbprint = $Window.FindName('txt_CodeSigningThumbprint')
+$btn_BrowseCodeSigningCert = $Window.FindName('btn_BrowseCodeSigningCert')
+$txt_CodeSigningCertInfo   = $Window.FindName('txt_CodeSigningCertInfo')
+$panel_CodeSigningCertDetails = $Window.FindName('panel_CodeSigningCertDetails')
+$txt_CodeSigningCertSubject   = $Window.FindName('txt_CodeSigningCertSubject')
+$txt_CodeSigningCertIssuer    = $Window.FindName('txt_CodeSigningCertIssuer')
+$txt_CodeSigningCertExpiry    = $Window.FindName('txt_CodeSigningCertExpiry')
+$txt_CodeSigningCertStatus    = $Window.FindName('txt_CodeSigningCertStatus')
+$btn_ViewCodeSigningCert      = $Window.FindName('btn_ViewCodeSigningCert')
+
+# Shared state for view cert button (stores thumbprint for nested handler)
+$script:CodeSigningCertThumbprint = $null
+
+function Update-CodeSigningCertDetails {
+    param([string]$Thumbprint)
+    if ([string]::IsNullOrEmpty($Thumbprint)) {
+        $panel_CodeSigningCertDetails.Visibility = 'Collapsed'
+        $txt_CodeSigningCertInfo.Text = ""
+        $script:CodeSigningCertThumbprint = $null
+        return
+    }
+    $cert = $null
+    foreach ($storePath in @('Cert:\LocalMachine\My', 'Cert:\CurrentUser\My')) {
+        $cert = Get-ChildItem -Path $storePath -ErrorAction SilentlyContinue |
+            Where-Object { $_.Thumbprint -eq $Thumbprint -and $_.HasPrivateKey } |
+            Select-Object -First 1
+        if ($cert) { break }
+    }
+    if ($cert) {
+        $script:CodeSigningCertThumbprint = $Thumbprint
+        # Subject (strip CN= prefix if present)
+        $subject = $cert.Subject -replace '^CN=', ''
+        $txt_CodeSigningCertSubject.Text = $subject
+        # Issuer
+        $issuer = $cert.Issuer -replace '^CN=', ''
+        $txt_CodeSigningCertIssuer.Text = "Issued by: $issuer"
+        # Expiry and status
+        $expiryStr = $cert.NotAfter.ToString('dd MMM yyyy')
+        $daysLeft = [math]::Floor(($cert.NotAfter - (Get-Date)).TotalDays)
+        $txt_CodeSigningCertExpiry.Text = "Expires: $expiryStr"
+        if ($cert.NotAfter -lt (Get-Date)) {
+            $txt_CodeSigningCertStatus.Text = "EXPIRED"
+            $txt_CodeSigningCertStatus.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+                [System.Windows.Media.ColorConverter]::ConvertFromString('#E74856'))
+        } elseif ($daysLeft -le 30) {
+            $txt_CodeSigningCertStatus.Text = "Expiring soon ($daysLeft days)"
+            $txt_CodeSigningCertStatus.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+                [System.Windows.Media.ColorConverter]::ConvertFromString('#FCB827'))
+        } else {
+            $txt_CodeSigningCertStatus.Text = "Valid"
+            $txt_CodeSigningCertStatus.Foreground = $Window.FindResource('AccentColor')
+        }
+        $panel_CodeSigningCertDetails.Visibility = 'Visible'
+        $txt_CodeSigningCertInfo.Text = ""
+    } else {
+        $panel_CodeSigningCertDetails.Visibility = 'Collapsed'
+        $txt_CodeSigningCertInfo.Text = "Certificate not found in local stores"
+        $script:CodeSigningCertThumbprint = $null
+    }
+}
+
+$chk_CodeSigning.Add_Checked({
+    Set-DATRegistryValue -Name "CodeSigningEnabled" -Value 1 -Type DWord
+    $txt_CodeSigningState.Text = 'On'
+    $txt_CodeSigningState.Foreground = $Window.FindResource('AccentColor')
+    $panel_CodeSigningConfig.Visibility = 'Visible'
+    Write-DATActivityLog "Code Signing: Enabled" -Level Info
+})
+$chk_CodeSigning.Add_Unchecked({
+    Set-DATRegistryValue -Name "CodeSigningEnabled" -Value 0 -Type DWord
+    $txt_CodeSigningState.Text = 'Off'
+    $txt_CodeSigningState.Foreground = $Window.FindResource('InputPlaceholder')
+    $panel_CodeSigningConfig.Visibility = 'Collapsed'
+    Write-DATActivityLog "Code Signing: Disabled" -Level Info
+})
+
+$btn_BrowseCodeSigningCert.Add_Click({
+    # Enumerate code signing certificates from both stores
+    $certs = @()
+    foreach ($storePath in @('Cert:\LocalMachine\My', 'Cert:\CurrentUser\My')) {
+        $certs += Get-ChildItem -Path $storePath -ErrorAction SilentlyContinue |
+            Where-Object { $_.HasPrivateKey -and ($_.EnhancedKeyUsageList | Where-Object { $_.ObjectId -eq '1.3.6.1.5.5.7.3.3' }) }
+    }
+    if ($certs.Count -eq 0) {
+        Show-DATInfoDialog -Title "No Certificates Found" -Message "No code signing certificates with private keys were found in the Local Machine or Current User certificate stores." -Type Warning -ButtonLabel "OK"
+        return
+    }
+
+    # Build selection list
+    $items = $certs | ForEach-Object {
+        $expiry = $_.NotAfter.ToString('yyyy-MM-dd')
+        $status = if ($_.NotAfter -lt (Get-Date)) { ' [EXPIRED]' } else { '' }
+        [PSCustomObject]@{
+            Display     = "$($_.Subject) (expires $expiry)$status"
+            Thumbprint  = $_.Thumbprint
+            Subject     = $_.Subject
+            Expiry      = $_.NotAfter
+        }
+    } | Sort-Object Expiry -Descending
+
+    # Show a simple selection dialog
+    $theme = Get-DATTheme -ThemeName $script:CurrentTheme
+    $bgColor = [System.Windows.Media.ColorConverter]::ConvertFromString($theme['CardBackground'])
+
+    $selState = [hashtable]::Synchronized(@{ Dialog = $null; ListBox = $null })
+
+    $dlg = [System.Windows.Window]::new()
+    $dlg.WindowStyle = 'None'
+    $dlg.AllowsTransparency = $true
+    $dlg.Background = [System.Windows.Media.Brushes]::Transparent
+    $dlg.WindowStartupLocation = 'CenterOwner'
+    $dlg.Owner = $Window
+    $dlg.Width = 560
+    $dlg.MaxHeight = 500
+    $dlg.SizeToContent = 'Height'
+    $dlg.Topmost = $true
+    $dlg.ResizeMode = 'NoResize'
+    $dlg.ShowInTaskbar = $false
+    $selState.Dialog = $dlg
+
+    $border = [System.Windows.Controls.Border]::new()
+    $border.Background = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.Color]::FromArgb(245, $bgColor.R, $bgColor.G, $bgColor.B))
+    $border.CornerRadius = [System.Windows.CornerRadius]::new(16)
+    $border.Padding = [System.Windows.Thickness]::new(28, 24, 28, 24)
+    $border.BorderBrush = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.ColorConverter]::ConvertFromString($theme['CardBorder']))
+    $border.BorderThickness = [System.Windows.Thickness]::new(1)
+
+    $panel = [System.Windows.Controls.StackPanel]::new()
+
+    $titleText = [System.Windows.Controls.TextBlock]::new()
+    $titleText.Text = "Select Code Signing Certificate"
+    $titleText.FontSize = 16
+    $titleText.FontWeight = [System.Windows.FontWeights]::Bold
+    $titleText.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.ColorConverter]::ConvertFromString($theme['WindowForeground']))
+    $titleText.Margin = [System.Windows.Thickness]::new(0, 0, 0, 16)
+    $panel.Children.Add($titleText) | Out-Null
+
+    $listBox = [System.Windows.Controls.ListBox]::new()
+    $listBox.MaxHeight = 300
+    $listBox.Background = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.ColorConverter]::ConvertFromString($theme['InputBackground']))
+    $listBox.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.ColorConverter]::ConvertFromString($theme['WindowForeground']))
+    $listBox.BorderBrush = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.ColorConverter]::ConvertFromString($theme['InputBorder']))
+    $listBox.BorderThickness = [System.Windows.Thickness]::new(1)
+    $listBox.Margin = [System.Windows.Thickness]::new(0, 0, 0, 16)
+    foreach ($item in $items) {
+        $lbi = [System.Windows.Controls.ListBoxItem]::new()
+        $lbi.Content = $item.Display
+        $lbi.Tag = $item.Thumbprint
+        $lbi.FontSize = 12
+        $lbi.Padding = [System.Windows.Thickness]::new(8, 6, 8, 6)
+        $listBox.Items.Add($lbi) | Out-Null
+    }
+    $panel.Children.Add($listBox) | Out-Null
+    $selState.ListBox = $listBox
+
+    # Select button
+    $btnSelect = [System.Windows.Controls.Button]::new()
+    $btnSelect.Height = 36
+    $btnSelect.Cursor = [System.Windows.Input.Cursors]::Hand
+    $selectTemplate = [System.Windows.Markup.XamlReader]::Parse(@"
+<ControlTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" TargetType="Button">
+    <Border x:Name="bd" Background="$($theme['ButtonPrimary'])" CornerRadius="8" Padding="16,8">
+        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+    </Border>
+    <ControlTemplate.Triggers>
+        <Trigger Property="IsMouseOver" Value="True">
+            <Setter TargetName="bd" Property="Background" Value="$($theme['ButtonPrimaryHover'])"/>
+        </Trigger>
+    </ControlTemplate.Triggers>
+</ControlTemplate>
+"@)
+    $btnSelect.Template = $selectTemplate
+    $btnSelect.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.ColorConverter]::ConvertFromString($theme['ButtonPrimaryForeground']))
+    $btnSelect.FontSize = 13
+    $btnSelect.FontWeight = [System.Windows.FontWeights]::SemiBold
+    $btnSelect.Content = "Select Certificate"
+    $btnSelect.Tag = $selState
+    $btnSelect.Add_Click({
+        $state = $this.Tag
+        $selected = $state.ListBox.SelectedItem
+        if ($selected) {
+            $txt_CodeSigningThumbprint.Text = $selected.Tag
+            Set-DATRegistryValue -Name "CodeSigningCertThumbprint" -Value $selected.Tag -Type String
+            Update-CodeSigningCertDetails -Thumbprint $selected.Tag
+        }
+        $state.Dialog.Close()
+    })
+    $panel.Children.Add($btnSelect) | Out-Null
+
+    $border.Child = $panel
+    $dlg.Content = $border
+    $dlg.ShowDialog() | Out-Null
+})
+
+$txt_CodeSigningThumbprint.Add_LostFocus({
+    $thumbprint = $txt_CodeSigningThumbprint.Text.Trim()
+    if (-not [string]::IsNullOrEmpty($thumbprint)) {
+        Set-DATRegistryValue -Name "CodeSigningCertThumbprint" -Value $thumbprint -Type String
+        Update-CodeSigningCertDetails -Thumbprint $thumbprint
+    } else {
+        Update-CodeSigningCertDetails -Thumbprint ''
+    }
+})
+
+$btn_ViewCodeSigningCert.Add_Click({
+    $thumbprint = $script:CodeSigningCertThumbprint
+    if ([string]::IsNullOrEmpty($thumbprint)) {
+        Show-DATInfoDialog -Title "No Certificate" -Message "No valid certificate is currently selected. Select or enter a certificate thumbprint first." -Type Warning -ButtonLabel "OK"
+        return
+    }
+    # Find the certificate and open the Windows certificate viewer
+    $cert = $null
+    foreach ($storePath in @('Cert:\LocalMachine\My', 'Cert:\CurrentUser\My')) {
+        $cert = Get-ChildItem -Path $storePath -ErrorAction SilentlyContinue |
+            Where-Object { $_.Thumbprint -eq $thumbprint } |
+            Select-Object -First 1
+        if ($cert) { break }
+    }
+    if ($cert) {
+        # Export to temp .cer and open with certutil UI (shows chain)
+        $tempCer = Join-Path $env:TEMP "DATCodeSignCert_$thumbprint.cer"
+        try {
+            [System.IO.File]::WriteAllBytes($tempCer, $cert.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Cert))
+            Start-Process -FilePath 'certutil.exe' -ArgumentList "-user -viewstore `"My`"" -WindowStyle Hidden -ErrorAction SilentlyContinue
+            # Use rundll32 to show the certificate dialog with chain tab
+            Start-Process -FilePath 'rundll32.exe' -ArgumentList "cryptext.dll,CryptExtOpenCER $tempCer"
+        } catch {
+            Show-DATInfoDialog -Title "Error" -Message "Failed to open certificate viewer: $($_.Exception.Message)" -Type Warning -ButtonLabel "OK"
+        }
+    } else {
+        Show-DATInfoDialog -Title "Certificate Not Found" -Message "Certificate with thumbprint $thumbprint was not found in the local certificate stores." -Type Warning -ButtonLabel "OK"
+    }
+})
+
+#endregion Code Signing
+
 #region Debug Package Build
 
 $chk_DebugPackageBuild = $Window.FindName('chk_DebugPackageBuild')
@@ -14180,11 +15702,14 @@ function Update-DATIntuneAppFilter {
 
     # Build the display name prefix to match: "Drivers -" or "BIOS -"
     $typePrefix = switch ($pkgType) {
-        'BIOS Update' { 'BIOS ' }
-        default       { 'Drivers ' }
+        'BIOS Update'    { 'BIOS ' }
+        'Drivers Pilot'  { 'Drivers Pilot ' }
+        'BIOS Pilot'     { 'BIOS Pilot ' }
+        'All Pilot'      { $null }
+        default          { 'Drivers ' }
     }
 
-    $isBios = ($pkgType -eq 'BIOS Update')
+    $isBios = ($pkgType -in @('BIOS Update', 'BIOS Pilot'))
     $hasOem = ($oemFilter -ne 'All')
     $hasOs = (-not $isBios -and $osFilter -ne 'All')
 
@@ -14197,7 +15722,13 @@ function Update-DATIntuneAppFilter {
     $view.Filter = [System.Predicate[object]]{
         param($item)
         # Package type filter
-        if (-not $item.DisplayName.StartsWith($typePrefix, [System.StringComparison]::OrdinalIgnoreCase)) { return $false }
+        if ($null -ne $typePrefix) {
+            if (-not $item.DisplayName.StartsWith($typePrefix, [System.StringComparison]::OrdinalIgnoreCase)) { return $false }
+        } else {
+            # All Pilot: match both pilot prefixes
+            if (-not ($item.DisplayName.StartsWith('Drivers Pilot ', [System.StringComparison]::OrdinalIgnoreCase) -or
+                      $item.DisplayName.StartsWith('BIOS Pilot ', [System.StringComparison]::OrdinalIgnoreCase))) { return $false }
+        }
         # OEM filter
         if ($hasOem -and $item.Publisher -ne $oemFilter) { return $false }
         # OS filter (skipped for BIOS)
@@ -16251,19 +17782,141 @@ $btn_AgreeEula.Add_Click({
 #endregion EULA Agreement
 
 #region Release Notes
-# Fetch release notes from GitHub and display in the About section
-try {
-    if ($null -ne $txt_ReleaseNotes) {
-        $releaseNotesUrl = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/DriverAutomationToolNotes.txt"
-        $releaseNotesText = (Invoke-WebRequest -Uri $releaseNotesUrl -UseBasicParsing -ErrorAction Stop).Content
-        $txt_ReleaseNotes.Text = $releaseNotesText
+# Store release notes text for the modal dialog
+$script:ReleaseNotesText = $null
+
+function Show-DATReleaseNotesDialog {
+    $theme = Get-DATTheme -ThemeName $script:CurrentTheme
+    $bgColor = [System.Windows.Media.ColorConverter]::ConvertFromString($theme['CardBackground'])
+
+    # Fetch if not already loaded
+    if ([string]::IsNullOrEmpty($script:ReleaseNotesText)) {
+        try {
+            $releaseNotesUrl = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/DriverAutomationToolNotes.txt"
+            $script:ReleaseNotesText = (Invoke-WebRequest -Uri $releaseNotesUrl -UseBasicParsing -ErrorAction Stop).Content
+        } catch {
+            $script:ReleaseNotesText = "Unable to load release notes. Please check your internet connection."
+            Write-DATActivityLog "Failed to fetch release notes: $_" -Level Warn
+        }
     }
-} catch {
-    if ($null -ne $txt_ReleaseNotes) {
-        $txt_ReleaseNotes.Text = "Unable to load release notes. Please check your internet connection."
-    }
-    Write-DATActivityLog "Failed to fetch release notes: $_" -Level Warn
+
+    $dlg = [System.Windows.Window]::new()
+    $dlg.WindowStyle = 'None'
+    $dlg.AllowsTransparency = $true
+    $dlg.Background = [System.Windows.Media.Brushes]::Transparent
+    $dlg.WindowStartupLocation = 'CenterOwner'
+    $dlg.Owner = $Window
+    $dlg.Width = 600
+    $dlg.Height = 520
+    $dlg.Topmost = $true
+    $dlg.ResizeMode = 'NoResize'
+    $dlg.ShowInTaskbar = $false
+
+    $border = [System.Windows.Controls.Border]::new()
+    $border.Background = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.Color]::FromArgb(250, $bgColor.R, $bgColor.G, $bgColor.B))
+    $border.CornerRadius = [System.Windows.CornerRadius]::new(16)
+    $border.Padding = [System.Windows.Thickness]::new(28, 24, 28, 24)
+    $border.BorderBrush = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.ColorConverter]::ConvertFromString($theme['CardBorder']))
+    $border.BorderThickness = [System.Windows.Thickness]::new(1)
+    $shadow = [System.Windows.Media.Effects.DropShadowEffect]::new()
+    $shadow.BlurRadius = 30; $shadow.ShadowDepth = 0; $shadow.Opacity = 0.5
+    $shadow.Color = [System.Windows.Media.Colors]::Black
+    $border.Effect = $shadow
+
+    $mainPanel = [System.Windows.Controls.DockPanel]::new()
+    $mainPanel.LastChildFill = $true
+
+    # Header with title and close button
+    $headerGrid = [System.Windows.Controls.Grid]::new()
+    $col1 = [System.Windows.Controls.ColumnDefinition]::new()
+    $col1.Width = [System.Windows.GridLength]::new(1, [System.Windows.GridUnitType]::Star)
+    $col2 = [System.Windows.Controls.ColumnDefinition]::new()
+    $col2.Width = [System.Windows.GridLength]::Auto
+    $headerGrid.ColumnDefinitions.Add($col1)
+    $headerGrid.ColumnDefinitions.Add($col2)
+    $headerGrid.Margin = [System.Windows.Thickness]::new(0, 0, 0, 16)
+
+    $titleBlock = [System.Windows.Controls.TextBlock]::new()
+    $titleBlock.FontSize = 18
+    $titleBlock.FontWeight = [System.Windows.FontWeights]::Bold
+    $titleBlock.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.ColorConverter]::ConvertFromString($theme['AccentColor']))
+    $titleBlock.VerticalAlignment = 'Center'
+    $iconRun = [System.Windows.Documents.Run]::new([string][char]0xE7C3)
+    $iconRun.FontFamily = [System.Windows.Media.FontFamily]::new('Segoe MDL2 Assets')
+    $titleBlock.Inlines.Add($iconRun)
+    $titleBlock.Inlines.Add([System.Windows.Documents.Run]::new('  Release Notes'))
+    [System.Windows.Controls.Grid]::SetColumn($titleBlock, 0)
+    $headerGrid.Children.Add($titleBlock) | Out-Null
+
+    $closeBtn = [System.Windows.Controls.Button]::new()
+    $closeBtn.Content = [string][char]0xE711
+    $closeBtn.FontFamily = [System.Windows.Media.FontFamily]::new('Segoe MDL2 Assets')
+    $closeBtn.FontSize = 12
+    $closeBtn.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.ColorConverter]::ConvertFromString($theme['InputPlaceholder']))
+    $closeBtn.Background = [System.Windows.Media.Brushes]::Transparent
+    $closeBtn.BorderThickness = [System.Windows.Thickness]::new(0)
+    $closeBtn.Cursor = [System.Windows.Input.Cursors]::Hand
+    $closeBtn.VerticalAlignment = 'Top'
+    $closeBtn.Add_Click({ $dlg.Close() })
+    [System.Windows.Controls.Grid]::SetColumn($closeBtn, 1)
+    $headerGrid.Children.Add($closeBtn) | Out-Null
+
+    [System.Windows.Controls.DockPanel]::SetDock($headerGrid, [System.Windows.Controls.Dock]::Top)
+    $mainPanel.Children.Add($headerGrid) | Out-Null
+
+    # Close button at bottom
+    $btnClose = [System.Windows.Controls.Button]::new()
+    $btnClose.Height = 36
+    $btnClose.MinWidth = 90
+    $btnClose.HorizontalAlignment = 'Right'
+    $btnClose.Cursor = [System.Windows.Input.Cursors]::Hand
+    $btnClose.Margin = [System.Windows.Thickness]::new(0, 16, 0, 0)
+    $closeTpl = [System.Windows.Markup.XamlReader]::Parse(@"
+<ControlTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" TargetType="Button">
+    <Border Name="bd" Background="$($theme['ButtonPrimary'])" CornerRadius="8" Padding="16,8">
+        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+    </Border>
+    <ControlTemplate.Triggers>
+        <Trigger Property="IsMouseOver" Value="True">
+            <Setter TargetName="bd" Property="Background" Value="$($theme['ButtonPrimaryHover'])"/>
+        </Trigger>
+    </ControlTemplate.Triggers>
+</ControlTemplate>
+"@)
+    $btnClose.Template = $closeTpl
+    $btnClose.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.ColorConverter]::ConvertFromString($theme['ButtonPrimaryForeground']))
+    $btnClose.FontSize = 13
+    $btnClose.FontWeight = [System.Windows.FontWeights]::SemiBold
+    $btnClose.Content = 'Close'
+    $btnClose.Add_Click({ $dlg.Close() })
+    [System.Windows.Controls.DockPanel]::SetDock($btnClose, [System.Windows.Controls.Dock]::Bottom)
+    $mainPanel.Children.Add($btnClose) | Out-Null
+
+    # Scrollable release notes content (fills remaining space)
+    $scrollViewer = [System.Windows.Controls.ScrollViewer]::new()
+    $scrollViewer.VerticalScrollBarVisibility = 'Auto'
+    $scrollViewer.HorizontalScrollBarVisibility = 'Disabled'
+
+    $notesBlock = [System.Windows.Controls.TextBlock]::new()
+    $notesBlock.Text = $script:ReleaseNotesText
+    $notesBlock.TextWrapping = [System.Windows.TextWrapping]::Wrap
+    $notesBlock.FontSize = 12
+    $notesBlock.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.ColorConverter]::ConvertFromString($theme['WindowForeground']))
+    $scrollViewer.Content = $notesBlock
+    $mainPanel.Children.Add($scrollViewer) | Out-Null
+
+    $border.Child = $mainPanel
+    $dlg.Content = $border
+    $dlg.ShowDialog() | Out-Null
 }
+
+$btn_ReleaseNotes.Add_Click({ Show-DATReleaseNotesDialog })
 #endregion Release Notes
 
 #region Load Saved Settings
@@ -16447,6 +18100,24 @@ try {
             Write-Host "Disabled" -ForegroundColor DarkYellow
         }
 
+        # Restore Code Signing
+        Write-Host "  Code Signing  : " -NoNewline -ForegroundColor DarkGray
+        if ($null -ne $savedConfig.CodeSigningEnabled -and $savedConfig.CodeSigningEnabled -eq 1) {
+            $chk_CodeSigning.IsChecked = $true
+            $txt_CodeSigningState.Text = 'On'
+            $txt_CodeSigningState.Foreground = $Window.FindResource('AccentColor')
+            $panel_CodeSigningConfig.Visibility = 'Visible'
+            Write-Host "Enabled" -ForegroundColor Green
+            if (-not [string]::IsNullOrEmpty($savedConfig.CodeSigningCertThumbprint)) {
+                $txt_CodeSigningThumbprint.Text = $savedConfig.CodeSigningCertThumbprint
+                Write-Host "  Cert Thumb    : " -NoNewline -ForegroundColor DarkGray
+                Write-Host $savedConfig.CodeSigningCertThumbprint -ForegroundColor White
+                Update-CodeSigningCertDetails -Thumbprint $savedConfig.CodeSigningCertThumbprint
+            }
+        } else {
+            Write-Host "Disabled" -ForegroundColor DarkYellow
+        }
+
         # Restore Debug Package Build
         Write-Host "  Debug Build   : " -NoNewline -ForegroundColor DarkGray
         if ($null -ne $savedConfig.DebugPackageBuild -and $savedConfig.DebugPackageBuild -eq 1) {
@@ -16595,6 +18266,75 @@ try {
             }
             Update-DATOEMDisplayText
             Update-DATOEMSelectionHighlight
+
+            # Auto-upgrade HPCMSL if HP is selected and module is already installed
+            if ($savedOEMs -contains 'HP') {
+                $hpInstalled = Get-Module -ListAvailable -Name HPCMSL -ErrorAction SilentlyContinue | Sort-Object Version -Descending | Select-Object -First 1
+                if ($hpInstalled) {
+                    Write-Host "  HPCMSL        : " -NoNewline -ForegroundColor DarkGray
+                    Write-Host "v$($hpInstalled.Version) installed -- update check running in background" -ForegroundColor White
+                    Write-DATLogEntry -Value "[HP] HPCMSL v$($hpInstalled.Version) detected at startup -- background update check started" -Severity 1
+
+                    # Run the PSGallery check in a background runspace to avoid blocking startup
+                    $script:HPCMSLUpdateRunspace = [runspacefactory]::CreateRunspace()
+                    $script:HPCMSLUpdateRunspace.Open()
+                    $script:HPCMSLUpdatePS = [powershell]::Create()
+                    $script:HPCMSLUpdatePS.Runspace = $script:HPCMSLUpdateRunspace
+                    [void]$script:HPCMSLUpdatePS.AddScript({
+                        param($CurrentVersion)
+                        try {
+                            $gallery = Find-Module -Name HPCMSL -Repository PSGallery -ErrorAction Stop
+                            if ($gallery.Version -gt $CurrentVersion) {
+                                Install-Module -Name HPCMSL -Force -AllowClobber -SkipPublisherCheck -AcceptLicense -Scope AllUsers -ErrorAction Stop
+                                return [PSCustomObject]@{ Status = 'Updated'; OldVersion = $CurrentVersion.ToString(); NewVersion = $gallery.Version.ToString() }
+                            } else {
+                                return [PSCustomObject]@{ Status = 'Current'; Version = $CurrentVersion.ToString() }
+                            }
+                        } catch {
+                            return [PSCustomObject]@{ Status = 'Failed'; Error = $_.Exception.Message }
+                        }
+                    })
+                    [void]$script:HPCMSLUpdatePS.AddArgument($hpInstalled.Version)
+                    $script:HPCMSLUpdateAsyncResult = $script:HPCMSLUpdatePS.BeginInvoke()
+
+                    # Poll for completion via a DispatcherTimer (non-blocking)
+                    $script:HPCMSLUpdateTimer = New-Object System.Windows.Threading.DispatcherTimer
+                    $script:HPCMSLUpdateTimer.Interval = [TimeSpan]::FromSeconds(2)
+                    $script:HPCMSLUpdateTimer.Add_Tick({
+                        if ($script:HPCMSLUpdateAsyncResult.IsCompleted) {
+                            $script:HPCMSLUpdateTimer.Stop()
+                            try {
+                                $result = $script:HPCMSLUpdatePS.EndInvoke($script:HPCMSLUpdateAsyncResult)
+                                if ($result -and $result.Count -gt 0) {
+                                    $r = $result[0]
+                                    switch ($r.Status) {
+                                        'Updated' {
+                                            Remove-Module -Name HPCMSL -Force -ErrorAction SilentlyContinue
+                                            Import-Module -Name HPCMSL -Force -ErrorAction SilentlyContinue
+                                            Write-DATLogEntry -Value "[HP] HPCMSL upgraded in background: v$($r.OldVersion) -> v$($r.NewVersion)" -Severity 1
+                                            Write-DATActivityLog "HP CMSL updated to v$($r.NewVersion)" -Level Info
+                                        }
+                                        'Current' {
+                                            Write-DATLogEntry -Value "[HP] HPCMSL v$($r.Version) is already the latest version" -Severity 1
+                                        }
+                                        'Failed' {
+                                            Write-DATLogEntry -Value "[HP] HPCMSL background update check failed: $($r.Error)" -Severity 2
+                                        }
+                                    }
+                                }
+                            } catch {
+                                Write-DATLogEntry -Value "[HP] HPCMSL background update timer error: $($_.Exception.Message)" -Severity 2
+                            } finally {
+                                $script:HPCMSLUpdatePS.Dispose()
+                                $script:HPCMSLUpdateRunspace.Dispose()
+                                $script:HPCMSLUpdateChecked = $true
+                            }
+                        }
+                    })
+                    $script:HPCMSLUpdateTimer.Start()
+                    $script:HPCMSLUpdateChecked = $true
+                }
+            }
         } else {
             Write-Host "  Selected OEMs : " -NoNewline -ForegroundColor DarkGray
             Write-Host "(none)" -ForegroundColor DarkYellow
@@ -16677,6 +18417,31 @@ try {
             $chk_BinaryDiffReplication.IsChecked = $false
             $txt_BdrState.Text = 'Off'
             Write-Host "Disabled" -ForegroundColor DarkYellow
+        }
+
+        # Restore Custom Console Folder
+        Write-Host "  Console Folder: " -NoNewline -ForegroundColor DarkGray
+        if ($null -ne $savedConfig.CustomConsoleFolderEnabled -and $savedConfig.CustomConsoleFolderEnabled -eq 1) {
+            if ($null -ne $chk_CustomConsoleFolder) { $chk_CustomConsoleFolder.IsChecked = $true }
+            if ($null -ne $txt_CustomConsoleFolderState) {
+                $txt_CustomConsoleFolderState.Text = 'Custom Folder'
+                $txt_CustomConsoleFolderState.Foreground = $Window.FindResource('AccentColor')
+            }
+            if ($null -ne $panel_ConsoleFolderPicker) { $panel_ConsoleFolderPicker.Visibility = 'Visible' }
+            if (-not [string]::IsNullOrEmpty($savedConfig.ConsoleFolderPath)) {
+                if ($null -ne $txt_ConsoleFolderPath) { $txt_ConsoleFolderPath.Text = "Packages (Root)\$($savedConfig.ConsoleFolderPath)" }
+                Write-Host $savedConfig.ConsoleFolderPath -ForegroundColor Green
+            } elseif ($null -ne $savedConfig.ConsoleFolderID -and $savedConfig.ConsoleFolderID -eq 0) {
+                if ($null -ne $txt_ConsoleFolderPath) { $txt_ConsoleFolderPath.Text = 'Packages (Root)' }
+                Write-Host "(root)" -ForegroundColor Green
+            } else {
+                Write-Host "Enabled (no path set)" -ForegroundColor DarkYellow
+            }
+        } else {
+            if ($null -ne $chk_CustomConsoleFolder) { $chk_CustomConsoleFolder.IsChecked = $false }
+            if ($null -ne $txt_CustomConsoleFolderState) { $txt_CustomConsoleFolderState.Text = 'Use Default' }
+            if ($null -ne $panel_ConsoleFolderPicker) { $panel_ConsoleFolderPicker.Visibility = 'Collapsed' }
+            Write-Host "Use Default" -ForegroundColor DarkYellow
         }
 
         # Restore Known Models Only
@@ -16940,7 +18705,7 @@ if (Test-Path $logoPath) {
 
 # Read version from module manifest
 $manifestPath = Join-Path $AppRoot "Modules\DriverAutomationToolCore\DriverAutomationToolCore.psd1"
-$script:versionString = "v10.0.29"
+$script:versionString = "v10.0.30"
 if (Test-Path $manifestPath) {
     $manifestData = Import-PowerShellDataFile $manifestPath
     $ver = [version]$manifestData.ModuleVersion
@@ -17294,6 +19059,132 @@ $Window.Add_ContentRendered({
         Set-DATActiveView -ViewName 'view_About' -NavButtonName 'nav_About'
         $txt_EulaWarning.Visibility = 'Visible'
         Write-DATActivityLog "EULA not accepted -- navigated to About page on startup" -Level Warn
+    }
+
+    # Connectivity check on startup with progress overlay
+    try {
+        Write-DATActivityLog "Running startup connectivity check..." -Level Info
+        $connTheme = Get-DATTheme -ThemeName $script:CurrentTheme
+        $connBgColor = [System.Windows.Media.ColorConverter]::ConvertFromString($connTheme['CardBackground'])
+
+        # Create non-modal overlay window for progress
+        $connDlg = [System.Windows.Window]::new()
+        $connDlg.WindowStyle = 'None'
+        $connDlg.AllowsTransparency = $true
+        $connDlg.Background = [System.Windows.Media.Brushes]::Transparent
+        $connDlg.WindowStartupLocation = 'CenterOwner'
+        $connDlg.Owner = $Window
+        $connDlg.Width = 400
+        $connDlg.SizeToContent = 'Height'
+        $connDlg.Topmost = $true
+        $connDlg.ResizeMode = 'NoResize'
+        $connDlg.ShowInTaskbar = $false
+
+        $connBorder = [System.Windows.Controls.Border]::new()
+        $connBorder.Background = [System.Windows.Media.SolidColorBrush]::new(
+            [System.Windows.Media.Color]::FromArgb(245, $connBgColor.R, $connBgColor.G, $connBgColor.B))
+        $connBorder.CornerRadius = [System.Windows.CornerRadius]::new(16)
+        $connBorder.Padding = [System.Windows.Thickness]::new(28, 24, 28, 24)
+        $connBorder.BorderBrush = [System.Windows.Media.SolidColorBrush]::new(
+            [System.Windows.Media.ColorConverter]::ConvertFromString($connTheme['CardBorder']))
+        $connBorder.BorderThickness = [System.Windows.Thickness]::new(1)
+        $connShadow = [System.Windows.Media.Effects.DropShadowEffect]::new()
+        $connShadow.BlurRadius = 30; $connShadow.ShadowDepth = 0; $connShadow.Opacity = 0.5
+        $connShadow.Color = [System.Windows.Media.Colors]::Black
+        $connBorder.Effect = $connShadow
+
+        $connPanel = [System.Windows.Controls.StackPanel]::new()
+
+        # Globe icon (E774 = Globe)
+        $connIcon = [System.Windows.Controls.TextBlock]::new()
+        $connIcon.Text = [string][char]0xE774
+        $connIcon.FontFamily = [System.Windows.Media.FontFamily]::new('Segoe MDL2 Assets')
+        $connIcon.FontSize = 28
+        $connIcon.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+            [System.Windows.Media.ColorConverter]::ConvertFromString($connTheme['AccentColor']))
+        $connIcon.HorizontalAlignment = 'Center'
+        $connIcon.Margin = [System.Windows.Thickness]::new(0, 0, 0, 12)
+        $connPanel.Children.Add($connIcon) | Out-Null
+
+        # Title
+        $connTitle = [System.Windows.Controls.TextBlock]::new()
+        $connTitle.Text = 'Checking Internet Connectivity'
+        $connTitle.FontSize = 15
+        $connTitle.FontWeight = [System.Windows.FontWeights]::Bold
+        $connTitle.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+            [System.Windows.Media.ColorConverter]::ConvertFromString($connTheme['WindowForeground']))
+        $connTitle.HorizontalAlignment = 'Center'
+        $connTitle.Margin = [System.Windows.Thickness]::new(0, 0, 0, 8)
+        $connPanel.Children.Add($connTitle) | Out-Null
+
+        # Current URL label
+        $connUrlLabel = [System.Windows.Controls.TextBlock]::new()
+        $connUrlLabel.Text = 'Preparing...'
+        $connUrlLabel.FontSize = 12
+        $connUrlLabel.TextWrapping = [System.Windows.TextWrapping]::Wrap
+        $connUrlLabel.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+            [System.Windows.Media.ColorConverter]::ConvertFromString($connTheme['InputPlaceholder']))
+        $connUrlLabel.HorizontalAlignment = 'Center'
+        $connUrlLabel.TextAlignment = [System.Windows.TextAlignment]::Center
+        $connUrlLabel.Margin = [System.Windows.Thickness]::new(0, 0, 0, 12)
+        $connPanel.Children.Add($connUrlLabel) | Out-Null
+
+        # Progress bar
+        $connProgress = [System.Windows.Controls.ProgressBar]::new()
+        $connProgress.Height = 6
+        $connProgress.Minimum = 0
+        $connProgress.Maximum = 100
+        $connProgress.Value = 0
+        $connProgress.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+            [System.Windows.Media.ColorConverter]::ConvertFromString($connTheme['AccentColor']))
+        $connProgress.Background = [System.Windows.Media.SolidColorBrush]::new(
+            [System.Windows.Media.ColorConverter]::ConvertFromString($connTheme['InputBackground']))
+        $connPanel.Children.Add($connProgress) | Out-Null
+
+        # Counter label
+        $connCounter = [System.Windows.Controls.TextBlock]::new()
+        $connCounter.Text = ''
+        $connCounter.FontSize = 11
+        $connCounter.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+            [System.Windows.Media.ColorConverter]::ConvertFromString($connTheme['InputPlaceholder']))
+        $connCounter.HorizontalAlignment = 'Center'
+        $connCounter.Margin = [System.Windows.Thickness]::new(0, 6, 0, 0)
+        $connPanel.Children.Add($connCounter) | Out-Null
+
+        $connBorder.Child = $connPanel
+        $connDlg.Content = $connBorder
+
+        # Show as non-modal so we can run the check loop on the same thread
+        $connDlg.Show()
+
+        # Progress callback updates the overlay via Dispatcher
+        $progressCallback = {
+            param($current, $total, $url, $reachable)
+            $Window.Dispatcher.Invoke([Action]{
+                $connUrlLabel.Text = $url
+                $connProgress.Value = [math]::Round(($current / $total) * 100)
+                $connCounter.Text = "$current of $total"
+            }, [System.Windows.Threading.DispatcherPriority]::Render)
+        }.GetNewClosure()
+
+        $connectivityResults = Test-DATConnectivity -OnProgress $progressCallback
+
+        # Close the progress overlay
+        $connDlg.Close()
+
+        $failedEndpoints = @($connectivityResults | Where-Object { -not $_.Reachable })
+        if ($failedEndpoints.Count -gt 0) {
+            $failedNames = ($failedEndpoints | ForEach-Object { $_.URL }) -join ', '
+            Write-DATActivityLog "Connectivity issues detected -- unreachable: $failedNames" -Level Warn
+            # Pass all results so the Save to File includes both OK and FAIL statuses
+            Show-DATConnectivityWarningDialog -FailedEndpoints $connectivityResults
+        } else {
+            Write-DATActivityLog "All required URLs are reachable" -Level Info
+        }
+    } catch {
+        Write-DATActivityLog "Startup connectivity check failed: $($_.Exception.Message)" -Level Warn
+        # Ensure progress overlay is closed on error
+        try { if ($null -ne $connDlg) { $connDlg.Close() } } catch { }
     }
 
     # Check for updates on startup
