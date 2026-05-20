@@ -810,8 +810,19 @@ try {
     } else {
         Write-CMTraceLog "BIOS firmware prestaged successfully"
         if ($flashExitCode -in @(2, 1, 3010)) {
+            $DisableRestart = {{DISABLE_RESTART}}
             $RestartDelaySeconds = {{RESTART_DELAY_SECONDS}}
             $RestartDelayMinutes = [math]::Round($RestartDelaySeconds / 60, 0)
+
+            # -- Admin-configured: Disable Automatic Restart --
+            # When enabled, the BIOS update is prestaged but no restart is initiated.
+            # BitLocker remains suspended until the user manually restarts.
+            if ($DisableRestart) {
+                Write-CMTraceLog "Automatic BIOS restart is DISABLED by admin policy. The update will apply on the next manual reboot."
+                Write-CMTraceLog "NOTE: BitLocker protection remains suspended until the device is restarted."
+                Write-CMTraceLog "=========================================="
+                exit 3010
+            }
 
             # -- Focus Assist / DND Check Before Restart --
             # If the user has Focus Assist (Do Not Disturb) active, we must NOT restart

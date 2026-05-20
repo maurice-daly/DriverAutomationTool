@@ -3,6 +3,14 @@ Release Notes
 IMPORTANT
 - DAT Downloads have been moved to GitHub - https://github.com/maurice-daly/DriverAutomationTool
 
+Version 10.0.31
+Updates
+- BIOS update restarts can now be disabled, with a warning confirmation that BitLocker will be suspended until the restart
+- BIOS update toasts also reflect the restart/no restart wording 
+- Intune package options moved into their own cards for better visibility
+Fixes
+- Restart delay controls locked / disabled
+
 Version 10.0.30
 Updates
 - Configuration Manager custom folder UI placement added

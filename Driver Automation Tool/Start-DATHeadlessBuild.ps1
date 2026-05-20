@@ -107,8 +107,10 @@ $processingParams = @{
     StoragePath     = $storagePath
 }
 if ($config.DisableToast) { $processingParams['DisableToast'] = $true }
+if ($config.DisableRestart) { $processingParams['DisableRestart'] = $true }
 if ($config.ToastTimeoutAction -ne 'RemindMeLater') { $processingParams['ToastTimeoutAction'] = $config.ToastTimeoutAction }
 if ($config.MaxDeferrals -gt 0) { $processingParams['MaxDeferrals'] = $config.MaxDeferrals }
+if ($config.BIOSRestartDelayMinutes -gt 0) { $processingParams['RestartDelaySeconds'] = $config.BIOSRestartDelayMinutes * 60 }
 
 # Teams notifications
 if ($config.TeamsNotificationsEnabled -and -not [string]::IsNullOrEmpty($config.TeamsWebhookUrl)) {
@@ -179,6 +181,9 @@ switch ($config.Platform) {
             }
             if ($config.ConfigMgr.DistributionPriority) { $processingParams['DistributionPriority'] = $config.ConfigMgr.DistributionPriority }
             if ($config.ConfigMgr.EnableBinaryDeltaReplication -eq $true) { $processingParams['EnableBinaryDeltaReplication'] = $true }
+            if ($null -ne $config.ConfigMgr.ConsoleFolderID -and $config.ConfigMgr.ConsoleFolderID -ge 0) {
+                $processingParams['ConsoleFolderID'] = [int]$config.ConfigMgr.ConsoleFolderID
+            }
         }
     }
 }

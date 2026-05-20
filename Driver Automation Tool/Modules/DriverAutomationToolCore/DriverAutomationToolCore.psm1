@@ -4,7 +4,7 @@
      Organization:  MSEndpointMgr / Patch My PC
      Filename:      DriverAutomationToolCore.psm1
      Purpose:       Core functions for Driver Automation Tool v2.0
-     Version:       10.0.30.0
+     Version:       10.0.31.0
     ===========================================================================
 #>
 
@@ -27,8 +27,8 @@ if ($PSVersionTable.PSVersion.Major -le 5) {
 
 #region Variables
 
-[version]$global:ScriptRelease = "10.0.30.0"
-$global:ScriptBuildDate = "01-05-2026"
+[version]$global:ScriptRelease = "10.0.31.0"
+$global:ScriptBuildDate = "20-05-2026"
 $global:ReleaseNotesURL = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/DriverAutomationToolNotes.txt"
 $OEMLinksURL = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/OEMLinks.xml"
 
@@ -2728,6 +2728,7 @@ function Start-DATModelProcessing {
         [switch]$EnableBinaryDeltaReplication,
         [int]$ConsoleFolderID = -1,
         [switch]$DisableToast,
+        [switch]$DisableRestart,
         [ValidateSet('RemindMeLater','InstallNow')][string]$ToastTimeoutAction = 'RemindMeLater',
         [int]$MaxDeferrals = 0,
         [int]$RestartDelaySeconds = 600,
@@ -2981,6 +2982,7 @@ function Start-DATModelProcessing {
                         if ($isPilotBuild) { $intuneParams['NamePrefix'] = $driverNamePrefix }
                         if (-not [string]::IsNullOrEmpty($catalogVersion)) { $intuneParams['Version'] = "$catalogVersion" }
                         if ($DisableToast) { $intuneParams['DisableToast'] = $true }
+                        if ($DisableRestart) { $intuneParams['DisableRestart'] = $true }
                         if ($ToastTimeoutAction -ne 'RemindMeLater') { $intuneParams['ToastTimeoutAction'] = $ToastTimeoutAction }
                         if ($MaxDeferrals -gt 0) { $intuneParams['MaxDeferrals'] = $MaxDeferrals }
                         if ($RestartDelaySeconds -ne 600) { $intuneParams['RestartDelaySeconds'] = $RestartDelaySeconds }
@@ -3314,6 +3316,7 @@ function Start-DATModelProcessing {
                 if (-not [string]::IsNullOrEmpty($biosEntry.Version)) { $intuneParams['Version'] = "$($biosEntry.Version)" }
                                 if (-not [string]::IsNullOrEmpty($biosEntry.ReleaseDate)) { $intuneParams['ReleaseDate'] = $biosEntry.ReleaseDate }
                                 if ($DisableToast) { $intuneParams['DisableToast'] = $true }
+                                if ($DisableRestart) { $intuneParams['DisableRestart'] = $true }
                                 if ($ToastTimeoutAction -ne 'RemindMeLater') { $intuneParams['ToastTimeoutAction'] = $ToastTimeoutAction }
                                 if ($MaxDeferrals -gt 0) { $intuneParams['MaxDeferrals'] = $MaxDeferrals }
                                 if ($RestartDelaySeconds -ne 600) { $intuneParams['RestartDelaySeconds'] = $RestartDelaySeconds }
@@ -3699,6 +3702,7 @@ function Export-DATBuildConfig {
         [string]$TempPath,
         [string]$PackagePath,
         [bool]$DisableToast = $false,
+        [bool]$DisableRestart = $false,
         [string]$ToastTimeoutAction = 'RemindMeLater',
         [int]$MaxDeferrals = 0,
         [int]$BIOSRestartDelayMinutes = 3,
@@ -3726,6 +3730,7 @@ function Export-DATBuildConfig {
         Architecture               = $Architecture
         PackageType                = $PackageType
         DisableToast               = $DisableToast
+        DisableRestart             = $DisableRestart
         ToastTimeoutAction         = $ToastTimeoutAction
         MaxDeferrals               = $MaxDeferrals
         BIOSRestartDelayMinutes    = $BIOSRestartDelayMinutes
@@ -6473,7 +6478,8 @@ function New-DATIntuneToastScript {
         [string]$CustomToastBody = '',
         [string]$CustomToastGreeting = '',
         [string]$CustomToastSubtitle = '',
-        [int]$RestartDelayMinutes = 10
+        [int]$RestartDelayMinutes = 10,
+        [switch]$DisableRestart
     )
 
     # Determine layout type and per-type content
@@ -6485,8 +6491,13 @@ function New-DATIntuneToastScript {
             $body    = if (-not [string]::IsNullOrEmpty($CustomToastBody))  { $CustomToastBody  } else { 'Your device has pending updates which are required for security / stability reasons. Pressing the Update button will trigger a restart of your device. DO NOT power off the device during the update process.' }
         }
         'BIOSSuccess' {
-            $heading        = if (-not [string]::IsNullOrEmpty($CustomToastTitle)) { $CustomToastTitle } else { 'BIOS Firmware Prestaged' }
-            $body           = if (-not [string]::IsNullOrEmpty($CustomToastBody))  { $CustomToastBody  } else { "Your system has a pending BIOS update and will be restarted in $RestartDelayMinutes minute(s). Please save your work. Do NOT power off the device during the update process." }
+            if ($DisableRestart) {
+                $heading    = if (-not [string]::IsNullOrEmpty($CustomToastTitle)) { $CustomToastTitle } else { 'BIOS Update Pending Restart' }
+                $body       = if (-not [string]::IsNullOrEmpty($CustomToastBody))  { $CustomToastBody  } else { 'Your system has a pending BIOS update that will be applied upon your next restart. Please restart your device at your earliest convenience. Do NOT power off the device during the update process.' }
+            } else {
+                $heading    = if (-not [string]::IsNullOrEmpty($CustomToastTitle)) { $CustomToastTitle } else { 'BIOS Firmware Prestaged' }
+                $body       = if (-not [string]::IsNullOrEmpty($CustomToastBody))  { $CustomToastBody  } else { "Your system has a pending BIOS update and will be restarted in $RestartDelayMinutes minute(s). Please save your work. Do NOT power off the device during the update process." }
+            }
             $statusIcon     = '&#xE835;'   # FirmwareUpdate (Segoe MDL2 Assets)
             $iconColor      = '#3B82F6'    # blue-500
             $accentColor    = '#2563EB'    # blue-600
@@ -7095,6 +7106,7 @@ function New-DATIntuneInstallScript {
         [string]$ReleaseDate,
         [ValidateSet('Drivers','BIOS')][string]$UpdateType = 'Drivers',
         [switch]$DisableToast,
+        [switch]$DisableRestart,
         [ValidateSet('RemindMeLater','InstallNow')][string]$ToastTimeoutAction = 'RemindMeLater',
         [int]$MaxDeferrals = 0,
         [int]$RestartDelaySeconds = 600
@@ -7533,6 +7545,7 @@ function Show-DATStatusToast {
     $scriptContent = $scriptContent.Replace('{{STATUS_TOAST_BLOCK}}', $statusToastBlock)
     $scriptContent = $scriptContent.Replace('{{STATUS_TOAST_ERROR_BLOCK}}', $statusToastErrorBlock)
     $scriptContent = $scriptContent.Replace('{{RESTART_DELAY_SECONDS}}', [string]$RestartDelaySeconds)
+    $scriptContent = $scriptContent.Replace('{{DISABLE_RESTART}}', $(if ($DisableRestart) { '$true' } else { '$false' }))
 
     [System.IO.File]::WriteAllText($OutputPath, $scriptContent, [System.Text.UTF8Encoding]::new($false))
     Write-DATLogEntry -Value "[Intune] Install script generated: $OutputPath (Toast: $(if ($DisableToast) { 'Disabled' } else { 'Enabled' }))" -Severity 1
@@ -8526,6 +8539,7 @@ function Invoke-DATIntunePackageCreation {
         [ValidateSet('Drivers','BIOS')][string]$UpdateType = 'Drivers',
         [string]$NamePrefix,
         [switch]$DisableToast,
+        [switch]$DisableRestart,
         [ValidateSet('RemindMeLater','InstallNow')][string]$ToastTimeoutAction = 'RemindMeLater',
         [int]$MaxDeferrals = 0,
         [int]$RestartDelaySeconds = 600,
@@ -8656,6 +8670,7 @@ function Invoke-DATIntunePackageCreation {
         }
         if (-not [string]::IsNullOrEmpty($ReleaseDate)) { $installScriptParams['ReleaseDate'] = $ReleaseDate }
         if ($DisableToast) { $installScriptParams['DisableToast'] = $true }
+        if ($DisableRestart) { $installScriptParams['DisableRestart'] = $true }
         if ($ToastTimeoutAction -ne 'RemindMeLater') { $installScriptParams['ToastTimeoutAction'] = $ToastTimeoutAction }
         if ($MaxDeferrals -gt 0) { $installScriptParams['MaxDeferrals'] = $MaxDeferrals }
         if ($RestartDelaySeconds -ne 600) { $installScriptParams['RestartDelaySeconds'] = $RestartDelaySeconds }
@@ -8700,6 +8715,7 @@ function Invoke-DATIntunePackageCreation {
                 $biosSuccessParams = @{} + $statusToastParams
                 if (-not [string]::IsNullOrEmpty($CustomBIOSSuccessTitle)) { $biosSuccessParams['CustomToastTitle'] = $CustomBIOSSuccessTitle }
                 if (-not [string]::IsNullOrEmpty($CustomBIOSSuccessBody))  { $biosSuccessParams['CustomToastBody']  = $CustomBIOSSuccessBody  }
+                if ($DisableRestart) { $biosSuccessParams['DisableRestart'] = $true }
                 New-DATIntuneToastScript -OutputPath $biosSuccessToastPath -UpdateType 'BIOSSuccess' @biosSuccessParams
                 Write-DATLogEntry -Value "[Intune Pipeline] BIOS prestaged toast script created: $biosSuccessToastPath" -Severity 1 -UpdateUI
             }

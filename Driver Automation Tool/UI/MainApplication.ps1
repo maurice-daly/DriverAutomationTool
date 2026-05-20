@@ -1535,26 +1535,35 @@ function Show-DATConfirmDialog {
     $btnPanel.ColumnDefinitions.Add($col1)
     $btnPanel.ColumnDefinitions.Add($col2)
 
-    # Confirm button (primary)
+    # Confirm button (primary or warning-styled)
     $btnConfirm = [System.Windows.Controls.Button]::new()
     $btnConfirm.Height = 36
     $btnConfirm.Cursor = [System.Windows.Input.Cursors]::Hand
     $btnConfirm.Margin = [System.Windows.Thickness]::new(0, 0, 6, 0)
+    if ($Type -eq 'Warning') {
+        $confirmBg = $theme['StatusWarning']
+        $confirmHover = '#E69530'
+        $confirmFg = '#000000'
+    } else {
+        $confirmBg = $theme['ButtonPrimary']
+        $confirmHover = $theme['ButtonPrimaryHover']
+        $confirmFg = $theme['ButtonPrimaryForeground']
+    }
     $confirmTemplate = [System.Windows.Markup.XamlReader]::Parse(@"
 <ControlTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" TargetType="Button">
-    <Border x:Name="bd" Background="$($theme['ButtonPrimary'])" CornerRadius="8" Padding="16,8">
+    <Border x:Name="bd" Background="$confirmBg" CornerRadius="8" Padding="16,8">
         <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
     </Border>
     <ControlTemplate.Triggers>
         <Trigger Property="IsMouseOver" Value="True">
-            <Setter TargetName="bd" Property="Background" Value="$($theme['ButtonPrimaryHover'])"/>
+            <Setter TargetName="bd" Property="Background" Value="$confirmHover"/>
         </Trigger>
     </ControlTemplate.Triggers>
 </ControlTemplate>
 "@)
     $btnConfirm.Template = $confirmTemplate
     $btnConfirm.Foreground = [System.Windows.Media.SolidColorBrush]::new(
-        [System.Windows.Media.ColorConverter]::ConvertFromString($theme['ButtonPrimaryForeground']))
+        [System.Windows.Media.ColorConverter]::ConvertFromString($confirmFg))
     $btnConfirm.FontSize = 13
     $btnConfirm.FontWeight = [System.Windows.FontWeights]::SemiBold
     $btnConfirm.Content = $ConfirmLabel
@@ -7152,7 +7161,7 @@ $btn_Build.Add_Click({
     $script:BuildPS = [powershell]::Create()
     $script:BuildPS.Runspace = $script:BuildRunspace
     [void]$script:BuildPS.AddScript({
-        param($ModulePath, $ScriptDir, $RegPath, $RunningMode, $SelectedModels, $StoragePath, $PackagePath, $IntuneToken, $IntuneRefreshTok, $IntuneAuthClientIdParam, $IntuneTokenExpSec, $DisableToast, $SiteServer, $SiteCode, $PackageType, $DPGroups, $DPs, $DistPriority, $EnableBDR, $DebugBuildPath, $CustomBrandingPath, $HPPasswordBinPath, $ToastTimeoutAction, $MaxDeferrals, $BIOSRestartDelayMinutes, $TeamsWebhookUrl, $TeamsNotificationsEnabled, $CustomToastTextsJson, $ConsoleFolderID)
+        param($ModulePath, $ScriptDir, $RegPath, $RunningMode, $SelectedModels, $StoragePath, $PackagePath, $IntuneToken, $IntuneRefreshTok, $IntuneAuthClientIdParam, $IntuneTokenExpSec, $DisableToast, $DisableRestart, $SiteServer, $SiteCode, $PackageType, $DPGroups, $DPs, $DistPriority, $EnableBDR, $DebugBuildPath, $CustomBrandingPath, $HPPasswordBinPath, $ToastTimeoutAction, $MaxDeferrals, $BIOSRestartDelayMinutes, $TeamsWebhookUrl, $TeamsNotificationsEnabled, $CustomToastTextsJson, $ConsoleFolderID)
         try {
         Import-Module $ModulePath -Force
         $procParams = @{
@@ -7168,6 +7177,7 @@ $btn_Build.Add_Click({
         if (-not [string]::IsNullOrEmpty($IntuneAuthClientIdParam)) { $procParams['IntuneAuthClientId'] = $IntuneAuthClientIdParam }
         if ($IntuneTokenExpSec -gt 0) { $procParams['IntuneTokenExpiresInSec'] = $IntuneTokenExpSec }
         if ($DisableToast) { $procParams['DisableToast'] = $true }
+        if ($DisableRestart) { $procParams['DisableRestart'] = $true }
         if ($ToastTimeoutAction -ne 'RemindMeLater') { $procParams['ToastTimeoutAction'] = $ToastTimeoutAction }
         if ($MaxDeferrals -gt 0) { $procParams['MaxDeferrals'] = $MaxDeferrals }
         if ($BIOSRestartDelayMinutes -gt 0 -and $BIOSRestartDelayMinutes -ne 10) { $procParams['RestartDelaySeconds'] = $BIOSRestartDelayMinutes * 60 }
@@ -7273,6 +7283,8 @@ $btn_Build.Add_Click({
     [void]$script:BuildPS.AddArgument($intuneAuthClientId)
     [void]$script:BuildPS.AddArgument($intuneTokenExpSec)
     [void]$script:BuildPS.AddArgument($disableToast)
+    $disableRestart = ($selectedPlatform -eq 'Intune') -and ($chk_DisableBIOSRestart.IsChecked -eq $true)
+    [void]$script:BuildPS.AddArgument($disableRestart)
     [void]$script:BuildPS.AddArgument($cmSiteServer)
     [void]$script:BuildPS.AddArgument($cmSiteCode)
     [void]$script:BuildPS.AddArgument($cmPackageType)
@@ -11435,6 +11447,7 @@ $btn_ScheduleSave.Add_Click({
     }
 
     $schedDisableToast = ($schedPlatform -eq 'Intune') -and ($chk_DisableToastPrompt.IsChecked -eq $true)
+    $schedDisableRestart = ($schedPlatform -eq 'Intune') -and ($chk_DisableBIOSRestart.IsChecked -eq $true)
     $schedTimeoutAction = if ($cmb_BIOSTimeoutAction.SelectedIndex -eq 1) { 'InstallNow' } else { 'RemindMeLater' }
     $schedMaxDeferrals = if (($chk_EnableMaxDeferrals.IsChecked -eq $true) -and ($txt_MaxDeferrals.Text -match '^\d+$')) { [int]$txt_MaxDeferrals.Text } else { 0 }
     $schedBIOSRestartDelay = if (($txt_BIOSRestartDelay.Text -match '^\d+$')) { [int]$txt_BIOSRestartDelay.Text } else { 10 }
@@ -11463,7 +11476,8 @@ $btn_ScheduleSave.Add_Click({
     try {
         Export-DATBuildConfig -ConfigPath $configPath -Platform $schedPlatform -OS $schedOS -Architecture $schedArch `
             -PackageType $schedPkgType -Models @($schedModels) -TempPath $schedTempPath -PackagePath $schedPkgPath `
-            -DisableToast $schedDisableToast -ToastTimeoutAction $schedTimeoutAction -MaxDeferrals $schedMaxDeferrals `
+            -DisableToast $schedDisableToast -DisableRestart $schedDisableRestart `
+            -ToastTimeoutAction $schedTimeoutAction -MaxDeferrals $schedMaxDeferrals `
             -BIOSRestartDelayMinutes $schedBIOSRestartDelay `
             -TeamsWebhookUrl $schedTeamsUrl -TeamsNotificationsEnabled $schedTeamsEnabled -ConfigMgr $schedCM `
             -Intune $schedIntune
@@ -13317,33 +13331,157 @@ $chk_EnableMaxDeferrals.Add_Unchecked({
 
 # Deferrals +/- buttons
 $btn_DeferralsDown.Add_Click({
-    $val = [int]$txt_MaxDeferrals.Text
-    if ($val -gt 1) {
-        $txt_MaxDeferrals.Text = ($val - 1).ToString()
-        Set-DATRegistryValue -Name "BIOSMaxDeferrals" -Value ($val - 1) -Type DWord
-    }
+    try {
+        $val = if ($txt_MaxDeferrals.Text -match '^\d+$') { [int]$txt_MaxDeferrals.Text } else { 5 }
+        if ($val -gt 1) {
+            $txt_MaxDeferrals.Text = ($val - 1).ToString()
+            Set-DATRegistryValue -Name "BIOSMaxDeferrals" -Value ($val - 1) -Type DWord
+        }
+    } catch { }
 })
 $btn_DeferralsUp.Add_Click({
-    $val = [int]$txt_MaxDeferrals.Text
-    if ($val -lt 99) {
-        $txt_MaxDeferrals.Text = ($val + 1).ToString()
-        Set-DATRegistryValue -Name "BIOSMaxDeferrals" -Value ($val + 1) -Type DWord
-    }
+    try {
+        $val = if ($txt_MaxDeferrals.Text -match '^\d+$') { [int]$txt_MaxDeferrals.Text } else { 5 }
+        if ($val -lt 99) {
+            $txt_MaxDeferrals.Text = ($val + 1).ToString()
+            Set-DATRegistryValue -Name "BIOSMaxDeferrals" -Value ($val + 1) -Type DWord
+        }
+    } catch { }
 })
 
 # Restart delay +/- buttons
 $btn_RestartDelayDown.Add_Click({
-    $val = [int]$txt_BIOSRestartDelay.Text
-    if ($val -gt 1) {
-        $txt_BIOSRestartDelay.Text = ($val - 1).ToString()
-        Set-DATRegistryValue -Name "BIOSRestartDelayMinutes" -Value ($val - 1) -Type DWord
-    }
+    try {
+        $val = if ($txt_BIOSRestartDelay.Text -match '^\d+$') { [int]$txt_BIOSRestartDelay.Text } else { 10 }
+        if ($val -gt 1) {
+            $txt_BIOSRestartDelay.Text = ($val - 1).ToString()
+            Set-DATRegistryValue -Name "BIOSRestartDelayMinutes" -Value ($val - 1) -Type DWord
+        }
+    } catch { }
 })
 $btn_RestartDelayUp.Add_Click({
+    try {
+        $val = if ($txt_BIOSRestartDelay.Text -match '^\d+$') { [int]$txt_BIOSRestartDelay.Text } else { 10 }
+        if ($val -lt 120) {
+            $txt_BIOSRestartDelay.Text = ($val + 1).ToString()
+            Set-DATRegistryValue -Name "BIOSRestartDelayMinutes" -Value ($val + 1) -Type DWord
+        }
+    } catch { }
+})
+
+# TextBox direct input validation for deferrals
+$txt_MaxDeferrals.Add_PreviewTextInput({
+    param($sender, $e)
+    $e.Handled = $e.Text -notmatch '^\d$'
+})
+$txt_MaxDeferrals.Add_LostFocus({
+    $text = $txt_MaxDeferrals.Text.Trim()
+    if ($text -notmatch '^\d+$' -or [int]$text -lt 1) {
+        $txt_MaxDeferrals.Text = '1'
+    } elseif ([int]$text -gt 99) {
+        $txt_MaxDeferrals.Text = '99'
+    }
+    $val = [int]$txt_MaxDeferrals.Text
+    Set-DATRegistryValue -Name "BIOSMaxDeferrals" -Value $val -Type DWord
+})
+
+# TextBox direct input validation for restart delay
+$txt_BIOSRestartDelay.Add_PreviewTextInput({
+    param($sender, $e)
+    $e.Handled = $e.Text -notmatch '^\d$'
+})
+$txt_BIOSRestartDelay.Add_LostFocus({
+    $text = $txt_BIOSRestartDelay.Text.Trim()
+    if ($text -notmatch '^\d+$' -or [int]$text -lt 1) {
+        $txt_BIOSRestartDelay.Text = '1'
+    } elseif ([int]$text -gt 120) {
+        $txt_BIOSRestartDelay.Text = '120'
+    }
     $val = [int]$txt_BIOSRestartDelay.Text
-    if ($val -lt 120) {
-        $txt_BIOSRestartDelay.Text = ($val + 1).ToString()
-        Set-DATRegistryValue -Name "BIOSRestartDelayMinutes" -Value ($val + 1) -Type DWord
+    Set-DATRegistryValue -Name "BIOSRestartDelayMinutes" -Value $val -Type DWord
+})
+
+# Disable BIOS Restart toggle
+$chk_DisableBIOSRestart.Add_Checked({
+    # Skip confirmation dialog during settings restore (window not yet shown)
+    if (-not $script:DisableBIOSRestartRestoringSettings) {
+        $confirmed = Show-DATConfirmDialog -Title 'Security Warning' `
+            -Message "Disabling automatic BIOS restart means targeted devices will have BitLocker suspended pending the user's next manual restart. This is a security risk as the disk remains unprotected until the device is rebooted.`n`nAre you sure you want to enable this option?" `
+            -Type 'Warning' `
+            -ConfirmLabel "I Understand, Enable"
+        if (-not $confirmed) {
+            $chk_DisableBIOSRestart.IsChecked = $false
+            return
+        }
+    }
+    $panel_RestartDelayRow.Opacity = 0.4
+    $panel_RestartDelayRow.IsEnabled = $false
+    # Deferrals no longer apply when restart is disabled -- turn off and grey out
+    $script:DisablingDeferralsForRestart = $true
+    $chk_EnableMaxDeferrals.IsChecked = $false
+    $script:DisablingDeferralsForRestart = $false
+    $chk_EnableMaxDeferrals.IsEnabled = $false
+    $chk_EnableMaxDeferrals.Opacity = 0.4
+    $txt_MaxDeferrals.IsEnabled = $false
+    $btn_DeferralsDown.IsEnabled = $false
+    $btn_DeferralsUp.IsEnabled = $false
+    $txt_MaxDeferrals.Opacity = 0.4
+    $btn_DeferralsDown.Opacity = 0.4
+    $btn_DeferralsUp.Opacity = 0.4
+    Set-DATRegistryValue -Name "BIOSDisableRestart" -Value 1 -Type DWord
+    Write-DATActivityLog "BIOS automatic restart: Disabled (user acknowledged BitLocker risk)" -Level Warn
+    # Update custom toast text fields and preview if BIOS Prestaged is selected
+    $selectedType = if ($null -ne $cmb_ToastPreviewType.SelectedItem) { $cmb_ToastPreviewType.SelectedItem.Content } else { 'Driver Update' }
+    if ($selectedType -eq 'BIOS Prestaged') {
+        $defaults = $script:ToastDefaults['Toast_BIOSSuccess']
+        # Swap text fields to no-restart defaults if user hasn't customized them
+        if ($txt_CustomToastTitle.Text -eq $defaults.Title) {
+            $script:ToastTextLoading = $true
+            $txt_CustomToastTitle.Text = 'BIOS Update Pending Restart'
+            $script:ToastTextLoading = $false
+        }
+        if ($txt_CustomToastBody.Text -eq $defaults.Body) {
+            $script:ToastTextLoading = $true
+            $txt_CustomToastBody.Text = 'Your system has a pending BIOS update that will be applied upon your next restart. Please restart your device at your earliest convenience. Do NOT power off the device during the update process.'
+            $script:ToastTextLoading = $false
+        }
+        Update-DATToastPreview -Type $selectedType
+    }
+})
+$chk_DisableBIOSRestart.Add_Unchecked({
+    $panel_RestartDelayRow.Opacity = 1.0
+    $panel_RestartDelayRow.IsEnabled = $true
+    # Re-enable deferral toggle and controls
+    $chk_EnableMaxDeferrals.IsEnabled = $true
+    $chk_EnableMaxDeferrals.Opacity = 1.0
+    if ($chk_EnableMaxDeferrals.IsChecked -eq $true) {
+        $txt_MaxDeferrals.IsEnabled = $true
+        $btn_DeferralsDown.IsEnabled = $true
+        $btn_DeferralsUp.IsEnabled = $true
+    }
+    $txt_MaxDeferrals.Opacity = 1.0
+    $btn_DeferralsDown.Opacity = 1.0
+    $btn_DeferralsUp.Opacity = 1.0
+    Set-DATRegistryValue -Name "BIOSDisableRestart" -Value 0 -Type DWord
+    Write-DATActivityLog "BIOS automatic restart: Enabled" -Level Info
+    # Restore custom toast text fields and preview if BIOS Prestaged is selected
+    $selectedType = if ($null -ne $cmb_ToastPreviewType.SelectedItem) { $cmb_ToastPreviewType.SelectedItem.Content } else { 'Driver Update' }
+    if ($selectedType -eq 'BIOS Prestaged') {
+        $defaults = $script:ToastDefaults['Toast_BIOSSuccess']
+        $noRestartTitle = 'BIOS Update Pending Restart'
+        $noRestartBody = 'Your system has a pending BIOS update that will be applied upon your next restart. Please restart your device at your earliest convenience. Do NOT power off the device during the update process.'
+        # Restore text fields to restart defaults if they still show the no-restart defaults
+        if ($txt_CustomToastTitle.Text -eq $noRestartTitle) {
+            $script:ToastTextLoading = $true
+            $txt_CustomToastTitle.Text = $defaults.Title
+            $script:ToastTextLoading = $false
+        }
+        if ($txt_CustomToastBody.Text -eq $noRestartBody) {
+            $script:ToastTextLoading = $true
+            $txt_CustomToastBody.Text = $defaults.Body
+            $script:ToastTextLoading = $false
+        }
+        Update-DATToastPreview -Type $selectedType
     }
 })
 
@@ -14177,8 +14315,8 @@ function Update-DATToastPreview {
     $txt_ToastGreeting.Text  = "$greetingPrefix $($script:PreviewUserDisplayName)"
     $txt_ToastSubtitle.Text  = if (-not [string]::IsNullOrEmpty($customSubtitle)) { $customSubtitle } else { $defaults.Subtitle }
 
-    # Show Restart Now button only for BIOS Prestaged
-    if ($Type -eq 'BIOS Prestaged') {
+    # Show Restart Now button only for BIOS Prestaged (and only when restart is enabled)
+    if ($Type -eq 'BIOS Prestaged' -and $chk_DisableBIOSRestart.IsChecked -ne $true) {
         $bd_ToastRestartBtn.Visibility = 'Visible'
         $col_ToastRestartGap.Width = [System.Windows.GridLength]::new(10)
         $col_ToastRestart.Width    = [System.Windows.GridLength]::new(1, [System.Windows.GridUnitType]::Star)
@@ -14221,10 +14359,21 @@ function Update-DATToastPreview {
             $txt_ToastStatusIcon.Foreground        = $iconFg
             $txt_ToastStatusIcon.Text              = [char]0xE835   # FirmwareUpdate
             $restartMins = if (($txt_BIOSRestartDelay.Text -match '^\d+$')) { [int]$txt_BIOSRestartDelay.Text } else { 10 }
-            $defaultBody = $defaults.Body -replace '\{\{MINUTES\}\}', $restartMins
-            $customBodyResolved = if (-not [string]::IsNullOrEmpty($customBody)) { $customBody -replace '\{\{MINUTES\}\}', $restartMins } else { $null }
-            $txt_ToastStatusHeading.Text           = if (-not [string]::IsNullOrEmpty($customTitle)) { $customTitle } else { $defaults.Title }
-            $txt_ToastStatusBody.Text              = if (-not [string]::IsNullOrEmpty($customBodyResolved)) { $customBodyResolved } else { $defaultBody }
+            # Determine if user has customized the title/body or left the defaults
+            $isDefaultTitle = [string]::IsNullOrEmpty($customTitle) -or ($customTitle -eq $defaults.Title)
+            $isDefaultBody  = [string]::IsNullOrEmpty($customBody)  -or ($customBody -eq $defaults.Body)
+            if ($chk_DisableBIOSRestart.IsChecked -eq $true) {
+                # No-restart variant -- inform user the update will apply on next restart
+                $noRestartHeading = 'BIOS Update Pending Restart'
+                $noRestartBody = 'Your system has a pending BIOS update that will be applied upon your next restart. Please restart your device at your earliest convenience. Do NOT power off the device during the update process.'
+                $txt_ToastStatusHeading.Text = if ($isDefaultTitle) { $noRestartHeading } else { $customTitle }
+                $txt_ToastStatusBody.Text    = if ($isDefaultBody)  { $noRestartBody }    else { $customBody -replace '\{\{MINUTES\}\}', $restartMins }
+            } else {
+                $defaultBody = $defaults.Body -replace '\{\{MINUTES\}\}', $restartMins
+                $customBodyResolved = if (-not [string]::IsNullOrEmpty($customBody)) { $customBody -replace '\{\{MINUTES\}\}', $restartMins } else { $null }
+                $txt_ToastStatusHeading.Text           = if (-not [string]::IsNullOrEmpty($customTitle)) { $customTitle } else { $defaults.Title }
+                $txt_ToastStatusBody.Text              = if (-not [string]::IsNullOrEmpty($customBodyResolved)) { $customBodyResolved } else { $defaultBody }
+            }
         }
         'Driver Issues' {
             $panel_ToastUpdateMockup.Visibility = 'Collapsed'
@@ -14273,9 +14422,16 @@ $cmb_ToastPreviewType.Add_SelectionChanged({
     $savedGreeting  = (Get-ItemProperty -Path $global:RegPath -Name "${prefix}_Greeting" -ErrorAction SilentlyContinue)."${prefix}_Greeting"
     $savedSubtitle  = (Get-ItemProperty -Path $global:RegPath -Name "${prefix}_Subtitle" -ErrorAction SilentlyContinue)."${prefix}_Subtitle"
     $defaults = $script:ToastDefaults[$prefix]
+    # When DisableBIOSRestart is on and showing BIOS Prestaged, use no-restart defaults
+    $effectiveTitle = $defaults.Title
+    $effectiveBody  = $defaults.Body
+    if ($selectedType -eq 'BIOS Prestaged' -and $chk_DisableBIOSRestart.IsChecked -eq $true) {
+        $effectiveTitle = 'BIOS Update Pending Restart'
+        $effectiveBody  = 'Your system has a pending BIOS update that will be applied upon your next restart. Please restart your device at your earliest convenience. Do NOT power off the device during the update process.'
+    }
     $script:ToastTextLoading = $true
-    $txt_CustomToastTitle.Text    = if (-not [string]::IsNullOrEmpty($savedTitle))    { $savedTitle }    else { $defaults.Title }
-    $txt_CustomToastBody.Text     = if (-not [string]::IsNullOrEmpty($savedBody))     { $savedBody }     else { $defaults.Body }
+    $txt_CustomToastTitle.Text    = if (-not [string]::IsNullOrEmpty($savedTitle))    { $savedTitle }    else { $effectiveTitle }
+    $txt_CustomToastBody.Text     = if (-not [string]::IsNullOrEmpty($savedBody))     { $savedBody }     else { $effectiveBody }
     $txt_CustomToastGreeting.Text = if (-not [string]::IsNullOrEmpty($savedGreeting)) { $savedGreeting } else { $defaults.Greeting }
     $txt_CustomToastSubtitle.Text = if (-not [string]::IsNullOrEmpty($savedSubtitle)) { $savedSubtitle } else { $defaults.Subtitle }
     $script:ToastTextLoading = $false
@@ -18103,16 +18259,20 @@ try {
         # Restore Code Signing
         Write-Host "  Code Signing  : " -NoNewline -ForegroundColor DarkGray
         if ($null -ne $savedConfig.CodeSigningEnabled -and $savedConfig.CodeSigningEnabled -eq 1) {
-            $chk_CodeSigning.IsChecked = $true
-            $txt_CodeSigningState.Text = 'On'
-            $txt_CodeSigningState.Foreground = $Window.FindResource('AccentColor')
-            $panel_CodeSigningConfig.Visibility = 'Visible'
-            Write-Host "Enabled" -ForegroundColor Green
             if (-not [string]::IsNullOrEmpty($savedConfig.CodeSigningCertThumbprint)) {
+                $chk_CodeSigning.IsChecked = $true
+                $txt_CodeSigningState.Text = 'On'
+                $txt_CodeSigningState.Foreground = $Window.FindResource('AccentColor')
+                $panel_CodeSigningConfig.Visibility = 'Visible'
+                Write-Host "Enabled" -ForegroundColor Green
                 $txt_CodeSigningThumbprint.Text = $savedConfig.CodeSigningCertThumbprint
                 Write-Host "  Cert Thumb    : " -NoNewline -ForegroundColor DarkGray
                 Write-Host $savedConfig.CodeSigningCertThumbprint -ForegroundColor White
                 Update-CodeSigningCertDetails -Thumbprint $savedConfig.CodeSigningCertThumbprint
+            } else {
+                # No certificate configured -- disable code signing to prevent signing with null cert
+                Set-DATRegistryValue -Name "CodeSigningEnabled" -Value 0 -Type DWord
+                Write-Host "Disabled (no certificate)" -ForegroundColor DarkYellow
             }
         } else {
             Write-Host "Disabled" -ForegroundColor DarkYellow
@@ -18168,6 +18328,48 @@ try {
             Write-Host "$($savedConfig.BIOSRestartDelayMinutes) minute(s)" -ForegroundColor White
         } else {
             Write-Host "3 minutes (Default)" -ForegroundColor White
+        }
+
+        # Restore Disable BIOS Restart
+        Write-Host "  Disable Restart: " -NoNewline -ForegroundColor DarkGray
+        if ($null -ne $savedConfig.BIOSDisableRestart -and $savedConfig.BIOSDisableRestart -eq 1) {
+            $script:DisableBIOSRestartRestoringSettings = $true
+            $chk_DisableBIOSRestart.IsChecked = $true
+            $script:DisableBIOSRestartRestoringSettings = $false
+            $panel_RestartDelayRow.Opacity = 0.4
+            $panel_RestartDelayRow.IsEnabled = $false
+            # Deferrals no longer apply when restart is disabled
+            # Turn off deferral toggle and grey out
+            $script:DisablingDeferralsForRestart = $true
+            $chk_EnableMaxDeferrals.IsChecked = $false
+            $script:DisablingDeferralsForRestart = $false
+            $chk_EnableMaxDeferrals.IsEnabled = $false
+            $chk_EnableMaxDeferrals.Opacity = 0.4
+            $txt_MaxDeferrals.IsEnabled = $false
+            $btn_DeferralsDown.IsEnabled = $false
+            $btn_DeferralsUp.IsEnabled = $false
+            $txt_MaxDeferrals.Opacity = 0.4
+            $btn_DeferralsDown.Opacity = 0.4
+            $btn_DeferralsUp.Opacity = 0.4
+            # Swap toast text fields to no-restart defaults if BIOS Prestaged is selected
+            $restoreType = if ($null -ne $cmb_ToastPreviewType.SelectedItem) { $cmb_ToastPreviewType.SelectedItem.Content } else { 'Driver Update' }
+            if ($restoreType -eq 'BIOS Prestaged') {
+                $defaults = $script:ToastDefaults['Toast_BIOSSuccess']
+                if ($txt_CustomToastTitle.Text -eq $defaults.Title) {
+                    $script:ToastTextLoading = $true
+                    $txt_CustomToastTitle.Text = 'BIOS Update Pending Restart'
+                    $script:ToastTextLoading = $false
+                }
+                if ($txt_CustomToastBody.Text -eq $defaults.Body) {
+                    $script:ToastTextLoading = $true
+                    $txt_CustomToastBody.Text = 'Your system has a pending BIOS update that will be applied upon your next restart. Please restart your device at your earliest convenience. Do NOT power off the device during the update process.'
+                    $script:ToastTextLoading = $false
+                }
+                Update-DATToastPreview -Type $restoreType
+            }
+            Write-Host "Yes (BitLocker suspended until manual restart)" -ForegroundColor Yellow
+        } else {
+            Write-Host "No" -ForegroundColor DarkYellow
         }
 
         # Restore BIOS password from DPAPI-encrypted registry store
@@ -18705,7 +18907,7 @@ if (Test-Path $logoPath) {
 
 # Read version from module manifest
 $manifestPath = Join-Path $AppRoot "Modules\DriverAutomationToolCore\DriverAutomationToolCore.psd1"
-$script:versionString = "v10.0.30"
+$script:versionString = "v10.0.31"
 if (Test-Path $manifestPath) {
     $manifestData = Import-PowerShellDataFile $manifestPath
     $ver = [version]$manifestData.ModuleVersion
@@ -18987,6 +19189,30 @@ $Window.Add_Closing({
             # 1. Save model selections
             & $updateStatus "Saving model selections..."
             try { Save-DATModelSelections } catch { }
+
+            # 1b. Disable Code Signing if no valid certificate is configured
+            try {
+                $csRegConfig = Get-ItemProperty -Path $global:RegPath -ErrorAction SilentlyContinue
+                if ($csRegConfig -and $csRegConfig.CodeSigningEnabled -eq 1) {
+                    $csThumb = if ($csRegConfig.CodeSigningCertThumbprint) { $csRegConfig.CodeSigningCertThumbprint.Trim() } else { '' }
+                    if ([string]::IsNullOrEmpty($csThumb)) {
+                        Set-DATRegistryValue -Name "CodeSigningEnabled" -Value 0 -Type DWord
+                        Write-DATLogEntry -Value "[CodeSign] Disabled on exit -- no certificate thumbprint configured" -Severity 2
+                    } else {
+                        # Verify the cert actually exists in the stores
+                        $csFound = $false
+                        foreach ($csStore in @('Cert:\LocalMachine\My', 'Cert:\CurrentUser\My')) {
+                            if (Get-ChildItem -Path $csStore -ErrorAction SilentlyContinue | Where-Object { $_.Thumbprint -eq $csThumb -and $_.HasPrivateKey }) {
+                                $csFound = $true; break
+                            }
+                        }
+                        if (-not $csFound) {
+                            Set-DATRegistryValue -Name "CodeSigningEnabled" -Value 0 -Type DWord
+                            Write-DATLogEntry -Value "[CodeSign] Disabled on exit -- certificate $csThumb not found in local stores" -Severity 2
+                        }
+                    }
+                }
+            } catch { }
 
             # 2. Kill orphaned DISM/dismhost processes
             $dismProcs = @()
