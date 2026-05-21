@@ -4007,10 +4007,23 @@ function Update-DATApplication {
             }
         }
 
-        # Back up current version
-        $backupDir = Join-Path $env:TEMP "DATBackup_$(Get-Date -Format 'yyyyMMdd_HHmmss')"
+        # Back up current version to Backups folder within the configured temp path
+        $backupRoot = if (-not [string]::IsNullOrEmpty($global:TempDirectory) -and (Test-Path $global:TempDirectory)) {
+            Join-Path $global:TempDirectory 'Backups'
+        } else { $env:TEMP }
+        if (-not (Test-Path $backupRoot)) { New-Item -Path $backupRoot -ItemType Directory -Force | Out-Null }
+        $backupDir = Join-Path $backupRoot "DATBackup_$(Get-Date -Format 'yyyyMMdd_HHmmss')"
         Write-DATLogEntry -Value "[Update] Backing up current installation to $backupDir..." -Severity 1
         Copy-Item -Path $InstallDirectory -Destination $backupDir -Recurse -Force
+
+        # Remove previous DAT backup folders (keep only the one just created)
+        $backupDirName = Split-Path -Leaf $backupDir
+        Get-ChildItem -Path $backupRoot -Directory -Filter 'DATBackup_*' -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -ne $backupDirName } |
+            ForEach-Object {
+                Write-DATLogEntry -Value "[Update] Removing previous backup: $($_.Name)" -Severity 1
+                Remove-Item -Path $_.FullName -Recurse -Force -ErrorAction SilentlyContinue
+            }
 
         # Copy new files over existing installation (preserve user data like Settings, Logs, Temp)
         $preserveFolders = @('Settings', 'Logs', 'Temp', 'Packages')
@@ -6529,7 +6542,11 @@ function New-DATIntuneToastScript {
     switch ($UpdateType) {
         'BIOS' {
             $heading = if (-not [string]::IsNullOrEmpty($CustomToastTitle)) { $CustomToastTitle } else { 'BIOS Update Pending' }
-            $body    = if (-not [string]::IsNullOrEmpty($CustomToastBody))  { $CustomToastBody  } else { 'Your device has pending updates which are required for security / stability reasons. Pressing the Update button will trigger a restart of your device. DO NOT power off the device during the update process.' }
+            if ($DisableRestart) {
+                $body = if (-not [string]::IsNullOrEmpty($CustomToastBody)) { $CustomToastBody } else { 'Your device has pending updates which are required for security / stability reasons. Your device will perform this update upon the next restart. DO NOT power off the device during the update process.' }
+            } else {
+                $body = if (-not [string]::IsNullOrEmpty($CustomToastBody)) { $CustomToastBody } else { 'Your device has pending updates which are required for security / stability reasons. Pressing the Update button will trigger a restart of your device. DO NOT power off the device during the update process.' }
+            }
         }
         'BIOSSuccess' {
             if ($DisableRestart) {

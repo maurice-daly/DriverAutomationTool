@@ -13935,12 +13935,21 @@ $btn_RefreshFilterCount.Add_Click({
 $btn_QueryFilters.Add_Click({
     try {
         if (-not (Test-DATIntuneAuth)) {
+            Show-DATInfoDialog -Title "Authentication Required" -Message "Please authenticate to Intune before querying assignment filters." -Type Warning -ButtonLabel "OK"
             Write-DATActivityLog "Cannot query filters: authenticate to Intune first" -Level Error
             return
         }
 
         $theme = Get-DATTheme -ThemeName $script:CurrentTheme
         $bgColor = [System.Windows.Media.ColorConverter]::ConvertFromString($theme['CardBackground'])
+
+        # Shared state for nested event handlers (PS 5.1 closure safety)
+        $qfState = [hashtable]::Synchronized(@{
+            Theme     = $theme
+            Dialog    = $null
+            ListPanel = $null
+            BtnDelete = $null
+        })
 
         $dlg = [System.Windows.Window]::new()
         $dlg.WindowStyle      = 'None'
@@ -13953,6 +13962,7 @@ $btn_QueryFilters.Add_Click({
         $dlg.Topmost          = $true
         $dlg.ResizeMode       = 'NoResize'
         $dlg.ShowInTaskbar    = $false
+        $qfState.Dialog = $dlg
 
         $border = [System.Windows.Controls.Border]::new()
         $border.Background    = [System.Windows.Media.SolidColorBrush]::new(
@@ -13986,9 +13996,10 @@ $btn_QueryFilters.Add_Click({
         $titleText.Foreground = [System.Windows.Media.SolidColorBrush]::new(
             [System.Windows.Media.ColorConverter]::ConvertFromString($theme['WindowForeground']))
         $titleText.VerticalAlignment = 'Center'
-        $titleText.Inlines.Add([System.Windows.Documents.Run]::new([string][char]0xE71C))
-        $titleText.Inlines[0].FontFamily = [System.Windows.Media.FontFamily]::new('Segoe MDL2 Assets')
-        $titleText.Inlines[0].FontSize = 16
+        $titleIconRun = [System.Windows.Documents.Run]::new([string][char]0xE71C)
+        $titleIconRun.FontFamily = [System.Windows.Media.FontFamily]::new('Segoe MDL2 Assets')
+        $titleIconRun.FontSize = 16
+        $titleText.Inlines.Add($titleIconRun)
         $titleText.Inlines.Add([System.Windows.Documents.Run]::new('  Assignment Filters'))
         $headerGrid.Children.Add($titleText) | Out-Null
 
@@ -14005,7 +14016,7 @@ $btn_QueryFilters.Add_Click({
         $btnCloseX.Foreground = [System.Windows.Media.SolidColorBrush]::new(
             [System.Windows.Media.ColorConverter]::ConvertFromString($theme['InputPlaceholder']))
         $btnCloseX.Cursor = [System.Windows.Input.Cursors]::Hand
-        $btnCloseX.Add_Click({ $dlg.Close() })
+        $btnCloseX.Add_Click({ $qfState.Dialog.Close() })
         $headerGrid.Children.Add($btnCloseX) | Out-Null
 
         $rootGrid.Children.Add($headerGrid) | Out-Null
@@ -14035,13 +14046,16 @@ $btn_QueryFilters.Add_Click({
 "@)
         $btnDeleteFilters.Template = $btnTemplate
         $deleteContent = [System.Windows.Controls.TextBlock]::new()
-        $deleteContent.Inlines.Add([System.Windows.Documents.Run]::new([string][char]0xE74D))
-        $deleteContent.Inlines[0].FontFamily = [System.Windows.Media.FontFamily]::new('Segoe MDL2 Assets')
-        $deleteContent.Inlines[0].FontSize = 11
-        $deleteContent.Inlines.Add([System.Windows.Documents.Run]::new('  Delete Selected Filter(s)'))
-        $deleteContent.Inlines[1].FontSize = 12
+        $delIconRun = [System.Windows.Documents.Run]::new([string][char]0xE74D)
+        $delIconRun.FontFamily = [System.Windows.Media.FontFamily]::new('Segoe MDL2 Assets')
+        $delIconRun.FontSize = 11
+        $deleteContent.Inlines.Add($delIconRun)
+        $delLabelRun = [System.Windows.Documents.Run]::new('  Delete Selected Filter(s)')
+        $delLabelRun.FontSize = 12
+        $deleteContent.Inlines.Add($delLabelRun)
         $btnDeleteFilters.Content = $deleteContent
         $toolbarPanel.Children.Add($btnDeleteFilters) | Out-Null
+        $qfState.BtnDelete = $btnDeleteFilters
 
         $rootGrid.Children.Add($toolbarPanel) | Out-Null
 
@@ -14052,6 +14066,7 @@ $btn_QueryFilters.Add_Click({
         [System.Windows.Controls.Grid]::SetRow($scrollViewer, 2)
 
         $listPanel = [System.Windows.Controls.StackPanel]::new()
+        $qfState.ListPanel = $listPanel
 
         # Loading indicator
         $loadingText = [System.Windows.Controls.TextBlock]::new()
@@ -14072,18 +14087,21 @@ $btn_QueryFilters.Add_Click({
         # Load filters after dialog renders
         $dlg.Add_ContentRendered({
             try {
+                $t = $qfState.Theme
+                $lp = $qfState.ListPanel
+                $bd = $qfState.BtnDelete
                 $filters = Get-DATIntuneAssignmentFilters
-                $listPanel.Children.Clear()
+                $lp.Children.Clear()
 
                 if (@($filters).Count -eq 0) {
                     $emptyText = [System.Windows.Controls.TextBlock]::new()
                     $emptyText.Text = 'No assignment filters found.'
                     $emptyText.FontSize = 13
                     $emptyText.Foreground = [System.Windows.Media.SolidColorBrush]::new(
-                        [System.Windows.Media.ColorConverter]::ConvertFromString($theme['InputPlaceholder']))
+                        [System.Windows.Media.ColorConverter]::ConvertFromString($t['InputPlaceholder']))
                     $emptyText.HorizontalAlignment = 'Center'
                     $emptyText.Margin = [System.Windows.Thickness]::new(0, 20, 0, 0)
-                    $listPanel.Children.Add($emptyText) | Out-Null
+                    $lp.Children.Add($emptyText) | Out-Null
                     return
                 }
 
@@ -14092,14 +14110,14 @@ $btn_QueryFilters.Add_Click({
                 $countText.FontSize = 12
                 $countText.FontWeight = [System.Windows.FontWeights]::SemiBold
                 $countText.Foreground = [System.Windows.Media.SolidColorBrush]::new(
-                    [System.Windows.Media.ColorConverter]::ConvertFromString($theme['AccentColor']))
+                    [System.Windows.Media.ColorConverter]::ConvertFromString($t['AccentColor']))
                 $countText.Margin = [System.Windows.Thickness]::new(0, 0, 0, 12)
-                $listPanel.Children.Add($countText) | Out-Null
+                $lp.Children.Add($countText) | Out-Null
 
                 foreach ($f in ($filters | Sort-Object -Property displayName)) {
                     $card = [System.Windows.Controls.Border]::new()
                     $card.Background = [System.Windows.Media.SolidColorBrush]::new(
-                        [System.Windows.Media.ColorConverter]::ConvertFromString($theme['InputBackground']))
+                        [System.Windows.Media.ColorConverter]::ConvertFromString($t['InputBackground']))
                     $card.CornerRadius = [System.Windows.CornerRadius]::new(8)
                     $card.Padding = [System.Windows.Thickness]::new(12, 8, 12, 8)
                     $card.Margin = [System.Windows.Thickness]::new(0, 0, 0, 6)
@@ -14115,10 +14133,10 @@ $btn_QueryFilters.Add_Click({
                     $cb.VerticalAlignment = 'Center'
                     $cb.Margin = [System.Windows.Thickness]::new(0, 0, 10, 0)
                     $cb.Tag = $f.id
-                    $cb.Add_Checked({ $btnDeleteFilters.Visibility = 'Visible' })
+                    $cb.Add_Checked({ $qfState.BtnDelete.Visibility = 'Visible' })
                     $cb.Add_Unchecked({
                         $anyChecked = $false
-                        foreach ($child in $listPanel.Children) {
+                        foreach ($child in $qfState.ListPanel.Children) {
                             if ($child -is [System.Windows.Controls.Border]) {
                                 $innerGrid = $child.Child
                                 if ($innerGrid -is [System.Windows.Controls.Grid] -and $innerGrid.Children.Count -gt 0) {
@@ -14127,7 +14145,7 @@ $btn_QueryFilters.Add_Click({
                                 }
                             }
                         }
-                        if (-not $anyChecked) { $btnDeleteFilters.Visibility = 'Collapsed' }
+                        if (-not $anyChecked) { $qfState.BtnDelete.Visibility = 'Collapsed' }
                     })
                     [System.Windows.Controls.Grid]::SetColumn($cb, 0)
                     $cardGrid.Children.Add($cb) | Out-Null
@@ -14140,7 +14158,7 @@ $btn_QueryFilters.Add_Click({
                     $nameText.FontSize = 13
                     $nameText.FontWeight = [System.Windows.FontWeights]::SemiBold
                     $nameText.Foreground = [System.Windows.Media.SolidColorBrush]::new(
-                        [System.Windows.Media.ColorConverter]::ConvertFromString($theme['WindowForeground']))
+                        [System.Windows.Media.ColorConverter]::ConvertFromString($t['WindowForeground']))
                     $cardPanel.Children.Add($nameText) | Out-Null
 
                     $ruleText = [System.Windows.Controls.TextBlock]::new()
@@ -14148,7 +14166,7 @@ $btn_QueryFilters.Add_Click({
                     $ruleText.FontSize = 11
                     $ruleText.FontFamily = [System.Windows.Media.FontFamily]::new('Consolas')
                     $ruleText.Foreground = [System.Windows.Media.SolidColorBrush]::new(
-                        [System.Windows.Media.ColorConverter]::ConvertFromString($theme['InputPlaceholder']))
+                        [System.Windows.Media.ColorConverter]::ConvertFromString($t['InputPlaceholder']))
                     $ruleText.TextWrapping = [System.Windows.TextWrapping]::Wrap
                     $ruleText.Margin = [System.Windows.Thickness]::new(0, 2, 0, 0)
                     $cardPanel.Children.Add($ruleText) | Out-Null
@@ -14158,17 +14176,17 @@ $btn_QueryFilters.Add_Click({
                         $dateText.Text = "Created: $($f.createdDateTime)"
                         $dateText.FontSize = 10
                         $dateText.Foreground = [System.Windows.Media.SolidColorBrush]::new(
-                            [System.Windows.Media.ColorConverter]::ConvertFromString($theme['InputPlaceholder']))
+                            [System.Windows.Media.ColorConverter]::ConvertFromString($t['InputPlaceholder']))
                         $dateText.Margin = [System.Windows.Thickness]::new(0, 2, 0, 0)
                         $cardPanel.Children.Add($dateText) | Out-Null
                     }
 
                     $card.Child = $cardGrid
                     $cardGrid.Children.Add($cardPanel) | Out-Null
-                    $listPanel.Children.Add($card) | Out-Null
+                    $lp.Children.Add($card) | Out-Null
                 }
             } catch {
-                $listPanel.Children.Clear()
+                $qfState.ListPanel.Children.Clear()
                 $errText = [System.Windows.Controls.TextBlock]::new()
                 $errText.Text = "Failed to load filters: $($_.Exception.Message)"
                 $errText.FontSize = 12
@@ -14176,15 +14194,16 @@ $btn_QueryFilters.Add_Click({
                     [System.Windows.Media.ColorConverter]::ConvertFromString('#E8A035'))
                 $errText.TextWrapping = [System.Windows.TextWrapping]::Wrap
                 $errText.Margin = [System.Windows.Thickness]::new(0, 20, 0, 0)
-                $listPanel.Children.Add($errText) | Out-Null
+                $qfState.ListPanel.Children.Add($errText) | Out-Null
             }
         })
 
         # Delete Selected Filters handler
         $btnDeleteFilters.Add_Click({
+            $lp = $qfState.ListPanel
             $selectedIds = @()
             $selectedNames = @()
-            foreach ($child in $listPanel.Children) {
+            foreach ($child in $lp.Children) {
                 if ($child -is [System.Windows.Controls.Border]) {
                     $innerGrid = $child.Child
                     if ($innerGrid -is [System.Windows.Controls.Grid] -and $innerGrid.Children.Count -gt 0) {
@@ -14205,8 +14224,8 @@ $btn_QueryFilters.Add_Click({
             $confirm = Show-DATConfirmDialog -Title "Delete Filters" -Message $confirmMsg
             if (-not $confirm) { return }
 
-            $btnDeleteFilters.IsEnabled = $false
-            $btnDeleteFilters.Opacity = 0.5
+            $qfState.BtnDelete.IsEnabled = $false
+            $qfState.BtnDelete.Opacity = 0.5
             $deleteErrors = @()
             foreach ($filterId in $selectedIds) {
                 try {
@@ -14220,7 +14239,7 @@ $btn_QueryFilters.Add_Click({
 
             # Remove deleted cards from the list
             $toRemove = @()
-            foreach ($child in $listPanel.Children) {
+            foreach ($child in $lp.Children) {
                 if ($child -is [System.Windows.Controls.Border]) {
                     $innerGrid = $child.Child
                     if ($innerGrid -is [System.Windows.Controls.Grid] -and $innerGrid.Children.Count -gt 0) {
@@ -14231,14 +14250,14 @@ $btn_QueryFilters.Add_Click({
                     }
                 }
             }
-            foreach ($item in $toRemove) { $listPanel.Children.Remove($item) }
+            foreach ($item in $toRemove) { $lp.Children.Remove($item) }
 
             # Update count text
             $remaining = 0
-            foreach ($child in $listPanel.Children) {
+            foreach ($child in $lp.Children) {
                 if ($child -is [System.Windows.Controls.Border]) { $remaining++ }
             }
-            $countCtrl = $listPanel.Children[0]
+            $countCtrl = $lp.Children[0]
             if ($countCtrl -is [System.Windows.Controls.TextBlock]) {
                 $countCtrl.Text = "$remaining filters found (200 max)"
             }
@@ -14254,11 +14273,12 @@ $btn_QueryFilters.Add_Click({
         })
 
         # Allow dragging the modal
-        $border.Add_MouseLeftButtonDown({ $dlg.DragMove() })
+        $border.Add_MouseLeftButtonDown({ $qfState.Dialog.DragMove() })
 
         $dlg.ShowDialog() | Out-Null
     } catch {
-        Write-DATActivityLog "Query filters failed: $($_.Exception.Message)" -Level Error
+        Show-DATInfoDialog -Title "Query Filters Failed" -Message "Could not query assignment filters: $($_.Exception.Message)" -Type Error -ButtonLabel "OK"
+        Write-DATActivityLog "Query filters failed: $($_.Exception.Message)`n$($_.ScriptStackTrace)" -Level Error
     }
 })
 
@@ -14612,7 +14632,12 @@ function Update-DATToastPreview {
             $panel_ToastUpdateMockup.Visibility = 'Visible'
             $panel_ToastStatusMockup.Visibility = 'Collapsed'
             $txt_ToastHeading.Text = if (-not [string]::IsNullOrEmpty($customTitle)) { $customTitle } else { $defaults.Title }
-            $txt_ToastBody.Text    = if (-not [string]::IsNullOrEmpty($customBody)) { $customBody } else { $defaults.Body }
+            $isDefaultBody = [string]::IsNullOrEmpty($customBody) -or ($customBody -eq $defaults.Body)
+            if ($chk_DisableBIOSRestart.IsChecked -eq $true -and $isDefaultBody) {
+                $txt_ToastBody.Text = 'Your device has pending updates which are required for security / stability reasons. Your device will perform this update upon the next restart. DO NOT power off the device during the update process.'
+            } else {
+                $txt_ToastBody.Text = if (-not [string]::IsNullOrEmpty($customBody)) { $customBody } else { $defaults.Body }
+            }
         }
         'Successfully Updated' {
             $panel_ToastUpdateMockup.Visibility = 'Collapsed'
@@ -14703,12 +14728,16 @@ $cmb_ToastPreviewType.Add_SelectionChanged({
     $savedGreeting  = (Get-ItemProperty -Path $global:RegPath -Name "${prefix}_Greeting" -ErrorAction SilentlyContinue)."${prefix}_Greeting"
     $savedSubtitle  = (Get-ItemProperty -Path $global:RegPath -Name "${prefix}_Subtitle" -ErrorAction SilentlyContinue)."${prefix}_Subtitle"
     $defaults = $script:ToastDefaults[$prefix]
-    # When DisableBIOSRestart is on and showing BIOS Prestaged, use no-restart defaults
+    # When DisableBIOSRestart is on, use no-restart defaults for BIOS toast types
     $effectiveTitle = $defaults.Title
     $effectiveBody  = $defaults.Body
-    if ($selectedType -eq 'BIOS Prestaged' -and $chk_DisableBIOSRestart.IsChecked -eq $true) {
-        $effectiveTitle = 'BIOS Update Pending Restart'
-        $effectiveBody  = 'Your system has a pending BIOS update that will be applied upon your next restart. Please restart your device at your earliest convenience. Do NOT power off the device during the update process.'
+    if ($chk_DisableBIOSRestart.IsChecked -eq $true) {
+        if ($selectedType -eq 'BIOS Update') {
+            $effectiveBody = 'Your device has pending updates which are required for security / stability reasons. Your device will perform this update upon the next restart. DO NOT power off the device during the update process.'
+        } elseif ($selectedType -eq 'BIOS Prestaged') {
+            $effectiveTitle = 'BIOS Update Pending Restart'
+            $effectiveBody  = 'Your system has a pending BIOS update that will be applied upon your next restart. Please restart your device at your earliest convenience. Do NOT power off the device during the update process.'
+        }
     }
     $script:ToastTextLoading = $true
     $txt_CustomToastTitle.Text    = if (-not [string]::IsNullOrEmpty($savedTitle))    { $savedTitle }    else { $effectiveTitle }
@@ -17776,11 +17805,31 @@ $script:btn_ApplyUpdate.Add_Click({
             $sourceContents = (Get-ChildItem -Path $sourceDir | Select-Object -ExpandProperty Name) -join ', '
             Write-UpdateLog "Source contents: $sourceContents"
 
-            # Back up current version
-            $backupDir = Join-Path $env:TEMP "DATBackup_$(Get-Date -Format 'yyyyMMdd_HHmmss')"
+            # Back up current version to Backups folder within the configured temp path
+            $regTempPath = $null
+            try {
+                $regCfg = Get-ItemProperty -Path 'HKLM:\SOFTWARE\DriverAutomationTool' -ErrorAction SilentlyContinue
+                if ($regCfg -and -not [string]::IsNullOrEmpty($regCfg.TempStoragePath)) {
+                    $regTempPath = $regCfg.TempStoragePath
+                }
+            } catch { }
+            $backupRoot = if (-not [string]::IsNullOrEmpty($regTempPath) -and (Test-Path $regTempPath)) {
+                Join-Path $regTempPath 'Backups'
+            } else { $env:TEMP }
+            if (-not (Test-Path $backupRoot)) { New-Item -Path $backupRoot -ItemType Directory -Force | Out-Null }
+            $backupDir = Join-Path $backupRoot "DATBackup_$(Get-Date -Format 'yyyyMMdd_HHmmss')"
             Write-UpdateLog "Backing up current installation to: $backupDir"
             Copy-Item -Path $InstallDir -Destination $backupDir -Recurse -Force
             Write-UpdateLog "Backup complete"
+
+            # Remove previous DAT backup folders (keep only the one just created)
+            $backupDirName = Split-Path -Leaf $backupDir
+            Get-ChildItem -Path $backupRoot -Directory -Filter 'DATBackup_*' -ErrorAction SilentlyContinue |
+                Where-Object { $_.Name -ne $backupDirName } |
+                ForEach-Object {
+                    Write-UpdateLog "Removing previous backup: $($_.Name)"
+                    Remove-Item -Path $_.FullName -Recurse -Force -ErrorAction SilentlyContinue
+                }
 
             # Copy new files -- preserve user data folders
             $preserveFolders = @('Settings', 'Logs', 'Temp', 'Packages')
