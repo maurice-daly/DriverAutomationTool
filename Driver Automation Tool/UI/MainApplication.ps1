@@ -118,6 +118,7 @@ if (Test-Path $icoPath) {
 # IMPORTANT: The handler must NOT update the UI or write console output for transient
 # resource errors (e.g. "Not enough quota"), otherwise it triggers layout/redraw,
 # which throws more errors, creating an infinite cascade.
+$script:WebRequestTimeoutSec    = 120
 $script:LastUnhandledErrorTick = 0
 $script:UnhandledErrorCount    = 0
 try {
@@ -1006,8 +1007,12 @@ function Show-DATInfoDialog {
     $dlg.WindowStyle = 'None'
     $dlg.AllowsTransparency = $true
     $dlg.Background = [System.Windows.Media.Brushes]::Transparent
-    $dlg.WindowStartupLocation = 'CenterOwner'
-    $dlg.Owner = $Window
+    if ($Window -and $Window.IsVisible) {
+        $dlg.WindowStartupLocation = 'CenterOwner'
+        $dlg.Owner = $Window
+    } else {
+        $dlg.WindowStartupLocation = 'CenterScreen'
+    }
     $dlg.Width = 440
     $dlg.SizeToContent = 'Height'
     $dlg.Topmost = $true
@@ -5927,7 +5932,7 @@ $btn_RefreshModels.Add_Click({
     $refreshTempDir = if ($regConfig -and -not [string]::IsNullOrEmpty($regConfig.TempStoragePath)) { $regConfig.TempStoragePath } else { Join-Path $global:ScriptDirectory 'Temp' }
 
     [void]$script:RefreshPS.AddScript({
-        param($CoreModulePath, $RequiredOEMs, $OS, $Architecture, $PackageType, $TempDir)
+        param($CoreModulePath, $RequiredOEMs, $OS, $Architecture, $PackageType, $TempDir, $UseDATAPICatalog, $WebRequestTimeoutSec)
 
         function Write-Log {
             param([string]$Message, [string]$Level = 'Info')
@@ -5975,12 +5980,201 @@ $btn_RefreshModels.Add_Click({
             $LogQueue.Enqueue('[SOURCE:DATAPI:Loading]')
             $datApiUrl = 'https://api.driverautomationtool.com/api/health'
             try {
-                $apiResponse = Invoke-RestMethod -Uri $datApiUrl -UseBasicParsing -TimeoutSec 15 -ErrorAction Stop @proxyParams
+                $apiResponse = Invoke-RestMethod -Uri $datApiUrl -UseBasicParsing -TimeoutSec $WebRequestTimeoutSec -ErrorAction Stop @proxyParams
                 Write-Log "DAT API health check passed (api.driverautomationtool.com)" -Level Success
                 $LogQueue.Enqueue('[SOURCE:DATAPI:OK:Connected]')
             } catch {
                 Write-Log "DAT API unreachable: $($_.Exception.Message)" -Level Warn
                 $LogQueue.Enqueue('[SOURCE:DATAPI:Error:Unreachable -- check firewall/proxy]')
+            }
+
+            # ── DAT API Catalog Mode: skip individual OEM sources ──
+            if ($UseDATAPICatalog) {
+                Write-Log "DAT API catalog mode enabled -- fetching models from API instead of individual OEM sources..."
+                $LogQueue.Enqueue('[SOURCE:DATAPI:Loading driver catalog]')
+                try {
+                    $driverCatalogRaw = Get-DATDriverCatalog
+
+                    $OSList = $OS -split ';' | Where-Object { $_ }
+                    $OEMSupportedModels = @()
+
+                    foreach ($entry in $driverCatalogRaw) {
+                        # Filter by selected OEMs
+                        if ($entry.Manufacturer -notin $RequiredOEMs) { continue }
+
+                        # Filter by architecture (normalize amd64 -> x64)
+                        $entryArch = $entry.SupportedArchitecture
+                        if ($entryArch) {
+                            $normalizedArch = $entryArch -replace 'amd64', 'x64'
+                            if ($normalizedArch -notmatch [regex]::Escape($Architecture)) { continue }
+                        }
+
+                        # Match OS: API returns various formats like "win11 25H2", "Windows 11 64-bit, 25H2", "Windows11", "Windows 11"
+                        $entryOS = $entry.SupportedOS
+
+                        # Empty SupportedOS with a valid download: treat as matching all selected OS builds
+                        # Empty SupportedOS without download: skip (incomplete placeholder entry)
+                        if ([string]::IsNullOrEmpty($entryOS)) {
+                            if ([string]::IsNullOrEmpty($entry.DownloadURL)) { continue }
+                            foreach ($SingleOS in $OSList) {
+                                $osParts = $SingleOS.Split(" ")
+                                $WindowsVersion = "$($osParts[0]) $($osParts[1])"
+                                $WindowsBuild = if ($osParts.Count -ge 3) { $osParts[2] } else { '' }
+                                $displayVersion = ''
+                                if ($entry.Manufacturer -in @('HP', 'Acer')) {
+                                    $displayVersion = (Get-Date -Format 'ddMMyyyy')
+                                } elseif (-not [string]::IsNullOrEmpty($entry.Version) -and $entry.Version -notmatch '^\d+H\d+$') {
+                                    $displayVersion = $entry.Version
+                                } elseif (-not [string]::IsNullOrEmpty($entry.ReleaseDate)) {
+                                    $displayVersion = $entry.ReleaseDate
+                                }
+                                $OEMSupportedModels += [PSCustomObject]@{
+                                    OEM        = $entry.Manufacturer
+                                    Model      = $entry.DisplayName.Trim()
+                                    Baseboards = if ($entry.SupportedDevices) { $entry.SupportedDevices } else { '' }
+                                    OS         = $WindowsVersion
+                                    'OS Build' = $WindowsBuild
+                                    Version    = $displayVersion
+                                    DownloadURL = if ($entry.DownloadURL) { $entry.DownloadURL } else { '' }
+                                }
+                            }
+                            continue
+                        }
+
+                        $matched = $false
+                        foreach ($SingleOS in $OSList) {
+                            $osParts = $SingleOS.Split(" ")
+                            $WindowsVersion = "$($osParts[0]) $($osParts[1])"  # "Windows 11"
+                            $WindowsBuild = if ($osParts.Count -ge 3) { $osParts[2] } else { '' }  # "25H2"
+                            $winNum = $osParts[1]  # "11" or "10"
+
+                            # Normalize the API OS value and check for match
+                            $osMatch = $false
+                            if ($WindowsBuild) {
+                                # Exact build match patterns
+                                $osMatch = (
+                                    $entryOS -eq $SingleOS -or                                          # "Windows 11 25H2"
+                                    $entryOS -eq "win${winNum} ${WindowsBuild}" -or                     # "win11 25H2"
+                                    $entryOS -match "Windows\s+${winNum}.*${WindowsBuild}" -or          # "Windows 11 64-bit, 25H2"
+                                    ($entryOS -eq "win${winNum} *") -or                                 # "win10 *" (wildcard)
+                                    ($entryOS -eq "Windows ${winNum}" -and $WindowsBuild) -or           # "Windows 11" (generic, matches any build)
+                                    ($entryOS -eq "Windows${winNum}" -and $WindowsBuild)                # "Windows11" (no space, generic)
+                                )
+                            } else {
+                                # No build specified -- match any entry for that Windows version
+                                $osMatch = $entryOS -match "(?:Windows\s*${winNum}|win${winNum})"
+                            }
+
+                            if ($osMatch) {
+                                # Determine display version per OEM convention
+                                $displayVersion = ''
+                                if ($entry.Manufacturer -in @('HP', 'Acer')) {
+                                    # HP and Acer use current date as version (matches OEM XML method)
+                                    $displayVersion = (Get-Date -Format 'ddMMyyyy')
+                                } elseif (-not [string]::IsNullOrEmpty($entry.Version) -and $entry.Version -notmatch '^\d+H\d+$') {
+                                    $displayVersion = $entry.Version
+                                } elseif (-not [string]::IsNullOrEmpty($entry.ReleaseDate)) {
+                                    $displayVersion = $entry.ReleaseDate
+                                }
+                                $OEMSupportedModels += [PSCustomObject]@{
+                                    OEM        = $entry.Manufacturer
+                                    Model      = $entry.DisplayName.Trim()
+                                    Baseboards = if ($entry.SupportedDevices) { $entry.SupportedDevices } else { '' }
+                                    OS         = $WindowsVersion
+                                    'OS Build' = $WindowsBuild
+                                    Version    = $displayVersion
+                                    DownloadURL = if ($entry.DownloadURL) { $entry.DownloadURL } else { '' }
+                                }
+                            }
+                        }
+                    }
+
+                    # Report per-OEM counts
+                    foreach ($OEM in $RequiredOEMs) {
+                        $oemCount = @($OEMSupportedModels | Where-Object { $_.OEM -eq $OEM } | Select-Object -Property Model -Unique).Count
+                        Write-Log "${OEM}: $oemCount unique models from DAT API." -Level Success
+                        $LogQueue.Enqueue("[SOURCE:${OEM}:OK:${oemCount} models (API)]")
+                    }
+
+                    $totalCount = @($OEMSupportedModels).Count
+                    Write-Log "=== DAT API Catalog: $totalCount total models found ===" -Level Success
+                    $LogQueue.Enqueue('[SOURCE:DATAPI:OK:Catalog loaded]')
+                } catch {
+                    Write-Log "DAT API driver catalog failed: $($_.Exception.Message)" -Level Error
+                    $LogQueue.Enqueue('[SOURCE:DATAPI:Error:Driver catalog unavailable]')
+                    return @([PSCustomObject]@{ _Error = "DAT API driver catalog unavailable: $($_.Exception.Message)" })
+                }
+
+                # ── BIOS version lookup (same as standard path) ──
+                if ($totalCount -gt 0) {
+                    Write-Log "Looking up BIOS versions for $totalCount models..."
+                    $LogQueue.Enqueue('[SOURCE:BIOS:Loading]')
+                    try {
+                        $biosCatalog = Get-DATBiosCatalog
+                        if ($null -eq $biosCatalog -or @($biosCatalog).Count -eq 0) {
+                            Write-Log "BIOS catalog returned empty" -Level Warn
+                            $LogQueue.Enqueue('[SOURCE:BIOS:Error:API unavailable]')
+                            $biosCatalog = @()
+                        } else {
+                            $LogQueue.Enqueue("[SOURCE:BIOS:OK:$(@($biosCatalog).Count) entries]")
+                        }
+                    } catch {
+                        Write-Log "Failed to fetch BIOS catalog: $($_.Exception.Message)" -Level Warn
+                        $LogQueue.Enqueue('[SOURCE:BIOS:Error:API unavailable]')
+                        $biosCatalog = @()
+                    }
+
+                    # Build device lookup maps
+                    $biosDeviceMap = @{}
+                    $biosNameMap = @{}
+                    foreach ($bEntry in $biosCatalog) {
+                        if ([string]::IsNullOrEmpty($bEntry.DownloadURL)) { continue }
+                        if ([string]::IsNullOrEmpty($bEntry.SupportedDevices)) {
+                            if (-not [string]::IsNullOrEmpty($bEntry.DisplayName)) {
+                                $biosNameMap["$($bEntry.Manufacturer)|$($bEntry.DisplayName.Trim())"] = $bEntry
+                            }
+                            continue
+                        }
+                        $devices = $bEntry.SupportedDevices -split '[;\s]+' | ForEach-Object { $_.Trim().ToUpper() } | Where-Object { $_ }
+                        foreach ($dev in $devices) {
+                            $bKey = "$($bEntry.Manufacturer)|$dev"
+                            if (-not $biosDeviceMap.ContainsKey($bKey)) { $biosDeviceMap[$bKey] = $bEntry }
+                            else {
+                                try { if ([datetime]$bEntry.ReleaseDate -gt [datetime]$biosDeviceMap[$bKey].ReleaseDate) { $biosDeviceMap[$bKey] = $bEntry } } catch { }
+                            }
+                        }
+                    }
+
+                    $biosMatched = 0
+                    foreach ($model in $OEMSupportedModels) {
+                        try {
+                            if ($model.OEM -eq 'Microsoft') {
+                                if (-not [string]::IsNullOrEmpty($model.Version)) {
+                                    $model | Add-Member -NotePropertyName 'BIOSVersion' -NotePropertyValue $model.Version -Force
+                                    $biosMatched++
+                                }
+                                continue
+                            }
+                            if ($model.OEM -eq 'Acer') {
+                                $biosEntry = $biosNameMap["Acer|$($model.Model)"]
+                            } else {
+                                $biosEntry = $null
+                                $boards = $model.Baseboards -split '[,;\s]+' | ForEach-Object { $_.Trim().ToUpper() } | Where-Object { $_ }
+                                foreach ($board in $boards) {
+                                    $biosEntry = $biosDeviceMap["$($model.OEM)|$board"]
+                                    if ($null -ne $biosEntry) { break }
+                                }
+                            }
+                            if ($null -ne $biosEntry -and -not [string]::IsNullOrEmpty($biosEntry.Version)) {
+                                $model | Add-Member -NotePropertyName 'BIOSVersion' -NotePropertyValue $biosEntry.Version -Force
+                                $biosMatched++
+                            }
+                        } catch { }
+                    }
+                    Write-Log "BIOS: Matched versions for $biosMatched of $totalCount models." -Level Success
+                }
+
+                return $OEMSupportedModels
             }
 
             $LogQueue.Enqueue('[SOURCE:OEMLinks:Loading]')
@@ -5993,7 +6187,7 @@ $btn_RefreshModels.Add_Click({
                 $webResponse = $null
                 for ($retryAttempt = 1; $retryAttempt -le 3; $retryAttempt++) {
                     try {
-                        $webResponse = Invoke-WebRequest -Uri $OEMLinksURL -UseBasicParsing -TimeoutSec 30 @proxyParams
+                        $webResponse = Invoke-WebRequest -Uri $OEMLinksURL -UseBasicParsing -TimeoutSec $WebRequestTimeoutSec @proxyParams
                         break
                     } catch {
                         if ($retryAttempt -lt 3) {
@@ -6045,7 +6239,7 @@ $btn_RefreshModels.Add_Click({
                         } else {
                             Write-Log "Downloading HP driver pack catalog..."
                             $proxyParams = Get-DATWebRequestProxy
-                            Invoke-WebRequest -Uri $HPLink -OutFile $HPCabPath -UseBasicParsing -TimeoutSec 60 @proxyParams
+                            Invoke-WebRequest -Uri $HPLink -OutFile $HPCabPath -UseBasicParsing -TimeoutSec $WebRequestTimeoutSec @proxyParams
                             Write-Log "Extracting $HPCabFile to $TempDir..."
                             & expand.exe "$HPCabPath" -F:* "$TempDir" -R 2>&1 | Out-Null
                         }
@@ -6107,7 +6301,7 @@ $btn_RefreshModels.Add_Click({
                         } elseif (-not (Test-Path $DellCabPath) -or -not (Test-CatalogFresh -FilePath $DellCabPath)) {
                             Write-Log "Downloading Dell driver pack catalog..."
                             $proxyParams = Get-DATWebRequestProxy
-                            Invoke-WebRequest -Uri $DellLink -OutFile $DellCabPath -UseBasicParsing -TimeoutSec 60 @proxyParams
+                            Invoke-WebRequest -Uri $DellLink -OutFile $DellCabPath -UseBasicParsing -TimeoutSec $WebRequestTimeoutSec @proxyParams
                             Write-Log "Extracting $DellCabFile..."
                             & expand.exe "$DellCabPath" -F:* "$TempDir" -R 2>&1 | Out-Null
                         } else {
@@ -6185,7 +6379,7 @@ $btn_RefreshModels.Add_Click({
                         } else {
                             Write-Log "Downloading Lenovo model catalog..."
                             $proxyParams = Get-DATWebRequestProxy
-                            Invoke-WebRequest -Uri $LenovoLink -OutFile $LenovoFilePath -UseBasicParsing -TimeoutSec 60 @proxyParams
+                            Invoke-WebRequest -Uri $LenovoLink -OutFile $LenovoFilePath -UseBasicParsing -TimeoutSec $WebRequestTimeoutSec @proxyParams
                         }
                         [xml]$LenovoModelXML = Get-Content -Path $LenovoFilePath
                         $LenovoDrivers = $LenovoModelXML.ModelList.Model
@@ -6242,7 +6436,7 @@ $btn_RefreshModels.Add_Click({
                         } else {
                             Write-Log "Downloading Microsoft Surface catalog to $MSFilePath..."
                             $proxyParams = Get-DATWebRequestProxy
-                            Invoke-WebRequest -Uri $MSLink -OutFile $MSFilePath -UseBasicParsing -TimeoutSec 15 @proxyParams
+                            Invoke-WebRequest -Uri $MSLink -OutFile $MSFilePath -UseBasicParsing -TimeoutSec $WebRequestTimeoutSec @proxyParams
                             Write-Log "Microsoft catalog downloaded successfully." -Level Success
                         }
                         $MSFileSize = [math]::Round((Get-Item $MSFilePath).Length / 1KB, 1)
@@ -6308,7 +6502,7 @@ $btn_RefreshModels.Add_Click({
                         } else {
                             Write-Log "Downloading Acer model catalog..."
                             $proxyParams = Get-DATWebRequestProxy
-                            Invoke-WebRequest -Uri $AcerLink -OutFile $AcerFilePath -UseBasicParsing -TimeoutSec 60 @proxyParams
+                            Invoke-WebRequest -Uri $AcerLink -OutFile $AcerFilePath -UseBasicParsing -TimeoutSec $WebRequestTimeoutSec @proxyParams
                         }
                         [xml]$AcerModelXML = Get-Content -Path $AcerFilePath
                         $AcerDrivers = $AcerModelXML.ModelList.Model
@@ -6572,6 +6766,8 @@ $btn_RefreshModels.Add_Click({
     [void]$script:RefreshPS.AddArgument($selectedArch)
     [void]$script:RefreshPS.AddArgument($selectedPackageType)
     [void]$script:RefreshPS.AddArgument($refreshTempDir)
+    [void]$script:RefreshPS.AddArgument(($chk_UseDATAPICatalog.IsChecked -eq $true))
+    [void]$script:RefreshPS.AddArgument($script:WebRequestTimeoutSec)
 
     $script:RefreshAsyncResult = $script:RefreshPS.BeginInvoke()
 
@@ -8068,10 +8264,18 @@ function Invoke-DATConfigMgrConnect {
     $txt_SiteCode.Foreground = $Window.FindResource('StatusInfo')
     $txt_SiteCode.Text = "Attempting connection..."
     Reset-DATSiteServerInfoPanel
+    # Clear stale connection globals before attempting new connection
+    $global:SiteCode = $null
+    $global:SiteServer = $null
+    $global:ConfigMgrValidation = $false
+    if ($global:DATCimSession) {
+        Remove-CimSession -CimSession $global:DATCimSession -ErrorAction SilentlyContinue
+        $global:DATCimSession = $null
+    }
     $Window.Dispatcher.Invoke([System.Windows.Threading.DispatcherPriority]::Render, [action]{})
 
     try {
-        Connect-DATConfigMgr -SiteServer $SiteServer -WinRMOverSSL $UseSSL | Out-Null
+        Connect-DATConfigMgr -SiteServer $SiteServer | Out-Null
         if (-not [string]::IsNullOrEmpty($global:SiteCode)) {
             $txt_SiteCode.Foreground = $Window.FindResource('StatusSuccess')
             $txt_SiteCode.Text = "Connected - Site Code: $($global:SiteCode)"
@@ -8091,11 +8295,26 @@ function Invoke-DATConfigMgrConnect {
                 $txt_ServerIP.Text = 'Unable to resolve'
             }
 
+            # Reuse the CIM session established during site code discovery
+            $infoCimSess = $global:DATCimSession
+            if (-not $infoCimSess) {
+                try {
+                    $infoCimSess = New-DATCimSession -ComputerName $SiteServer
+                } catch {
+                    Write-DATActivityLog "[WMI] CIM session for info panel failed: $($_.Exception.Message)" -Level Error
+                }
+            }
+
             # ConfigMgr Version
             try {
                 Write-DATActivityLog "[WMI] \\$SiteServer\root\SMS\Site_$($global:SiteCode) : SMS_Site" -Level Info
-                $cmVersion = Get-CimInstance -ComputerName $SiteServer -Namespace "root\SMS\Site_$($global:SiteCode)" -ClassName SMS_Site -ErrorAction Stop |
-                    Select-Object -ExpandProperty Version
+                if ($infoCimSess) {
+                    $cmVersion = Get-CimInstance -CimSession $infoCimSess -Namespace "root\SMS\Site_$($global:SiteCode)" -ClassName SMS_Site -ErrorAction Stop |
+                        Select-Object -ExpandProperty Version
+                } else {
+                    $cmVersion = Get-CimInstance -ComputerName $SiteServer -Namespace "root\SMS\Site_$($global:SiteCode)" -ClassName SMS_Site -ErrorAction Stop |
+                        Select-Object -ExpandProperty Version
+                }
                 $txt_ServerCMVersion.Text = if ($cmVersion) { $cmVersion } else { 'Not available' }
                 Write-DATActivityLog "[WMI] ConfigMgr version: $cmVersion" -Level Info
             } catch {
@@ -8105,7 +8324,11 @@ function Invoke-DATConfigMgrConnect {
             # Server OS Version
             try {
                 Write-DATActivityLog "[WMI] \\$SiteServer\root\cimv2 : Win32_OperatingSystem" -Level Info
-                $osInfo = Get-CimInstance -ComputerName $SiteServer -ClassName Win32_OperatingSystem -ErrorAction Stop
+                if ($infoCimSess) {
+                    $osInfo = Get-CimInstance -CimSession $infoCimSess -ClassName Win32_OperatingSystem -ErrorAction Stop
+                } else {
+                    $osInfo = Get-CimInstance -ComputerName $SiteServer -ClassName Win32_OperatingSystem -ErrorAction Stop
+                }
                 $txt_ServerOSVersion.Text = if ($osInfo) { "$($osInfo.Caption) ($($osInfo.Version))" } else { 'Not available' }
                 Write-DATActivityLog "[WMI] Site server OS: $($osInfo.Caption) ($($osInfo.Version))" -Level Info
             } catch {
@@ -8115,7 +8338,11 @@ function Invoke-DATConfigMgrConnect {
             # Package Count and Breakdown
             try {
                 Write-DATActivityLog "[WMI] \\$SiteServer\root\SMS\Site_$($global:SiteCode) : SMS_Package (all packages)" -Level Info
-                $allPackages = Get-CimInstance -ComputerName $SiteServer -Namespace "root\SMS\Site_$($global:SiteCode)" -ClassName SMS_Package -ErrorAction Stop
+                if ($infoCimSess) {
+                    $allPackages = Get-CimInstance -CimSession $infoCimSess -Namespace "root\SMS\Site_$($global:SiteCode)" -ClassName SMS_Package -ErrorAction Stop
+                } else {
+                    $allPackages = Get-CimInstance -ComputerName $SiteServer -Namespace "root\SMS\Site_$($global:SiteCode)" -ClassName SMS_Package -ErrorAction Stop
+                }
                 $packageCount = ($allPackages | Measure-Object).Count
                 $txt_ServerPackageCount.Text = $packageCount.ToString('N0')
 
@@ -8145,6 +8372,18 @@ function Invoke-DATConfigMgrConnect {
             }
 
             $panel_SiteServerInfo.Visibility = 'Visible'
+
+            # Check for insufficient ConfigMgr permissions
+            # If site code resolved but SMS_Site and SMS_Package returned nothing, the user lacks RBAC rights
+            $noVersion = ([string]::IsNullOrEmpty($cmVersion))
+            $noPkgs = ($null -eq $allPackages -or @($allPackages).Count -eq 0)
+            if ($noVersion -and $noPkgs) {
+                $panel_PackageChart.Visibility = 'Collapsed'
+                $currentUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+                Show-DATInfoDialog -Title 'Insufficient Permissions' `
+                    -Message "Connected to site $($global:SiteCode) on $($global:SiteServer), but the current account ($currentUser) does not have sufficient ConfigMgr permissions to read site data or packages.`n`nPlease ensure the account has at least the Read-only Analyst security role in Configuration Manager." `
+                    -Type Warning -ButtonLabel 'OK'
+            }
 
             # Populate Distribution Points and DP Groups
             $savedDPs = @()
@@ -9137,7 +9376,8 @@ function Show-DATConsoleFolderBrowseDialog {
 
     # Query all package folders (ObjectType=2)
     try {
-        $allFolders = @(Get-CimInstance -ComputerName $SiteServer -Namespace $smsNamespace `
+        $folderCimSess = if ($global:DATCimSession) { $global:DATCimSession } else { New-DATCimSession -ComputerName $SiteServer }
+        $allFolders = @(Get-CimInstance -CimSession $folderCimSess -Namespace $smsNamespace `
             -Query "SELECT ContainerNodeID, Name, ParentContainerNodeID FROM SMS_ObjectContainerNode WHERE ObjectType = 2" `
             -ErrorAction Stop)
     } catch {
@@ -9962,16 +10202,22 @@ function Invoke-DATPackageRefresh {
     [void]$script:PkgRefreshPS.AddScript({
         param($SiteServer, $SiteCode, $NamePrefixes)
         try {
+            # Create CIM session with DCOM/short-name fallback (module not available in runspace)
+            $cimSess = $null
+            try { $cimSess = New-CimSession -ComputerName $SiteServer -ErrorAction Stop }
+            catch {
+                try { $cimSess = New-CimSession -ComputerName $SiteServer -SessionOption (New-CimSessionOption -Protocol Dcom) -ErrorAction Stop }
+                catch {
+                    if ($SiteServer -match '\.') {
+                        $cimSess = New-CimSession -ComputerName ($SiteServer.Split('.')[0]) -ErrorAction Stop
+                    } else { throw }
+                }
+            }
             $results = @()
             foreach ($NamePrefix in $NamePrefixes) {
-            # Security fix #25: escape WQL LIKE special characters before interpolation.
-            # '  → ''   (WQL string delimiter — prevents filter breakout)
-            # [  → [[   (WQL character-class open bracket)
-            # _  → [_]  (WQL single-character wildcard)
-            # *  → %    (intentional multi-character wildcard — converted last)
             $wqlSafe = $NamePrefix.Replace("'", "''").Replace('[', '[[').Replace('_', '[_]').Replace('*', '%')
             $wmiFilter = "Name LIKE '$wqlSafe'"
-            $packages = Get-CimInstance -ComputerName $SiteServer -Namespace "root\SMS\Site_$SiteCode" -ClassName SMS_Package -Filter $wmiFilter -ErrorAction Stop
+            $packages = Get-CimInstance -CimSession $cimSess -Namespace "root\SMS\Site_$SiteCode" -ClassName SMS_Package -Filter $wmiFilter -ErrorAction Stop
             foreach ($pkg in $packages) {
                 $pkgModel = ''
                 if ($pkg.Name -match '^(?:Drivers|BIOS Update)(?:\s+(?:Pilot|Retired))?\s*-\s*(.+)$') {
@@ -10337,6 +10583,17 @@ $btn_CmDeleteSelected.Add_Click({
     $script:cmDeletePS.Runspace = $script:cmDeleteRunspace
     [void]$script:cmDeletePS.AddScript({
         param ($SiteServer, $SiteCode, $PkgIds, $PkgNames, $State)
+        # Create CIM session with fallback (module not available in runspace)
+        $cimSess = $null
+        try { $cimSess = New-CimSession -ComputerName $SiteServer -ErrorAction Stop }
+        catch {
+            try { $cimSess = New-CimSession -ComputerName $SiteServer -SessionOption (New-CimSessionOption -Protocol Dcom) -ErrorAction Stop }
+            catch {
+                if ($SiteServer -match '\.') {
+                    $cimSess = New-CimSession -ComputerName ($SiteServer.Split('.')[0]) -ErrorAction Stop
+                } else { throw }
+            }
+        }
         for ($i = 0; $i -lt $PkgIds.Count; $i++) {
             if ($State.CancelRequested) {
                 $State.Cancelled = $true
@@ -10344,7 +10601,7 @@ $btn_CmDeleteSelected.Add_Click({
             }
             $State.Current = $PkgNames[$i]
             try {
-                $pkg = Get-CimInstance -ComputerName $SiteServer -Namespace "root\SMS\Site_$SiteCode" `
+                $pkg = Get-CimInstance -CimSession $cimSess -Namespace "root\SMS\Site_$SiteCode" `
                     -ClassName SMS_Package -Filter "PackageID = '$($PkgIds[$i])'" -ErrorAction Stop
                 if ($null -ne $pkg) {
                     $pkg | Remove-CimInstance -ErrorAction Stop
@@ -10456,7 +10713,8 @@ $grid_Packages.Add_SelectionChanged({
         $siteServer = $global:SiteServer
         $siteCode = $global:SiteCode
         $pkgID = $selected.PackageID
-        $pkg = Get-CimInstance -ComputerName $siteServer -Namespace "root\SMS\Site_$siteCode" -ClassName SMS_Package -Filter "PackageID = '$pkgID'" -ErrorAction Stop
+        $selCimSess = if ($global:DATCimSession) { $global:DATCimSession } else { New-DATCimSession -ComputerName $siteServer }
+        $pkg = Get-CimInstance -CimSession $selCimSess -Namespace "root\SMS\Site_$siteCode" -ClassName SMS_Package -Filter "PackageID = '$pkgID'" -ErrorAction Stop
 
         if ($null -ne $pkg) {
             $txt_PkgDetailName.Text = if ($pkg.Name) { $pkg.Name } else { [char]0x2014 }
@@ -10498,7 +10756,7 @@ $grid_Packages.Add_SelectionChanged({
             # Content status -- query SMS_PackageStatusDistPointsSummarizer for actual distribution state
             $statusText = 'Not distributed'
             try {
-                $distStatus = Get-CimInstance -ComputerName $siteServer -Namespace "root\SMS\Site_$siteCode" `
+                $distStatus = Get-CimInstance -CimSession $selCimSess -Namespace "root\SMS\Site_$siteCode" `
                     -ClassName SMS_PackageStatusDistPointsSummarizer -Filter "PackageID = '$pkgID'" -ErrorAction Stop
                 if ($null -ne $distStatus -and @($distStatus).Count -gt 0) {
                     $totalDPs = @($distStatus).Count
@@ -10609,7 +10867,8 @@ $btn_CmDeletePackage.Add_Click({
     try {
         $siteServer = $global:SiteServer
         $siteCode = $global:SiteCode
-        $pkg = Get-CimInstance -ComputerName $siteServer -Namespace "root\SMS\Site_$siteCode" -ClassName SMS_Package -Filter "PackageID = '$($selected.PackageID)'" -ErrorAction Stop
+        $delCimSess = if ($global:DATCimSession) { $global:DATCimSession } else { New-DATCimSession -ComputerName $siteServer }
+        $pkg = Get-CimInstance -CimSession $delCimSess -Namespace "root\SMS\Site_$siteCode" -ClassName SMS_Package -Filter "PackageID = '$($selected.PackageID)'" -ErrorAction Stop
         if ($null -ne $pkg) {
             $pkg | Remove-CimInstance -ErrorAction Stop
             Write-DATActivityLog "Deleted package: $($selected.Name) ($($selected.PackageID))" -Level Success
@@ -10893,6 +11152,7 @@ $cmb_PkgAction.Add_SelectionChanged({
         $siteCode = $global:SiteCode
         $successCount = 0
         $failCount = 0
+        $actionCimSess = if ($global:DATCimSession) { $global:DATCimSession } else { New-DATCimSession -ComputerName $siteServer }
 
         foreach ($pkg in $selectedPkgs) {
             try {
@@ -10907,7 +11167,7 @@ $cmb_PkgAction.Add_SelectionChanged({
                     Write-DATLogEntry -Value "- Package '$oldName' already targets $newOS -- skipped" -Severity 1
                     continue
                 }
-                $wmiPkg = Get-CimInstance -ComputerName $siteServer -Namespace "root\SMS\Site_$siteCode" `
+                $wmiPkg = Get-CimInstance -CimSession $actionCimSess -Namespace "root\SMS\Site_$siteCode" `
                     -ClassName SMS_Package -Filter "PackageID = '$($pkg.PackageID)'" -ErrorAction Stop
                 if ($null -ne $wmiPkg) {
                     $wmiPkg.Name = $newName
@@ -10944,6 +11204,7 @@ $cmb_PkgAction.Add_SelectionChanged({
         $siteCode = $global:SiteCode
         $successCount = 0
         $failCount = 0
+        $moveCimSess = if ($global:DATCimSession) { $global:DATCimSession } else { New-DATCimSession -ComputerName $siteServer }
 
         foreach ($pkg in $selectedPkgs) {
             try {
@@ -10967,7 +11228,7 @@ $cmb_PkgAction.Add_SelectionChanged({
                     continue
                 }
 
-                $wmiPkg = Get-CimInstance -ComputerName $siteServer -Namespace "root\SMS\Site_$siteCode" `
+                $wmiPkg = Get-CimInstance -CimSession $moveCimSess -Namespace "root\SMS\Site_$siteCode" `
                     -ClassName SMS_Package -Filter "PackageID = '$($pkg.PackageID)'" -ErrorAction Stop
                 if ($null -ne $wmiPkg) {
                     $wmiPkg.Name = $newName
@@ -11101,6 +11362,26 @@ $chk_TelemetryOptOut.Add_Unchecked({
     # Disable Report Issue buttons when telemetry is opted out
     $btn_CmReportIssue.IsEnabled = $false
     $btn_IntuneReportIssue.IsEnabled = $false
+})
+
+# ── DAT API Catalog Source toggle ──
+$chk_UseDATAPICatalog = $Window.FindName('chk_UseDATAPICatalog')
+$panel_DATAPIStatus = $Window.FindName('panel_DATAPIStatus')
+$txt_DATAPIStatusIcon = $Window.FindName('txt_DATAPIStatusIcon')
+$txt_DATAPIStatus = $Window.FindName('txt_DATAPIStatus')
+
+$chk_UseDATAPICatalog.Add_Checked({
+    Set-DATRegistryValue -Name "UseDATAPICatalog" -Value 1 -Type DWord
+    $panel_DATAPIStatus.Visibility = 'Visible'
+    $txt_DATAPIStatusIcon.Text = [char]0xE73E
+    $txt_DATAPIStatusIcon.Foreground = [System.Windows.Media.Brushes]::Green
+    $txt_DATAPIStatus.Text = "DAT API catalog mode enabled -- OEM sources will be skipped on next refresh"
+    Write-DATLogEntry -Value "DAT API catalog mode enabled by user" -Severity 1
+})
+$chk_UseDATAPICatalog.Add_Unchecked({
+    Set-DATRegistryValue -Name "UseDATAPICatalog" -Value 0 -Type DWord
+    $panel_DATAPIStatus.Visibility = 'Collapsed'
+    Write-DATLogEntry -Value "DAT API catalog mode disabled -- individual OEM sources will be used" -Severity 1
 })
 
 $btn_CopyTelemetryGuid = $Window.FindName('btn_CopyTelemetryGuid')
@@ -13342,7 +13623,7 @@ $btn_DeferralsDown.Add_Click({
 $btn_DeferralsUp.Add_Click({
     try {
         $val = if ($txt_MaxDeferrals.Text -match '^\d+$') { [int]$txt_MaxDeferrals.Text } else { 5 }
-        if ($val -lt 99) {
+        if ($val -lt 10) {
             $txt_MaxDeferrals.Text = ($val + 1).ToString()
             Set-DATRegistryValue -Name "BIOSMaxDeferrals" -Value ($val + 1) -Type DWord
         }
@@ -13362,7 +13643,7 @@ $btn_RestartDelayDown.Add_Click({
 $btn_RestartDelayUp.Add_Click({
     try {
         $val = if ($txt_BIOSRestartDelay.Text -match '^\d+$') { [int]$txt_BIOSRestartDelay.Text } else { 10 }
-        if ($val -lt 120) {
+        if ($val -lt 240) {
             $txt_BIOSRestartDelay.Text = ($val + 1).ToString()
             Set-DATRegistryValue -Name "BIOSRestartDelayMinutes" -Value ($val + 1) -Type DWord
         }
@@ -13378,8 +13659,8 @@ $txt_MaxDeferrals.Add_LostFocus({
     $text = $txt_MaxDeferrals.Text.Trim()
     if ($text -notmatch '^\d+$' -or [int]$text -lt 1) {
         $txt_MaxDeferrals.Text = '1'
-    } elseif ([int]$text -gt 99) {
-        $txt_MaxDeferrals.Text = '99'
+    } elseif ([int]$text -gt 10) {
+        $txt_MaxDeferrals.Text = '10'
     }
     $val = [int]$txt_MaxDeferrals.Text
     Set-DATRegistryValue -Name "BIOSMaxDeferrals" -Value $val -Type DWord
@@ -13394,8 +13675,8 @@ $txt_BIOSRestartDelay.Add_LostFocus({
     $text = $txt_BIOSRestartDelay.Text.Trim()
     if ($text -notmatch '^\d+$' -or [int]$text -lt 1) {
         $txt_BIOSRestartDelay.Text = '1'
-    } elseif ([int]$text -gt 120) {
-        $txt_BIOSRestartDelay.Text = '120'
+    } elseif ([int]$text -gt 240) {
+        $txt_BIOSRestartDelay.Text = '240'
     }
     $val = [int]$txt_BIOSRestartDelay.Text
     Set-DATRegistryValue -Name "BIOSRestartDelayMinutes" -Value $val -Type DWord
@@ -17429,7 +17710,7 @@ $script:btn_ApplyUpdate.Add_Click({
     $script:updateJob = [PowerShell]::Create()
     $script:updateJob.Runspace = $script:updateRunspace
     [void]$script:updateJob.AddScript({
-        param([string]$InstallDir, [string]$CoreModulePath)
+        param([string]$InstallDir, [string]$CoreModulePath, [int]$WebRequestTimeoutSec = 120)
 
         function Write-UpdateLog {
             param([string]$Message, [string]$Level = 'Info')
@@ -17456,7 +17737,7 @@ $script:btn_ApplyUpdate.Add_Click({
             # Download ZIP
             Write-UpdateLog "Downloading from: $downloadUrl"
             $proxyParams = Get-DATWebRequestProxy
-            Invoke-WebRequest -Uri $downloadUrl -OutFile $zipPath -UseBasicParsing -TimeoutSec 120 @proxyParams -ErrorAction Stop
+            Invoke-WebRequest -Uri $downloadUrl -OutFile $zipPath -UseBasicParsing -TimeoutSec $WebRequestTimeoutSec @proxyParams -ErrorAction Stop
 
             if (-not (Test-Path $zipPath)) {
                 throw "Download failed -- ZIP file not found at $zipPath"
@@ -17583,6 +17864,7 @@ $script:btn_ApplyUpdate.Add_Click({
     $modulePath = Join-Path $global:ScriptDirectory 'Modules\DriverAutomationToolCore\DriverAutomationToolCore.psd1'
     [void]$script:updateJob.AddArgument($global:ScriptDirectory)
     [void]$script:updateJob.AddArgument($modulePath)
+    [void]$script:updateJob.AddArgument($script:WebRequestTimeoutSec)
     $script:updateAsyncResult = $script:updateJob.BeginInvoke()
 
     $script:updateTimer = [System.Windows.Threading.DispatcherTimer]::new()
@@ -18193,6 +18475,15 @@ try {
             }
         } else {
             Write-Host "Not opted in" -ForegroundColor DarkYellow
+        }
+
+        # Restore DAT API Catalog Source
+        Write-Host "  DAT API Mode  : " -NoNewline -ForegroundColor DarkGray
+        if ($null -ne $savedConfig.UseDATAPICatalog -and $savedConfig.UseDATAPICatalog -eq 1) {
+            $chk_UseDATAPICatalog.IsChecked = $true
+            Write-Host "Enabled (OEM sources skipped)" -ForegroundColor Green
+        } else {
+            Write-Host "Disabled (individual OEM sources)" -ForegroundColor DarkYellow
         }
 
         # Restore Deploy All Devices
@@ -18907,7 +19198,7 @@ if (Test-Path $logoPath) {
 
 # Read version from module manifest
 $manifestPath = Join-Path $AppRoot "Modules\DriverAutomationToolCore\DriverAutomationToolCore.psd1"
-$script:versionString = "v10.0.31"
+$script:versionString = "v10.0.32"
 if (Test-Path $manifestPath) {
     $manifestData = Import-PowerShellDataFile $manifestPath
     $ver = [version]$manifestData.ModuleVersion
@@ -19092,6 +19383,566 @@ $Window.Add_Closing({
     if ($script:CustomBuildTimer) { try { $script:CustomBuildTimer.Stop() } catch { } }
     if ($script:RefreshTimer) { try { $script:RefreshTimer.Stop() } catch { } }
     if ($script:hpcmslInstallTimer) { try { $script:hpcmslInstallTimer.Stop() } catch { } }
+
+    # ── Exit Feedback Modal ──
+    # Show a quick feedback prompt before shutdown (thumbs up / thumbs down / close)
+    try {
+        $fbTheme = Get-DATTheme -ThemeName $script:CurrentTheme
+        $fbBgColor = [System.Windows.Media.ColorConverter]::ConvertFromString($fbTheme['CardBackground'])
+
+        $fbDlg = [System.Windows.Window]::new()
+        $fbDlg.WindowStyle = 'None'
+        $fbDlg.AllowsTransparency = $true
+        $fbDlg.Background = [System.Windows.Media.Brushes]::Transparent
+        $fbDlg.WindowStartupLocation = 'CenterScreen'
+        $fbDlg.Width = 420
+        $fbDlg.SizeToContent = 'Height'
+        $fbDlg.Topmost = $true
+        $fbDlg.ResizeMode = 'NoResize'
+        $fbDlg.ShowInTaskbar = $false
+
+        $fbBorder = [System.Windows.Controls.Border]::new()
+        $fbBorder.Background = [System.Windows.Media.SolidColorBrush]::new(
+            [System.Windows.Media.Color]::FromArgb(245, $fbBgColor.R, $fbBgColor.G, $fbBgColor.B))
+        $fbBorder.CornerRadius = [System.Windows.CornerRadius]::new(16)
+        $fbBorder.Padding = [System.Windows.Thickness]::new(28, 24, 28, 24)
+        $fbBorder.BorderBrush = [System.Windows.Media.SolidColorBrush]::new(
+            [System.Windows.Media.ColorConverter]::ConvertFromString($fbTheme['CardBorder']))
+        $fbBorder.BorderThickness = [System.Windows.Thickness]::new(1)
+        $fbShadow = [System.Windows.Media.Effects.DropShadowEffect]::new()
+        $fbShadow.BlurRadius = 30; $fbShadow.ShadowDepth = 0; $fbShadow.Opacity = 0.5
+        $fbShadow.Color = [System.Windows.Media.Colors]::Black
+        $fbBorder.Effect = $fbShadow
+
+        $fbPanel = [System.Windows.Controls.StackPanel]::new()
+        $fbPanel.HorizontalAlignment = 'Center'
+
+        # Icon -- E19F = Like glyph
+        $fbIcon = [System.Windows.Controls.TextBlock]::new()
+        $fbIcon.Text = [char]0xED15
+        $fbIcon.FontFamily = [System.Windows.Media.FontFamily]::new('Segoe MDL2 Assets')
+        $fbIcon.FontSize = 28
+        $fbIcon.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+            [System.Windows.Media.ColorConverter]::ConvertFromString($fbTheme['StatusInfo']))
+        $fbIcon.HorizontalAlignment = 'Center'
+        $fbIcon.Margin = [System.Windows.Thickness]::new(0, 0, 0, 12)
+        $fbPanel.Children.Add($fbIcon) | Out-Null
+
+        # Title
+        $fbTitle = [System.Windows.Controls.TextBlock]::new()
+        $fbTitle.Text = "How was your experience?"
+        $fbTitle.FontSize = 16
+        $fbTitle.FontWeight = [System.Windows.FontWeights]::Bold
+        $fbTitle.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+            [System.Windows.Media.ColorConverter]::ConvertFromString($fbTheme['WindowForeground']))
+        $fbTitle.HorizontalAlignment = 'Center'
+        $fbTitle.Margin = [System.Windows.Thickness]::new(0, 0, 0, 6)
+        $fbPanel.Children.Add($fbTitle) | Out-Null
+
+        # Subtitle
+        $fbSubtitle = [System.Windows.Controls.TextBlock]::new()
+        $fbSubtitle.Text = "Your feedback helps us improve the tool"
+        $fbSubtitle.FontSize = 13
+        $fbSubtitle.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+            [System.Windows.Media.ColorConverter]::ConvertFromString($fbTheme['InputPlaceholder']))
+        $fbSubtitle.HorizontalAlignment = 'Center'
+        $fbSubtitle.Margin = [System.Windows.Thickness]::new(0, 0, 0, 20)
+        $fbPanel.Children.Add($fbSubtitle) | Out-Null
+
+        # Thumbs Up / Thumbs Down button row
+        $fbBtnPanel = [System.Windows.Controls.StackPanel]::new()
+        $fbBtnPanel.Orientation = 'Horizontal'
+        $fbBtnPanel.HorizontalAlignment = 'Center'
+        $fbBtnPanel.Margin = [System.Windows.Thickness]::new(0, 0, 0, 16)
+
+        # Thumbs Up button
+        $fbBtnUp = [System.Windows.Controls.Button]::new()
+        $fbBtnUp.Width = 100
+        $fbBtnUp.Height = 40
+        $fbBtnUp.Margin = [System.Windows.Thickness]::new(0, 0, 12, 0)
+        $fbBtnUp.Cursor = [System.Windows.Input.Cursors]::Hand
+        $fbBtnUp.ToolTip = "Submit positive feedback"
+        $fbUpTemplate = [System.Windows.Markup.XamlReader]::Parse(@"
+<ControlTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" TargetType="Button">
+    <Border x:Name="bd" Background="$($fbTheme['ButtonPrimary'])" CornerRadius="8" Padding="12,8">
+        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+    </Border>
+    <ControlTemplate.Triggers>
+        <Trigger Property="IsMouseOver" Value="True">
+            <Setter TargetName="bd" Property="Background" Value="$($fbTheme['ButtonPrimaryHover'])"/>
+        </Trigger>
+    </ControlTemplate.Triggers>
+</ControlTemplate>
+"@)
+        $fbBtnUp.Template = $fbUpTemplate
+        # Content: thumbs up icon + text
+        $fbUpContent = [System.Windows.Controls.StackPanel]::new()
+        $fbUpContent.Orientation = 'Horizontal'
+        $fbUpContent.HorizontalAlignment = 'Center'
+        $fbUpIcon = [System.Windows.Controls.TextBlock]::new()
+        $fbUpIcon.Text = [char]0xE19F
+        $fbUpIcon.FontFamily = [System.Windows.Media.FontFamily]::new('Segoe MDL2 Assets')
+        $fbUpIcon.FontSize = 16
+        $fbUpIcon.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+            [System.Windows.Media.ColorConverter]::ConvertFromString($fbTheme['ButtonPrimaryForeground']))
+        $fbUpIcon.VerticalAlignment = 'Center'
+        $fbUpIcon.Margin = [System.Windows.Thickness]::new(0, 0, 6, 0)
+        $fbUpContent.Children.Add($fbUpIcon) | Out-Null
+        $fbUpLabel = [System.Windows.Controls.TextBlock]::new()
+        $fbUpLabel.Text = "Good"
+        $fbUpLabel.FontSize = 13
+        $fbUpLabel.FontWeight = [System.Windows.FontWeights]::SemiBold
+        $fbUpLabel.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+            [System.Windows.Media.ColorConverter]::ConvertFromString($fbTheme['ButtonPrimaryForeground']))
+        $fbUpLabel.VerticalAlignment = 'Center'
+        $fbUpContent.Children.Add($fbUpLabel) | Out-Null
+        $fbBtnUp.Content = $fbUpContent
+        $fbBtnUp.Tag = $fbDlg
+        $fbBtnUp.Add_Click({
+            $this.Tag.Close()
+            try { Send-DATFeedback -Rating 'Positive' } catch { }
+        })
+        $fbBtnPanel.Children.Add($fbBtnUp) | Out-Null
+
+        # Thumbs Down button
+        $fbBtnDown = [System.Windows.Controls.Button]::new()
+        $fbBtnDown.Width = 100
+        $fbBtnDown.Height = 40
+        $fbBtnDown.Cursor = [System.Windows.Input.Cursors]::Hand
+        $fbBtnDown.ToolTip = "Submit negative feedback"
+        $fbDownTemplate = [System.Windows.Markup.XamlReader]::Parse(@"
+<ControlTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" TargetType="Button">
+    <Border x:Name="bd" Background="$($fbTheme['ButtonSecondary'])" CornerRadius="8" Padding="12,8">
+        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+    </Border>
+    <ControlTemplate.Triggers>
+        <Trigger Property="IsMouseOver" Value="True">
+            <Setter TargetName="bd" Property="Background" Value="$($fbTheme['ButtonSecondaryHover'])"/>
+        </Trigger>
+    </ControlTemplate.Triggers>
+</ControlTemplate>
+"@)
+        $fbBtnDown.Template = $fbDownTemplate
+        # Content: thumbs down icon + text
+        $fbDownContent = [System.Windows.Controls.StackPanel]::new()
+        $fbDownContent.Orientation = 'Horizontal'
+        $fbDownContent.HorizontalAlignment = 'Center'
+        $fbDownIcon = [System.Windows.Controls.TextBlock]::new()
+        $fbDownIcon.Text = [char]0xE19E
+        $fbDownIcon.FontFamily = [System.Windows.Media.FontFamily]::new('Segoe MDL2 Assets')
+        $fbDownIcon.FontSize = 16
+        $fbDownIcon.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+            [System.Windows.Media.ColorConverter]::ConvertFromString($fbTheme['ButtonSecondaryForeground']))
+        $fbDownIcon.VerticalAlignment = 'Center'
+        $fbDownIcon.Margin = [System.Windows.Thickness]::new(0, 0, 6, 0)
+        $fbDownContent.Children.Add($fbDownIcon) | Out-Null
+        $fbDownLabel = [System.Windows.Controls.TextBlock]::new()
+        $fbDownLabel.Text = "Bad"
+        $fbDownLabel.FontSize = 13
+        $fbDownLabel.FontWeight = [System.Windows.FontWeights]::SemiBold
+        $fbDownLabel.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+            [System.Windows.Media.ColorConverter]::ConvertFromString($fbTheme['ButtonSecondaryForeground']))
+        $fbDownLabel.VerticalAlignment = 'Center'
+        $fbDownContent.Children.Add($fbDownLabel) | Out-Null
+        $fbBtnDown.Content = $fbDownContent
+        $fbBtnDown.Tag = @{ Dialog = $fbDlg; Theme = $fbTheme }
+        $fbBtnDown.Add_Click({
+            $ctx = $this.Tag
+            $ctx.Dialog.Close()
+
+            # Show the detailed negative feedback dialog (same as main UI thumbs-down)
+            $theme = $ctx.Theme
+            $bgColor = [System.Windows.Media.ColorConverter]::ConvertFromString($theme['CardBackground'])
+
+            $nfState = [hashtable]::Synchronized(@{
+                Dialog        = $null
+                TextBox       = $null
+                EmailBox      = $null
+                EmailHint     = $null
+                EmailLabel    = $null
+                FollowUpCheck = $null
+                SubmitButton  = $null
+            })
+
+            $nfDlg = [System.Windows.Window]::new()
+            $nfDlg.WindowStyle = 'None'
+            $nfDlg.AllowsTransparency = $true
+            $nfDlg.Background = [System.Windows.Media.Brushes]::Transparent
+            $nfDlg.WindowStartupLocation = 'CenterScreen'
+            $nfDlg.Width = 460
+            $nfDlg.SizeToContent = 'Height'
+            $nfDlg.Topmost = $true
+            $nfDlg.ResizeMode = 'NoResize'
+            $nfDlg.ShowInTaskbar = $false
+            $nfState.Dialog = $nfDlg
+
+            $nfBorder = [System.Windows.Controls.Border]::new()
+            $nfBorder.Background = [System.Windows.Media.SolidColorBrush]::new(
+                [System.Windows.Media.Color]::FromArgb(245, $bgColor.R, $bgColor.G, $bgColor.B))
+            $nfBorder.CornerRadius = [System.Windows.CornerRadius]::new(16)
+            $nfBorder.Padding = [System.Windows.Thickness]::new(28, 24, 28, 24)
+            $nfBorder.BorderBrush = [System.Windows.Media.SolidColorBrush]::new(
+                [System.Windows.Media.ColorConverter]::ConvertFromString($theme['CardBorder']))
+            $nfBorder.BorderThickness = [System.Windows.Thickness]::new(1)
+            $nfShadow = [System.Windows.Media.Effects.DropShadowEffect]::new()
+            $nfShadow.BlurRadius = 30; $nfShadow.ShadowDepth = 0; $nfShadow.Opacity = 0.5
+            $nfShadow.Color = [System.Windows.Media.Colors]::Black
+            $nfBorder.Effect = $nfShadow
+
+            $nfPanel = [System.Windows.Controls.StackPanel]::new()
+
+            # Icon
+            $nfIcon = [System.Windows.Controls.TextBlock]::new()
+            $nfIcon.Text = [char]0xE19E
+            $nfIcon.FontFamily = [System.Windows.Media.FontFamily]::new('Segoe MDL2 Assets')
+            $nfIcon.FontSize = 28
+            $nfIcon.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+                [System.Windows.Media.ColorConverter]::ConvertFromString($theme['StatusWarning']))
+            $nfIcon.HorizontalAlignment = 'Center'
+            $nfIcon.Margin = [System.Windows.Thickness]::new(0, 0, 0, 12)
+            $nfPanel.Children.Add($nfIcon) | Out-Null
+
+            # Title
+            $nfTitle = [System.Windows.Controls.TextBlock]::new()
+            $nfTitle.Text = "We're sorry to hear that"
+            $nfTitle.FontSize = 16
+            $nfTitle.FontWeight = [System.Windows.FontWeights]::Bold
+            $nfTitle.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+                [System.Windows.Media.ColorConverter]::ConvertFromString($theme['WindowForeground']))
+            $nfTitle.HorizontalAlignment = 'Center'
+            $nfTitle.Margin = [System.Windows.Thickness]::new(0, 0, 0, 8)
+            $nfPanel.Children.Add($nfTitle) | Out-Null
+
+            # Subtitle
+            $nfSubtitle = [System.Windows.Controls.TextBlock]::new()
+            $nfSubtitle.Text = "Please tell us what we can improve:"
+            $nfSubtitle.FontSize = 13
+            $nfSubtitle.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+                [System.Windows.Media.ColorConverter]::ConvertFromString($theme['InputPlaceholder']))
+            $nfSubtitle.HorizontalAlignment = 'Center'
+            $nfSubtitle.Margin = [System.Windows.Thickness]::new(0, 0, 0, 16)
+            $nfPanel.Children.Add($nfSubtitle) | Out-Null
+
+            # Rounded TextBox template
+            $nfRoundedTemplate = [System.Windows.Markup.XamlReader]::Parse(@"
+<ControlTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                 xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                 TargetType="TextBox">
+    <Border x:Name="bd" Background="{TemplateBinding Background}"
+            BorderBrush="{TemplateBinding BorderBrush}"
+            BorderThickness="{TemplateBinding BorderThickness}"
+            CornerRadius="8" SnapsToDevicePixels="True">
+        <ScrollViewer x:Name="PART_ContentHost"
+                      Margin="{TemplateBinding Padding}"
+                      VerticalAlignment="{TemplateBinding VerticalContentAlignment}"
+                      HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                      Background="Transparent" Focusable="False"/>
+    </Border>
+    <ControlTemplate.Triggers>
+        <Trigger Property="IsEnabled" Value="False">
+            <Setter TargetName="bd" Property="Opacity" Value="0.55"/>
+        </Trigger>
+    </ControlTemplate.Triggers>
+</ControlTemplate>
+"@)
+
+            # Feedback TextBox
+            $nfTextBox = [System.Windows.Controls.TextBox]::new()
+            $nfTextBox.Height = 120
+            $nfTextBox.TextWrapping = [System.Windows.TextWrapping]::Wrap
+            $nfTextBox.AcceptsReturn = $true
+            $nfTextBox.VerticalScrollBarVisibility = 'Auto'
+            $nfTextBox.FontSize = 13
+            $nfTextBox.Padding = [System.Windows.Thickness]::new(12, 10, 12, 10)
+            $nfTextBox.Background = [System.Windows.Media.SolidColorBrush]::new(
+                [System.Windows.Media.ColorConverter]::ConvertFromString($theme['InputBackground']))
+            $nfTextBox.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+                [System.Windows.Media.ColorConverter]::ConvertFromString($theme['WindowForeground']))
+            $nfTextBox.BorderBrush = [System.Windows.Media.SolidColorBrush]::new(
+                [System.Windows.Media.ColorConverter]::ConvertFromString($theme['InputBorder']))
+            $nfTextBox.BorderThickness = [System.Windows.Thickness]::new(1)
+            $nfTextBox.Margin = [System.Windows.Thickness]::new(0, 0, 0, 16)
+            $nfTextBox.Template = $nfRoundedTemplate
+            $nfPanel.Children.Add($nfTextBox) | Out-Null
+            $nfState.TextBox = $nfTextBox
+
+            # Follow-up toggle
+            $nfFollowUp = [System.Windows.Controls.CheckBox]::new()
+            $nfFollowUp.VerticalAlignment = 'Center'
+            $nfFollowUp.Cursor = [System.Windows.Input.Cursors]::Hand
+            $nfFollowUp.Margin = [System.Windows.Thickness]::new(0, 0, 0, 10)
+            $trackOffBg  = $theme['InputBackground']
+            $trackBorder = $theme['CardBorder']
+            $thumbOffFg  = $theme['InputPlaceholder']
+            $trackOnBg   = $theme['ButtonPrimary']
+            $nfToggleTemplate = [System.Windows.Markup.XamlReader]::Parse(@"
+<ControlTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                 xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                 TargetType="CheckBox">
+    <Grid>
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="Auto"/>
+            <ColumnDefinition Width="*"/>
+        </Grid.ColumnDefinitions>
+        <Border x:Name="switchTrack" Grid.Column="0"
+                Width="40" Height="20" CornerRadius="10"
+                Background="$trackOffBg"
+                BorderBrush="$trackBorder" BorderThickness="1"
+                VerticalAlignment="Center" SnapsToDevicePixels="True">
+            <Border x:Name="switchThumb"
+                    Width="16" Height="16" CornerRadius="8"
+                    Background="$thumbOffFg"
+                    HorizontalAlignment="Left" Margin="2,0,0,0"
+                    VerticalAlignment="Center"/>
+        </Border>
+        <ContentPresenter Grid.Column="1" Margin="10,0,0,0"
+                          VerticalAlignment="Center" RecognizesAccessKey="True"/>
+    </Grid>
+    <ControlTemplate.Triggers>
+        <Trigger Property="IsChecked" Value="True">
+            <Setter TargetName="switchTrack" Property="Background" Value="$trackOnBg"/>
+            <Setter TargetName="switchThumb" Property="Background" Value="#FFFFFF"/>
+            <Setter TargetName="switchThumb" Property="HorizontalAlignment" Value="Right"/>
+            <Setter TargetName="switchThumb" Property="Margin" Value="0,0,2,0"/>
+        </Trigger>
+        <Trigger Property="IsMouseOver" Value="True">
+            <Setter TargetName="switchTrack" Property="Opacity" Value="0.85"/>
+        </Trigger>
+    </ControlTemplate.Triggers>
+</ControlTemplate>
+"@)
+            $nfFollowUp.Template = $nfToggleTemplate
+            $nfFollowUpLabel = [System.Windows.Controls.TextBlock]::new()
+            $nfFollowUpLabel.Text = "Follow up with me"
+            $nfFollowUpLabel.FontSize = 13
+            $nfFollowUpLabel.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+                [System.Windows.Media.ColorConverter]::ConvertFromString($theme['WindowForeground']))
+            $nfFollowUpLabel.VerticalAlignment = 'Center'
+            $nfFollowUp.Content = $nfFollowUpLabel
+            $nfPanel.Children.Add($nfFollowUp) | Out-Null
+            $nfState.FollowUpCheck = $nfFollowUp
+
+            # Email label
+            $nfEmailLabel = [System.Windows.Controls.TextBlock]::new()
+            $nfEmailLabel.Text = "Please enter a valid email address below:"
+            $nfEmailLabel.FontSize = 12
+            $nfEmailLabel.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+                [System.Windows.Media.ColorConverter]::ConvertFromString($theme['InputPlaceholder']))
+            $nfEmailLabel.Margin = [System.Windows.Thickness]::new(0, 0, 0, 4)
+            $nfEmailLabel.Visibility = 'Collapsed'
+            $nfPanel.Children.Add($nfEmailLabel) | Out-Null
+            $nfState.EmailLabel = $nfEmailLabel
+
+            # Email TextBox
+            $nfEmailBox = [System.Windows.Controls.TextBox]::new()
+            $nfEmailBox.MinHeight = 36
+            $nfEmailBox.FontSize = 13
+            $nfEmailBox.IsEnabled = $false
+            $nfEmailBox.Visibility = 'Collapsed'
+            $nfEmailBox.VerticalContentAlignment = 'Center'
+            $nfEmailBox.Padding = [System.Windows.Thickness]::new(10, 4, 10, 4)
+            $nfEmailBox.Background = [System.Windows.Media.SolidColorBrush]::new(
+                [System.Windows.Media.ColorConverter]::ConvertFromString($theme['InputBackground']))
+            $nfEmailBox.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+                [System.Windows.Media.ColorConverter]::ConvertFromString($theme['WindowForeground']))
+            $nfEmailBox.BorderBrush = [System.Windows.Media.SolidColorBrush]::new(
+                [System.Windows.Media.ColorConverter]::ConvertFromString($theme['InputBorder']))
+            $nfEmailBox.BorderThickness = [System.Windows.Thickness]::new(1)
+            $nfEmailBox.Margin = [System.Windows.Thickness]::new(0, 0, 0, 6)
+            $nfEmailBox.ToolTip = "Enter your email so we can follow up"
+            $nfEmailBox.Template = $nfRoundedTemplate
+            $nfPanel.Children.Add($nfEmailBox) | Out-Null
+            $nfState.EmailBox = $nfEmailBox
+
+            # Email validation hint
+            $nfEmailHint = [System.Windows.Controls.TextBlock]::new()
+            $nfEmailHint.Text = ""
+            $nfEmailHint.FontSize = 11
+            $nfEmailHint.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+                [System.Windows.Media.ColorConverter]::ConvertFromString($theme['DriverNoPackForeground']))
+            $nfEmailHint.Margin = [System.Windows.Thickness]::new(0, 0, 0, 20)
+            $nfEmailHint.Visibility = 'Collapsed'
+            $nfPanel.Children.Add($nfEmailHint) | Out-Null
+            $nfState.EmailHint = $nfEmailHint
+
+            # Spacer
+            $nfSpacer = [System.Windows.Controls.Border]::new()
+            $nfSpacer.Height = 12
+            $nfPanel.Children.Add($nfSpacer) | Out-Null
+
+            $nfEmailRegex = '^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$'
+
+            # Follow-up toggle handlers
+            $nfFollowUp.Tag = $nfState
+            $nfFollowUp.Add_Checked({
+                $st = $this.Tag
+                $st.EmailLabel.Visibility = 'Visible'
+                $st.EmailBox.Visibility = 'Visible'
+                $st.EmailBox.IsEnabled = $true
+                $st.SubmitButton.IsEnabled = $false
+                $st.EmailBox.Focus() | Out-Null
+            })
+            $nfFollowUp.Add_Unchecked({
+                $st = $this.Tag
+                $st.EmailBox.IsEnabled = $false
+                $st.EmailBox.Visibility = 'Collapsed'
+                $st.EmailBox.Text = ''
+                $st.EmailLabel.Visibility = 'Collapsed'
+                $st.EmailHint.Visibility = 'Collapsed'
+                $st.SubmitButton.IsEnabled = $true
+            })
+
+            # Email validation
+            $nfEmailBox.Tag = @{ State = $nfState; Regex = $nfEmailRegex }
+            $nfEmailBox.Add_TextChanged({
+                $c = $this.Tag
+                $st = $c.State
+                $txt = $this.Text
+                if ([string]::IsNullOrWhiteSpace($txt)) {
+                    $st.EmailHint.Visibility = 'Collapsed'
+                    $st.SubmitButton.IsEnabled = $false
+                } elseif ($txt -notmatch $c.Regex) {
+                    $st.EmailHint.Text = "Email address format validation issue."
+                    $st.EmailHint.Visibility = 'Visible'
+                    $st.SubmitButton.IsEnabled = $false
+                } else {
+                    $st.EmailHint.Visibility = 'Collapsed'
+                    $st.SubmitButton.IsEnabled = $true
+                }
+            })
+
+            # Button row
+            $nfBtnGrid = [System.Windows.Controls.Grid]::new()
+            $nfCol1 = [System.Windows.Controls.ColumnDefinition]::new(); $nfCol1.Width = [System.Windows.GridLength]::new(1, [System.Windows.GridUnitType]::Star)
+            $nfCol2 = [System.Windows.Controls.ColumnDefinition]::new(); $nfCol2.Width = [System.Windows.GridLength]::new(1, [System.Windows.GridUnitType]::Star)
+            $nfBtnGrid.ColumnDefinitions.Add($nfCol1)
+            $nfBtnGrid.ColumnDefinitions.Add($nfCol2)
+
+            # Submit button
+            $nfBtnSubmit = [System.Windows.Controls.Button]::new()
+            $nfBtnSubmit.Height = 36
+            $nfBtnSubmit.Margin = [System.Windows.Thickness]::new(0, 0, 6, 0)
+            $nfBtnSubmit.Cursor = [System.Windows.Input.Cursors]::Hand
+            $nfSubmitTemplate = [System.Windows.Markup.XamlReader]::Parse(@"
+<ControlTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" TargetType="Button">
+    <Border x:Name="bd" Background="$($theme['ButtonPrimary'])" CornerRadius="8" Padding="16,8">
+        <ContentPresenter x:Name="cp" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+    </Border>
+    <ControlTemplate.Triggers>
+        <Trigger Property="IsMouseOver" Value="True">
+            <Setter TargetName="bd" Property="Background" Value="$($theme['ButtonPrimaryHover'])"/>
+        </Trigger>
+        <Trigger Property="IsEnabled" Value="False">
+            <Setter TargetName="bd" Property="Opacity" Value="0.4"/>
+            <Setter TargetName="cp" Property="Opacity" Value="0.5"/>
+        </Trigger>
+    </ControlTemplate.Triggers>
+</ControlTemplate>
+"@)
+            $nfBtnSubmit.Template = $nfSubmitTemplate
+            $nfBtnSubmit.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+                [System.Windows.Media.ColorConverter]::ConvertFromString($theme['ButtonPrimaryForeground']))
+            $nfBtnSubmit.FontSize = 13
+            $nfBtnSubmit.FontWeight = [System.Windows.FontWeights]::SemiBold
+            $nfBtnSubmit.Content = "Submit Feedback"
+            [System.Windows.Controls.Grid]::SetColumn($nfBtnSubmit, 0)
+            $nfBtnSubmit.Tag = $nfState
+            $nfState.SubmitButton = $nfBtnSubmit
+            $nfBtnSubmit.Add_Click({
+                $st = $this.Tag
+                $comment = $st.TextBox.Text
+                $followUp = [bool]$st.FollowUpCheck.IsChecked
+                $email = if ($followUp) { $st.EmailBox.Text.Trim() } else { '' }
+
+                if ($followUp) {
+                    $emailRegex = '^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$'
+                    if ([string]::IsNullOrWhiteSpace($email) -or $email -notmatch $emailRegex) {
+                        $st.EmailHint.Text = "Email address format validation issue."
+                        $st.EmailHint.Visibility = 'Visible'
+                        $st.EmailBox.Focus() | Out-Null
+                        return
+                    }
+                }
+
+                $st.Dialog.Close()
+                try {
+                    Send-DATFeedback -Rating 'Negative' -Comment $comment -Email $email -FollowUp $followUp
+                } catch {
+                    Write-DATLogEntry -Value "[Feedback] Exit feedback submit failed: $($_.Exception.Message)" -Severity 2
+                }
+            })
+            $nfBtnGrid.Children.Add($nfBtnSubmit) | Out-Null
+
+            # Cancel button
+            $nfBtnCancel = [System.Windows.Controls.Button]::new()
+            $nfBtnCancel.Height = 36
+            $nfBtnCancel.Margin = [System.Windows.Thickness]::new(6, 0, 0, 0)
+            $nfBtnCancel.Cursor = [System.Windows.Input.Cursors]::Hand
+            $nfCancelTemplate = [System.Windows.Markup.XamlReader]::Parse(@"
+<ControlTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" TargetType="Button">
+    <Border x:Name="bd" Background="$($theme['ButtonSecondary'])" CornerRadius="8" Padding="16,8">
+        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+    </Border>
+    <ControlTemplate.Triggers>
+        <Trigger Property="IsMouseOver" Value="True">
+            <Setter TargetName="bd" Property="Background" Value="$($theme['ButtonSecondaryHover'])"/>
+        </Trigger>
+    </ControlTemplate.Triggers>
+</ControlTemplate>
+"@)
+            $nfBtnCancel.Template = $nfCancelTemplate
+            $nfBtnCancel.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+                [System.Windows.Media.ColorConverter]::ConvertFromString($theme['ButtonSecondaryForeground']))
+            $nfBtnCancel.FontSize = 13
+            $nfBtnCancel.FontWeight = [System.Windows.FontWeights]::SemiBold
+            $nfBtnCancel.Content = "Cancel"
+            [System.Windows.Controls.Grid]::SetColumn($nfBtnCancel, 1)
+            $nfBtnCancel.Tag = $nfState
+            $nfBtnCancel.Add_Click({ $this.Tag.Dialog.Close() })
+            $nfBtnGrid.Children.Add($nfBtnCancel) | Out-Null
+
+            $nfPanel.Children.Add($nfBtnGrid) | Out-Null
+            $nfBorder.Child = $nfPanel
+            $nfDlg.Content = $nfBorder
+            $nfDlg.ShowDialog() | Out-Null
+        })
+        $fbBtnPanel.Children.Add($fbBtnDown) | Out-Null
+
+        $fbPanel.Children.Add($fbBtnPanel) | Out-Null
+
+        # Close / Skip button
+        $fbBtnClose = [System.Windows.Controls.Button]::new()
+        $fbBtnClose.Height = 32
+        $fbBtnClose.HorizontalAlignment = 'Center'
+        $fbBtnClose.Cursor = [System.Windows.Input.Cursors]::Hand
+        $fbBtnClose.Margin = [System.Windows.Thickness]::new(0, 0, 0, 0)
+        $fbCloseTemplate = [System.Windows.Markup.XamlReader]::Parse(@"
+<ControlTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" TargetType="Button">
+    <Border x:Name="bd" Background="Transparent" CornerRadius="6" Padding="16,4">
+        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+    </Border>
+    <ControlTemplate.Triggers>
+        <Trigger Property="IsMouseOver" Value="True">
+            <Setter TargetName="bd" Property="Background" Value="$($fbTheme['ButtonSecondary'])"/>
+        </Trigger>
+    </ControlTemplate.Triggers>
+</ControlTemplate>
+"@)
+        $fbBtnClose.Template = $fbCloseTemplate
+        $fbBtnClose.Content = "Close"
+        $fbBtnClose.FontSize = 12
+        $fbBtnClose.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+            [System.Windows.Media.ColorConverter]::ConvertFromString($fbTheme['InputPlaceholder']))
+        $fbBtnClose.Tag = $fbDlg
+        $fbBtnClose.Add_Click({ $this.Tag.Close() })
+        $fbPanel.Children.Add($fbBtnClose) | Out-Null
+
+        $fbBorder.Child = $fbPanel
+        $fbDlg.Content = $fbBorder
+        $fbDlg.ShowDialog() | Out-Null
+    } catch {
+        Write-DATLogEntry -Value "[Feedback] Exit feedback modal failed: $($_.Exception.Message)" -Severity 2
+    }
 
     # Gather temp cleanup info before showing modal
     $cleanTempEnabled = $chk_CleanTempOnExit.IsChecked -eq $true

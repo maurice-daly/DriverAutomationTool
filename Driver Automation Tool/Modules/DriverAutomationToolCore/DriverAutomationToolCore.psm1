@@ -4,7 +4,7 @@
      Organization:  MSEndpointMgr / Patch My PC
      Filename:      DriverAutomationToolCore.psm1
      Purpose:       Core functions for Driver Automation Tool v2.0
-     Version:       10.0.31.0
+     Version:       10.0.32.0
     ===========================================================================
 #>
 
@@ -27,7 +27,7 @@ if ($PSVersionTable.PSVersion.Major -le 5) {
 
 #region Variables
 
-[version]$global:ScriptRelease = "10.0.31.0"
+[version]$global:ScriptRelease = "10.0.32.0"
 $global:ScriptBuildDate = "20-05-2026"
 $global:ReleaseNotesURL = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/DriverAutomationToolNotes.txt"
 $OEMLinksURL = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/OEMLinks.xml"
@@ -2008,11 +2008,53 @@ function Invoke-DATDriverFilePackaging {
 
 #region ConfigMgr
 
+function New-DATCimSession {
+    <#
+    .SYNOPSIS
+        Creates a CIM session with DCOM and short-hostname fallbacks.
+    .DESCRIPTION
+        Attempts default WSMAN authentication first. If that fails, retries with
+        DCOM protocol (RPC). If both fail and the computer name is an FQDN, retries
+        with the short hostname which often resolves Kerberos SPN mismatches.
+    #>
+    param (
+        [Parameter(Mandatory = $true)][string]$ComputerName
+    )
+    # Attempt 1: WSMAN (default)
+    try {
+        return (New-CimSession -ComputerName $ComputerName -ErrorAction Stop)
+    } catch {
+        Write-DATLogEntry -Value "[WMI] WSMAN session failed for ${ComputerName}: $($_.Exception.Message)" -Severity 2
+    }
+    # Attempt 2: DCOM (RPC -- bypasses WinRM entirely)
+    try {
+        $dcomOpts = New-CimSessionOption -Protocol Dcom
+        return (New-CimSession -ComputerName $ComputerName -SessionOption $dcomOpts -ErrorAction Stop)
+    } catch {
+        Write-DATLogEntry -Value "[WMI] DCOM session failed for ${ComputerName}: $($_.Exception.Message)" -Severity 2
+    }
+    # Attempt 3: If FQDN, try short hostname (resolves Kerberos SPN mismatches)
+    if ($ComputerName -match '\.') {
+        $shortName = $ComputerName.Split('.')[0]
+        Write-DATLogEntry -Value "[WMI] FQDN failed -- retrying with short name: $shortName" -Severity 2
+        try {
+            return (New-CimSession -ComputerName $shortName -ErrorAction Stop)
+        } catch {
+            Write-DATLogEntry -Value "[WMI] Short name also failed for ${shortName}: $($_.Exception.Message)" -Severity 3
+        }
+    }
+    throw "All CIM session methods failed for $ComputerName"
+}
+
 function Get-DATSiteCode {
     param ([Parameter(Mandatory = $true)][string]$SiteServer)
     try {
         Write-DATLogEntry -Value "[WMI] Querying \\$SiteServer\root\SMS : SMS_ProviderLocation for site code" -Severity 1
-        $SiteCodeObjects = Get-CimInstance -ComputerName $SiteServer -Namespace "root\SMS" -ClassName SMS_ProviderLocation -ErrorAction Stop
+        $cimSess = New-DATCimSession -ComputerName $SiteServer
+        # Store the working CIM session and effective server name globally
+        $global:DATCimSession = $cimSess
+        $global:DATEffectiveServer = $cimSess.ComputerName
+        $SiteCodeObjects = Get-CimInstance -CimSession $cimSess -Namespace "root\SMS" -ClassName SMS_ProviderLocation -ErrorAction Stop
         foreach ($obj in $SiteCodeObjects) {
             if ($obj.ProviderForLocalSite -eq $true) {
                 $global:SiteCode = $obj.SiteCode
@@ -2028,33 +2070,25 @@ function Get-DATSiteCode {
 
 function Connect-DATConfigMgr {
     param (
-        [Parameter(Mandatory = $true)][string]$SiteServer,
-        [Parameter(Mandatory = $true)][boolean]$WinRMOverSSL,
-        [boolean]$KnownModels
+        [Parameter(Mandatory = $true)][string]$SiteServer
     )
     if (-not ([string]::IsNullOrEmpty($SiteServer))) {
         try {
-            if ($WinRMOverSSL) {
-                [string]$ConfigMgrDiscovery = (Test-WSMan -ComputerName $SiteServer -UseSSL -ErrorAction SilentlyContinue).wsmid
+            Get-DATSiteCode -SiteServer $SiteServer
+            # Use the effective server name (short name if FQDN fallback was used)
+            if (-not [string]::IsNullOrEmpty($global:DATEffectiveServer)) {
+                $global:SiteServer = $global:DATEffectiveServer
             } else {
-                [string]$ConfigMgrDiscovery = (Test-WSMan -ComputerName $SiteServer -ErrorAction SilentlyContinue).wsmid
+                $global:SiteServer = $SiteServer
+            }
+            Set-DATRegistryValue -Name "SiteServer" -Value $global:SiteServer -Type String
+            if ($null -ne $env:SMS_ADMIN_UI_PATH) {
+                $ModuleName = (Get-Item $env:SMS_ADMIN_UI_PATH | Split-Path -Parent) + "\ConfigurationManager.psd1"
+                Import-Module $ModuleName
+                $global:ConfigMgrValidation = $true
             }
         } catch {
-            Write-DATLogEntry -Value "[Error] - WinRM connection failed: $($_.Exception.Message)" -Severity 3
-        }
-        if ($null -ne $ConfigMgrDiscovery) {
-            try {
-                Get-DATSiteCode -SiteServer $SiteServer
-                $global:SiteServer = $SiteServer
-                Set-DATRegistryValue -Name "SiteServer" -Value $SiteServer -Type String
-                if ($null -ne $env:SMS_ADMIN_UI_PATH) {
-                    $ModuleName = (Get-Item $env:SMS_ADMIN_UI_PATH | Split-Path -Parent) + "\ConfigurationManager.psd1"
-                    Import-Module $ModuleName
-                    $global:ConfigMgrValidation = $true
-                }
-            } catch {
-                Write-DATLogEntry -Value "[Error] - ConfigMgr connection failed: $($_.Exception.Message)" -Severity 3
-            }
+            Write-DATLogEntry -Value "[Error] - ConfigMgr connection failed: $($_.Exception.Message)" -Severity 3
         }
     }
 }
@@ -2110,7 +2144,7 @@ function Get-DATConfigMgrKnownModels {
         if ($OnProgress) { & $OnProgress "Connecting to $SiteServer..." }
         Write-DATLogEntry -Value "[ConfigMgr Known Models] Connecting CIM session to $SiteServer" -Severity 1
 
-        $cimSession = New-CimSession -ComputerName $SiteServer -ErrorAction Stop
+        $cimSession = New-DATCimSession -ComputerName $SiteServer
 
         # --- OEM query definitions ---
         # Each entry: OEM display name, WQL query, Make property, Model property
@@ -2291,7 +2325,8 @@ function Get-DATDistributionPoints {
         [Parameter(Mandatory = $true)][string]$SiteServer
     )
     Write-DATLogEntry -Value "[WMI] Querying \\$SiteServer\Root\SMS\Site_$SiteCode : SMS_SystemResourceList (Role: Distribution Point)" -Severity 1
-    [Array]$DistributionPoints = Get-CimInstance -ComputerName $SiteServer -Namespace "Root\SMS\Site_$SiteCode" -ClassName SMS_SystemResourceList |
+    $cimSess = New-DATCimSession -ComputerName $SiteServer
+    [Array]$DistributionPoints = Get-CimInstance -CimSession $cimSess -Namespace "Root\SMS\Site_$SiteCode" -ClassName SMS_SystemResourceList |
         Where-Object { $_.RoleName -match "Distribution" } | Select-Object -ExpandProperty ServerName -Unique | Sort-Object
     Write-DATLogEntry -Value "[WMI] Distribution Points found: $(@($DistributionPoints).Count) -- $($DistributionPoints -join ', ')" -Severity 1
     return $DistributionPoints
@@ -2303,7 +2338,8 @@ function Get-DATDistributionPointGroups {
         [Parameter(Mandatory = $true)][string]$SiteServer
     )
     Write-DATLogEntry -Value "[WMI] Querying \\$SiteServer\Root\SMS\Site_$SiteCode : SMS_DistributionPointGroup (SELECT Distinct Name)" -Severity 1
-    [Array]$DPGroups = Get-CimInstance -ComputerName $SiteServer -Namespace "Root\SMS\Site_$SiteCode" -Query "SELECT Distinct Name FROM SMS_DistributionPointGroup" | Select-Object -ExpandProperty Name
+    $cimSess = New-DATCimSession -ComputerName $SiteServer
+    [Array]$DPGroups = Get-CimInstance -CimSession $cimSess -Namespace "Root\SMS\Site_$SiteCode" -Query "SELECT Distinct Name FROM SMS_DistributionPointGroup" | Select-Object -ExpandProperty Name
     Write-DATLogEntry -Value "[WMI] DP Groups found: $(@($DPGroups).Count) -- $($DPGroups -join ', ')" -Severity 1
     return $DPGroups
 }
@@ -2344,6 +2380,9 @@ function New-DATConfigMgrPkg {
         }
         $folderName = if ($PackageType -eq 'BIOS') { "BIOS Packages" } else { "Driver Packages" }
 
+        # Create CIM session with auth fallback for all WMI operations in this function
+        $cimSess = New-DATCimSession -ComputerName $SiteServer
+
         # Build description -- BIOS packages include the release date in YYYYMMDD format for matching
         $pkgDescription = if ($PackageType -eq 'BIOS' -and -not [string]::IsNullOrEmpty($ReleaseDate)) {
             $releaseDateFormatted = try { ([datetime]$ReleaseDate).ToString('yyyyMMdd') } catch { $ReleaseDate }
@@ -2355,7 +2394,7 @@ function New-DATConfigMgrPkg {
         # --- Stage 1: Check existing package via WMI before copying files ---
         Write-DATLogEntry -Value "- [ConfigMgr] Checking for existing package: $CMPackage (version $Version)" -Severity 1
         $wmiQuery = "SELECT PackageID, Name, Version, PkgSourcePath FROM SMS_Package WHERE Name = '$($CMPackage -replace "'","''")'"
-        $existingPkgs = Get-CimInstance -ComputerName $SiteServer -Namespace $smsNamespace -Query $wmiQuery -ErrorAction Stop
+        $existingPkgs = Get-CimInstance -CimSession $cimSess -Namespace $smsNamespace -Query $wmiQuery -ErrorAction Stop
         $matchingPkg = $existingPkgs | Where-Object { $_.Version -eq $Version }
 
         if ($matchingPkg -and -not $ForceUpdate) {
@@ -2423,7 +2462,7 @@ function New-DATConfigMgrPkg {
             if ($DistributionPointGroups -and $DistributionPointGroups.Count -gt 0) {
                 foreach ($dpGroup in $DistributionPointGroups) {
                     try {
-                        $dpgWmi = Get-CimInstance -ComputerName $SiteServer -Namespace $smsNamespace `
+                        $dpgWmi = Get-CimInstance -CimSession $cimSess -Namespace $smsNamespace `
                             -Query "SELECT GroupID FROM SMS_DistributionPointGroup WHERE Name = '$($dpGroup -replace "'","''")'" `
                             -ErrorAction Stop | Select-Object -First 1
                         if ($dpgWmi) {
@@ -2442,7 +2481,7 @@ function New-DATConfigMgrPkg {
                 foreach ($dpServer in $DistributionPoints) {
                     try {
                         Write-DATLogEntry -Value "- [ConfigMgr] Redistributing package $pkgId to DP: $dpServer" -Severity 1
-                        $dpNalPath = Get-CimInstance -ComputerName $SiteServer -Namespace $smsNamespace `
+                        $dpNalPath = Get-CimInstance -CimSession $cimSess -Namespace $smsNamespace `
                             -Query "SELECT NALPath FROM SMS_DistributionPointInfo WHERE ServerName = '$($dpServer -replace "'","''")'" `
                             -ErrorAction Stop | Select-Object -First 1 -ExpandProperty NALPath
                         if ($dpNalPath) {
@@ -2525,7 +2564,7 @@ function New-DATConfigMgrPkg {
                     Write-DATLogEntry -Value "- [ConfigMgr] Package left at console root (custom folder: root)" -Severity 1
                 } else {
                     # Verify the folder still exists
-                    $customFolder = Get-CimInstance -ComputerName $SiteServer -Namespace $smsNamespace `
+                    $customFolder = Get-CimInstance -CimSession $cimSess -Namespace $smsNamespace `
                         -Query "SELECT ContainerNodeID FROM SMS_ObjectContainerNode WHERE ContainerNodeID = $ConsoleFolderID AND ObjectType = 2" `
                         -ErrorAction Stop | Select-Object -First 1
                     if ($customFolder) {
@@ -2544,7 +2583,7 @@ function New-DATConfigMgrPkg {
             if ($ConsoleFolderID -lt 0) {
             # Default: create/use Driver Packages\OEM or BIOS Packages\OEM
             # Find or create the top-level folder (e.g. "Driver Packages")
-            $topFolder = Get-CimInstance -ComputerName $SiteServer -Namespace $smsNamespace `
+            $topFolder = Get-CimInstance -CimSession $cimSess -Namespace $smsNamespace `
                 -Query "SELECT ContainerNodeID FROM SMS_ObjectContainerNode WHERE Name = '$folderName' AND ObjectType = 2 AND ParentContainerNodeID = 0" `
                 -ErrorAction Stop | Select-Object -First 1
             if (-not $topFolder) {
@@ -2553,14 +2592,14 @@ function New-DATConfigMgrPkg {
                 $newFolder.ObjectType = 2  # Package
                 $newFolder.ParentContainerNodeID = 0
                 $newFolder.Put() | Out-Null
-                $topFolder = Get-CimInstance -ComputerName $SiteServer -Namespace $smsNamespace `
+                $topFolder = Get-CimInstance -CimSession $cimSess -Namespace $smsNamespace `
                     -Query "SELECT ContainerNodeID FROM SMS_ObjectContainerNode WHERE Name = '$folderName' AND ObjectType = 2 AND ParentContainerNodeID = 0" `
                     -ErrorAction Stop | Select-Object -First 1
             }
             $topFolderID = $topFolder.ContainerNodeID
 
             # Find or create the OEM sub-folder (e.g. "Driver Packages\Dell")
-            $oemFolder = Get-CimInstance -ComputerName $SiteServer -Namespace $smsNamespace `
+            $oemFolder = Get-CimInstance -CimSession $cimSess -Namespace $smsNamespace `
                 -Query "SELECT ContainerNodeID FROM SMS_ObjectContainerNode WHERE Name = '$($OEM -replace "'","''")' AND ObjectType = 2 AND ParentContainerNodeID = $topFolderID" `
                 -ErrorAction Stop | Select-Object -First 1
             if (-not $oemFolder) {
@@ -2569,7 +2608,7 @@ function New-DATConfigMgrPkg {
                 $newOemFolder.ObjectType = 2
                 $newOemFolder.ParentContainerNodeID = $topFolderID
                 $newOemFolder.Put() | Out-Null
-                $oemFolder = Get-CimInstance -ComputerName $SiteServer -Namespace $smsNamespace `
+                $oemFolder = Get-CimInstance -CimSession $cimSess -Namespace $smsNamespace `
                     -Query "SELECT ContainerNodeID FROM SMS_ObjectContainerNode WHERE Name = '$($OEM -replace "'","''")' AND ObjectType = 2 AND ParentContainerNodeID = $topFolderID" `
                     -ErrorAction Stop | Select-Object -First 1
             }
@@ -2593,7 +2632,7 @@ function New-DATConfigMgrPkg {
             foreach ($dpGroup in $DistributionPointGroups) {
                 try {
                     Write-DATLogEntry -Value "- [ConfigMgr] Distributing package $packageId to DP group: $dpGroup" -Severity 1
-                    $dpgWmi = Get-CimInstance -ComputerName $SiteServer -Namespace $smsNamespace `
+                    $dpgWmi = Get-CimInstance -CimSession $cimSess -Namespace $smsNamespace `
                         -Query "SELECT GroupID FROM SMS_DistributionPointGroup WHERE Name = '$($dpGroup -replace "'","''")'" `
                         -ErrorAction Stop | Select-Object -First 1
                     if ($dpgWmi) {
@@ -2613,7 +2652,7 @@ function New-DATConfigMgrPkg {
             foreach ($dpServer in $DistributionPoints) {
                 try {
                     Write-DATLogEntry -Value "- [ConfigMgr] Distributing package $packageId to DP: $dpServer" -Severity 1
-                    $dpNalPath = Get-CimInstance -ComputerName $SiteServer -Namespace $smsNamespace `
+                    $dpNalPath = Get-CimInstance -CimSession $cimSess -Namespace $smsNamespace `
                         -Query "SELECT NALPath FROM SMS_DistributionPointInfo WHERE ServerName = '$($dpServer -replace "'","''")'" `
                         -ErrorAction Stop | Select-Object -First 1 -ExpandProperty NALPath
                     if ($dpNalPath) {
@@ -2837,7 +2876,8 @@ function Start-DATModelProcessing {
         try {
             $smsNs = "root\SMS\Site_$SiteCode"
             Write-DATLogEntry -Value "[ConfigMgr] Pre-fetching package versions for skip-if-current checks..." -Severity 1
-            $cmPkgs = Get-CimInstance -ComputerName $SiteServer -Namespace $smsNs -Query "SELECT Name, Version FROM SMS_Package" -ErrorAction Stop
+            $cimSess = New-DATCimSession -ComputerName $SiteServer
+            $cmPkgs = Get-CimInstance -CimSession $cimSess -Namespace $smsNs -Query "SELECT Name, Version FROM SMS_Package" -ErrorAction Stop
             foreach ($p in $cmPkgs) {
                 if (-not [string]::IsNullOrEmpty($p.Name) -and -not [string]::IsNullOrEmpty($p.Version)) {
                     $cmPkgVersionCache[$p.Name] = $p.Version
@@ -6010,7 +6050,8 @@ function Invoke-DATPackageRetention {
 
             Write-DATLogEntry -Value "[Retention][CM] Querying superseded packages for: $pkgName" -Severity 1
             $wmiQuery = "SELECT PackageID, Name, Version FROM SMS_Package WHERE Name = '$($pkgName -replace "'","''")'"
-            $allPkgs  = @(Get-CimInstance -ComputerName $SiteServer -Namespace $smsNamespace -Query $wmiQuery -ErrorAction Stop)
+            $cimSess = New-DATCimSession -ComputerName $SiteServer
+            $allPkgs  = @(Get-CimInstance -CimSession $cimSess -Namespace $smsNamespace -Query $wmiQuery -ErrorAction Stop)
             $sorted   = $allPkgs | Sort-Object -Property Version -Descending
             # Keep newest + $RetainCount previous; delete the rest
             $toDelete = if ($sorted.Count -gt ($RetainCount + 1)) { $sorted | Select-Object -Skip ($RetainCount + 1) } else { @() }
@@ -6018,7 +6059,7 @@ function Invoke-DATPackageRetention {
             foreach ($pkg in $toDelete) {
                 Write-DATLogEntry -Value "[Retention][CM] Removing $($pkg.Name) v$($pkg.Version) ($($pkg.PackageID))" -Severity 1
                 try {
-                    Get-CimInstance -ComputerName $SiteServer -Namespace $smsNamespace `
+                    Get-CimInstance -CimSession $cimSess -Namespace $smsNamespace `
                               -Query "SELECT * FROM SMS_Package WHERE PackageID = '$($pkg.PackageID)'" -ErrorAction Stop | Remove-CimInstance -ErrorAction Stop
                     $results.Add([pscustomobject]@{ Platform='ConfigMgr'; Name=$pkg.Name; Version=$pkg.Version; PackageId=$pkg.PackageID; Action='Deleted'; Error='' })
                 } catch {
@@ -9072,6 +9113,91 @@ function Get-DATBiosCatalog {
         return $global:BiosCatalog
     } catch {
         throw "Failed to parse BIOS catalog JSON: $($_.Exception.Message)"
+    }
+}
+
+function Get-DATDriverCatalog {
+    <#
+    .SYNOPSIS
+        Downloads and caches the DAT driver catalog from the API. Returns the parsed catalog array.
+        On subsequent calls within the same session, returns the cached copy.
+    #>
+    [CmdletBinding()]
+    param (
+        [switch]$Force
+    )
+
+    if ($global:DriverCatalog -and -not $Force) {
+        Write-DATLogEntry -Value "[DRIVERS] Using cached driver catalog ($($global:DriverCatalog.Count) entries)" -Severity 1
+        return $global:DriverCatalog
+    }
+
+    $catalogURL = "https://api.driverautomationtool.com/api/catalog/drivers"
+    $cachePath = Join-Path $global:TempDirectory "DATDriverCatalog.json"
+
+    # Check if cached file is fresh (less than 24 hours old) to avoid unnecessary downloads
+    $cacheIsFresh = (Test-Path $cachePath) -and ((Get-Date) - (Get-Item $cachePath).LastWriteTime).TotalHours -lt 24
+    if ($cacheIsFresh -and -not $Force) {
+        Write-DATLogEntry -Value "[DRIVERS] Using cached driver catalog (less than 24h old)" -Severity 1
+    } else {
+        Write-DATLogEntry -Value "[DRIVERS] Downloading driver catalog..." -Severity 1
+        Write-DATLogEntry -Value "[DRIVERS] Catalog cache path: $cachePath" -Severity 1
+        Set-DATRegistryValue -Name "RunningMessage" -Value "Downloading driver catalog..." -Type String
+
+        # HMAC-SHA256 request signing for GET (softfail-safe -- skipped if secret is absent or computation fails)
+        $hmacHeaders = @{}
+        try {
+            $telConfig = Get-DATTelemetryConfig
+            $hmacSecret = $null
+            if ($telConfig -and $telConfig.PSObject.Properties['hmacSecret']) {
+                $hmacSecret = $telConfig.hmacSecret
+            }
+            if (-not [string]::IsNullOrEmpty($hmacSecret)) {
+                $timestamp = (Get-Date).ToUniversalTime().ToString('o')
+                $keyBytes  = [System.Text.Encoding]::UTF8.GetBytes($hmacSecret)
+                $hmac      = [System.Security.Cryptography.HMACSHA256]::new($keyBytes)
+                $sigBytes  = $hmac.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($timestamp))
+                $signature = -join ($sigBytes | ForEach-Object { $_.ToString('x2') })
+                $hmac.Dispose()
+                $hmacHeaders['x-dat-signature'] = $signature
+                $hmacHeaders['x-dat-timestamp'] = $timestamp
+            }
+        } catch {
+            Write-DATLogEntry -Value "[DRIVERS] HMAC signing skipped: $($_.Exception.Message)" -Severity 2
+        }
+
+        $downloaded = $false
+        for ($i = 1; $i -le 3; $i++) {
+            try {
+                $proxyParams = Get-DATWebRequestProxy
+                Invoke-WebRequest -Uri $catalogURL -OutFile $cachePath -Headers $hmacHeaders -UseBasicParsing -TimeoutSec 60 -ErrorAction Stop @proxyParams
+                $downloaded = $true
+                break
+            } catch {
+                Write-DATLogEntry -Value "[Warning] - Driver catalog download attempt $i/3 failed: $($_.Exception.Message)" -Severity 2
+                if ($i -lt 3) { Start-Sleep -Seconds 5 } else {
+                    # If download fails but we have a cached copy, use it
+                    if (Test-Path $cachePath) {
+                        Write-DATLogEntry -Value "[DRIVERS] Using previously cached driver catalog" -Severity 2
+                        $downloaded = $true
+                    } else {
+                        throw "Driver catalog unavailable after 3 attempts: $($_.Exception.Message)"
+                    }
+                }
+            }
+        }
+    }
+
+    if (-not (Test-Path $cachePath)) {
+        throw "Driver catalog file not found at $cachePath"
+    }
+
+    try {
+        $global:DriverCatalog = @(Get-Content -Path $cachePath -Raw | ConvertFrom-Json)
+        Write-DATLogEntry -Value "[DRIVERS] Catalog loaded: $($global:DriverCatalog.Count) entries" -Severity 1
+        return $global:DriverCatalog
+    } catch {
+        throw "Failed to parse driver catalog JSON: $($_.Exception.Message)"
     }
 }
 

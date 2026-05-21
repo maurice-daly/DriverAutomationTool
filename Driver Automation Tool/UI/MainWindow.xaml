@@ -902,7 +902,7 @@
                                    Foreground="{DynamicResource AccentColor}" VerticalAlignment="Center" Margin="0,0,8,0"/>
                         <TextBlock Text="Driver Automation Tool" FontSize="13" FontWeight="SemiBold"
                                    Foreground="{DynamicResource WindowForeground}" VerticalAlignment="Center"/>
-                        <TextBlock x:Name="txt_Version" Text=" Version 10.0.31" FontSize="11"
+                        <TextBlock x:Name="txt_Version" Text=" Version 10.0.32" FontSize="11"
                                    Foreground="{DynamicResource InputPlaceholder}" VerticalAlignment="Center" Margin="4,0"/>
                     </StackPanel>
 
@@ -1541,9 +1541,32 @@
                                                         </DataTemplate>
                                                     </DataGridTemplateColumn.CellTemplate>
                                                 </DataGridTemplateColumn>
-                                                <DataGridTextColumn Header="BIOS" Width="80"
-                                                                    Binding="{Binding BIOSVersion}" IsReadOnly="True"
-                                                                    SortMemberPath="BIOSVersion"/>
+                                                <DataGridTemplateColumn Header="BIOS" Width="80" SortMemberPath="BIOSVersion">
+                                                    <DataGridTemplateColumn.CellTemplate>
+                                                        <DataTemplate>
+                                                            <TextBlock VerticalAlignment="Center"
+                                                                       TextTrimming="CharacterEllipsis">
+                                                                <TextBlock.Style>
+                                                                    <Style TargetType="TextBlock">
+                                                                        <Setter Property="Text" Value="{Binding BIOSVersion}"/>
+                                                                        <Style.Triggers>
+                                                                            <DataTrigger Binding="{Binding BIOSVersion}" Value="">
+                                                                                <Setter Property="Text" Value="N/A"/>
+                                                                                <Setter Property="Foreground" Value="{DynamicResource DriverNoPackForeground}"/>
+                                                                                <Setter Property="FontWeight" Value="SemiBold"/>
+                                                                            </DataTrigger>
+                                                                            <DataTrigger Binding="{Binding BIOSVersion}" Value="{x:Null}">
+                                                                                <Setter Property="Text" Value="N/A"/>
+                                                                                <Setter Property="Foreground" Value="{DynamicResource DriverNoPackForeground}"/>
+                                                                                <Setter Property="FontWeight" Value="SemiBold"/>
+                                                                            </DataTrigger>
+                                                                        </Style.Triggers>
+                                                                    </Style>
+                                                                </TextBlock.Style>
+                                                            </TextBlock>
+                                                        </DataTemplate>
+                                                    </DataGridTemplateColumn.CellTemplate>
+                                                </DataGridTemplateColumn>
                                             </DataGrid.Columns>
                                         </DataGrid>
                                     </Border>
@@ -3714,6 +3737,8 @@
                                                         <TextBlock Text="&#xE710;" FontFamily="Segoe MDL2 Assets" FontSize="10"/>
                                                     </Button>
                                                 </Grid>
+                                                <TextBlock Text="Maximum: 10 deferrals" FontSize="11"
+                                                           Foreground="{DynamicResource InputPlaceholder}" Margin="0,4,0,0"/>
 
                                                 <!-- BIOS restart delay -->
                                                 <Grid x:Name="panel_RestartDelayRow" Margin="0,12,0,0">
@@ -3745,6 +3770,8 @@
                                                         <TextBlock Text="&#xE710;" FontFamily="Segoe MDL2 Assets" FontSize="10"/>
                                                     </Button>
                                                 </Grid>
+                                                <TextBlock Text="Maximum: 240 minutes" FontSize="11"
+                                                           Foreground="{DynamicResource InputPlaceholder}" Margin="0,4,0,0"/>
 
                                                 <!-- Disable BIOS Restart -->
                                                 <Grid Margin="0,16,0,0">
@@ -4410,6 +4437,61 @@
                                                 <TextBlock x:Name="txt_PackageFreeSpace" Grid.Row="1" FontSize="10" Margin="0,4,0,0"
                                                            Foreground="{DynamicResource InputPlaceholder}" HorizontalAlignment="Right"/>
                                             </Grid>
+                                        </StackPanel>
+                                    </Border>
+
+                                    <!-- DAT API Catalog Source -->
+                                    <Border Style="{StaticResource CardPanel}" Margin="0,0,0,12">
+                                        <StackPanel>
+                                            <TextBlock FontSize="14" FontWeight="SemiBold"
+                                                       Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,6">
+                                                <Run Text="&#xE753;" FontFamily="Segoe MDL2 Assets" FontSize="14"/><Run Text="  DAT API Catalog Source"/>
+                                            </TextBlock>
+                                            <TextBlock TextWrapping="Wrap" FontSize="12" LineHeight="18"
+                                                       Foreground="{DynamicResource InputPlaceholder}" Margin="0,0,0,12">
+                                                Use the Driver Automation Tool API as the sole source for model catalogs and download URLs. When enabled, individual OEM sources (Dell, HP, Lenovo, Acer, Microsoft) will no longer be downloaded directly -- all data is served from the DAT API, which is refreshed every 24 hours.
+                                            </TextBlock>
+                                            <TextBlock TextWrapping="Wrap" FontSize="12" LineHeight="18"
+                                                       Foreground="{DynamicResource StatusWarning}" Margin="0,0,0,12">
+                                                Note: You must trust the DAT API (api.driverautomationtool.com) as the authoritative source for driver and BIOS catalog data. Individual OEM catalog downloads will be skipped entirely.
+                                            </TextBlock>
+
+                                            <Grid Margin="0,0,0,0">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="Auto"/>
+                                                    <ColumnDefinition Width="*"/>
+                                                </Grid.ColumnDefinitions>
+                                                <CheckBox x:Name="chk_UseDATAPICatalog" Grid.Column="0"
+                                                          Style="{StaticResource ToggleSwitch}"
+                                                          VerticalAlignment="Center"
+                                                          Margin="0,0,12,0"/>
+                                                <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                                    <TextBlock Text="Use DAT API as catalog source" FontSize="13"
+                                                               Foreground="{DynamicResource WindowForeground}"/>
+                                                    <TextBlock Text="Replaces individual OEM catalog downloads with the centralized DAT API endpoint."
+                                                               FontSize="11" Foreground="{DynamicResource InputPlaceholder}" TextWrapping="Wrap" Margin="0,2,0,0"/>
+                                                </StackPanel>
+                                            </Grid>
+
+                                            <!-- API Status indicator -->
+                                            <Border x:Name="panel_DATAPIStatus" Visibility="Collapsed"
+                                                    Background="{DynamicResource InputBackground}" CornerRadius="6" Padding="12,10" Margin="0,12,0,0">
+                                                <Grid>
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="Auto"/>
+                                                        <ColumnDefinition Width="*"/>
+                                                    </Grid.ColumnDefinitions>
+                                                    <TextBlock x:Name="txt_DATAPIStatusIcon" Grid.Column="0"
+                                                               FontFamily="Segoe MDL2 Assets" FontSize="14"
+                                                               VerticalAlignment="Center" Margin="0,0,10,0"
+                                                               Foreground="{DynamicResource InputPlaceholder}"
+                                                               Text="&#xE946;"/>
+                                                    <TextBlock x:Name="txt_DATAPIStatus" Grid.Column="1"
+                                                               FontSize="12" VerticalAlignment="Center"
+                                                               Foreground="{DynamicResource InputPlaceholder}"
+                                                               Text="DAT API catalog mode enabled"/>
+                                                </Grid>
+                                            </Border>
                                         </StackPanel>
                                     </Border>
 
@@ -5517,7 +5599,7 @@
                                     <StackPanel>
                                         <TextBlock Text="Driver Automation Tool" FontSize="22" FontWeight="Bold"
                                                    Foreground="{DynamicResource AccentColor}" Margin="0,0,0,4"/>
-                                        <TextBlock x:Name="txt_AboutVersion" Text="Version 10.0.31" FontSize="14"
+                                        <TextBlock x:Name="txt_AboutVersion" Text="Version 10.0.32" FontSize="14"
                                                    Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,16"/>
 
                                         <TextBlock TextWrapping="Wrap" FontSize="13"
