@@ -4,7 +4,7 @@
      Organization:  MSEndpointMgr / Patch My PC
      Filename:      DriverAutomationToolCore.psm1
      Purpose:       Core functions for Driver Automation Tool v2.0
-     Version:       10.0.32.0
+     Version:       10.0.33.0
     ===========================================================================
 #>
 
@@ -27,7 +27,7 @@ if ($PSVersionTable.PSVersion.Major -le 5) {
 
 #region Variables
 
-[version]$global:ScriptRelease = "10.0.32.0"
+[version]$global:ScriptRelease = "10.0.33.0"
 $global:ScriptBuildDate = "20-05-2026"
 $global:ReleaseNotesURL = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/DriverAutomationToolNotes.txt"
 $OEMLinksURL = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/OEMLinks.xml"
@@ -2015,14 +2015,16 @@ function New-DATCimSession {
     .DESCRIPTION
         Attempts default WSMAN authentication first. If that fails, retries with
         DCOM protocol (RPC). If both fail and the computer name is an FQDN, retries
-        with the short hostname which often resolves Kerberos SPN mismatches.
+        with the short hostname for both WSMAN and DCOM to resolve Kerberos SPN
+        mismatches. Returns $null and sets $global:DATUseLegacyWmi when all CIM
+        session methods fail, enabling Get-WmiObject fallback in query functions.
     #>
     param (
         [Parameter(Mandatory = $true)][string]$ComputerName
     )
-    # Attempt 1: WSMAN (default)
+    # Attempt 1: WSMAN (default) with a short timeout so we fail fast when WinRM is unavailable
     try {
-        return (New-CimSession -ComputerName $ComputerName -ErrorAction Stop)
+        return (New-CimSession -ComputerName $ComputerName -OperationTimeoutSec 15 -ErrorAction Stop)
     } catch {
         Write-DATLogEntry -Value "[WMI] WSMAN session failed for ${ComputerName}: $($_.Exception.Message)" -Severity 2
     }
@@ -2033,17 +2035,74 @@ function New-DATCimSession {
     } catch {
         Write-DATLogEntry -Value "[WMI] DCOM session failed for ${ComputerName}: $($_.Exception.Message)" -Severity 2
     }
-    # Attempt 3: If FQDN, try short hostname (resolves Kerberos SPN mismatches)
+    # Attempt 3 & 4: If FQDN, try short hostname with both WSMAN and DCOM
     if ($ComputerName -match '\.') {
         $shortName = $ComputerName.Split('.')[0]
         Write-DATLogEntry -Value "[WMI] FQDN failed -- retrying with short name: $shortName" -Severity 2
         try {
-            return (New-CimSession -ComputerName $shortName -ErrorAction Stop)
+            return (New-CimSession -ComputerName $shortName -OperationTimeoutSec 15 -ErrorAction Stop)
         } catch {
-            Write-DATLogEntry -Value "[WMI] Short name also failed for ${shortName}: $($_.Exception.Message)" -Severity 3
+            Write-DATLogEntry -Value "[WMI] Short name WSMAN failed for ${shortName}: $($_.Exception.Message)" -Severity 2
+        }
+        try {
+            $dcomOpts = New-CimSessionOption -Protocol Dcom
+            return (New-CimSession -ComputerName $shortName -SessionOption $dcomOpts -ErrorAction Stop)
+        } catch {
+            Write-DATLogEntry -Value "[WMI] Short name DCOM also failed for ${shortName}: $($_.Exception.Message)" -Severity 3
         }
     }
-    throw "All CIM session methods failed for $ComputerName"
+    # All CIM session methods exhausted -- enable legacy WMI fallback
+    Write-DATLogEntry -Value "[WMI] All CIM session methods failed for $ComputerName -- enabling Get-WmiObject fallback" -Severity 2
+    $global:DATUseLegacyWmi = $true
+    return $null
+}
+
+function Invoke-DATRemoteQuery {
+    <#
+    .SYNOPSIS
+        Queries a remote WMI/CIM namespace with automatic Get-WmiObject fallback.
+    .DESCRIPTION
+        Uses Get-CimInstance when a valid CIM session is available. Falls back to
+        Get-WmiObject (legacy DCOM/RPC) when CIM sessions are unavailable, which
+        resolves connectivity issues in environments where WinRM is not configured
+        and the CIM DCOM stack has restricted permissions.
+    .PARAMETER CimSession
+        An existing CIM session. If $null and $global:DATUseLegacyWmi is set,
+        the function uses Get-WmiObject instead.
+    .PARAMETER ComputerName
+        The remote computer name (used for Get-WmiObject fallback).
+    .PARAMETER Namespace
+        The WMI namespace (e.g. root\SMS\Site_PS1).
+    .PARAMETER ClassName
+        The WMI class name (used for non-query calls).
+    .PARAMETER Query
+        A WQL query string (used instead of ClassName when provided).
+    #>
+    [CmdletBinding()]
+    param (
+        [Parameter()]$CimSession,
+        [Parameter(Mandatory = $true)][string]$ComputerName,
+        [Parameter(Mandatory = $true)][string]$Namespace,
+        [Parameter()][string]$ClassName,
+        [Parameter()][string]$Query
+    )
+
+    # Prefer CIM session when available
+    if ($null -ne $CimSession) {
+        if ($Query) {
+            return (Get-CimInstance -CimSession $CimSession -Namespace $Namespace -Query $Query -ErrorAction Stop)
+        } else {
+            return (Get-CimInstance -CimSession $CimSession -Namespace $Namespace -ClassName $ClassName -ErrorAction Stop)
+        }
+    }
+
+    # Legacy WMI fallback (uses DCOM/RPC via System.Management -- no WinRM required)
+    Write-DATLogEntry -Value "[WMI] Using Get-WmiObject fallback for $ComputerName" -Severity 1
+    if ($Query) {
+        return (Get-WmiObject -ComputerName $ComputerName -Namespace $Namespace -Query $Query -ErrorAction Stop)
+    } else {
+        return (Get-WmiObject -ComputerName $ComputerName -Namespace $Namespace -Class $ClassName -ErrorAction Stop)
+    }
 }
 
 function Get-DATSiteCode {
@@ -2053,8 +2112,13 @@ function Get-DATSiteCode {
         $cimSess = New-DATCimSession -ComputerName $SiteServer
         # Store the working CIM session and effective server name globally
         $global:DATCimSession = $cimSess
-        $global:DATEffectiveServer = $cimSess.ComputerName
-        $SiteCodeObjects = Get-CimInstance -CimSession $cimSess -Namespace "root\SMS" -ClassName SMS_ProviderLocation -ErrorAction Stop
+        if ($null -ne $cimSess) {
+            $global:DATEffectiveServer = $cimSess.ComputerName
+        } else {
+            $global:DATEffectiveServer = $SiteServer
+        }
+        $SiteCodeObjects = Invoke-DATRemoteQuery -CimSession $cimSess -ComputerName $SiteServer `
+            -Namespace "root\SMS" -ClassName SMS_ProviderLocation
         foreach ($obj in $SiteCodeObjects) {
             if ($obj.ProviderForLocalSite -eq $true) {
                 $global:SiteCode = $obj.SiteCode
@@ -2196,9 +2260,8 @@ function Get-DATConfigMgrKnownModels {
         #     Keyed by ResourceID so it can be joined to COMPUTER_SYSTEM results.
         $hpBaseboardMap = @{}   # ResourceID -> Product
         try {
-            $hpBBResults = @(Get-CimInstance -CimSession $cimSession -Namespace $namespace `
-                -Query "SELECT ResourceID, Product FROM SMS_G_System_BASE_BOARD WHERE Manufacturer LIKE 'HP%' OR Manufacturer LIKE 'Hewlett%'" `
-                -ErrorAction Stop)
+            $hpBBResults = @(Invoke-DATRemoteQuery -CimSession $cimSession -ComputerName $SiteServer -Namespace $namespace `
+                -Query "SELECT ResourceID, Product FROM SMS_G_System_BASE_BOARD WHERE Manufacturer LIKE 'HP%' OR Manufacturer LIKE 'Hewlett%'")
             foreach ($r in $hpBBResults) {
                 if (-not [string]::IsNullOrWhiteSpace($r.Product)) {
                     $hpBaseboardMap[[string]$r.ResourceID] = $r.Product.Trim().ToUpper()
@@ -2213,9 +2276,8 @@ function Get-DATConfigMgrKnownModels {
         #       Keyed by Model name so it can be joined during the main loop.
         $dellSkuMap = @{}   # Model -> SystemSKUNumber
         try {
-            $dellSkuResults = @(Get-CimInstance -CimSession $cimSession -Namespace $namespace `
-                -Query "SELECT DISTINCT Model, SystemSKUNumber FROM SMS_G_System_COMPUTER_SYSTEM WHERE Manufacturer = 'Dell Inc.' AND SystemSKUNumber IS NOT NULL" `
-                -ErrorAction Stop)
+            $dellSkuResults = @(Invoke-DATRemoteQuery -CimSession $cimSession -ComputerName $SiteServer -Namespace $namespace `
+                -Query "SELECT DISTINCT Model, SystemSKUNumber FROM SMS_G_System_COMPUTER_SYSTEM WHERE Manufacturer = 'Dell Inc.' AND SystemSKUNumber IS NOT NULL")
             foreach ($r in $dellSkuResults) {
                 $sku = [string]$r.SystemSKUNumber
                 if (-not [string]::IsNullOrWhiteSpace($sku) -and -not [string]::IsNullOrWhiteSpace($r.Model)) {
@@ -2232,7 +2294,7 @@ function Get-DATConfigMgrKnownModels {
             Write-DATLogEntry -Value "[ConfigMgr Known Models] Querying $($oem.OEM): $($oem.Query)" -Severity 1
 
             try {
-                $results = @(Get-CimInstance -CimSession $cimSession -Namespace $namespace -Query $oem.Query -ErrorAction Stop)
+                $results = @(Invoke-DATRemoteQuery -CimSession $cimSession -ComputerName $SiteServer -Namespace $namespace -Query $oem.Query)
                 Write-DATLogEntry -Value "[ConfigMgr Known Models] $($oem.OEM): $($results.Count) raw results" -Severity 1
 
                 foreach ($item in $results) {
@@ -2326,7 +2388,8 @@ function Get-DATDistributionPoints {
     )
     Write-DATLogEntry -Value "[WMI] Querying \\$SiteServer\Root\SMS\Site_$SiteCode : SMS_SystemResourceList (Role: Distribution Point)" -Severity 1
     $cimSess = New-DATCimSession -ComputerName $SiteServer
-    [Array]$DistributionPoints = Get-CimInstance -CimSession $cimSess -Namespace "Root\SMS\Site_$SiteCode" -ClassName SMS_SystemResourceList |
+    [Array]$DistributionPoints = Invoke-DATRemoteQuery -CimSession $cimSess -ComputerName $SiteServer `
+        -Namespace "Root\SMS\Site_$SiteCode" -ClassName SMS_SystemResourceList |
         Where-Object { $_.RoleName -match "Distribution" } | Select-Object -ExpandProperty ServerName -Unique | Sort-Object
     Write-DATLogEntry -Value "[WMI] Distribution Points found: $(@($DistributionPoints).Count) -- $($DistributionPoints -join ', ')" -Severity 1
     return $DistributionPoints
@@ -2339,7 +2402,9 @@ function Get-DATDistributionPointGroups {
     )
     Write-DATLogEntry -Value "[WMI] Querying \\$SiteServer\Root\SMS\Site_$SiteCode : SMS_DistributionPointGroup (SELECT Distinct Name)" -Severity 1
     $cimSess = New-DATCimSession -ComputerName $SiteServer
-    [Array]$DPGroups = Get-CimInstance -CimSession $cimSess -Namespace "Root\SMS\Site_$SiteCode" -Query "SELECT Distinct Name FROM SMS_DistributionPointGroup" | Select-Object -ExpandProperty Name
+    [Array]$DPGroups = Invoke-DATRemoteQuery -CimSession $cimSess -ComputerName $SiteServer `
+        -Namespace "Root\SMS\Site_$SiteCode" -Query "SELECT Distinct Name FROM SMS_DistributionPointGroup" |
+        Select-Object -ExpandProperty Name
     Write-DATLogEntry -Value "[WMI] DP Groups found: $(@($DPGroups).Count) -- $($DPGroups -join ', ')" -Severity 1
     return $DPGroups
 }
@@ -2394,7 +2459,7 @@ function New-DATConfigMgrPkg {
         # --- Stage 1: Check existing package via WMI before copying files ---
         Write-DATLogEntry -Value "- [ConfigMgr] Checking for existing package: $CMPackage (version $Version)" -Severity 1
         $wmiQuery = "SELECT PackageID, Name, Version, PkgSourcePath FROM SMS_Package WHERE Name = '$($CMPackage -replace "'","''")'"
-        $existingPkgs = Get-CimInstance -CimSession $cimSess -Namespace $smsNamespace -Query $wmiQuery -ErrorAction Stop
+        $existingPkgs = Invoke-DATRemoteQuery -CimSession $cimSess -ComputerName $SiteServer -Namespace $smsNamespace -Query $wmiQuery
         $matchingPkg = $existingPkgs | Where-Object { $_.Version -eq $Version }
 
         if ($matchingPkg -and -not $ForceUpdate) {
@@ -2462,9 +2527,9 @@ function New-DATConfigMgrPkg {
             if ($DistributionPointGroups -and $DistributionPointGroups.Count -gt 0) {
                 foreach ($dpGroup in $DistributionPointGroups) {
                     try {
-                        $dpgWmi = Get-CimInstance -CimSession $cimSess -Namespace $smsNamespace `
-                            -Query "SELECT GroupID FROM SMS_DistributionPointGroup WHERE Name = '$($dpGroup -replace "'","''")'" `
-                            -ErrorAction Stop | Select-Object -First 1
+                        $dpgWmi = Invoke-DATRemoteQuery -CimSession $cimSess -ComputerName $SiteServer -Namespace $smsNamespace `
+                            -Query "SELECT GroupID FROM SMS_DistributionPointGroup WHERE Name = '$($dpGroup -replace "'","''")'" |
+                            Select-Object -First 1
                         if ($dpgWmi) {
                             $dpgObj = [wmi]"\\$SiteServer\$($smsNamespace):SMS_DistributionPointGroup.GroupID='$($dpgWmi.GroupID)'"
                             $dpgObj.AddPackages(@($pkgId)) | Out-Null
@@ -2481,9 +2546,9 @@ function New-DATConfigMgrPkg {
                 foreach ($dpServer in $DistributionPoints) {
                     try {
                         Write-DATLogEntry -Value "- [ConfigMgr] Redistributing package $pkgId to DP: $dpServer" -Severity 1
-                        $dpNalPath = Get-CimInstance -CimSession $cimSess -Namespace $smsNamespace `
-                            -Query "SELECT NALPath FROM SMS_DistributionPointInfo WHERE ServerName = '$($dpServer -replace "'","''")'" `
-                            -ErrorAction Stop | Select-Object -First 1 -ExpandProperty NALPath
+                        $dpNalPath = Invoke-DATRemoteQuery -CimSession $cimSess -ComputerName $SiteServer -Namespace $smsNamespace `
+                            -Query "SELECT NALPath FROM SMS_DistributionPointInfo WHERE ServerName = '$($dpServer -replace "'","''")'" |
+                            Select-Object -First 1 -ExpandProperty NALPath
                         if ($dpNalPath) {
                             $newDP = ([WmiClass]"\\$SiteServer\$($smsNamespace):SMS_DistributionPoint").CreateInstance()
                             $newDP.PackageID = $pkgId
@@ -2564,9 +2629,9 @@ function New-DATConfigMgrPkg {
                     Write-DATLogEntry -Value "- [ConfigMgr] Package left at console root (custom folder: root)" -Severity 1
                 } else {
                     # Verify the folder still exists
-                    $customFolder = Get-CimInstance -CimSession $cimSess -Namespace $smsNamespace `
-                        -Query "SELECT ContainerNodeID FROM SMS_ObjectContainerNode WHERE ContainerNodeID = $ConsoleFolderID AND ObjectType = 2" `
-                        -ErrorAction Stop | Select-Object -First 1
+                    $customFolder = Invoke-DATRemoteQuery -CimSession $cimSess -ComputerName $SiteServer -Namespace $smsNamespace `
+                        -Query "SELECT ContainerNodeID FROM SMS_ObjectContainerNode WHERE ContainerNodeID = $ConsoleFolderID AND ObjectType = 2" |
+                        Select-Object -First 1
                     if ($customFolder) {
                         $moveItem = ([WmiClass]"\\$SiteServer\$($smsNamespace):SMS_ObjectContainerItem").CreateInstance()
                         $moveItem.InstanceKey = $packageId
@@ -2583,34 +2648,34 @@ function New-DATConfigMgrPkg {
             if ($ConsoleFolderID -lt 0) {
             # Default: create/use Driver Packages\OEM or BIOS Packages\OEM
             # Find or create the top-level folder (e.g. "Driver Packages")
-            $topFolder = Get-CimInstance -CimSession $cimSess -Namespace $smsNamespace `
-                -Query "SELECT ContainerNodeID FROM SMS_ObjectContainerNode WHERE Name = '$folderName' AND ObjectType = 2 AND ParentContainerNodeID = 0" `
-                -ErrorAction Stop | Select-Object -First 1
+            $topFolder = Invoke-DATRemoteQuery -CimSession $cimSess -ComputerName $SiteServer -Namespace $smsNamespace `
+                -Query "SELECT ContainerNodeID FROM SMS_ObjectContainerNode WHERE Name = '$folderName' AND ObjectType = 2 AND ParentContainerNodeID = 0" |
+                Select-Object -First 1
             if (-not $topFolder) {
                 $newFolder = ([WmiClass]"\\$SiteServer\$($smsNamespace):SMS_ObjectContainerNode").CreateInstance()
                 $newFolder.Name = $folderName
                 $newFolder.ObjectType = 2  # Package
                 $newFolder.ParentContainerNodeID = 0
                 $newFolder.Put() | Out-Null
-                $topFolder = Get-CimInstance -CimSession $cimSess -Namespace $smsNamespace `
-                    -Query "SELECT ContainerNodeID FROM SMS_ObjectContainerNode WHERE Name = '$folderName' AND ObjectType = 2 AND ParentContainerNodeID = 0" `
-                    -ErrorAction Stop | Select-Object -First 1
+                $topFolder = Invoke-DATRemoteQuery -CimSession $cimSess -ComputerName $SiteServer -Namespace $smsNamespace `
+                    -Query "SELECT ContainerNodeID FROM SMS_ObjectContainerNode WHERE Name = '$folderName' AND ObjectType = 2 AND ParentContainerNodeID = 0" |
+                    Select-Object -First 1
             }
             $topFolderID = $topFolder.ContainerNodeID
 
             # Find or create the OEM sub-folder (e.g. "Driver Packages\Dell")
-            $oemFolder = Get-CimInstance -CimSession $cimSess -Namespace $smsNamespace `
-                -Query "SELECT ContainerNodeID FROM SMS_ObjectContainerNode WHERE Name = '$($OEM -replace "'","''")' AND ObjectType = 2 AND ParentContainerNodeID = $topFolderID" `
-                -ErrorAction Stop | Select-Object -First 1
+            $oemFolder = Invoke-DATRemoteQuery -CimSession $cimSess -ComputerName $SiteServer -Namespace $smsNamespace `
+                -Query "SELECT ContainerNodeID FROM SMS_ObjectContainerNode WHERE Name = '$($OEM -replace "'","''")' AND ObjectType = 2 AND ParentContainerNodeID = $topFolderID" |
+                Select-Object -First 1
             if (-not $oemFolder) {
                 $newOemFolder = ([WmiClass]"\\$SiteServer\$($smsNamespace):SMS_ObjectContainerNode").CreateInstance()
                 $newOemFolder.Name = $OEM
                 $newOemFolder.ObjectType = 2
                 $newOemFolder.ParentContainerNodeID = $topFolderID
                 $newOemFolder.Put() | Out-Null
-                $oemFolder = Get-CimInstance -CimSession $cimSess -Namespace $smsNamespace `
-                    -Query "SELECT ContainerNodeID FROM SMS_ObjectContainerNode WHERE Name = '$($OEM -replace "'","''")' AND ObjectType = 2 AND ParentContainerNodeID = $topFolderID" `
-                    -ErrorAction Stop | Select-Object -First 1
+                $oemFolder = Invoke-DATRemoteQuery -CimSession $cimSess -ComputerName $SiteServer -Namespace $smsNamespace `
+                    -Query "SELECT ContainerNodeID FROM SMS_ObjectContainerNode WHERE Name = '$($OEM -replace "'","''")' AND ObjectType = 2 AND ParentContainerNodeID = $topFolderID" |
+                    Select-Object -First 1
             }
             $oemFolderID = $oemFolder.ContainerNodeID
 
@@ -2632,9 +2697,9 @@ function New-DATConfigMgrPkg {
             foreach ($dpGroup in $DistributionPointGroups) {
                 try {
                     Write-DATLogEntry -Value "- [ConfigMgr] Distributing package $packageId to DP group: $dpGroup" -Severity 1
-                    $dpgWmi = Get-CimInstance -CimSession $cimSess -Namespace $smsNamespace `
-                        -Query "SELECT GroupID FROM SMS_DistributionPointGroup WHERE Name = '$($dpGroup -replace "'","''")'" `
-                        -ErrorAction Stop | Select-Object -First 1
+                    $dpgWmi = Invoke-DATRemoteQuery -CimSession $cimSess -ComputerName $SiteServer -Namespace $smsNamespace `
+                        -Query "SELECT GroupID FROM SMS_DistributionPointGroup WHERE Name = '$($dpGroup -replace "'","''")'" |
+                        Select-Object -First 1
                     if ($dpgWmi) {
                         $dpgObj = [wmi]"\\$SiteServer\$($smsNamespace):SMS_DistributionPointGroup.GroupID='$($dpgWmi.GroupID)'"
                         $dpgObj.AddPackages(@($packageId)) | Out-Null
@@ -2652,9 +2717,9 @@ function New-DATConfigMgrPkg {
             foreach ($dpServer in $DistributionPoints) {
                 try {
                     Write-DATLogEntry -Value "- [ConfigMgr] Distributing package $packageId to DP: $dpServer" -Severity 1
-                    $dpNalPath = Get-CimInstance -CimSession $cimSess -Namespace $smsNamespace `
-                        -Query "SELECT NALPath FROM SMS_DistributionPointInfo WHERE ServerName = '$($dpServer -replace "'","''")'" `
-                        -ErrorAction Stop | Select-Object -First 1 -ExpandProperty NALPath
+                    $dpNalPath = Invoke-DATRemoteQuery -CimSession $cimSess -ComputerName $SiteServer -Namespace $smsNamespace `
+                        -Query "SELECT NALPath FROM SMS_DistributionPointInfo WHERE ServerName = '$($dpServer -replace "'","''")'" |
+                        Select-Object -First 1 -ExpandProperty NALPath
                     if ($dpNalPath) {
                         $newDP = ([WmiClass]"\\$SiteServer\$($smsNamespace):SMS_DistributionPoint").CreateInstance()
                         $newDP.PackageID = $packageId
@@ -2877,7 +2942,7 @@ function Start-DATModelProcessing {
             $smsNs = "root\SMS\Site_$SiteCode"
             Write-DATLogEntry -Value "[ConfigMgr] Pre-fetching package versions for skip-if-current checks..." -Severity 1
             $cimSess = New-DATCimSession -ComputerName $SiteServer
-            $cmPkgs = Get-CimInstance -CimSession $cimSess -Namespace $smsNs -Query "SELECT Name, Version FROM SMS_Package" -ErrorAction Stop
+            $cmPkgs = Invoke-DATRemoteQuery -CimSession $cimSess -ComputerName $SiteServer -Namespace $smsNs -Query "SELECT Name, Version FROM SMS_Package"
             foreach ($p in $cmPkgs) {
                 if (-not [string]::IsNullOrEmpty($p.Name) -and -not [string]::IsNullOrEmpty($p.Version)) {
                     $cmPkgVersionCache[$p.Name] = $p.Version
@@ -6064,7 +6129,7 @@ function Invoke-DATPackageRetention {
             Write-DATLogEntry -Value "[Retention][CM] Querying superseded packages for: $pkgName" -Severity 1
             $wmiQuery = "SELECT PackageID, Name, Version FROM SMS_Package WHERE Name = '$($pkgName -replace "'","''")'"
             $cimSess = New-DATCimSession -ComputerName $SiteServer
-            $allPkgs  = @(Get-CimInstance -CimSession $cimSess -Namespace $smsNamespace -Query $wmiQuery -ErrorAction Stop)
+            $allPkgs  = @(Invoke-DATRemoteQuery -CimSession $cimSess -ComputerName $SiteServer -Namespace $smsNamespace -Query $wmiQuery)
             $sorted   = $allPkgs | Sort-Object -Property Version -Descending
             # Keep newest + $RetainCount previous; delete the rest
             $toDelete = if ($sorted.Count -gt ($RetainCount + 1)) { $sorted | Select-Object -Skip ($RetainCount + 1) } else { @() }
@@ -6072,8 +6137,14 @@ function Invoke-DATPackageRetention {
             foreach ($pkg in $toDelete) {
                 Write-DATLogEntry -Value "[Retention][CM] Removing $($pkg.Name) v$($pkg.Version) ($($pkg.PackageID))" -Severity 1
                 try {
-                    Get-CimInstance -CimSession $cimSess -Namespace $smsNamespace `
-                              -Query "SELECT * FROM SMS_Package WHERE PackageID = '$($pkg.PackageID)'" -ErrorAction Stop | Remove-CimInstance -ErrorAction Stop
+                    if ($null -ne $cimSess) {
+                        Get-CimInstance -CimSession $cimSess -Namespace $smsNamespace `
+                                  -Query "SELECT * FROM SMS_Package WHERE PackageID = '$($pkg.PackageID)'" -ErrorAction Stop | Remove-CimInstance -ErrorAction Stop
+                    } else {
+                        $wmiObj = Get-WmiObject -ComputerName $SiteServer -Namespace $smsNamespace `
+                                  -Query "SELECT * FROM SMS_Package WHERE PackageID = '$($pkg.PackageID)'" -ErrorAction Stop
+                        $wmiObj | ForEach-Object { $_.Delete() }
+                    }
                     $results.Add([pscustomobject]@{ Platform='ConfigMgr'; Name=$pkg.Name; Version=$pkg.Version; PackageId=$pkg.PackageID; Action='Deleted'; Error='' })
                 } catch {
                     $results.Add([pscustomobject]@{ Platform='ConfigMgr'; Name=$pkg.Name; Version=$pkg.Version; PackageId=$pkg.PackageID; Action='Failed'; Error=$_.Exception.Message })
@@ -10455,15 +10526,12 @@ function Repair-DATBiosPackageNames {
             try {
                 $smsNamespace = "root\SMS\Site_$SiteCode"
 
-                # ConfigMgr's SMS WMI namespace requires DCOM protocol -- WSMAN returns deserialized
-                # ManagementObject instances that have no live methods, causing 'Get'/'Put' errors.
-                $cimSessionOpt = New-CimSessionOption -Protocol Dcom
-                $cimSession = New-CimSession -ComputerName $SiteServer -SessionOption $cimSessionOpt -ErrorAction Stop
+                $cimSession = New-DATCimSession -ComputerName $SiteServer
 
                 # Old format: "BIOS Update - OEM Model" (no architecture suffix)
                 $wmiQuery = "SELECT PackageID, Name, Version, MIFVersion FROM SMS_Package WHERE Name LIKE 'BIOS Update -%'"
-                $cmPackages = Get-CimInstance -CimSession $cimSession -Namespace $smsNamespace `
-                    -Query $wmiQuery -ErrorAction Stop
+                $cmPackages = Invoke-DATRemoteQuery -CimSession $cimSession -ComputerName $SiteServer -Namespace $smsNamespace `
+                    -Query $wmiQuery
 
                 # Filter to packages missing architecture suffix (old format)
                 $oldFormatPkgs = @($cmPackages | Where-Object {
@@ -10503,19 +10571,25 @@ function Repair-DATBiosPackageNames {
                     $newMif = $arch
 
                     try {
-                        # Fetch a live CimInstance via the DCOM session so Set-CimInstance
-                        # receives a live object (not a deserialized ManagementObject) and
-                        # can invoke ModifyInstance without calling the WMI .Get() method.
-                        $livePkg = Get-CimInstance -CimSession $cimSession -Namespace $smsNamespace `
-                            -Query "SELECT * FROM SMS_Package WHERE PackageID = '$($pkg.PackageID)'" `
-                            -ErrorAction Stop | Select-Object -First 1
+                        if ($null -ne $cimSession) {
+                            # CIM path: fetch live instance and update via Set-CimInstance
+                            $livePkg = Get-CimInstance -CimSession $cimSession -Namespace $smsNamespace `
+                                -Query "SELECT * FROM SMS_Package WHERE PackageID = '$($pkg.PackageID)'" `
+                                -ErrorAction Stop | Select-Object -First 1
 
-                        if (-not $livePkg) {
-                            throw "Package '$($pkg.PackageID)' not found during live fetch"
+                            if (-not $livePkg) {
+                                throw "Package '$($pkg.PackageID)' not found during live fetch"
+                            }
+
+                            Set-CimInstance -CimSession $cimSession -InputObject $livePkg `
+                                -Property @{ Name = $newName; MIFVersion = $newMif } -ErrorAction Stop
+                        } else {
+                            # Legacy WMI fallback: use [wmi] accelerator + .Put()
+                            $wmiPkg = [wmi]"\\$SiteServer\$($smsNamespace):SMS_Package.PackageID='$($pkg.PackageID)'"
+                            $wmiPkg.Name = $newName
+                            $wmiPkg.MIFVersion = $newMif
+                            $wmiPkg.Put() | Out-Null
                         }
-
-                        Set-CimInstance -CimSession $cimSession -InputObject $livePkg `
-                            -Property @{ Name = $newName; MIFVersion = $newMif } -ErrorAction Stop
 
                         Write-DATLogEntry -Value "[BIOS Repair] ConfigMgr: '$oldName' -> '$newName' (MIFVersion: '$oldMif' -> '$newMif')" -Severity 1
                         [void]$results.Add([PSCustomObject]@{

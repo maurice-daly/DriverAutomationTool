@@ -3,6 +3,10 @@ Release Notes
 IMPORTANT
 - DAT Downloads have been moved to GitHub - https://github.com/maurice-daly/DriverAutomationTool
 
+Version 10.0.33
+Fixes
+- Added fallback to go back to Get-WMIObject for legacy versions of Windows server
+
 Version 10.0.32
 Updates
 - Additional methods and fallbacks for connecting to remote site servers (Configuration Manager)
