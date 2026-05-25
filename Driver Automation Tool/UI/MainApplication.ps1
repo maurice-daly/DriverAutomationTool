@@ -60,6 +60,7 @@ public class ModelItem : INotifyPropertyChanged {
     public string Version    { get; set; }
     public string BIOSVersion { get; set; }
     public bool   BIOSOnly   { get; set; }
+    public string DownloadURL { get; set; }
 }
 '@
     } catch {
@@ -5281,6 +5282,14 @@ $intuneSubPanel = $Window.FindName('panel_IntuneSub')
 function Set-DATActiveView {
     param ([string]$ViewName, [string]$NavButtonName)
 
+    # Close any open popups (OEM/OS dropdowns) before switching views
+    try {
+        $popupOEM = $Window.FindName('popup_OEM')
+        $popupOS  = $Window.FindName('popup_OS')
+        if ($null -ne $popupOEM) { $popupOEM.IsOpen = $false }
+        if ($null -ne $popupOS)  { $popupOS.IsOpen  = $false }
+    } catch {}
+
     # Hide all views
     foreach ($v in $allViews) {
         $ctrl = $Window.FindName($v)
@@ -5912,6 +5921,12 @@ $btn_RefreshModels.Add_Click({
     $progress_Job.IsIndeterminate = $true
     $btn_RefreshModels.IsEnabled = $false
     $script:ModelData.Clear()
+
+    # Reset previous build status indicators so they don't persist across refreshes
+    $pill_BuildStatus.Visibility = 'Collapsed'
+    $txt_BuildElapsed.Visibility = 'Collapsed'
+    $panel_BuildProgress.Visibility = 'Collapsed'
+
     Write-DATActivityLog "Starting model refresh..." -Level Info
 
     # Show the Loading Sources modal -- OEMs sorted A-Z
@@ -6467,6 +6482,7 @@ $btn_RefreshModels.Add_Click({
                                 $products = ($MSModelGroup.Group | ForEach-Object { $_.SystemId } | Select-Object -Unique) -join ','
                                 $latestEntry = $MSModelGroup.Group | Sort-Object { try { [datetime]$_.ReleaseDate } catch { [datetime]::MinValue } } -Descending | Select-Object -First 1
                                 $msVersion = if ($latestEntry.ReleaseDate) { $latestEntry.ReleaseDate } else { '' }
+                                $msDownloadUrl = if ($latestEntry.Url) { $latestEntry.Url } else { '' }
                                 $OEMSupportedModels += [PSCustomObject]@{
                                     OEM        = "Microsoft"
                                     Model      = $MSModelGroup.Name
@@ -6474,6 +6490,7 @@ $btn_RefreshModels.Add_Click({
                                     OS         = $WindowsVersion
                                     'OS Build' = $WindowsBuild
                                     Version    = $msVersion
+                                    DownloadURL = $msDownloadUrl
                                 }
                             }
                         }
@@ -6812,9 +6829,10 @@ $btn_RefreshModels.Add_Click({
                                 GFXBrand   = if ($model.GFXBrand) { $model.GFXBrand } else { '' }
                                 Version    = if ($model.Version) { $model.Version } else { '' }
                             }
-                            # BIOSVersion / BIOSOnly set separately -- property may not exist on stale cached type
+                            # BIOSVersion / BIOSOnly / DownloadURL set separately -- property may not exist on stale cached type
                             try { $modelItem.BIOSVersion = if ($model.BIOSVersion) { $model.BIOSVersion } else { '' } } catch { }
                             try { $modelItem.BIOSOnly = if ($model.BIOSOnly) { $true } else { $false } } catch { }
+                            try { $modelItem.DownloadURL = if ($model.DownloadURL) { $model.DownloadURL } else { '' } } catch { }
                             $script:ModelData.Add($modelItem)
                         }
                     }
@@ -6822,6 +6840,9 @@ $btn_RefreshModels.Add_Click({
                     $txt_ModelCount.Text = "$($script:ModelData.Count) models"
                     if ($script:ModelData.Count -gt 0) {
                         $txt_Status.Text = "Loaded $($script:ModelData.Count) supported models."
+                        $txt_Status.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+                            [System.Windows.Media.ColorConverter]::ConvertFromString(
+                                (Get-DATTheme -ThemeName $script:CurrentTheme)['WindowForeground']))
                         Write-DATActivityLog "Populated grid with $($script:ModelData.Count) models." -Level Success
 
                         # Log a per-OEM summary (counts only -- individual models go to the log file)
@@ -7161,9 +7182,31 @@ $btn_Build.Add_Click({
 
     # Guard: prevent a second build while one is already running
     if ($script:BuildPS -and $script:BuildAsyncResult -and -not $script:BuildAsyncResult.IsCompleted) {
-        $txt_Status.Text = "A build is already in progress. Use Abort to stop it first."
-        Write-DATActivityLog "Build blocked -- a build runspace is already running" -Level Warn
-        return
+        # If the previous build already finished (completion handled) but the runspace
+        # hasn't been disposed yet, force cleanup instead of blocking the user
+        if ($script:BuildCompletionHandled) {
+            try { $script:BuildPS.Stop() } catch {}
+            try { $script:BuildPS.EndInvoke($script:BuildAsyncResult) } catch {}
+            try { $script:BuildPS.Dispose() } catch {}
+            try { $script:BuildRunspace.Dispose() } catch {}
+            $script:BuildAsyncResult = $null
+            $script:BuildPS = $null
+            $script:BuildRunspace = $null
+            Write-DATActivityLog "Cleaned up stale build runspace from previous session" -Level Info
+        } else {
+            $txt_Status.Text = "A build is already in progress. Use Abort to stop it first."
+            Write-DATActivityLog "Build blocked -- a build runspace is already running" -Level Warn
+            return
+        }
+    }
+    # Also clean up completed-but-undisposed runspace objects (timer may have stopped before cleanup)
+    if ($script:BuildPS -and $script:BuildAsyncResult -and $script:BuildAsyncResult.IsCompleted) {
+        try { $script:BuildPS.EndInvoke($script:BuildAsyncResult) } catch {}
+        try { $script:BuildPS.Dispose() } catch {}
+        try { $script:BuildRunspace.Dispose() } catch {}
+        $script:BuildAsyncResult = $null
+        $script:BuildPS = $null
+        $script:BuildRunspace = $null
     }
 
     # Guard: ensure the target platform is connected before building
@@ -7295,6 +7338,7 @@ $btn_Build.Add_Click({
             BIOSVersion      = $(try { $model.BIOSVersion } catch { '' })
             ForceUpdate      = [bool]$model.ForceUpdate
             BIOSOnly         = $(try { [bool]$model.BIOSOnly } catch { $false })
+            DownloadURL      = $(try { $model.DownloadURL } catch { '' })
         }
         $global:SelectedModels.Add($modelObj) | Out-Null
     }
@@ -8295,26 +8339,12 @@ function Invoke-DATConfigMgrConnect {
                 $txt_ServerIP.Text = 'Unable to resolve'
             }
 
-            # Reuse the CIM session established during site code discovery
-            $infoCimSess = $global:DATCimSession
-            if (-not $infoCimSess) {
-                try {
-                    $infoCimSess = New-DATCimSession -ComputerName $SiteServer
-                } catch {
-                    Write-DATActivityLog "[WMI] CIM session for info panel failed: $($_.Exception.Message)" -Level Error
-                }
-            }
-
             # ConfigMgr Version
             try {
                 Write-DATActivityLog "[WMI] \\$SiteServer\root\SMS\Site_$($global:SiteCode) : SMS_Site" -Level Info
-                if ($infoCimSess) {
-                    $cmVersion = Get-CimInstance -CimSession $infoCimSess -Namespace "root\SMS\Site_$($global:SiteCode)" -ClassName SMS_Site -ErrorAction Stop |
-                        Select-Object -ExpandProperty Version
-                } else {
-                    $cmVersion = Get-CimInstance -ComputerName $SiteServer -Namespace "root\SMS\Site_$($global:SiteCode)" -ClassName SMS_Site -ErrorAction Stop |
-                        Select-Object -ExpandProperty Version
-                }
+                $cmVersion = Invoke-DATRemoteQuery -CimSession $global:DATCimSession -ComputerName $SiteServer `
+                    -Namespace "root\SMS\Site_$($global:SiteCode)" -ClassName SMS_Site |
+                    Select-Object -ExpandProperty Version
                 $txt_ServerCMVersion.Text = if ($cmVersion) { $cmVersion } else { 'Not available' }
                 Write-DATActivityLog "[WMI] ConfigMgr version: $cmVersion" -Level Info
             } catch {
@@ -8324,11 +8354,8 @@ function Invoke-DATConfigMgrConnect {
             # Server OS Version
             try {
                 Write-DATActivityLog "[WMI] \\$SiteServer\root\cimv2 : Win32_OperatingSystem" -Level Info
-                if ($infoCimSess) {
-                    $osInfo = Get-CimInstance -CimSession $infoCimSess -ClassName Win32_OperatingSystem -ErrorAction Stop
-                } else {
-                    $osInfo = Get-CimInstance -ComputerName $SiteServer -ClassName Win32_OperatingSystem -ErrorAction Stop
-                }
+                $osInfo = Invoke-DATRemoteQuery -CimSession $global:DATCimSession -ComputerName $SiteServer `
+                    -Namespace "root\cimv2" -ClassName Win32_OperatingSystem
                 $txt_ServerOSVersion.Text = if ($osInfo) { "$($osInfo.Caption) ($($osInfo.Version))" } else { 'Not available' }
                 Write-DATActivityLog "[WMI] Site server OS: $($osInfo.Caption) ($($osInfo.Version))" -Level Info
             } catch {
@@ -8338,11 +8365,8 @@ function Invoke-DATConfigMgrConnect {
             # Package Count and Breakdown
             try {
                 Write-DATActivityLog "[WMI] \\$SiteServer\root\SMS\Site_$($global:SiteCode) : SMS_Package (all packages)" -Level Info
-                if ($infoCimSess) {
-                    $allPackages = Get-CimInstance -CimSession $infoCimSess -Namespace "root\SMS\Site_$($global:SiteCode)" -ClassName SMS_Package -ErrorAction Stop
-                } else {
-                    $allPackages = Get-CimInstance -ComputerName $SiteServer -Namespace "root\SMS\Site_$($global:SiteCode)" -ClassName SMS_Package -ErrorAction Stop
-                }
+                $allPackages = Invoke-DATRemoteQuery -CimSession $global:DATCimSession -ComputerName $SiteServer `
+                    -Namespace "root\SMS\Site_$($global:SiteCode)" -ClassName SMS_Package
                 $packageCount = ($allPackages | Measure-Object).Count
                 $txt_ServerPackageCount.Text = $packageCount.ToString('N0')
 
@@ -9346,6 +9370,24 @@ $cmb_DistPriority.Add_SelectionChanged({
     }
 })
 
+# --- Source Folder Cleanup toggle ---
+$chk_DeleteSourceFolder = $Window.FindName('chk_DeleteSourceFolder')
+$txt_DeleteSourceFolderState = $Window.FindName('txt_DeleteSourceFolderState')
+$panel_DeleteSourceWarning = $Window.FindName('panel_DeleteSourceWarning')
+
+$chk_DeleteSourceFolder.Add_Checked({
+    Set-DATRegistryValue -Name 'DeleteSourceFolderOnRemoval' -Value 1 -Type DWord
+    $txt_DeleteSourceFolderState.Text = 'On'
+    $txt_DeleteSourceFolderState.Foreground = $Window.FindResource('StatusWarning')
+    $panel_DeleteSourceWarning.Visibility = 'Visible'
+})
+$chk_DeleteSourceFolder.Add_Unchecked({
+    Set-DATRegistryValue -Name 'DeleteSourceFolderOnRemoval' -Value 0 -Type DWord
+    $txt_DeleteSourceFolderState.Text = 'Off'
+    $txt_DeleteSourceFolderState.Foreground = $Window.FindResource('InputPlaceholder')
+    $panel_DeleteSourceWarning.Visibility = 'Collapsed'
+})
+
 # --- Custom Console Folder toggle and browse ---
 $chk_CustomConsoleFolder.Add_Checked({
     Set-DATRegistryValue -Name 'CustomConsoleFolderEnabled' -Value 1 -Type DWord
@@ -9376,10 +9418,9 @@ function Show-DATConsoleFolderBrowseDialog {
 
     # Query all package folders (ObjectType=2)
     try {
-        $folderCimSess = if ($global:DATCimSession) { $global:DATCimSession } else { New-DATCimSession -ComputerName $SiteServer }
-        $allFolders = @(Get-CimInstance -CimSession $folderCimSess -Namespace $smsNamespace `
-            -Query "SELECT ContainerNodeID, Name, ParentContainerNodeID FROM SMS_ObjectContainerNode WHERE ObjectType = 2" `
-            -ErrorAction Stop)
+        $allFolders = @(Invoke-DATRemoteQuery -CimSession $global:DATCimSession -ComputerName $SiteServer `
+            -Namespace $smsNamespace `
+            -Query "SELECT ContainerNodeID, Name, ParentContainerNodeID FROM SMS_ObjectContainerNode WHERE ObjectType = 2")
     } catch {
         Show-DATInfoDialog -Title 'Connection Error' `
             -Message "Failed to query ConfigMgr console folders: $($_.Exception.Message)" `
@@ -10202,22 +10243,32 @@ function Invoke-DATPackageRefresh {
     [void]$script:PkgRefreshPS.AddScript({
         param($SiteServer, $SiteCode, $NamePrefixes)
         try {
-            # Create CIM session with DCOM/short-name fallback (module not available in runspace)
+            # Create CIM session with DCOM/short-name/WMI fallback (module not available in runspace)
             $cimSess = $null
-            try { $cimSess = New-CimSession -ComputerName $SiteServer -ErrorAction Stop }
+            $useLegacyWmi = $false
+            try { $cimSess = New-CimSession -ComputerName $SiteServer -OperationTimeoutSec 15 -ErrorAction Stop }
             catch {
                 try { $cimSess = New-CimSession -ComputerName $SiteServer -SessionOption (New-CimSessionOption -Protocol Dcom) -ErrorAction Stop }
                 catch {
                     if ($SiteServer -match '\.') {
-                        $cimSess = New-CimSession -ComputerName ($SiteServer.Split('.')[0]) -ErrorAction Stop
-                    } else { throw }
+                        $shortName = $SiteServer.Split('.')[0]
+                        try { $cimSess = New-CimSession -ComputerName $shortName -OperationTimeoutSec 15 -ErrorAction Stop }
+                        catch {
+                            try { $cimSess = New-CimSession -ComputerName $shortName -SessionOption (New-CimSessionOption -Protocol Dcom) -ErrorAction Stop }
+                            catch { $useLegacyWmi = $true }
+                        }
+                    } else { $useLegacyWmi = $true }
                 }
             }
             $results = @()
             foreach ($NamePrefix in $NamePrefixes) {
             $wqlSafe = $NamePrefix.Replace("'", "''").Replace('[', '[[').Replace('_', '[_]').Replace('*', '%')
             $wmiFilter = "Name LIKE '$wqlSafe'"
-            $packages = Get-CimInstance -CimSession $cimSess -Namespace "root\SMS\Site_$SiteCode" -ClassName SMS_Package -Filter $wmiFilter -ErrorAction Stop
+            if ($useLegacyWmi) {
+                $packages = Get-WmiObject -ComputerName $SiteServer -Namespace "root\SMS\Site_$SiteCode" -Query "SELECT * FROM SMS_Package WHERE $wmiFilter" -ErrorAction Stop
+            } else {
+                $packages = Get-CimInstance -CimSession $cimSess -Namespace "root\SMS\Site_$SiteCode" -ClassName SMS_Package -Filter $wmiFilter -ErrorAction Stop
+            }
             foreach ($pkg in $packages) {
                 $pkgModel = ''
                 if ($pkg.Name -match '^(?:Drivers|BIOS Update)(?:\s+(?:Pilot|Retired))?\s*-\s*(.+)$') {
@@ -10418,7 +10469,13 @@ $btn_CmDeleteSelected.Add_Click({
         return
     }
 
-    $confirm = Show-DATConfirmDialog -Title "Delete Packages" -Message "Delete $($selectedPkgs.Count) selected package(s) from ConfigMgr?`n`nThis action cannot be undone."
+    $deleteSourceFolder = ($chk_DeleteSourceFolder.IsChecked -eq $true)
+    $confirmMsg = "Delete $($selectedPkgs.Count) selected package(s) from ConfigMgr?`n`nThis action cannot be undone."
+    if ($deleteSourceFolder) {
+        $confirmMsg += "`n`nSource folders will also be permanently deleted."
+    }
+
+    $confirm = Show-DATConfirmDialog -Title "Delete Packages" -Message $confirmMsg
     if (-not $confirm) { return }
 
     $btn_CmDeleteSelected.IsEnabled = $false
@@ -10565,13 +10622,15 @@ $btn_CmDeleteSelected.Add_Click({
 
     # Synchronized state for background runspace communication
     $script:cmDeleteState = [hashtable]::Synchronized(@{
-        Processed       = 0
-        Deleted         = 0
-        Errors          = 0
-        Current         = ''
-        Done            = $false
-        CancelRequested = $false
-        Cancelled       = $false
+        Processed            = 0
+        Deleted              = 0
+        Errors               = 0
+        SourceFoldersDeleted = 0
+        SourceFolderErrors   = 0
+        Current              = ''
+        Done                 = $false
+        CancelRequested      = $false
+        Cancelled            = $false
     })
 
     # Background runspace for WMI calls (keeps UI responsive)
@@ -10582,16 +10641,22 @@ $btn_CmDeleteSelected.Add_Click({
     $script:cmDeletePS = [powershell]::Create()
     $script:cmDeletePS.Runspace = $script:cmDeleteRunspace
     [void]$script:cmDeletePS.AddScript({
-        param ($SiteServer, $SiteCode, $PkgIds, $PkgNames, $State)
-        # Create CIM session with fallback (module not available in runspace)
+        param ($SiteServer, $SiteCode, $PkgIds, $PkgNames, $State, $DeleteSourceFolders)
+        # Create CIM session with DCOM/short-name/WMI fallback (module not available in runspace)
         $cimSess = $null
-        try { $cimSess = New-CimSession -ComputerName $SiteServer -ErrorAction Stop }
+        $useLegacyWmi = $false
+        try { $cimSess = New-CimSession -ComputerName $SiteServer -OperationTimeoutSec 15 -ErrorAction Stop }
         catch {
             try { $cimSess = New-CimSession -ComputerName $SiteServer -SessionOption (New-CimSessionOption -Protocol Dcom) -ErrorAction Stop }
             catch {
                 if ($SiteServer -match '\.') {
-                    $cimSess = New-CimSession -ComputerName ($SiteServer.Split('.')[0]) -ErrorAction Stop
-                } else { throw }
+                    $shortName = $SiteServer.Split('.')[0]
+                    try { $cimSess = New-CimSession -ComputerName $shortName -OperationTimeoutSec 15 -ErrorAction Stop }
+                    catch {
+                        try { $cimSess = New-CimSession -ComputerName $shortName -SessionOption (New-CimSessionOption -Protocol Dcom) -ErrorAction Stop }
+                        catch { $useLegacyWmi = $true }
+                    }
+                } else { $useLegacyWmi = $true }
             }
         }
         for ($i = 0; $i -lt $PkgIds.Count; $i++) {
@@ -10601,11 +10666,28 @@ $btn_CmDeleteSelected.Add_Click({
             }
             $State.Current = $PkgNames[$i]
             try {
-                $pkg = Get-CimInstance -CimSession $cimSess -Namespace "root\SMS\Site_$SiteCode" `
-                    -ClassName SMS_Package -Filter "PackageID = '$($PkgIds[$i])'" -ErrorAction Stop
+                if ($useLegacyWmi) {
+                    $pkg = Get-WmiObject -ComputerName $SiteServer -Namespace "root\SMS\Site_$SiteCode" `
+                        -Query "SELECT * FROM SMS_Package WHERE PackageID = '$($PkgIds[$i])'" -ErrorAction Stop
+                } else {
+                    $pkg = Get-CimInstance -CimSession $cimSess -Namespace "root\SMS\Site_$SiteCode" `
+                        -ClassName SMS_Package -Filter "PackageID = '$($PkgIds[$i])'" -ErrorAction Stop
+                }
                 if ($null -ne $pkg) {
-                    $pkg | Remove-CimInstance -ErrorAction Stop
-                    $State.Deleted++
+                    $sourcePath = $pkg.PkgSourcePath
+                    if ($pkg -is [System.Management.ManagementObject]) { [void]$pkg.Delete() } else { $pkg | Remove-CimInstance -ErrorAction Stop }
+
+                    # Delete source folder if enabled
+                    if ($DeleteSourceFolders -and -not [string]::IsNullOrEmpty($sourcePath)) {
+                        if (Test-Path -LiteralPath $sourcePath) {
+                            try {
+                                Remove-Item -LiteralPath $sourcePath -Recurse -Force -ErrorAction Stop
+                                $State.SourceFoldersDeleted++
+                            } catch {
+                                $State.SourceFolderErrors++
+                            }
+                        }
+                    }
                 }
             } catch {
                 $State.Errors++
@@ -10619,6 +10701,7 @@ $btn_CmDeleteSelected.Add_Click({
     [void]$script:cmDeletePS.AddArgument($pkgIds)
     [void]$script:cmDeletePS.AddArgument($pkgNames)
     [void]$script:cmDeletePS.AddArgument($script:cmDeleteState)
+    [void]$script:cmDeletePS.AddArgument($deleteSourceFolder)
     $script:cmDeleteAsync = $script:cmDeletePS.BeginInvoke()
 
     # Poll timer to update modal UI from background state
@@ -10666,12 +10749,16 @@ $btn_CmDeleteSelected.Add_Click({
                 $delDeleted = $script:cmDeleteState.Deleted
                 $delErrors = $script:cmDeleteState.Errors
                 $delCancelled = $script:cmDeleteState.Cancelled
+                $delSourceFolders = $script:cmDeleteState.SourceFoldersDeleted
+                $delSourceErrors = $script:cmDeleteState.SourceFolderErrors
                 $errMsg = if ($delErrors -gt 0) { "`n`n$delErrors package(s) failed to delete." } else { '' }
+                $srcMsg = if ($delSourceFolders -gt 0) { "`n`n$delSourceFolders source folder(s) removed." } else { '' }
+                $srcErrMsg = if ($delSourceErrors -gt 0) { "`n$delSourceErrors source folder(s) failed to delete." } else { '' }
                 $cancelledMsg = if ($delCancelled) { "`n`nOperation was cancelled by user." } else { '' }
-                $dlgType = if ($delErrors -gt 0 -or $delCancelled) { 'Warning' } else { 'Success' }
+                $dlgType = if ($delErrors -gt 0 -or $delCancelled -or $delSourceErrors -gt 0) { 'Warning' } else { 'Success' }
                 $dlgTitle = if ($delCancelled) { "Deletion Cancelled" } else { "Deletion Complete" }
                 Show-DATInfoDialog -Title $dlgTitle `
-                    -Message "Successfully deleted $delDeleted of $delTotal package(s) from ConfigMgr.$errMsg$cancelledMsg" `
+                    -Message "Successfully deleted $delDeleted of $delTotal package(s) from ConfigMgr.$errMsg$srcMsg$srcErrMsg$cancelledMsg" `
                     -Type $dlgType
                 $btn_CmDeleteSelected.IsEnabled = $false
             })
@@ -10713,8 +10800,9 @@ $grid_Packages.Add_SelectionChanged({
         $siteServer = $global:SiteServer
         $siteCode = $global:SiteCode
         $pkgID = $selected.PackageID
-        $selCimSess = if ($global:DATCimSession) { $global:DATCimSession } else { New-DATCimSession -ComputerName $siteServer }
-        $pkg = Get-CimInstance -CimSession $selCimSess -Namespace "root\SMS\Site_$siteCode" -ClassName SMS_Package -Filter "PackageID = '$pkgID'" -ErrorAction Stop
+        $selCimSess = $global:DATCimSession
+        $pkg = Invoke-DATRemoteQuery -CimSession $selCimSess -ComputerName $siteServer `
+            -Namespace "root\SMS\Site_$siteCode" -Query "SELECT * FROM SMS_Package WHERE PackageID = '$pkgID'"
 
         if ($null -ne $pkg) {
             $txt_PkgDetailName.Text = if ($pkg.Name) { $pkg.Name } else { [char]0x2014 }
@@ -10861,18 +10949,42 @@ $btn_CmDeletePackage.Add_Click({
     $selected = $grid_Packages.SelectedItem
     if ($null -eq $selected -or [string]::IsNullOrEmpty($selected.PackageID)) { return }
 
-    $confirm = Show-DATConfirmDialog -Title "Delete Package" -Message "Are you sure you want to delete package '$($selected.Name)' ($($selected.PackageID))?`n`nThis action cannot be undone."
+    $deleteSourceFolder = ($chk_DeleteSourceFolder.IsChecked -eq $true)
+    $confirmMsg = "Are you sure you want to delete package '$($selected.Name)' ($($selected.PackageID))?`n`nThis action cannot be undone."
+    if ($deleteSourceFolder) {
+        $confirmMsg += "`n`nThe package source folder will also be permanently deleted."
+    }
+
+    $confirm = Show-DATConfirmDialog -Title "Delete Package" -Message $confirmMsg
     if (-not $confirm) { return }
 
     try {
         $siteServer = $global:SiteServer
         $siteCode = $global:SiteCode
-        $delCimSess = if ($global:DATCimSession) { $global:DATCimSession } else { New-DATCimSession -ComputerName $siteServer }
-        $pkg = Get-CimInstance -CimSession $delCimSess -Namespace "root\SMS\Site_$siteCode" -ClassName SMS_Package -Filter "PackageID = '$($selected.PackageID)'" -ErrorAction Stop
+        $pkg = Invoke-DATRemoteQuery -CimSession $global:DATCimSession -ComputerName $siteServer `
+            -Namespace "root\SMS\Site_$siteCode" -Query "SELECT * FROM SMS_Package WHERE PackageID = '$($selected.PackageID)'"
         if ($null -ne $pkg) {
-            $pkg | Remove-CimInstance -ErrorAction Stop
+            $sourcePath = $pkg.PkgSourcePath
+            if ($pkg -is [System.Management.ManagementObject]) { [void]$pkg.Delete() } else { $pkg | Remove-CimInstance -ErrorAction Stop }
             Write-DATActivityLog "Deleted package: $($selected.Name) ($($selected.PackageID))" -Level Success
             Write-DATLogEntry -Value "Deleted ConfigMgr package: $($selected.Name) ($($selected.PackageID))" -Severity 1
+
+            # Delete source folder if enabled
+            if ($deleteSourceFolder -and -not [string]::IsNullOrEmpty($sourcePath)) {
+                if (Test-Path -LiteralPath $sourcePath) {
+                    try {
+                        Remove-Item -LiteralPath $sourcePath -Recurse -Force -ErrorAction Stop
+                        Write-DATActivityLog "Deleted source folder: $sourcePath" -Level Success
+                        Write-DATLogEntry -Value "Deleted source folder: $sourcePath" -Severity 1
+                    } catch {
+                        Write-DATActivityLog "Failed to delete source folder: $($_.Exception.Message)" -Level Error
+                        Write-DATLogEntry -Value "[Error] - Failed to delete source folder $sourcePath -- $($_.Exception.Message)" -Severity 3
+                    }
+                } else {
+                    Write-DATActivityLog "Source folder not found (already removed): $sourcePath" -Level Info
+                }
+            }
+
             $txt_PkgStatus.Foreground = $Window.FindResource('StatusSuccess')
             $txt_PkgStatus.Text = "Deleted: $($selected.Name)"
             $txt_PkgStatus.Visibility = 'Visible'
@@ -11152,7 +11264,7 @@ $cmb_PkgAction.Add_SelectionChanged({
         $siteCode = $global:SiteCode
         $successCount = 0
         $failCount = 0
-        $actionCimSess = if ($global:DATCimSession) { $global:DATCimSession } else { New-DATCimSession -ComputerName $siteServer }
+        $actionCimSess = $global:DATCimSession
 
         foreach ($pkg in $selectedPkgs) {
             try {
@@ -11167,11 +11279,11 @@ $cmb_PkgAction.Add_SelectionChanged({
                     Write-DATLogEntry -Value "- Package '$oldName' already targets $newOS -- skipped" -Severity 1
                     continue
                 }
-                $wmiPkg = Get-CimInstance -CimSession $actionCimSess -Namespace "root\SMS\Site_$siteCode" `
-                    -ClassName SMS_Package -Filter "PackageID = '$($pkg.PackageID)'" -ErrorAction Stop
+                $wmiPkg = Invoke-DATRemoteQuery -CimSession $actionCimSess -ComputerName $siteServer `
+                    -Namespace "root\SMS\Site_$siteCode" -Query "SELECT * FROM SMS_Package WHERE PackageID = '$($pkg.PackageID)'"
                 if ($null -ne $wmiPkg) {
                     $wmiPkg.Name = $newName
-                    Set-CimInstance -InputObject $wmiPkg -ErrorAction Stop
+                    if ($wmiPkg -is [System.Management.ManagementObject]) { [void]$wmiPkg.Put() } else { Set-CimInstance -InputObject $wmiPkg -ErrorAction Stop }
                     Write-DATLogEntry -Value "- Renamed package $($pkg.PackageID): '$oldName' -> '$newName'" -Severity 1
                     $pkg.Name = $newName
                     $successCount++
@@ -11204,7 +11316,7 @@ $cmb_PkgAction.Add_SelectionChanged({
         $siteCode = $global:SiteCode
         $successCount = 0
         $failCount = 0
-        $moveCimSess = if ($global:DATCimSession) { $global:DATCimSession } else { New-DATCimSession -ComputerName $siteServer }
+        $moveCimSess = $global:DATCimSession
 
         foreach ($pkg in $selectedPkgs) {
             try {
@@ -11228,11 +11340,11 @@ $cmb_PkgAction.Add_SelectionChanged({
                     continue
                 }
 
-                $wmiPkg = Get-CimInstance -CimSession $moveCimSess -Namespace "root\SMS\Site_$siteCode" `
-                    -ClassName SMS_Package -Filter "PackageID = '$($pkg.PackageID)'" -ErrorAction Stop
+                $wmiPkg = Invoke-DATRemoteQuery -CimSession $moveCimSess -ComputerName $siteServer `
+                    -Namespace "root\SMS\Site_$siteCode" -Query "SELECT * FROM SMS_Package WHERE PackageID = '$($pkg.PackageID)'"
                 if ($null -ne $wmiPkg) {
                     $wmiPkg.Name = $newName
-                    Set-CimInstance -InputObject $wmiPkg -ErrorAction Stop
+                    if ($wmiPkg -is [System.Management.ManagementObject]) { [void]$wmiPkg.Put() } else { Set-CimInstance -InputObject $wmiPkg -ErrorAction Stop }
                     Write-DATLogEntry -Value "- Renamed package $($pkg.PackageID): '$oldName' -> '$newName'" -Severity 1
                     $pkg.Name = $newName
                     $successCount++
@@ -11375,13 +11487,16 @@ $chk_UseDATAPICatalog.Add_Checked({
     $panel_DATAPIStatus.Visibility = 'Visible'
     $txt_DATAPIStatusIcon.Text = [char]0xE73E
     $txt_DATAPIStatusIcon.Foreground = [System.Windows.Media.Brushes]::Green
-    $txt_DATAPIStatus.Text = "DAT API catalog mode enabled -- OEM sources will be skipped on next refresh"
+    $txt_DATAPIStatus.Text = "DAT API catalog mode enabled -- models will be sourced from the DAT API"
     Write-DATLogEntry -Value "DAT API catalog mode enabled by user" -Severity 1
 })
 $chk_UseDATAPICatalog.Add_Unchecked({
     Set-DATRegistryValue -Name "UseDATAPICatalog" -Value 0 -Type DWord
-    $panel_DATAPIStatus.Visibility = 'Collapsed'
-    Write-DATLogEntry -Value "DAT API catalog mode disabled -- individual OEM sources will be used" -Severity 1
+    $panel_DATAPIStatus.Visibility = 'Visible'
+    $txt_DATAPIStatusIcon.Text = [char]0xE946
+    $txt_DATAPIStatusIcon.Foreground = $Window.FindResource('InputPlaceholder')
+    $txt_DATAPIStatus.Text = "OEM catalog sources enabled -- catalogs will be downloaded from each OEM directly"
+    Write-DATLogEntry -Value "DAT API catalog mode disabled -- individual OEM catalog sources will be used" -Severity 1
 })
 
 $btn_CopyTelemetryGuid = $Window.FindName('btn_CopyTelemetryGuid')
@@ -17674,6 +17789,30 @@ $link_License.Add_RequestNavigate({
     $e.Handled = $true
 })
 
+# View License modal
+$link_ViewLicense = $Window.FindName('link_ViewLicense')
+$overlay_License = $Window.FindName('overlay_License')
+$txt_LicenseContent = $Window.FindName('txt_LicenseContent')
+$btn_LicenseClose = $Window.FindName('btn_LicenseClose')
+
+$link_ViewLicense.Add_Click({
+    try {
+        $licensePath = Join-Path $AppRoot 'LICENSE'
+        if (Test-Path $licensePath) {
+            $txt_LicenseContent.Text = Get-Content -Path $licensePath -Raw
+        } else {
+            $txt_LicenseContent.Text = "License file not found."
+        }
+    } catch {
+        $txt_LicenseContent.Text = "Unable to load license file."
+    }
+    $overlay_License.Visibility = 'Visible'
+})
+
+$btn_LicenseClose.Add_Click({
+    $overlay_License.Visibility = 'Collapsed'
+})
+
 $link_AuthorGitHub = $Window.FindName('btn_AuthorGitHub')
 $link_AuthorGitHub.Add_Click({
     Start-Process "https://github.com/maurice-daly"
@@ -18528,11 +18667,13 @@ try {
 
         # Restore DAT API Catalog Source
         Write-Host "  DAT API Mode  : " -NoNewline -ForegroundColor DarkGray
-        if ($null -ne $savedConfig.UseDATAPICatalog -and $savedConfig.UseDATAPICatalog -eq 1) {
-            $chk_UseDATAPICatalog.IsChecked = $true
-            Write-Host "Enabled (OEM sources skipped)" -ForegroundColor Green
-        } else {
+        if ($null -ne $savedConfig.UseDATAPICatalog -and $savedConfig.UseDATAPICatalog -eq 0) {
+            $chk_UseDATAPICatalog.IsChecked = $false
             Write-Host "Disabled (individual OEM sources)" -ForegroundColor DarkYellow
+        } else {
+            # Default to ON for new installs or when explicitly enabled
+            $chk_UseDATAPICatalog.IsChecked = $true
+            Write-Host "Enabled (DAT API catalog)" -ForegroundColor Green
         }
 
         # Restore Deploy All Devices
@@ -18986,6 +19127,23 @@ try {
             Write-Host "Use Default" -ForegroundColor DarkYellow
         }
 
+        # Restore Source Folder Cleanup
+        Write-Host "  Source Cleanup: " -NoNewline -ForegroundColor DarkGray
+        if ($null -ne $savedConfig.DeleteSourceFolderOnRemoval -and $savedConfig.DeleteSourceFolderOnRemoval -eq 1) {
+            if ($null -ne $chk_DeleteSourceFolder) { $chk_DeleteSourceFolder.IsChecked = $true }
+            if ($null -ne $txt_DeleteSourceFolderState) {
+                $txt_DeleteSourceFolderState.Text = 'On'
+                $txt_DeleteSourceFolderState.Foreground = $Window.FindResource('StatusWarning')
+            }
+            if ($null -ne $panel_DeleteSourceWarning) { $panel_DeleteSourceWarning.Visibility = 'Visible' }
+            Write-Host "Enabled" -ForegroundColor Yellow
+        } else {
+            if ($null -ne $chk_DeleteSourceFolder) { $chk_DeleteSourceFolder.IsChecked = $false }
+            if ($null -ne $txt_DeleteSourceFolderState) { $txt_DeleteSourceFolderState.Text = 'Off' }
+            if ($null -ne $panel_DeleteSourceWarning) { $panel_DeleteSourceWarning.Visibility = 'Collapsed' }
+            Write-Host "Disabled" -ForegroundColor DarkYellow
+        }
+
         # Restore Known Models Only
         Write-Host "  Known Models  : " -NoNewline -ForegroundColor DarkGray
         if ($null -ne $savedConfig.KnownModelsOnly -and $savedConfig.KnownModelsOnly -eq 1) {
@@ -19247,7 +19405,7 @@ if (Test-Path $logoPath) {
 
 # Read version from module manifest
 $manifestPath = Join-Path $AppRoot "Modules\DriverAutomationToolCore\DriverAutomationToolCore.psd1"
-$script:versionString = "v10.0.33"
+$script:versionString = "v10.0.34"
 if (Test-Path $manifestPath) {
     $manifestData = Import-PowerShellDataFile $manifestPath
     $ver = [version]$manifestData.ModuleVersion

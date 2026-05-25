@@ -902,7 +902,7 @@
                                    Foreground="{DynamicResource AccentColor}" VerticalAlignment="Center" Margin="0,0,8,0"/>
                         <TextBlock Text="Driver Automation Tool" FontSize="13" FontWeight="SemiBold"
                                    Foreground="{DynamicResource WindowForeground}" VerticalAlignment="Center"/>
-                        <TextBlock x:Name="txt_Version" Text=" Version 10.0.33" FontSize="11"
+                        <TextBlock x:Name="txt_Version" Text=" Version 10.0.34" FontSize="11"
                                    Foreground="{DynamicResource InputPlaceholder}" VerticalAlignment="Center" Margin="4,0"/>
                     </StackPanel>
 
@@ -1917,12 +1917,12 @@
                                             <Run Text="&#xE946;" FontFamily="Segoe MDL2 Assets" FontSize="13"/><Run Text="  Package Details"/>
                                         </TextBlock>
                                         <Button x:Name="btn_CmReportIssue" Grid.Column="1"
-                                                Style="{StaticResource WarningButton}" Height="30"
+                                                Style="{StaticResource WarningButton}" Height="34"
                                                 IsEnabled="False">
                                             <TextBlock><Run Text="&#xE7BA;" FontFamily="Segoe MDL2 Assets"/><Run Text="  Report Issue"/></TextBlock>
                                         </Button>
                                         <Button x:Name="btn_CmDeletePackage" Grid.Column="2"
-                                                Style="{StaticResource DangerButton}" Height="30"
+                                                Style="{StaticResource DangerButton}" Height="34"
                                                 Margin="8,0,0,0" IsEnabled="False">
                                             <TextBlock><Run Text="&#xE74D;" FontFamily="Segoe MDL2 Assets"/><Run Text="  Delete Package"/></TextBlock>
                                         </Button>
@@ -2423,6 +2423,53 @@
                                         </DataGrid.Columns>
                                     </DataGrid>
                                 </Grid>
+                            </Border>
+
+                            <!-- Source Folder Cleanup -->
+                            <Border Style="{StaticResource CardPanel}" Margin="0,0,0,12">
+                                <StackPanel>
+                                    <TextBlock FontSize="13" FontWeight="SemiBold"
+                                               Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,8">
+                                        <Run Text="&#xE74D;" FontFamily="Segoe MDL2 Assets" FontSize="13"/><Run Text="  Source Folder Cleanup"/>
+                                    </TextBlock>
+                                    <TextBlock TextWrapping="Wrap" FontSize="12"
+                                               Foreground="{DynamicResource InputPlaceholder}" Margin="0,0,0,16" LineHeight="20">
+                                        When enabled, deleting a package from ConfigMgr will also permanently remove the package source folder from disk. This applies to both individual and bulk package deletions.
+                                    </TextBlock>
+
+                                    <Grid Margin="0,0,0,0">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                            <ColumnDefinition Width="*"/>
+                                        </Grid.ColumnDefinitions>
+                                        <CheckBox x:Name="chk_DeleteSourceFolder"
+                                                  Style="{StaticResource ToggleSwitch}"
+                                                  VerticalAlignment="Center"
+                                                  Margin="0,0,12,0"/>
+                                        <TextBlock x:Name="txt_DeleteSourceFolderState" Grid.Column="1"
+                                                   Text="Off" FontSize="12" FontWeight="SemiBold"
+                                                   Foreground="{DynamicResource InputPlaceholder}"
+                                                   VerticalAlignment="Center" Margin="0,0,16,0"/>
+                                    </Grid>
+
+                                    <!-- Data removal warning (shown when toggle is on) -->
+                                    <Border x:Name="panel_DeleteSourceWarning" Visibility="Collapsed"
+                                            Background="{DynamicResource StatusWarningBackground}"
+                                            CornerRadius="6" Padding="12,10" Margin="0,12,0,0">
+                                        <DockPanel>
+                                            <TextBlock Text="&#xE7BA;" FontFamily="Segoe MDL2 Assets" FontSize="14"
+                                                       Foreground="{DynamicResource StatusWarning}"
+                                                       VerticalAlignment="Top" Margin="0,1,10,0"
+                                                       DockPanel.Dock="Left"/>
+                                            <TextBlock TextWrapping="Wrap" FontSize="12"
+                                                       Foreground="{DynamicResource WindowForeground}" LineHeight="20">
+                                                <Run FontWeight="SemiBold">Warning:</Run>
+                                                <Run>Source folder contents will be permanently deleted from disk when packages are removed. This cannot be undone. Ensure backups exist before enabling this option.</Run>
+                                            </TextBlock>
+                                        </DockPanel>
+                                    </Border>
+                                </StackPanel>
                             </Border>
                             </StackPanel>
                             </ScrollViewer>
@@ -4449,11 +4496,11 @@
                                             </TextBlock>
                                             <TextBlock TextWrapping="Wrap" FontSize="12" LineHeight="18"
                                                        Foreground="{DynamicResource InputPlaceholder}" Margin="0,0,0,12">
-                                                Use the Driver Automation Tool API as the sole source for model catalogs and download URLs. When enabled, individual OEM sources (Dell, HP, Lenovo, Acer, Microsoft) will no longer be downloaded directly -- all data is served from the DAT API, which is refreshed every 24 hours.
+                                                Model catalogs and download URLs are sourced from the Driver Automation Tool API by default. If you prefer to download catalogs directly from individual OEM sources (Dell, HP, Lenovo, Acer, Microsoft), toggle this setting off.
                                             </TextBlock>
                                             <TextBlock TextWrapping="Wrap" FontSize="12" LineHeight="18"
-                                                       Foreground="{DynamicResource StatusWarning}" Margin="0,0,0,12">
-                                                Note: You must trust the DAT API (api.driverautomationtool.com) as the authoritative source for driver and BIOS catalog data. Individual OEM catalog downloads will be skipped entirely.
+                                                       Foreground="{DynamicResource InputPlaceholder}" Margin="0,0,0,12">
+                                                The DAT API catalog is refreshed every 24 hours. When disabled, driver catalogs will be downloaded directly from each OEM during model refresh (Note: BIOS downloads will always use the API).
                                             </TextBlock>
 
                                             <Grid Margin="0,0,0,0">
@@ -4468,7 +4515,7 @@
                                                 <StackPanel Grid.Column="1" VerticalAlignment="Center">
                                                     <TextBlock Text="Use DAT API as catalog source" FontSize="13"
                                                                Foreground="{DynamicResource WindowForeground}"/>
-                                                    <TextBlock Text="Replaces individual OEM catalog downloads with the centralized DAT API endpoint."
+                                                    <TextBlock Text="Obtain model catalogs from the centralized DAT API endpoint."
                                                                FontSize="11" Foreground="{DynamicResource InputPlaceholder}" TextWrapping="Wrap" Margin="0,2,0,0"/>
                                                 </StackPanel>
                                             </Grid>
@@ -5599,7 +5646,7 @@
                                     <StackPanel>
                                         <TextBlock Text="Driver Automation Tool" FontSize="22" FontWeight="Bold"
                                                    Foreground="{DynamicResource AccentColor}" Margin="0,0,0,4"/>
-                                        <TextBlock x:Name="txt_AboutVersion" Text="Version 10.0.33" FontSize="14"
+                                        <TextBlock x:Name="txt_AboutVersion" Text="Version 10.0.34" FontSize="14"
                                                    Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,16"/>
 
                                         <TextBlock TextWrapping="Wrap" FontSize="13"
@@ -5628,8 +5675,13 @@
                                             </Button>
                                         </StackPanel>
                                         <TextBlock FontSize="13"
+                                                   Foreground="{DynamicResource InputPlaceholder}" Margin="0,0,0,4">
+                                            <Run Text="License: Proprietary -- All Rights Reserved -- "/>
+                                            <Hyperlink x:Name="link_ViewLicense" Foreground="{DynamicResource AccentColor}">View License</Hyperlink>
+                                        </TextBlock>
+                                        <TextBlock FontSize="13"
                                                    Foreground="{DynamicResource InputPlaceholder}" Margin="0,0,0,16">
-                                            <Run Text="License: CC BY-NC 4.0 — "/><Hyperlink x:Name="link_License" NavigateUri="https://creativecommons.org/licenses/by-nc/4.0/" Foreground="{DynamicResource AccentColor}">View License</Hyperlink>
+                                            <Run Text="Contact: "/><Hyperlink x:Name="link_License" NavigateUri="mailto:maurice.daly@outlook.com" Foreground="{DynamicResource AccentColor}">maurice.daly@outlook.com</Hyperlink>
                                         </TextBlock>
 
                                         <StackPanel Orientation="Horizontal">
@@ -5832,6 +5884,35 @@ BY USING THIS TOOL, YOU ACKNOWLEDGE AND AGREE THAT:
 
                         </Grid>
 
+                    </Grid>
+                </Border>
+            </Grid>
+
+            <!-- License Modal Overlay -->
+            <Grid x:Name="overlay_License" Grid.Row="0" Grid.RowSpan="2" Visibility="Collapsed">
+                <Border Background="#80000000"/>
+                <Border Background="{DynamicResource WindowBackground}"
+                        BorderBrush="{DynamicResource WindowBorder}" BorderThickness="1"
+                        CornerRadius="{StaticResource CardRadius}"
+                        HorizontalAlignment="Center" VerticalAlignment="Center"
+                        Width="620" MaxHeight="520" Padding="28">
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="*"/>
+                            <RowDefinition Height="Auto"/>
+                        </Grid.RowDefinitions>
+                        <TextBlock Grid.Row="0" Text="License" FontSize="18" FontWeight="SemiBold"
+                                   Foreground="{DynamicResource AccentColor}" Margin="0,0,0,16"/>
+                        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" Margin="0,0,0,16">
+                            <TextBlock x:Name="txt_LicenseContent" TextWrapping="Wrap" FontSize="12"
+                                       Foreground="{DynamicResource WindowForeground}"/>
+                        </ScrollViewer>
+                        <Button x:Name="btn_LicenseClose" Grid.Row="2"
+                                Style="{StaticResource RoundedButton}"
+                                HorizontalAlignment="Right" Height="34">
+                            <TextBlock><Run Text="&#xE711;" FontFamily="Segoe MDL2 Assets"/><Run Text="  Close"/></TextBlock>
+                        </Button>
                     </Grid>
                 </Border>
             </Grid>

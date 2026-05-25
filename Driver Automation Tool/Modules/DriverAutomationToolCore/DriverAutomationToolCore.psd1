@@ -1,6 +1,6 @@
 @{
     RootModule        = 'DriverAutomationToolCore.psm1'
-    ModuleVersion     = '10.0.33.0'
+    ModuleVersion     = '10.0.34.0'
     GUID              = 'a3e0e746-8e3a-4c5b-b8d0-3b2e4f6a9c1d'
     Author            = 'Maurice Daly'
     CompanyName       = 'MSEndpointMgr'
@@ -101,7 +101,9 @@
         'Unregister-DATScheduledBuild',
         'Get-DATAvailableUpdate',
         'Update-DATApplication',
-        'Repair-DATBiosPackageNames'
+        'Repair-DATBiosPackageNames',
+        'New-DATCimSession',
+        'Invoke-DATRemoteQuery'
     )
     VariablesToExport = '*'
     CmdletsToExport   = @()

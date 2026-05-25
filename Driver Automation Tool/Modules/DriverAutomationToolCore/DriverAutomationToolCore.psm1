@@ -4,7 +4,7 @@
      Organization:  MSEndpointMgr / Patch My PC
      Filename:      DriverAutomationToolCore.psm1
      Purpose:       Core functions for Driver Automation Tool v2.0
-     Version:       10.0.33.0
+     Version:       10.0.34.0
     ===========================================================================
 #>
 
@@ -27,7 +27,7 @@ if ($PSVersionTable.PSVersion.Major -le 5) {
 
 #region Variables
 
-[version]$global:ScriptRelease = "10.0.33.0"
+[version]$global:ScriptRelease = "10.0.34.0"
 $global:ScriptBuildDate = "20-05-2026"
 $global:ReleaseNotesURL = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/DriverAutomationToolNotes.txt"
 $OEMLinksURL = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/OEMLinks.xml"
@@ -752,33 +752,77 @@ function Get-DATOEMModelInfo {
                 }
             }
             "Microsoft" {
-                $MicrosoftCatalogSource = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/OSDCatalogMicrosoftDriverPack.json"
-                $MicrosoftCatalogPath = Join-Path $global:TempDirectory "OSDCatalogMicrosoftDriverPack.json"
+                $MSArchFilter = if ($Architecture -eq 'Arm64') { 'arm64' } else { 'amd64' }
+                $DATMicrosoftModels = @()
+                $DATModelNames = @()
+
+                # Try DAT API catalog first
                 try {
-                    Write-DATLogEntry -Value "[Microsoft] Catalog download path: $MicrosoftCatalogPath" -Severity 1
-                    $proxyParams = Get-DATWebRequestProxy
-                    Invoke-WebRequest -Uri $MicrosoftCatalogSource -OutFile $MicrosoftCatalogPath -UseBasicParsing -TimeoutSec 30 @proxyParams
-                    $global:MicrosoftModelList = Get-Content -Path $MicrosoftCatalogPath -Raw | ConvertFrom-Json
-                    $MSArchFilter = if ($Architecture -eq 'Arm64') { 'arm64' } else { 'amd64' }
-                    $MSFiltered = $global:MicrosoftModelList | Where-Object {
-                        $_.OperatingSystem -match $WindowsVersion -and $_.OSArchitecture -eq $MSArchFilter
-                    }
-                    $MicrosoftModels = $MSFiltered | Group-Object -Property Model
-                    foreach ($MSModelGroup in $MicrosoftModels) {
-                        $products = ($MSModelGroup.Group | ForEach-Object { $_.SystemId } | Select-Object -Unique) -join ','
-                        $latestEntry = $MSModelGroup.Group | Sort-Object { try { [datetime]$_.ReleaseDate } catch { [datetime]::MinValue } } -Descending | Select-Object -First 1
-                        $msVersion = if ($latestEntry.ReleaseDate) { $latestEntry.ReleaseDate } else { '' }
-                        $OEMSupportedModels += [PSCustomObject]@{
-                            OEM        = "Microsoft"
-                            Model      = $MSModelGroup.Name
-                            Baseboards = $products
-                            OS         = $WindowsVersion
-                            'OS Build' = $WindowsBuild
-                            Version    = $msVersion
+                    Write-DATLogEntry -Value "[Microsoft] Checking DAT driver catalog for Microsoft models..." -Severity 1
+                    $DATCatalog = Get-DATDriverCatalog
+                    if ($DATCatalog -and $DATCatalog.Count -gt 0) {
+                        $DATMSFiltered = $DATCatalog | Where-Object {
+                            $_.Manufacturer -eq 'Microsoft' -and
+                            $_.SupportedOS -match $WindowsVersion -and
+                            $_.SupportedArchitecture -eq $MSArchFilter
                         }
+                        $DATMicrosoftModels = $DATMSFiltered | Group-Object -Property DisplayName
+                        foreach ($MSModelGroup in $DATMicrosoftModels) {
+                            $latestEntry = $MSModelGroup.Group | Sort-Object { try { [datetime]$_.ReleaseDate } catch { [datetime]::MinValue } } -Descending | Select-Object -First 1
+                            $msVersion = if ($latestEntry.ReleaseDate) { $latestEntry.ReleaseDate } else { '' }
+                            $OEMSupportedModels += [PSCustomObject]@{
+                                OEM        = "Microsoft"
+                                Model      = $MSModelGroup.Name
+                                Baseboards = if ($latestEntry.SupportedDevices) { $latestEntry.SupportedDevices } else { $MSModelGroup.Name }
+                                OS         = $WindowsVersion
+                                'OS Build' = $WindowsBuild
+                                Version    = $msVersion
+                            }
+                            $DATModelNames += $MSModelGroup.Name
+                        }
+                        Write-DATLogEntry -Value "[Microsoft] DAT catalog: $($DATMicrosoftModels.Count) model(s) found" -Severity 1
                     }
                 } catch {
-                    Write-DATLogEntry -Value "[Error] - Microsoft model retrieval failed: $($_.Exception.Message)" -Severity 3
+                    Write-DATLogEntry -Value "[Microsoft] DAT catalog unavailable: $($_.Exception.Message) -- falling back to OSD catalog" -Severity 2
+                }
+
+                # Load OSD catalog only when DAT API catalog mode is NOT enabled
+                $useDATReg = (Get-ItemProperty -Path $global:RegPath -Name 'UseDATAPICatalog' -ErrorAction SilentlyContinue).UseDATAPICatalog
+                $useDATAPICatalog = ($useDATReg -eq 1)
+                if (-not $useDATAPICatalog) {
+                    $MicrosoftCatalogSource = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/OSDCatalogMicrosoftDriverPack.json"
+                    $MicrosoftCatalogPath = Join-Path $global:TempDirectory "OSDCatalogMicrosoftDriverPack.json"
+                    try {
+                        Write-DATLogEntry -Value "[Microsoft] OSD catalog download path: $MicrosoftCatalogPath" -Severity 1
+                        $proxyParams = Get-DATWebRequestProxy
+                        Invoke-WebRequest -Uri $MicrosoftCatalogSource -OutFile $MicrosoftCatalogPath -UseBasicParsing -TimeoutSec 30 @proxyParams
+                        $global:MicrosoftModelList = Get-Content -Path $MicrosoftCatalogPath -Raw | ConvertFrom-Json
+                        $MSFiltered = $global:MicrosoftModelList | Where-Object {
+                            $_.OperatingSystem -match $WindowsVersion -and $_.OSArchitecture -eq $MSArchFilter -and
+                            $_.Model -notin $DATModelNames
+                        }
+                        $MicrosoftModels = $MSFiltered | Group-Object -Property Model
+                        foreach ($MSModelGroup in $MicrosoftModels) {
+                            $products = ($MSModelGroup.Group | ForEach-Object { $_.SystemId } | Select-Object -Unique) -join ','
+                            $latestEntry = $MSModelGroup.Group | Sort-Object { try { [datetime]$_.ReleaseDate } catch { [datetime]::MinValue } } -Descending | Select-Object -First 1
+                            $msVersion = if ($latestEntry.ReleaseDate) { $latestEntry.ReleaseDate } else { '' }
+                            $OEMSupportedModels += [PSCustomObject]@{
+                                OEM        = "Microsoft"
+                                Model      = $MSModelGroup.Name
+                                Baseboards = $products
+                                OS         = $WindowsVersion
+                                'OS Build' = $WindowsBuild
+                                Version    = $msVersion
+                            }
+                        }
+                        if ($MicrosoftModels.Count -gt 0) {
+                            Write-DATLogEntry -Value "[Microsoft] OSD catalog: $($MicrosoftModels.Count) additional model(s) added" -Severity 1
+                        }
+                    } catch {
+                        Write-DATLogEntry -Value "[Error] - Microsoft OSD model retrieval failed: $($_.Exception.Message)" -Severity 3
+                    }
+                } else {
+                    Write-DATLogEntry -Value "[Microsoft] DAT API catalog mode enabled -- skipping OSD catalog" -Severity 1
                 }
             }
             "Acer" {
@@ -2979,6 +3023,7 @@ function Start-DATModelProcessing {
         $catalogDriverVersion = if ($model.Version) { $model.Version } else { '' }
         $catalogBIOSVersion   = if ($model.BIOSVersion) { $model.BIOSVersion } else { '' }
         $modelForceUpdate     = [bool]$model.ForceUpdate
+        $modelDownloadURL     = if ($model.DownloadURL) { [string]$model.DownloadURL } else { '' }
 
         Set-DATRegistryValue -Name "CurrentJob" -Value "$currentIndex" -Type String
         Set-DATRegistryValue -Name "RunningMessage" -Value "[$currentIndex/$totalModels] $oem $modelName" -Type String
@@ -3042,13 +3087,29 @@ function Start-DATModelProcessing {
                         }
                     }
                 } else {
-                    # Download Only / WIM Package Only -- check if WIM already exists from today
-                    $existingWimPath = Join-Path $global:TempDirectory "Packaged\$oem\$modelName\$windowsVersion $windowsBuild\DriverPackage.wim"
-                    if ((Test-Path $existingWimPath) -and (Get-Item $existingWimPath).LastWriteTime.Date -eq (Get-Date).Date -and -not $modelForceUpdate) {
-                        Write-DATLogEntry -Value "[$currentIndex/$totalModels] SKIPPED download -- driver WIM already created today: $existingWimPath" -Severity 1
-                        Set-DATRegistryValue -Name "RunningMessage" -Value "Skipped (exists): $oem $modelName" -Type String
-                        $skipDriverDownload = $true
-                        $driverPackageSuccessCount++
+                    # Download Only / WIM Package Only -- check if output already exists from today
+                    if ($RunningMode -eq 'Download Only') {
+                        # Download Only: check if raw download file exists from today
+                        $existingDlDir = Join-Path $StoragePath "$oem\$modelName"
+                        $existingDlFile = if (Test-Path $existingDlDir) {
+                            Get-ChildItem -Path $existingDlDir -File -ErrorAction SilentlyContinue |
+                                Where-Object { $_.LastWriteTime.Date -eq (Get-Date).Date } | Select-Object -First 1
+                        }
+                        if ($existingDlFile -and -not $modelForceUpdate) {
+                            Write-DATLogEntry -Value "[$currentIndex/$totalModels] SKIPPED download -- driver file already downloaded today: $($existingDlFile.FullName)" -Severity 1
+                            Set-DATRegistryValue -Name "RunningMessage" -Value "Skipped (exists): $oem $modelName" -Type String
+                            $skipDriverDownload = $true
+                            $driverPackageSuccessCount++
+                        }
+                    } else {
+                        # WIM Package Only: check if WIM already exists from today
+                        $existingWimPath = Join-Path $global:TempDirectory "Packaged\$oem\$modelName\$windowsVersion $windowsBuild\DriverPackage.wim"
+                        if ((Test-Path $existingWimPath) -and (Get-Item $existingWimPath).LastWriteTime.Date -eq (Get-Date).Date -and -not $modelForceUpdate) {
+                            Write-DATLogEntry -Value "[$currentIndex/$totalModels] SKIPPED download -- driver WIM already created today: $existingWimPath" -Severity 1
+                            Set-DATRegistryValue -Name "RunningMessage" -Value "Skipped (exists): $oem $modelName" -Type String
+                            $skipDriverDownload = $true
+                            $driverPackageSuccessCount++
+                        }
                     }
                 }
 
@@ -3065,7 +3126,8 @@ function Start-DATModelProcessing {
                     -LogDirectory $global:LogDirectory `
                     -TempDirectory $global:TempDirectory `
                     -RunningMode $RunningMode `
-                    -CustomDriverPath $customDriverPath
+                    -CustomDriverPath $customDriverPath `
+                    -CatalogDownloadURL $modelDownloadURL
 
                 # Intune: Create and upload Win32 app after packaging
                 if ($RunningMode -eq 'Intune') {
@@ -3278,7 +3340,23 @@ function Start-DATModelProcessing {
                 # Telemetry: driver report for Download Only / WIM Only modes (no Intune or ConfigMgr)
                 if ($RunningMode -notin @('Intune', 'Configuration Manager')) {
                     try {
-                        # WIM Package Only moves the WIM to PackagePath; Download Only keeps it in temp staging
+                        if ($RunningMode -eq 'Download Only') {
+                            # Download Only: use the raw downloaded file for telemetry
+                            $dlDestDir = Join-Path $StoragePath "$oem\$modelName"
+                            $dlFile = if (Test-Path $dlDestDir) {
+                                Get-ChildItem -Path $dlDestDir -File -ErrorAction SilentlyContinue |
+                                    Sort-Object LastWriteTime -Descending | Select-Object -First 1
+                            }
+                            if ($dlFile) {
+                                $drvHash = Get-DATPackageHash -FilePath $dlFile.FullName
+                                $drvSize = $dlFile.Length
+                                Send-DATDriverReport -Manufacturer $oem -Model $modelName `
+                                    -OSVersion "$windowsVersion $windowsBuild" -OSArchitecture $arch `
+                                    -Platform $RunningMode -Status 'Success' `
+                                    -PackageSize $drvSize -PackageHash $drvHash
+                            }
+                        } else {
+                        # WIM Package Only: use the WIM file for telemetry
                         $dlWimPath = Join-Path $global:TempDirectory "Packaged\$oem\$modelName\$windowsVersion $windowsBuild\DriverPackage.wim"
                         if (-not (Test-Path $dlWimPath)) {
                             $dlWimPath = Join-Path $PackagePath "$oem\$modelName\$windowsVersion $windowsBuild\DriverPackage.wim"
@@ -3291,15 +3369,22 @@ function Start-DATModelProcessing {
                                 -Platform $RunningMode -Status 'Success' `
                                 -PackageSize $drvSize -PackageHash $drvHash
                         }
+                        }
                     } catch {
                         Write-DATLogEntry -Value "[Telemetry] Driver report failed: $($_.Exception.Message)" -Severity 2
                     }
                 }
 
-                # Count driver package success -- check if the WIM was produced (Download Only)
+                # Count driver package success -- check if the WIM was produced
                 # or if it was successfully consumed by the Intune/ConfigMgr pipeline
+                # For Download Only, the raw download exists (no WIM) -- check the download folder
                 $drvWimCheck = Join-Path $global:TempDirectory "Packaged\$oem\$modelName\$windowsVersion $windowsBuild\DriverPackage.wim"
-                if ((Test-Path $drvWimCheck) -or $script:driverPipelineSuccess) { $driverPackageSuccessCount++ }
+                if ($RunningMode -eq 'Download Only') {
+                    # Download Only skips WIM packaging -- success = downloaded file exists in destination
+                    $dlDestDir = Join-Path $StoragePath "$oem\$modelName"
+                    $dlFileExists = (Test-Path $dlDestDir) -and @(Get-ChildItem -Path $dlDestDir -File -ErrorAction SilentlyContinue).Count -gt 0
+                    if ($dlFileExists) { $driverPackageSuccessCount++ }
+                } elseif ((Test-Path $drvWimCheck) -or $script:driverPipelineSuccess) { $driverPackageSuccessCount++ }
                 $script:driverPipelineSuccess = $false
                 } # end if (-not $skipDriverDownload)
             } # end if (-not $modelBIOSOnly)
@@ -4288,7 +4373,8 @@ function Invoke-DATOEMDownloadModule {
         [string]$LogDirectory,
         [string]$TempDirectory,
         [string]$RunningMode = "Download Only",
-        [string]$CustomDriverPath
+        [string]$CustomDriverPath,
+        [string]$CatalogDownloadURL
     )
 
     [Net.ServicePointManager]::SecurityProtocol = (
@@ -4346,7 +4432,20 @@ function Invoke-DATOEMDownloadModule {
     $gfxDownloadFileName = $null
     $gfxBrand = $null
     $catalogVersion = $null
+    $catalogFileHash = ''
+    $catalogHashMethod = ''
 
+    # If a direct download URL was provided from the DAT API catalog, use it and skip OEM catalog lookup
+    # Only accept URLs that point to a downloadable file (not info/landing pages)
+    if (-not [string]::IsNullOrEmpty($CatalogDownloadURL) -and $CatalogDownloadURL -match '\.(msi|exe|cab|zip|wim)(\?|$)') {
+        $downloadURL = $CatalogDownloadURL
+        $downloadFileName = ($CatalogDownloadURL -split '\?')[0] | Split-Path -Leaf
+        Write-DATLogEntry -Value "[$OEM] Using pre-resolved download URL from DAT API catalog: $downloadFileName" -Severity 1
+    } elseif (-not [string]::IsNullOrEmpty($CatalogDownloadURL)) {
+        Write-DATLogEntry -Value "[$OEM] DAT API catalog URL is not a direct download link, falling back to OEM catalog: $CatalogDownloadURL" -Severity 2
+    }
+
+    if ([string]::IsNullOrEmpty($downloadURL)) {
     switch ($OEM) {
         "Dell" {
             $DellLink = ($OEMLinks.OEM.Manufacturer | Where-Object { $_.Name -match "Dell" }).Link |
@@ -4825,7 +4924,8 @@ function Invoke-DATOEMDownloadModule {
                 Write-DATLogEntry -Value "[HP] Creating WIM package from staging directory..." -Severity 1
 
                 $null = Invoke-DATDriverFilePackaging -FilePath $HPStagingDir -OEM $OEM -Model $Model `
-                    -OS "$WindowsVersion $WindowsBuild" -Destination $packageDest -Platform $packagingPlatform
+                    -OS "$WindowsVersion $WindowsBuild" -Destination $packageDest -Platform $packagingPlatform `
+                    -CustomDriverPath $CustomDriverPath
             }
 
             Set-DATRegistryValue -Name "RunningMode" -Value "Download Completed" -Type String
@@ -4890,31 +4990,67 @@ function Invoke-DATOEMDownloadModule {
             }
         }
         "Microsoft" {
-            $MicrosoftCatalogPath = Join-Path $TempDirectory "OSDCatalogMicrosoftDriverPack.json"
-            if (-not (Test-Path $MicrosoftCatalogPath)) {
-                $MicrosoftCatalogSource = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/OSDCatalogMicrosoftDriverPack.json"
-                Write-DATLogEntry -Value "[$OEM] Downloading Microsoft catalog..." -Severity 1
-                Write-DATLogEntry -Value "[$OEM] Catalog download path: $MicrosoftCatalogPath" -Severity 1
-                Set-DATRegistryValue -Name "RunningMessage" -Value "Downloading Microsoft driver catalog..." -Type String
-                $proxyParams = Get-DATWebRequestProxy
-                Invoke-WebRequest -Uri $MicrosoftCatalogSource -OutFile $MicrosoftCatalogPath -UseBasicParsing -TimeoutSec 30 @proxyParams
-            } else {
-                Write-DATLogEntry -Value "[$OEM] Using cached Microsoft catalog: $MicrosoftCatalogPath" -Severity 1
+            # Try DAT API catalog first (has the most current URLs)
+            $datApiResolved = $false
+            try {
+                $driverCatalog = Get-DATDriverCatalog
+                if ($driverCatalog) {
+                    $normalizedArch = if ($Architecture -eq 'Arm64') { 'arm64' } else { 'x64' }
+                    $matchingEntry = $driverCatalog | Where-Object {
+                        $_.Manufacturer -eq 'Microsoft' -and
+                        $_.DisplayName -eq $Model -and
+                        $_.SupportedOS -match $WindowsVersion -and
+                        $_.SupportedArchitecture -eq $normalizedArch -and
+                        -not [string]::IsNullOrEmpty($_.DownloadURL) -and
+                        $_.DownloadURL -match '\.(msi|exe|cab|zip|wim)(\?|$)'
+                    } | Sort-Object { try { [datetime]$_.ReleaseDate } catch { [datetime]::MinValue } } -Descending | Select-Object -First 1
+
+                    if ($matchingEntry) {
+                        $downloadURL = $matchingEntry.DownloadURL
+                        $downloadFileName = ($downloadURL -split '\?')[0] | Split-Path -Leaf
+                        $catalogVersion = if ($matchingEntry.Version) { $matchingEntry.Version } elseif ($matchingEntry.ReleaseDate) { $matchingEntry.ReleaseDate } else { '' }
+                        if (-not [string]::IsNullOrEmpty($matchingEntry.FileHash)) {
+                            $catalogFileHash = $matchingEntry.FileHash
+                            $catalogHashMethod = if (-not [string]::IsNullOrEmpty($matchingEntry.HashMethod)) { $matchingEntry.HashMethod } else { 'SHA256' }
+                        }
+                        Write-DATLogEntry -Value "[$OEM] Resolved from DAT API catalog: $downloadFileName (Version: $catalogVersion)" -Severity 1
+                        $datApiResolved = $true
+                    } else {
+                        Write-DATLogEntry -Value "[$OEM] Model '$Model' not found in DAT API catalog for $WindowsVersion $normalizedArch -- trying OEM catalog" -Severity 2
+                    }
+                }
+            } catch {
+                Write-DATLogEntry -Value "[$OEM] DAT API catalog lookup failed, falling back to OEM catalog: $($_.Exception.Message)" -Severity 2
             }
 
-            $MSModelList = Get-Content -Path $MicrosoftCatalogPath -Raw | ConvertFrom-Json
-            $MSArchFilter = if ($Architecture -eq 'Arm64') { 'arm64' } else { 'amd64' }
-            $matchingModel = $MSModelList | Where-Object {
-                $_.Model -eq $Model -and $_.OperatingSystem -match $WindowsVersion -and $_.OSArchitecture -eq $MSArchFilter
-            } | Select-Object -First 1
+            # Fall back to GitHub-hosted OEM catalog if DAT API didn't resolve
+            if (-not $datApiResolved) {
+                $MicrosoftCatalogPath = Join-Path $TempDirectory "OSDCatalogMicrosoftDriverPack.json"
+                if (-not (Test-Path $MicrosoftCatalogPath)) {
+                    $MicrosoftCatalogSource = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/OSDCatalogMicrosoftDriverPack.json"
+                    Write-DATLogEntry -Value "[$OEM] Downloading Microsoft OEM catalog..." -Severity 1
+                    Write-DATLogEntry -Value "[$OEM] Catalog download path: $MicrosoftCatalogPath" -Severity 1
+                    Set-DATRegistryValue -Name "RunningMessage" -Value "Downloading Microsoft driver catalog..." -Type String
+                    $proxyParams = Get-DATWebRequestProxy
+                    Invoke-WebRequest -Uri $MicrosoftCatalogSource -OutFile $MicrosoftCatalogPath -UseBasicParsing -TimeoutSec 30 @proxyParams
+                } else {
+                    Write-DATLogEntry -Value "[$OEM] Using cached Microsoft OEM catalog: $MicrosoftCatalogPath" -Severity 1
+                }
 
-            if ($null -ne $matchingModel -and -not [string]::IsNullOrEmpty($matchingModel.Url)) {
-                $downloadURL = $matchingModel.Url
-                $downloadFileName = $downloadURL | Split-Path -Leaf
-                $catalogVersion = if ($matchingModel.ReleaseDate) { $matchingModel.ReleaseDate } else { '' }
-                Write-DATLogEntry -Value "[$OEM] Found Surface driver: $downloadFileName (ReleaseDate: $catalogVersion)" -Severity 1
-            } else {
-                throw "No matching Microsoft driver package found for $Model ($WindowsVersion)"
+                $MSModelList = Get-Content -Path $MicrosoftCatalogPath -Raw | ConvertFrom-Json
+                $MSArchFilter = if ($Architecture -eq 'Arm64') { 'arm64' } else { 'amd64' }
+                $matchingModel = $MSModelList | Where-Object {
+                    $_.Model -eq $Model -and $_.OperatingSystem -match $WindowsVersion -and $_.OSArchitecture -eq $MSArchFilter
+                } | Select-Object -First 1
+
+                if ($null -ne $matchingModel -and -not [string]::IsNullOrEmpty($matchingModel.Url)) {
+                    $downloadURL = $matchingModel.Url
+                    $downloadFileName = $downloadURL | Split-Path -Leaf
+                    $catalogVersion = if ($matchingModel.ReleaseDate) { $matchingModel.ReleaseDate } else { '' }
+                    Write-DATLogEntry -Value "[$OEM] Found Surface driver (OEM catalog): $downloadFileName (ReleaseDate: $catalogVersion)" -Severity 1
+                } else {
+                    throw "No matching Microsoft driver package found for $Model ($WindowsVersion)"
+                }
             }
         }
         "Acer" {
@@ -4970,9 +5106,30 @@ function Invoke-DATOEMDownloadModule {
             throw "Unsupported OEM: $OEM"
         }
     }
+    } # end if ([string]::IsNullOrEmpty($downloadURL)) -- skip OEM lookup when CatalogDownloadURL provided
 
     if ([string]::IsNullOrEmpty($downloadURL)) {
         throw "Failed to resolve download URL for $OEM $Model"
+    }
+
+    # If no hash was captured from the OEM-specific catalog, try the DAT API catalog
+    if ([string]::IsNullOrEmpty($catalogFileHash)) {
+        try {
+            $datCatalog = Get-DATDriverCatalog
+            if ($datCatalog) {
+                $hashMatch = $datCatalog | Where-Object {
+                    $_.DownloadURL -eq $downloadURL -and
+                    -not [string]::IsNullOrEmpty($_.FileHash)
+                } | Select-Object -First 1
+                if ($hashMatch) {
+                    $catalogFileHash = $hashMatch.FileHash
+                    $catalogHashMethod = if (-not [string]::IsNullOrEmpty($hashMatch.HashMethod)) { $hashMatch.HashMethod } else { 'SHA256' }
+                    Write-DATLogEntry -Value "[$OEM] File hash retrieved from DAT API catalog ($catalogHashMethod): $catalogFileHash" -Severity 1
+                }
+            }
+        } catch {
+            Write-DATLogEntry -Value "[$OEM] DAT API catalog hash lookup skipped: $($_.Exception.Message)" -Severity 2
+        }
     }
 
     # Pre-download URL reachability check
@@ -5013,24 +5170,77 @@ function Invoke-DATOEMDownloadModule {
         }
     }
 
-    # Download the driver pack
-    Set-DATRegistryValue -Name "RunningMessage" -Value "Downloading $OEM $Model driver pack..." -Type String
-    Write-DATLogEntry -Value "[$OEM] Starting download: $downloadURL" -Severity 1
-
-    Invoke-DATContentDownload -DownloadURL $downloadURL -DownloadDestination $DownloadDestination
-
+    # Download the driver pack (with retry on failure or hash mismatch)
+    $maxDownloadAttempts = 3
+    $downloadVerified = $false
     $downloadedFile = Join-Path $DownloadDestination $downloadFileName
 
-    if (-not (Test-Path $downloadedFile)) {
-        throw "Downloaded file not found after transfer: $downloadedFile"
+    for ($dlAttempt = 1; $dlAttempt -le $maxDownloadAttempts; $dlAttempt++) {
+        if ($dlAttempt -gt 1) {
+            Write-DATLogEntry -Value "[$OEM] Download attempt $dlAttempt/$maxDownloadAttempts for $Model..." -Severity 2
+            Set-DATRegistryValue -Name "RunningMessage" -Value "Retrying download ($dlAttempt/$maxDownloadAttempts) for $OEM $Model..." -Type String
+            # Remove any partial/corrupt file from previous attempt
+            if (Test-Path $downloadedFile) { Remove-Item $downloadedFile -Force -ErrorAction SilentlyContinue }
+        } else {
+            Set-DATRegistryValue -Name "RunningMessage" -Value "Downloading $OEM $Model driver pack..." -Type String
+        }
+        Write-DATLogEntry -Value "[$OEM] Starting download: $downloadURL" -Severity 1
+
+        try {
+            Invoke-DATContentDownload -DownloadURL $downloadURL -DownloadDestination $DownloadDestination
+
+            if (-not (Test-Path $downloadedFile)) {
+                Write-DATLogEntry -Value "[Warning] - Downloaded file not found after transfer (attempt $dlAttempt): $downloadedFile" -Severity 2
+                if ($dlAttempt -lt $maxDownloadAttempts) { continue } else { throw "Downloaded file not found after $maxDownloadAttempts attempts: $downloadedFile" }
+            }
+            $downloadedSize = (Get-Item $downloadedFile).Length
+            if ($downloadedSize -eq 0) {
+                Remove-Item $downloadedFile -Force -ErrorAction SilentlyContinue
+                Write-DATLogEntry -Value "[Warning] - Downloaded file is empty (attempt $dlAttempt): $downloadedFile" -Severity 2
+                if ($dlAttempt -lt $maxDownloadAttempts) { continue } else { throw "Downloaded file is empty (0 bytes) after $maxDownloadAttempts attempts: $downloadedFile" }
+            }
+            # Detect HTTP error pages saved as files (e.g. 404 responses) -- real driver packages are at least 1 MB
+            $minDriverPackSize = 1MB
+            if ($downloadedSize -lt $minDriverPackSize) {
+                Write-DATLogEntry -Value "[Warning] - Downloaded file is suspiciously small ($downloadedSize bytes), likely a 404 error page: $downloadedFile" -Severity 3
+                Remove-Item $downloadedFile -Force -ErrorAction SilentlyContinue
+                throw "Downloaded file is too small ($downloadedSize bytes) -- likely a 404 error page or invalid response. URL may be stale: $downloadURL"
+            }
+            $downloadedSizeMB = [math]::Round($downloadedSize / 1MB, 2)
+            Write-DATLogEntry -Value "[$OEM] Download complete: $downloadedFile ($downloadedSizeMB MB)" -Severity 1
+
+            # Hash verification (if catalog provides a hash)
+            if (-not [string]::IsNullOrEmpty($catalogFileHash)) {
+                $algo = if ($catalogHashMethod -match '^(SHA256|SHA1|MD5|SHA384|SHA512)$') { $catalogHashMethod } else { 'SHA256' }
+                Write-DATLogEntry -Value "[$OEM] Verifying file hash ($algo)..." -Severity 1
+                $computedHash = (Get-FileHash -Path $downloadedFile -Algorithm $algo -ErrorAction SilentlyContinue).Hash
+                if ($computedHash -eq $catalogFileHash) {
+                    Write-DATLogEntry -Value "[$OEM] Hash verified ($algo): $computedHash" -Severity 1
+                    $downloadVerified = $true
+                    break
+                } else {
+                    Write-DATLogEntry -Value "[Warning] - Hash mismatch (attempt $dlAttempt/$maxDownloadAttempts). Expected: $catalogFileHash, Got: $computedHash" -Severity 2
+                    Remove-Item $downloadedFile -Force -ErrorAction SilentlyContinue
+                    if ($dlAttempt -lt $maxDownloadAttempts) { continue }
+                    # Final attempt failed -- download anyway but warn
+                    Write-DATLogEntry -Value "[Warning] - Hash verification failed after $maxDownloadAttempts attempts. Re-downloading and proceeding without hash verification." -Severity 2
+                    Invoke-DATContentDownload -DownloadURL $downloadURL -DownloadDestination $DownloadDestination
+                    $downloadVerified = $false
+                    break
+                }
+            } else {
+                Write-DATLogEntry -Value "[$OEM] No catalog hash available -- skipping hash verification" -Severity 1
+                $downloadVerified = $true
+                break
+            }
+        } catch {
+            if ($dlAttempt -lt $maxDownloadAttempts) {
+                Write-DATLogEntry -Value "[Warning] - Download attempt $dlAttempt failed: $($_.Exception.Message)" -Severity 2
+            } else {
+                throw
+            }
+        }
     }
-    $downloadedSize = (Get-Item $downloadedFile).Length
-    if ($downloadedSize -eq 0) {
-        Remove-Item $downloadedFile -Force -ErrorAction SilentlyContinue
-        throw "Downloaded file is empty (0 bytes): $downloadedFile"
-    }
-    $downloadedSizeMB = [math]::Round($downloadedSize / 1MB, 2)
-    Write-DATLogEntry -Value "[$OEM] Download complete: $downloadedFile ($downloadedSizeMB MB)" -Severity 1
 
     # Download supplemental GFX package if present
     $supplementalFiles = @()
@@ -7841,7 +8051,8 @@ try {{
 
     $skuMatch = $false
     foreach ($val in $expectedValues) {{
-        if ($systemSKU -match $val -or $baseboardProduct -match $val) {{
+        $escaped = [regex]::Escape($val)
+        if ($systemSKU -match $escaped -or $baseboardProduct -match $escaped) {{
             $skuMatch = $true
             break
         }}
@@ -8006,7 +8217,8 @@ try {{
 
     $skuMatch = $false
     foreach ($val in $expectedValues) {{
-        if ($systemSKU -match $val -or $baseboardProduct -match $val) {{
+        $escaped = [regex]::Escape($val)
+        if ($systemSKU -match $escaped -or $baseboardProduct -match $escaped) {{
             $skuMatch = $true
             break
         }}
