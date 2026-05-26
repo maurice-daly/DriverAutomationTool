@@ -3127,8 +3127,7 @@ function Start-DATModelProcessing {
                     -TempDirectory $global:TempDirectory `
                     -RunningMode $RunningMode `
                     -CustomDriverPath $customDriverPath `
-                    -CatalogDownloadURL $modelDownloadURL `
-                    -CatalogVersion $catalogDriverVersion
+                    -CatalogDownloadURL $modelDownloadURL
 
                 # Intune: Create and upload Win32 app after packaging
                 if ($RunningMode -eq 'Intune') {
@@ -4375,8 +4374,7 @@ function Invoke-DATOEMDownloadModule {
         [string]$TempDirectory,
         [string]$RunningMode = "Download Only",
         [string]$CustomDriverPath,
-        [string]$CatalogDownloadURL,
-        [string]$CatalogVersion
+        [string]$CatalogDownloadURL
     )
 
     [Net.ServicePointManager]::SecurityProtocol = (
@@ -4442,10 +4440,6 @@ function Invoke-DATOEMDownloadModule {
     if (-not [string]::IsNullOrEmpty($CatalogDownloadURL) -and $CatalogDownloadURL -match '\.(msi|exe|cab|zip|wim)(\?|$)') {
         $downloadURL = $CatalogDownloadURL
         $downloadFileName = ($CatalogDownloadURL -split '\?')[0] | Split-Path -Leaf
-        if (-not [string]::IsNullOrEmpty($CatalogVersion)) {
-            $catalogVersion = $CatalogVersion
-            Write-DATLogEntry -Value "[$OEM] Using catalog version from DAT API: $catalogVersion" -Severity 1
-        }
         Write-DATLogEntry -Value "[$OEM] Using pre-resolved download URL from DAT API catalog: $downloadFileName" -Severity 1
     } elseif (-not [string]::IsNullOrEmpty($CatalogDownloadURL)) {
         Write-DATLogEntry -Value "[$OEM] DAT API catalog URL is not a direct download link, falling back to OEM catalog: $CatalogDownloadURL" -Severity 2

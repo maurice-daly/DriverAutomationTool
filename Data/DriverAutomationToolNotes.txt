@@ -3,6 +3,15 @@ Release Notes
 IMPORTANT
 - DAT Downloads have been moved to GitHub - https://github.com/maurice-daly/DriverAutomationTool
 
+Version 10.0.34
+Updates
+- DAT Driver API is now default. The backend API now compiles a list of Microsoft downloads natively, and has updates to help reduce duplication in Dell downloads.
+- Added an option to delete ConfigMgr package source upon package deletion
+- Various UI tweaks
+Fixes
+- Issue identified when adding custom drivers for HP devices
+- Abort state / failed state bug in some cases requiring a restart of the UI
+
 Version 10.0.33
 Fixes
 - Added fallback to go back to Get-WMIObject for legacy versions of Windows server
