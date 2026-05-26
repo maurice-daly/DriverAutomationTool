@@ -70,6 +70,7 @@ $script:Themes = @{
         StatusInfo             = "#0B84F1"
         StatusSuccess          = "#4ADE80"
         StatusWarning          = "#FFAA44"
+        StatusWarningBackground = "#1AFFAA44"
         StatusError            = "#E74856"
 
         # Info box callouts (auth cards, notes)
@@ -167,6 +168,7 @@ $script:Themes = @{
         StatusInfo             = "#0078D4"
         StatusSuccess          = "#107C10"
         StatusWarning          = "#FFAA44"
+        StatusWarningBackground = "#20FFAA44"
         StatusError            = "#E74856"
 
         # Info box callouts (auth cards, notes)
