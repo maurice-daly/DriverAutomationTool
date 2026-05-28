@@ -4,7 +4,7 @@
      Organization:  MSEndpointMgr / Patch My PC
      Filename:      DriverAutomationToolCore.psm1
      Purpose:       Core functions for Driver Automation Tool v2.0
-     Version:       10.0.34.0
+     Version:       10.0.35.0
     ===========================================================================
 #>
 
@@ -27,8 +27,8 @@ if ($PSVersionTable.PSVersion.Major -le 5) {
 
 #region Variables
 
-[version]$global:ScriptRelease = "10.0.34.0"
-$global:ScriptBuildDate = "20-05-2026"
+[version]$global:ScriptRelease = "10.0.35.0"
+$global:ScriptBuildDate = "28-05-2026"
 $global:ReleaseNotesURL = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/DriverAutomationToolNotes.txt"
 $OEMLinksURL = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/OEMLinks.xml"
 
@@ -2504,6 +2504,24 @@ function New-DATConfigMgrPkg {
         Write-DATLogEntry -Value "- [ConfigMgr] Checking for existing package: $CMPackage (version $Version)" -Severity 1
         $wmiQuery = "SELECT PackageID, Name, Version, PkgSourcePath FROM SMS_Package WHERE Name = '$($CMPackage -replace "'","''")'"
         $existingPkgs = Invoke-DATRemoteQuery -CimSession $cimSess -ComputerName $SiteServer -Namespace $smsNamespace -Query $wmiQuery
+
+        # Fallback: if exact name not found, search for variant package names (handles catalog naming changes)
+        if (-not $existingPkgs) {
+            $coreId = ($Model -split '\s+')[-1]
+            if ($coreId -ne $Model) {
+                $fallbackCMName = if ($PackageType -eq 'BIOS') {
+                    "$packagePrefix - $OEM $coreId - $Architecture"
+                } else {
+                    "$packagePrefix - $OEM $coreId - $OS $Architecture"
+                }
+                $fallbackQuery = "SELECT PackageID, Name, Version, PkgSourcePath FROM SMS_Package WHERE Name = '$($fallbackCMName -replace "'","''")'"
+                $existingPkgs = Invoke-DATRemoteQuery -CimSession $cimSess -ComputerName $SiteServer -Namespace $smsNamespace -Query $fallbackQuery
+                if ($existingPkgs) {
+                    Write-DATLogEntry -Value "- [ConfigMgr] Matched variant package: $fallbackCMName (catalog model: $Model)" -Severity 1
+                }
+            }
+        }
+
         $matchingPkg = $existingPkgs | Where-Object { $_.Version -eq $Version }
 
         if ($matchingPkg -and -not $ForceUpdate) {
@@ -3055,35 +3073,78 @@ function Start-DATModelProcessing {
 
                 # ── Pre-flight: skip download+packaging if package version is current ──
                 $skipDriverDownload = $false
+                # Extract core model identifier (last token) for fallback matching when OEM catalogs
+                # change naming conventions (e.g. "PA14250" vs "Pro Laptops PA14250")
+                $coreModelId = ($modelName -split '\s+')[-1]
+
                 if ($RunningMode -eq 'Configuration Manager') {
                     $cmDriverPkgName = "$driverNamePrefix - $oem $modelName - $windowsVersion $windowsBuild $arch"
-                    $existingCMVersion = $cmPkgVersionCache[$cmDriverPkgName]
-                    if (-not [string]::IsNullOrEmpty($existingCMVersion) -and -not [string]::IsNullOrEmpty($catalogDriverVersion) -and $existingCMVersion -eq $catalogDriverVersion -and -not $modelForceUpdate) {
-                        Write-DATLogEntry -Value "[$currentIndex/$totalModels] SKIPPED -- driver package version is current ($existingCMVersion): $cmDriverPkgName" -Severity 1
-                        Set-DATRegistryValue -Name "RunningMessage" -Value "Skipped (current v$existingCMVersion): $oem $modelName" -Type String
-                        $skipDriverDownload = $true
-                        $script:driverPipelineSuccess = $true
-                        $driverPackageSuccessCount++
-                    } elseif (-not [string]::IsNullOrEmpty($existingCMVersion)) {
-                        Write-DATLogEntry -Value "[$currentIndex/$totalModels] UPDATE needed -- existing v$existingCMVersion, catalog v${catalogDriverVersion}: $cmDriverPkgName" -Severity 1
+                    Write-DATLogEntry -Value "[$currentIndex/$totalModels] Checking for existing ConfigMgr package: $cmDriverPkgName (catalog v${catalogDriverVersion})" -Severity 1
+                    if ($cmPkgVersionCache.Count -eq 0) {
+                        Write-DATLogEntry -Value "[$currentIndex/$totalModels] WARNING: ConfigMgr package cache is empty -- skip-if-current check disabled (CIM session may have failed)" -Severity 2
+                    } elseif ([string]::IsNullOrEmpty($catalogDriverVersion)) {
+                        Write-DATLogEntry -Value "[$currentIndex/$totalModels] WARNING: No catalog version available for $oem $modelName -- skip-if-current check disabled" -Severity 2
+                    } else {
+                        $existingCMVersion = $cmPkgVersionCache[$cmDriverPkgName]
+                        # Fallback: if exact name not found, try with just the core model identifier
+                        # Handles catalog naming changes (e.g. old pkg "Drivers - Dell PA14250 - ..." vs new catalog "Pro Laptops PA14250")
+                        if ([string]::IsNullOrEmpty($existingCMVersion) -and $coreModelId -ne $modelName) {
+                            $fallbackPkgName = "$driverNamePrefix - $oem $coreModelId - $windowsVersion $windowsBuild $arch"
+                            $existingCMVersion = $cmPkgVersionCache[$fallbackPkgName]
+                            if (-not [string]::IsNullOrEmpty($existingCMVersion)) {
+                                Write-DATLogEntry -Value "[$currentIndex/$totalModels] Matched variant ConfigMgr package: $fallbackPkgName (catalog model: $modelName)" -Severity 1
+                                $cmDriverPkgName = $fallbackPkgName
+                            }
+                        }
+                        if ([string]::IsNullOrEmpty($existingCMVersion)) {
+                            Write-DATLogEntry -Value "[$currentIndex/$totalModels] No existing ConfigMgr package found matching: $cmDriverPkgName -- will download" -Severity 1
+                        } elseif ($existingCMVersion -eq $catalogDriverVersion -and -not $modelForceUpdate) {
+                            Write-DATLogEntry -Value "[$currentIndex/$totalModels] SKIPPED -- driver package version is current ($existingCMVersion): $cmDriverPkgName" -Severity 1
+                            Set-DATRegistryValue -Name "RunningMessage" -Value "Skipped (current v$existingCMVersion): $oem $modelName" -Type String
+                            $skipDriverDownload = $true
+                            $script:driverPipelineSuccess = $true
+                            $driverPackageSuccessCount++
+                        } elseif ($modelForceUpdate) {
+                            Write-DATLogEntry -Value "[$currentIndex/$totalModels] FORCE UPDATE -- bypassing version match (existing v$existingCMVersion, catalog v${catalogDriverVersion}): $cmDriverPkgName" -Severity 1
+                        } else {
+                            Write-DATLogEntry -Value "[$currentIndex/$totalModels] UPDATE needed -- existing v$existingCMVersion, catalog v${catalogDriverVersion}: $cmDriverPkgName" -Severity 1
+                        }
                     }
                 } elseif ($RunningMode -eq 'Intune') {
                     # Check cached Intune app list -- compare display version against catalog version
                     $expectedDisplayName = "$driverNamePrefix - $oem $modelName - $windowsVersion $windowsBuild $arch"
-                    Write-DATLogEntry -Value "[$currentIndex/$totalModels] Checking for existing Intune package: $expectedDisplayName" -Severity 1
-                    $existingIntuneApp = $cachedIntuneApps | Where-Object {
-                        $_.displayName -eq $expectedDisplayName
-                    } | Sort-Object -Property displayVersion -Descending | Select-Object -First 1
-                    if ($existingIntuneApp) {
-                        $intuneVersion = $existingIntuneApp.displayVersion
-                        if (-not [string]::IsNullOrEmpty($catalogDriverVersion) -and $intuneVersion -eq $catalogDriverVersion -and -not $modelForceUpdate) {
-                            Write-DATLogEntry -Value "[$currentIndex/$totalModels] SKIPPED -- Intune driver package version is current (v$intuneVersion): $($existingIntuneApp.displayName) (ID: $($existingIntuneApp.id))" -Severity 1
-                            Set-DATRegistryValue -Name "RunningMessage" -Value "Skipped (current v$intuneVersion): $oem $modelName" -Type String
+                    Write-DATLogEntry -Value "[$currentIndex/$totalModels] Checking for existing Intune package: $expectedDisplayName (catalog v${catalogDriverVersion})" -Severity 1
+                    if ($cachedIntuneApps.Count -eq 0) {
+                        Write-DATLogEntry -Value "[$currentIndex/$totalModels] WARNING: Intune app cache is empty -- skip-if-current check disabled (Graph API may have failed)" -Severity 2
+                    } elseif ([string]::IsNullOrEmpty($catalogDriverVersion)) {
+                        Write-DATLogEntry -Value "[$currentIndex/$totalModels] WARNING: No catalog version available for $oem $modelName -- skip-if-current check disabled" -Severity 2
+                    } else {
+                        $existingIntuneApp = $cachedIntuneApps | Where-Object {
+                            $_.displayName -eq $expectedDisplayName
+                        } | Sort-Object -Property displayVersion -Descending | Select-Object -First 1
+                        # Fallback: try with just the core model identifier
+                        if (-not $existingIntuneApp -and $coreModelId -ne $modelName) {
+                            $fallbackDisplayName = "$driverNamePrefix - $oem $coreModelId - $windowsVersion $windowsBuild $arch"
+                            $existingIntuneApp = $cachedIntuneApps | Where-Object {
+                                $_.displayName -eq $fallbackDisplayName
+                            } | Sort-Object -Property displayVersion -Descending | Select-Object -First 1
+                            if ($existingIntuneApp) {
+                                Write-DATLogEntry -Value "[$currentIndex/$totalModels] Matched variant Intune app: $fallbackDisplayName (catalog model: $modelName)" -Severity 1
+                                $expectedDisplayName = $fallbackDisplayName
+                            }
+                        }
+                        if (-not $existingIntuneApp) {
+                            Write-DATLogEntry -Value "[$currentIndex/$totalModels] No existing Intune app found matching: $expectedDisplayName -- will download" -Severity 1
+                        } elseif ($existingIntuneApp.displayVersion -eq $catalogDriverVersion -and -not $modelForceUpdate) {
+                            Write-DATLogEntry -Value "[$currentIndex/$totalModels] SKIPPED -- Intune driver package version is current (v$($existingIntuneApp.displayVersion)): $($existingIntuneApp.displayName) (ID: $($existingIntuneApp.id))" -Severity 1
+                            Set-DATRegistryValue -Name "RunningMessage" -Value "Skipped (current v$($existingIntuneApp.displayVersion)): $oem $modelName" -Type String
                             $skipDriverDownload = $true
                             $script:driverPipelineSuccess = $true
                             $driverPackageSuccessCount++
+                        } elseif ($modelForceUpdate) {
+                            Write-DATLogEntry -Value "[$currentIndex/$totalModels] FORCE UPDATE -- bypassing version match (Intune v$($existingIntuneApp.displayVersion), catalog v${catalogDriverVersion}): $expectedDisplayName" -Severity 1
                         } else {
-                            Write-DATLogEntry -Value "[$currentIndex/$totalModels] UPDATE needed -- Intune v$intuneVersion, catalog v${catalogDriverVersion}: $expectedDisplayName" -Severity 1
+                            Write-DATLogEntry -Value "[$currentIndex/$totalModels] UPDATE needed -- Intune v$($existingIntuneApp.displayVersion), catalog v${catalogDriverVersion}: $expectedDisplayName" -Severity 1
                         }
                     }
                 } else {
@@ -3127,7 +3188,8 @@ function Start-DATModelProcessing {
                     -TempDirectory $global:TempDirectory `
                     -RunningMode $RunningMode `
                     -CustomDriverPath $customDriverPath `
-                    -CatalogDownloadURL $modelDownloadURL
+                    -CatalogDownloadURL $modelDownloadURL `
+                    -CatalogVersion $catalogDriverVersion
 
                 # Intune: Create and upload Win32 app after packaging
                 if ($RunningMode -eq 'Intune') {
@@ -3410,30 +3472,70 @@ function Start-DATModelProcessing {
 
                 # ── Pre-flight: skip BIOS if deployed version matches catalog version ──
                 $skipBios = $false
-                if (-not [string]::IsNullOrEmpty($catalogBIOSVersion)) {
+                if ([string]::IsNullOrEmpty($catalogBIOSVersion)) {
+                    Write-DATLogEntry -Value "[$currentIndex/$totalModels] WARNING: No catalog BIOS version available for $oem $modelName -- skip-if-current check disabled" -Severity 2
+                } else {
                     if ($RunningMode -eq 'Configuration Manager') {
                         $cmBiosPkgName = "$biosUpdateNamePrefix - $oem $modelName - $arch"
-                        $existingCMBiosVer = $cmPkgVersionCache[$cmBiosPkgName]
-                        if (-not [string]::IsNullOrEmpty($existingCMBiosVer) -and $existingCMBiosVer -eq $catalogBIOSVersion -and -not $modelForceUpdate) {
-                            Write-DATLogEntry -Value "[$currentIndex/$totalModels] SKIPPED -- BIOS version is current ($existingCMBiosVer): $cmBiosPkgName" -Severity 1
-                            Set-DATRegistryValue -Name "RunningMessage" -Value "BIOS skipped (current v$existingCMBiosVer): $oem $modelName" -Type String
-                            $skipBios = $true
-                            $biosPackageSuccessCount++
-                        } elseif (-not [string]::IsNullOrEmpty($existingCMBiosVer)) {
-                            Write-DATLogEntry -Value "[$currentIndex/$totalModels] BIOS UPDATE needed -- existing v$existingCMBiosVer, catalog v${catalogBIOSVersion}: $cmBiosPkgName" -Severity 1
+                        Write-DATLogEntry -Value "[$currentIndex/$totalModels] Checking for existing ConfigMgr BIOS package: $cmBiosPkgName (catalog v${catalogBIOSVersion})" -Severity 1
+                        if ($cmPkgVersionCache.Count -eq 0) {
+                            Write-DATLogEntry -Value "[$currentIndex/$totalModels] WARNING: ConfigMgr package cache is empty -- BIOS skip-if-current check disabled" -Severity 2
+                        } else {
+                            $existingCMBiosVer = $cmPkgVersionCache[$cmBiosPkgName]
+                            # Fallback: try with just the core model identifier for catalog naming changes
+                            if ([string]::IsNullOrEmpty($existingCMBiosVer) -and $coreModelId -ne $modelName) {
+                                $fallbackBiosPkgName = "$biosUpdateNamePrefix - $oem $coreModelId - $arch"
+                                $existingCMBiosVer = $cmPkgVersionCache[$fallbackBiosPkgName]
+                                if (-not [string]::IsNullOrEmpty($existingCMBiosVer)) {
+                                    Write-DATLogEntry -Value "[$currentIndex/$totalModels] Matched variant ConfigMgr BIOS package: $fallbackBiosPkgName (catalog model: $modelName)" -Severity 1
+                                    $cmBiosPkgName = $fallbackBiosPkgName
+                                }
+                            }
+                            if ([string]::IsNullOrEmpty($existingCMBiosVer)) {
+                                Write-DATLogEntry -Value "[$currentIndex/$totalModels] No existing ConfigMgr BIOS package found matching: $cmBiosPkgName -- will download" -Severity 1
+                            } elseif ($existingCMBiosVer -eq $catalogBIOSVersion -and -not $modelForceUpdate) {
+                                Write-DATLogEntry -Value "[$currentIndex/$totalModels] SKIPPED -- BIOS version is current ($existingCMBiosVer): $cmBiosPkgName" -Severity 1
+                                Set-DATRegistryValue -Name "RunningMessage" -Value "BIOS skipped (current v$existingCMBiosVer): $oem $modelName" -Type String
+                                $skipBios = $true
+                                $biosPackageSuccessCount++
+                            } elseif ($modelForceUpdate) {
+                                Write-DATLogEntry -Value "[$currentIndex/$totalModels] BIOS FORCE UPDATE -- bypassing version match (existing v$existingCMBiosVer, catalog v${catalogBIOSVersion}): $cmBiosPkgName" -Severity 1
+                            } else {
+                                Write-DATLogEntry -Value "[$currentIndex/$totalModels] BIOS UPDATE needed -- existing v$existingCMBiosVer, catalog v${catalogBIOSVersion}: $cmBiosPkgName" -Severity 1
+                            }
                         }
                     } elseif ($RunningMode -eq 'Intune') {
                         $expectedBiosName = "$biosNamePrefix - $oem $modelName - $arch"
-                        $existingBiosApp = $cachedIntuneApps | Where-Object {
-                            $_.displayName -eq $expectedBiosName
-                        } | Sort-Object -Property displayVersion -Descending | Select-Object -First 1
-                        if ($existingBiosApp -and $existingBiosApp.displayVersion -eq $catalogBIOSVersion -and -not $modelForceUpdate) {
-                            Write-DATLogEntry -Value "[$currentIndex/$totalModels] SKIPPED -- Intune BIOS version is current (v$($existingBiosApp.displayVersion)): $expectedBiosName (ID: $($existingBiosApp.id))" -Severity 1
-                            Set-DATRegistryValue -Name "RunningMessage" -Value "BIOS skipped (current v$($existingBiosApp.displayVersion)): $oem $modelName" -Type String
-                            $skipBios = $true
-                            $biosPackageSuccessCount++
-                        } elseif ($existingBiosApp) {
-                            Write-DATLogEntry -Value "[$currentIndex/$totalModels] BIOS UPDATE needed -- Intune v$($existingBiosApp.displayVersion), catalog v${catalogBIOSVersion}: $expectedBiosName" -Severity 1
+                        Write-DATLogEntry -Value "[$currentIndex/$totalModels] Checking for existing Intune BIOS package: $expectedBiosName (catalog v${catalogBIOSVersion})" -Severity 1
+                        if ($cachedIntuneApps.Count -eq 0) {
+                            Write-DATLogEntry -Value "[$currentIndex/$totalModels] WARNING: Intune app cache is empty -- BIOS skip-if-current check disabled" -Severity 2
+                        } else {
+                            $existingBiosApp = $cachedIntuneApps | Where-Object {
+                                $_.displayName -eq $expectedBiosName
+                            } | Sort-Object -Property displayVersion -Descending | Select-Object -First 1
+                            # Fallback: try with just the core model identifier
+                            if (-not $existingBiosApp -and $coreModelId -ne $modelName) {
+                                $fallbackBiosName = "$biosNamePrefix - $oem $coreModelId - $arch"
+                                $existingBiosApp = $cachedIntuneApps | Where-Object {
+                                    $_.displayName -eq $fallbackBiosName
+                                } | Sort-Object -Property displayVersion -Descending | Select-Object -First 1
+                                if ($existingBiosApp) {
+                                    Write-DATLogEntry -Value "[$currentIndex/$totalModels] Matched variant Intune BIOS app: $fallbackBiosName (catalog model: $modelName)" -Severity 1
+                                    $expectedBiosName = $fallbackBiosName
+                                }
+                            }
+                            if (-not $existingBiosApp) {
+                                Write-DATLogEntry -Value "[$currentIndex/$totalModels] No existing Intune BIOS app found matching: $expectedBiosName -- will download" -Severity 1
+                            } elseif ($existingBiosApp.displayVersion -eq $catalogBIOSVersion -and -not $modelForceUpdate) {
+                                Write-DATLogEntry -Value "[$currentIndex/$totalModels] SKIPPED -- Intune BIOS version is current (v$($existingBiosApp.displayVersion)): $expectedBiosName (ID: $($existingBiosApp.id))" -Severity 1
+                                Set-DATRegistryValue -Name "RunningMessage" -Value "BIOS skipped (current v$($existingBiosApp.displayVersion)): $oem $modelName" -Type String
+                                $skipBios = $true
+                                $biosPackageSuccessCount++
+                            } elseif ($modelForceUpdate) {
+                                Write-DATLogEntry -Value "[$currentIndex/$totalModels] BIOS FORCE UPDATE -- bypassing version match (Intune v$($existingBiosApp.displayVersion), catalog v${catalogBIOSVersion}): $expectedBiosName" -Severity 1
+                            } else {
+                                Write-DATLogEntry -Value "[$currentIndex/$totalModels] BIOS UPDATE needed -- Intune v$($existingBiosApp.displayVersion), catalog v${catalogBIOSVersion}: $expectedBiosName" -Severity 1
+                            }
                         }
                     } else {
                         # Download Only / WIM Package Only -- check if BIOS package already exists with matching version
@@ -4374,7 +4476,8 @@ function Invoke-DATOEMDownloadModule {
         [string]$TempDirectory,
         [string]$RunningMode = "Download Only",
         [string]$CustomDriverPath,
-        [string]$CatalogDownloadURL
+        [string]$CatalogDownloadURL,
+        [string]$CatalogVersion
     )
 
     [Net.ServicePointManager]::SecurityProtocol = (
@@ -4440,6 +4543,10 @@ function Invoke-DATOEMDownloadModule {
     if (-not [string]::IsNullOrEmpty($CatalogDownloadURL) -and $CatalogDownloadURL -match '\.(msi|exe|cab|zip|wim)(\?|$)') {
         $downloadURL = $CatalogDownloadURL
         $downloadFileName = ($CatalogDownloadURL -split '\?')[0] | Split-Path -Leaf
+        if (-not [string]::IsNullOrEmpty($CatalogVersion)) {
+            $catalogVersion = $CatalogVersion
+            Write-DATLogEntry -Value "[$OEM] Using catalog version from DAT API: $catalogVersion" -Severity 1
+        }
         Write-DATLogEntry -Value "[$OEM] Using pre-resolved download URL from DAT API catalog: $downloadFileName" -Severity 1
     } elseif (-not [string]::IsNullOrEmpty($CatalogDownloadURL)) {
         Write-DATLogEntry -Value "[$OEM] DAT API catalog URL is not a direct download link, falling back to OEM catalog: $CatalogDownloadURL" -Severity 2

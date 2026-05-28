@@ -6441,65 +6441,97 @@ $btn_RefreshModels.Add_Click({
                     }
                 }
                 "Microsoft" {
+                    $MSArchFilter = if ($Architecture -eq 'Arm64') { 'arm64' } else { 'amd64' }
+                    # Track model names added from the DAT API so the OSD catalog can fill gaps
+                    $DATMSModelNames = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+
+                    # --- Step 1: DAT API catalog (always try first, mirrors core module behaviour) ---
+                    try {
+                        Write-Log "Microsoft: querying DAT API catalog..."
+                        $DATCatalog = Get-DATDriverCatalog
+                        if ($DATCatalog -and @($DATCatalog).Count -gt 0) {
+                            foreach ($SingleOS in $OSList) {
+                                $WindowsBuild   = $($SingleOS).Split(" ")[2]
+                                $WindowsVersion = $SingleOS.Trim("$WindowsBuild").TrimEnd()
+                                $DATMSFiltered  = $DATCatalog | Where-Object {
+                                    $_.Manufacturer -eq 'Microsoft' -and
+                                    $_.SupportedOS  -match $WindowsVersion -and
+                                    $_.SupportedArchitecture -eq $MSArchFilter
+                                }
+                                foreach ($entry in ($DATMSFiltered | Group-Object -Property DisplayName)) {
+                                    $latestEntry = $entry.Group | Sort-Object { try { [datetime]$_.ReleaseDate } catch { [datetime]::MinValue } } -Descending | Select-Object -First 1
+                                    $OEMSupportedModels += [PSCustomObject]@{
+                                        OEM         = "Microsoft"
+                                        Model       = $entry.Name
+                                        Baseboards  = if ($latestEntry.SupportedDevices) { $latestEntry.SupportedDevices } else { $entry.Name }
+                                        OS          = $WindowsVersion
+                                        'OS Build'  = $WindowsBuild
+                                        Version     = if ($latestEntry.ReleaseDate) { $latestEntry.ReleaseDate } else { '' }
+                                        DownloadURL = if ($latestEntry.DownloadURL) { $latestEntry.DownloadURL } else { '' }
+                                    }
+                                    [void]$DATMSModelNames.Add($entry.Name)
+                                }
+                            }
+                            $datCount = $DATMSModelNames.Count
+                            Write-Log "Microsoft: DAT API catalog returned $datCount unique model(s)." -Level Success
+                        } else {
+                            Write-Log "Microsoft: DAT API catalog returned no results -- OSD catalog will supply all models." -Level Warn
+                        }
+                    } catch {
+                        Write-Log "Microsoft: DAT API catalog unavailable ($($_.Exception.Message)) -- OSD catalog will supply all models." -Level Warn
+                    }
+
+                    # --- Step 2: OSD catalog (supplement with models not already in API results) ---
                     $MSLink = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/OSDCatalogMicrosoftDriverPack.json"
-                    Write-Log "Microsoft catalog URL: $MSLink"
                     try {
                         $MSFilePath = Join-Path $TempDir "OSDCatalogMicrosoftDriverPack.json"
                         if (Test-CatalogFresh -FilePath $MSFilePath) {
-                            Write-Log "Using cached Microsoft catalog (less than 24h old)."
-                            $LogQueue.Enqueue('[SOURCE:Microsoft:Cached]')
+                            Write-Log "Using cached Microsoft OSD catalog (less than 24h old)."
                         } else {
-                            Write-Log "Downloading Microsoft Surface catalog to $MSFilePath..."
+                            Write-Log "Downloading Microsoft OSD catalog to $MSFilePath..."
                             $proxyParams = Get-DATWebRequestProxy
                             Invoke-WebRequest -Uri $MSLink -OutFile $MSFilePath -UseBasicParsing -TimeoutSec $WebRequestTimeoutSec @proxyParams
-                            Write-Log "Microsoft catalog downloaded successfully." -Level Success
+                            Write-Log "Microsoft OSD catalog downloaded successfully." -Level Success
                         }
-                        $MSFileSize = [math]::Round((Get-Item $MSFilePath).Length / 1KB, 1)
-                        Write-Log "Reading Microsoft catalog from $MSFilePath ($($MSFileSize) KB)"
-                        $MSModelList = Get-Content -Path $MSFilePath -Raw | ConvertFrom-Json
+                        $MSModelList  = Get-Content -Path $MSFilePath -Raw | ConvertFrom-Json
                         $MSModelTotal = @($MSModelList).Count
-                        Write-Log "Microsoft catalog contains $MSModelTotal total entries."
-                        if ($MSModelTotal -gt 0) {
-                            $sampleProperties = ($MSModelList | Select-Object -First 1).PSObject.Properties.Name -join ', '
-                            Write-Log "Microsoft catalog properties: $sampleProperties"
-                            $availableOSVersions = ($MSModelList | Select-Object -ExpandProperty OperatingSystem -ErrorAction SilentlyContinue | Sort-Object -Unique) -join ', '
-                            Write-Log "Microsoft catalog OS versions: $availableOSVersions"
-                        }
-                        $MSArchFilter = if ($Architecture -eq 'Arm64') { 'arm64' } else { 'amd64' }
-                        Write-Log "Microsoft architecture filter: $MSArchFilter (from $Architecture)"
+                        Write-Log "Microsoft OSD catalog: $MSModelTotal total entries."
                         foreach ($SingleOS in $OSList) {
-                            $WindowsBuild = $($SingleOS).Split(" ")[2]
+                            $WindowsBuild   = $($SingleOS).Split(" ")[2]
                             $WindowsVersion = $SingleOS.Trim("$WindowsBuild").TrimEnd()
-                            Write-Log "Filtering Microsoft models for $WindowsVersion (OS: $SingleOS)..."
                             $MSFiltered = $MSModelList | Where-Object { $_.OperatingSystem -match $WindowsVersion -and $_.OSArchitecture -eq $MSArchFilter }
-                            $MSModels = $MSFiltered | Group-Object -Property Model
-                            $count = @($MSModels).Count
-                            Write-Log "Microsoft: Found $count matching models for $SingleOS." -Level $(if ($count -gt 0) { 'Success' } else { 'Warn' })
-                            if ($count -eq 0) {
-                                Write-Log "No Microsoft models matched for $SingleOS." -Level Warn
-                            }
+                            $MSModels   = $MSFiltered | Group-Object -Property Model
+                            $count      = @($MSModels).Count
+                            Write-Log "Microsoft OSD: $count matching model(s) for $SingleOS." -Level $(if ($count -gt 0) { 'Success' } else { 'Warn' })
                             foreach ($MSModelGroup in $MSModels) {
-                                $products = ($MSModelGroup.Group | ForEach-Object { $_.SystemId } | Select-Object -Unique) -join ','
+                                # Skip models already supplied by the DAT API
+                                if ($DATMSModelNames.Contains($MSModelGroup.Name)) { continue }
+                                $products    = ($MSModelGroup.Group | ForEach-Object { $_.SystemId } | Select-Object -Unique) -join ','
                                 $latestEntry = $MSModelGroup.Group | Sort-Object { try { [datetime]$_.ReleaseDate } catch { [datetime]::MinValue } } -Descending | Select-Object -First 1
-                                $msVersion = if ($latestEntry.ReleaseDate) { $latestEntry.ReleaseDate } else { '' }
-                                $msDownloadUrl = if ($latestEntry.Url) { $latestEntry.Url } else { '' }
                                 $OEMSupportedModels += [PSCustomObject]@{
-                                    OEM        = "Microsoft"
-                                    Model      = $MSModelGroup.Name
-                                    Baseboards = $products
-                                    OS         = $WindowsVersion
-                                    'OS Build' = $WindowsBuild
-                                    Version    = $msVersion
-                                    DownloadURL = $msDownloadUrl
+                                    OEM         = "Microsoft"
+                                    Model       = $MSModelGroup.Name
+                                    Baseboards  = $products
+                                    OS          = $WindowsVersion
+                                    'OS Build'  = $WindowsBuild
+                                    Version     = if ($latestEntry.ReleaseDate) { $latestEntry.ReleaseDate } else { '' }
+                                    DownloadURL = if ($latestEntry.Url) { $latestEntry.Url } else { '' }
                                 }
                             }
                         }
                         $uniqueCount = @($OEMSupportedModels | Where-Object { $_.OEM -eq 'Microsoft' } | Select-Object -Property Model -Unique).Count
-                        Write-Log "Microsoft: $uniqueCount unique models across all selected OS versions." -Level Success
+                        Write-Log "Microsoft: $uniqueCount unique models total (DAT API + OSD catalog)." -Level Success
                         $LogQueue.Enqueue("[SOURCE:Microsoft:OK:$uniqueCount models]")
                     } catch {
-                        Write-Log "Microsoft processing failed: $($_.Exception.Message)" -Level Error
-                        $LogQueue.Enqueue('[SOURCE:Microsoft:Error]')
+                        if ($DATMSModelNames.Count -gt 0) {
+                            # API models loaded fine -- report partial success
+                            $uniqueCount = @($OEMSupportedModels | Where-Object { $_.OEM -eq 'Microsoft' } | Select-Object -Property Model -Unique).Count
+                            Write-Log "Microsoft OSD catalog failed ($($_.Exception.Message)) -- using $uniqueCount model(s) from DAT API only." -Level Warn
+                            $LogQueue.Enqueue("[SOURCE:Microsoft:OK:$uniqueCount models (API only)]")
+                        } else {
+                            Write-Log "Microsoft processing failed: $($_.Exception.Message)" -Level Error
+                            $LogQueue.Enqueue('[SOURCE:Microsoft:Error]')
+                        }
                     }
                 }
                 "Acer" {
@@ -6986,7 +7018,21 @@ function Test-DATKnownDeviceMatch {
     # --- Name-based fallback ---
     $normDeviceMake  = ConvertTo-DATNormalizedMake  -Make $DeviceMake
     $normDeviceModel = ConvertTo-DATNormalizedModel -Make $DeviceMake -Model $DeviceModel
-    return ($GridModel -eq $normDeviceModel -or "$GridMake|$GridModel" -eq "$normDeviceMake|$normDeviceModel")
+
+    if ($GridModel -eq $normDeviceModel -or "$GridMake|$GridModel" -eq "$normDeviceMake|$normDeviceModel") {
+        return $true
+    }
+
+    # --- Microsoft Surface CPU-qualifier prefix match ---
+    # WMI/Intune returns the base model name (e.g. "Surface Laptop 4") while the OSD
+    # catalog appends a CPU qualifier (e.g. "Surface Laptop 4 AMD" / "Surface Laptop 4 Intel").
+    # If the catalog model name starts with the device model name followed by a space,
+    # treat it as a match so all CPU variants are selected.
+    if ($normDeviceMake -eq 'Microsoft' -and $GridMake -eq 'Microsoft') {
+        return ($GridModel -like "$normDeviceModel *")
+    }
+
+    return $false
 }
 
 function Update-DATSelectKnownModelsVisibility {
@@ -7370,7 +7416,9 @@ $btn_Build.Add_Click({
         [System.Windows.Media.ColorConverter]::ConvertFromString(
             (Get-DATTheme -ThemeName $script:CurrentTheme)['AccentColor']))
     $txt_BuildStatusIcon.Text = [string][char]0xE916
+    $txt_BuildStatusIcon.Foreground = [System.Windows.Media.Brushes]::White
     $txt_BuildStatusText.Text = "Running"
+    $txt_BuildStatusText.Foreground = [System.Windows.Media.Brushes]::White
     $pill_BuildStatus.Visibility = 'Visible'
     $txt_BuildElapsed.Text = "00:00:00"
     $txt_BuildElapsed.Visibility = 'Visible'
@@ -7804,7 +7852,9 @@ $btn_Build.Add_Click({
                     [System.Windows.Media.ColorConverter]::ConvertFromString(
                         (Get-DATTheme -ThemeName $script:CurrentTheme)['StatusError']))
                 $txt_BuildStatusIcon.Text = [string][char]0xEA39
+                $txt_BuildStatusIcon.Foreground = [System.Windows.Media.Brushes]::White
                 $txt_BuildStatusText.Text = "Failed"
+                $txt_BuildStatusText.Foreground = [System.Windows.Media.Brushes]::White
                 $txt_Status.Foreground = [System.Windows.Media.SolidColorBrush]::new(
                     [System.Windows.Media.ColorConverter]::ConvertFromString(
                         (Get-DATTheme -ThemeName $script:CurrentTheme)['StatusError']))
@@ -7813,7 +7863,9 @@ $btn_Build.Add_Click({
                     [System.Windows.Media.ColorConverter]::ConvertFromString(
                         (Get-DATTheme -ThemeName $script:CurrentTheme)['ButtonSuccess']))
                 $txt_BuildStatusIcon.Text = [string][char]0xE73E
+                $txt_BuildStatusIcon.Foreground = [System.Windows.Media.Brushes]::White
                 $txt_BuildStatusText.Text = "Succeeded"
+                $txt_BuildStatusText.Foreground = [System.Windows.Media.Brushes]::White
                 $txt_Status.Foreground = [System.Windows.Media.SolidColorBrush]::new(
                     [System.Windows.Media.ColorConverter]::ConvertFromString(
                         (Get-DATTheme -ThemeName $script:CurrentTheme)['StatusSuccess']))
@@ -8902,6 +8954,19 @@ function Update-DATKnownModelSelection {
         elseif ($knownMakeModel.Contains("$gridMake|$gridModel")) {
             $item.Selected = $true
             $matchCount++
+        }
+        # Microsoft Surface CPU-qualifier prefix match:
+        # WMI/Intune returns the base name (e.g. "Surface Laptop 4") while the catalog
+        # appends a CPU qualifier (e.g. "Surface Laptop 4 AMD"). Check if any known device
+        # model is a prefix of the grid model name so all CPU variants are selected.
+        elseif ($gridMake -eq 'Microsoft') {
+            foreach ($knownEntry in $knownModels) {
+                if ($gridModel -like "$knownEntry *") {
+                    $item.Selected = $true
+                    $matchCount++
+                    break
+                }
+            }
         }
     }
 
@@ -19405,7 +19470,7 @@ if (Test-Path $logoPath) {
 
 # Read version from module manifest
 $manifestPath = Join-Path $AppRoot "Modules\DriverAutomationToolCore\DriverAutomationToolCore.psd1"
-$script:versionString = "v10.0.34"
+$script:versionString = "v10.0.35"
 if (Test-Path $manifestPath) {
     $manifestData = Import-PowerShellDataFile $manifestPath
     $ver = [version]$manifestData.ModuleVersion

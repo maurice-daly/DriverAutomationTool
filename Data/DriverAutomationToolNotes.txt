@@ -3,6 +3,16 @@ Release Notes
 IMPORTANT
 - DAT Downloads have been moved to GitHub - https://github.com/maurice-daly/DriverAutomationTool
 
+Version 10.0.35
+Updates
+- Driver pre-flight (ConfigMgr + Intune)
+- BIOS pre-flight (ConfigMgr + Intune)
+- Fallback WMI query to find variant-named existing packages, preventing duplicate package creation
+- Diagnostic logging throughout — every skip/miss/match decision is now logged with the exact package name being searched
+- Microsoft models will now all display for 25H2, as some model driver packs are updated by Microsoft, but the build number is not updated on the MSI
+Fixes:
+- Dell versioning fix
+
 Version 10.0.34
 Updates
 - DAT Driver API is now default. The backend API now compiles a list of Microsoft downloads natively, and has updates to help reduce duplication in Dell downloads.

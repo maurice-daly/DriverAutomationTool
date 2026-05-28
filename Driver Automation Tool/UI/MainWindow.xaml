@@ -902,7 +902,7 @@
                                    Foreground="{DynamicResource AccentColor}" VerticalAlignment="Center" Margin="0,0,8,0"/>
                         <TextBlock Text="Driver Automation Tool" FontSize="13" FontWeight="SemiBold"
                                    Foreground="{DynamicResource WindowForeground}" VerticalAlignment="Center"/>
-                        <TextBlock x:Name="txt_Version" Text=" Version 10.0.34" FontSize="11"
+                        <TextBlock x:Name="txt_Version" Text=" Version 10.0.35" FontSize="11"
                                    Foreground="{DynamicResource InputPlaceholder}" VerticalAlignment="Center" Margin="4,0"/>
                     </StackPanel>
 
@@ -2201,11 +2201,26 @@
                                         <Run Text="&#xE7B8;" FontFamily="Segoe MDL2 Assets" FontSize="14"/><Run Text="  Known Model Lookup"/>
                                     </TextBlock>
                                     <TextBlock TextWrapping="Wrap" FontSize="12"
-                                               Foreground="{DynamicResource InputPlaceholder}" Margin="0,0,0,16" LineHeight="18">
+                                               Foreground="{DynamicResource InputPlaceholder}" Margin="0,0,0,8" LineHeight="18">
                                         When enabled, the tool queries Configuration Manager for hardware inventory data to identify 
                                         models actively deployed in your environment. These known models are automatically highlighted 
                                         in the model selection list, making it easy to target only the devices you manage.
                                     </TextBlock>
+                                    <TextBlock FontSize="12" FontStyle="Italic"
+                                               Foreground="{DynamicResource InputPlaceholder}" Margin="0,0,0,4">
+                                        Note: Requires the following WMI classes enabled in client hardware inventory:
+                                    </TextBlock>
+                                    <StackPanel Margin="12,0,0,16">
+                                        <TextBlock FontSize="12" FontStyle="Italic" Foreground="{DynamicResource InputPlaceholder}">
+                                            <Run Text="&#x2022;  Win32_ComputerSystem"/>
+                                        </TextBlock>
+                                        <TextBlock FontSize="12" FontStyle="Italic" Foreground="{DynamicResource InputPlaceholder}">
+                                            <Run Text="&#x2022;  MS_SystemInformation"/>
+                                        </TextBlock>
+                                        <TextBlock FontSize="12" FontStyle="Italic" Foreground="{DynamicResource InputPlaceholder}">
+                                            <Run Text="&#x2022;  Win32_BaseBoard"/>
+                                        </TextBlock>
+                                    </StackPanel>
                                     <Grid>
                                         <Grid.ColumnDefinitions>
                                             <ColumnDefinition Width="Auto"/>
@@ -5646,7 +5661,7 @@
                                     <StackPanel>
                                         <TextBlock Text="Driver Automation Tool" FontSize="22" FontWeight="Bold"
                                                    Foreground="{DynamicResource AccentColor}" Margin="0,0,0,4"/>
-                                        <TextBlock x:Name="txt_AboutVersion" Text="Version 10.0.34" FontSize="14"
+                                        <TextBlock x:Name="txt_AboutVersion" Text="Version 10.0.35" FontSize="14"
                                                    Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,16"/>
 
                                         <TextBlock TextWrapping="Wrap" FontSize="13"
