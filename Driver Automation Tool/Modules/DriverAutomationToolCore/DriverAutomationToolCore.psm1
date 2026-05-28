@@ -3209,7 +3209,8 @@ function Start-DATModelProcessing {
                             IntuneAuthToken    = $IntuneAuthToken
                         }
                         if ($isPilotBuild) { $intuneParams['NamePrefix'] = $driverNamePrefix }
-                        if (-not [string]::IsNullOrEmpty($catalogVersion)) { $intuneParams['Version'] = "$catalogVersion" }
+                        $resolvedVersion = if (-not [string]::IsNullOrEmpty($catalogVersion)) { "$catalogVersion" } elseif (-not [string]::IsNullOrEmpty($catalogDriverVersion)) { "$catalogDriverVersion" } else { '' }
+                        if (-not [string]::IsNullOrEmpty($resolvedVersion)) { $intuneParams['Version'] = $resolvedVersion }
                         if ($DisableToast) { $intuneParams['DisableToast'] = $true }
                         if ($DisableRestart) { $intuneParams['DisableRestart'] = $true }
                         if ($ToastTimeoutAction -ne 'RemindMeLater') { $intuneParams['ToastTimeoutAction'] = $ToastTimeoutAction }
@@ -3317,7 +3318,7 @@ function Start-DATModelProcessing {
                             Write-DATLogEntry -Value "-- Site code: $SiteCode" -Severity 1
                             Set-DATRegistryValue -Name "RunningMessage" -Value "Creating ConfigMgr driver package: $oem $modelName..." -Type String
 
-                            $version = if (-not [string]::IsNullOrEmpty($catalogVersion)) { "$catalogVersion" } else { Get-Date -Format "ddMMyyyy" }
+                            $version = if (-not [string]::IsNullOrEmpty($catalogVersion)) { "$catalogVersion" } elseif (-not [string]::IsNullOrEmpty($catalogDriverVersion)) { "$catalogDriverVersion" } else { Get-Date -Format "ddMMyyyy" }
                             $cmParams = @{
                                 DriverPackage = $wimPath
                                 OEM           = $oem
@@ -4583,23 +4584,46 @@ function Invoke-DATOEMDownloadModule {
             [xml]$DellModelXML = Get-Content -Path $DellXMLPath -Raw
             $DellWindowsVersion = $WindowsVersion.Replace(" ", "")
 
+            # Split comma-separated SystemSKU into individual IDs for -contains matching
+            $systemSKUs = @($SystemSKU -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+            # Extract core model identifier (last token) for fallback matching
+            $coreModelName = ($Model -split '\s+')[-1]
+
             $matchingPkg = $DellModelXML.driverpackmanifest.driverpackage | Where-Object {
                 ($_.SupportedOperatingSystems.OperatingSystem.osCode -eq $DellWindowsVersion) -and
                 ($_.SupportedOperatingSystems.OperatingSystem.osArch -match $Architecture) -and
                 ($_.SupportedSystems.Brand.Model.name -contains $Model -or
-                 $_.SupportedSystems.Brand.Model.SystemID -contains $SystemSKU)
+                 @($_.SupportedSystems.Brand.Model.SystemID | Where-Object { $_ -in $systemSKUs }).Count -gt 0)
             } | Select-Object -First 1
 
+            # Fallback 1: try with core model identifier (handles "Pro Laptops PA14250" vs "PA14250")
+            if ($null -eq $matchingPkg -and $coreModelName -ne $Model) {
+                $matchingPkg = $DellModelXML.driverpackmanifest.driverpackage | Where-Object {
+                    ($_.SupportedOperatingSystems.OperatingSystem.osCode -eq $DellWindowsVersion) -and
+                    ($_.SupportedOperatingSystems.OperatingSystem.osArch -match $Architecture) -and
+                    ($_.SupportedSystems.Brand.Model.name -contains $coreModelName)
+                } | Select-Object -First 1
+                if ($matchingPkg) {
+                    Write-DATLogEntry -Value "[$OEM] Matched via core model identifier: $coreModelName (full catalog model: $Model)" -Severity 1
+                }
+            }
+
+            # Fallback 2: wildcard match
             if ($null -eq $matchingPkg) {
                 $matchingPkg = $DellModelXML.driverpackmanifest.driverpackage | Where-Object {
                     ($_.SupportedOperatingSystems.OperatingSystem.osCode -eq $DellWindowsVersion) -and
                     ($_.SupportedOperatingSystems.OperatingSystem.osArch -match $Architecture) -and
-                    ($_.SupportedSystems.Brand.Model.name -like "*$Model*")
+                    ($_.SupportedSystems.Brand.Model.name -like "*$coreModelName*")
                 } | Select-Object -First 1
             }
 
             if ($null -ne $matchingPkg) {
                 $catalogVersion = $matchingPkg.dellVersion
+                # Fallback: if catalog entry has no dellVersion, use the version passed from the caller
+                if ([string]::IsNullOrEmpty($catalogVersion) -and -not [string]::IsNullOrEmpty($CatalogVersion)) {
+                    $catalogVersion = $CatalogVersion
+                    Write-DATLogEntry -Value "[$OEM] Catalog entry missing dellVersion -- using caller-provided version: $catalogVersion" -Severity 1
+                }
                 $DellBaseURL = ($OEMLinks.OEM.Manufacturer | Where-Object { $_.Name -match "Dell" }).Link |
                     Where-Object { $_.Type -eq "DownloadBase" } | Select-Object -ExpandProperty URL -First 1
                 if ([string]::IsNullOrEmpty($DellBaseURL)) { $DellBaseURL = "https://downloads.dell.com" }
@@ -4607,7 +4631,7 @@ function Invoke-DATOEMDownloadModule {
                 $dellPath = $matchingPkg.path.TrimStart('/')
                 $downloadURL = "$DellBaseURL/$dellPath"
                 $downloadFileName = $matchingPkg.path | Split-Path -Leaf
-                Write-DATLogEntry -Value "[$OEM] Found driver pack: $downloadFileName" -Severity 1
+                Write-DATLogEntry -Value "[$OEM] Found driver pack: $downloadFileName (version: $catalogVersion)" -Severity 1
             } else {
                 throw "No matching Dell driver package found for $Model ($DellWindowsVersion $Architecture)"
             }
