@@ -2425,6 +2425,237 @@ function Get-DATConfigMgrKnownModels {
     }
 }
 
+function Get-DATConfigMgrKnownModelsV2 {
+    <#
+    .SYNOPSIS
+        V2 of Get-DATConfigMgrKnownModels. Queries ConfigMgr hardware inventory via CIM to discover known device makes and models.
+    .DESCRIPTION
+        Connects to the ConfigMgr site server's SMS WMI namespace and queries hardware inventory
+        classes (SMS_G_System_COMPUTER_SYSTEM and SMS_G_System_MS_SYSTEMINFORMATION) to identify
+        distinct device makes and models actively deployed in the environment.
+        Supports HP, Dell, Lenovo, Microsoft, and Acer.
+    #>
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory = $true)][string]$SiteServer,
+        [Parameter(Mandatory = $true)][string]$SiteCode,
+        [Parameter()][scriptblock]$OnProgress
+    )
+
+    $namespace = "root/SMS/site_$SiteCode"
+    $devicePairs = [System.Collections.Generic.Dictionary[string, PSCustomObject]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    $cimSession = $null
+
+    # Ensure the Lenovo catalog is loaded so Find-DATLenovoModelType can resolve
+    # 4-char machine types to friendly model names. This is needed when running in
+    # a background runspace where $global:LenovoModelDrivers is not populated.
+    if ($null -eq $global:LenovoModelDrivers) {
+        try {
+            if ($OnProgress) { & $OnProgress "Loading Lenovo model catalog..." }
+            Write-DATLogEntry -Value "[ConfigMgr Known Models V2] Lenovo catalog not loaded -- downloading for model resolution" -Severity 1
+            $OEMLinksURL = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/OEMLinks.xml"
+            $proxyParams = Get-DATWebRequestProxy
+            [xml]$oemLinksXml = (Invoke-WebRequest -Uri $OEMLinksURL -UseBasicParsing -TimeoutSec 30 @proxyParams).Content
+            $lenovoXmlUrl = ($oemLinksXml.OEM.Manufacturer | Where-Object { $_.Name -match "Lenovo" }).Link |
+                Where-Object { $_.Type -eq "XMLSource" } | Select-Object -ExpandProperty URL -First 1
+            if (-not [string]::IsNullOrEmpty($lenovoXmlUrl)) {
+                $lenovoTempPath = Join-Path $env:TEMP ($lenovoXmlUrl | Split-Path -Leaf)
+                if (-not (Test-Path $lenovoTempPath)) {
+                    Invoke-WebRequest -Uri $lenovoXmlUrl -OutFile $lenovoTempPath -UseBasicParsing -TimeoutSec 60 @proxyParams
+                }
+                [xml]$lenovoXml = Get-Content -Path $lenovoTempPath
+                $global:LenovoModelDrivers = $lenovoXml.ModelList.Model
+                Write-DATLogEntry -Value "[ConfigMgr Known Models V2] Lenovo catalog loaded: $(@($global:LenovoModelDrivers).Count) models" -Severity 1
+            }
+        } catch {
+            Write-DATLogEntry -Value "[ConfigMgr Known Models V2] Could not load Lenovo catalog: $($_.Exception.Message). Lenovo models will show raw WMI values." -Severity 2
+        }
+    }
+
+    try {
+        if ($OnProgress) { & $OnProgress "Connecting to $SiteServer..." }
+        Write-DATLogEntry -Value "[ConfigMgr Known Models V2] Connecting CIM session to $SiteServer" -Severity 1
+
+        $cimSession = New-DATCimSession -ComputerName $SiteServer
+
+        # --- OEM query definitions ---
+        # Each entry: OEM display name, WQL query, Make property, Model property
+        $oemQueries = @(
+            @{
+                OEM   = 'HP'
+                # ResourceID must be in the SELECT so the baseboard map join works.
+                # DISTINCT is intentionally omitted — $devicePairs deduplicates by make|model key.
+                # 'HP Inc.' covers post-2015 HP devices; 'HP' and 'Hewlett-Packard' cover older stock.
+                Query = "SELECT ResourceID, Manufacturer, Model FROM SMS_G_System_COMPUTER_SYSTEM WHERE (Manufacturer = 'Hewlett-Packard' OR Manufacturer = 'HP' OR Manufacturer = 'HP Inc.') AND Model NOT LIKE '%Proliant%'"
+                MakeProp  = 'Manufacturer'
+                ModelProp = 'Model'
+                NormalizeMake  = 'HP'
+                NormalizeModel = $true
+            },
+            @{
+                OEM   = 'Dell'
+                Query = "SELECT DISTINCT Manufacturer, Model FROM SMS_G_System_COMPUTER_SYSTEM WHERE Manufacturer = 'Dell Inc.'"
+                MakeProp  = 'Manufacturer'
+                ModelProp = 'Model'
+                NormalizeMake  = 'Dell'
+                NormalizeModel = $false
+            },
+            @{
+                OEM   = 'Lenovo'
+                Query = "SELECT DISTINCT Manufacturer, Model FROM SMS_G_System_COMPUTER_SYSTEM WHERE Manufacturer = 'LENOVO'"
+                MakeProp  = 'Manufacturer'
+                ModelProp = 'Model'
+                NormalizeMake  = 'Lenovo'
+                NormalizeModel = $false
+            },
+            @{
+                OEM   = 'Microsoft'
+                Query = "SELECT DISTINCT SystemManufacturer, SystemProductName FROM SMS_G_System_MS_SYSTEMINFORMATION WHERE SystemManufacturer LIKE 'Microsoft%' AND SystemProductName LIKE 'Surface%'"
+                MakeProp  = 'SystemManufacturer'
+                ModelProp = 'SystemProductName'
+                NormalizeMake  = 'Microsoft'
+                NormalizeModel = $false
+            },
+            @{
+                OEM   = 'Acer'
+                Query = "SELECT DISTINCT Manufacturer, Model FROM SMS_G_System_COMPUTER_SYSTEM WHERE Manufacturer = 'Acer'"
+                MakeProp  = 'Manufacturer'
+                ModelProp = 'Model'
+                NormalizeMake  = 'Acer'
+                NormalizeModel = $false
+            }
+        )
+
+        # --- Supplemental baseboard queries (optional classes; silently ignored if not collected) ---
+        # HP: SMS_G_System_BASE_BOARD.Product holds the 4-char system ID (e.g. 8B4F).
+        #     Keyed by ResourceID so it can be joined to COMPUTER_SYSTEM results.
+        $hpBaseboardMap = @{}   # ResourceID -> Product
+        try {
+            $hpBBResults = @(Invoke-DATRemoteQuery -CimSession $cimSession -ComputerName $SiteServer -Namespace $namespace `
+                -Query "SELECT ResourceID, Product FROM SMS_G_System_BASE_BOARD WHERE Manufacturer LIKE 'HP%' OR Manufacturer LIKE 'Hewlett%'")
+            foreach ($r in $hpBBResults) {
+                if (-not [string]::IsNullOrWhiteSpace($r.Product)) {
+                    $hpBaseboardMap[[string]$r.ResourceID] = $r.Product.Trim().ToUpper()
+                }
+            }
+            Write-DATLogEntry -Value "[ConfigMgr Known Models V2] HP BASE_BOARD: $($hpBaseboardMap.Count) entries" -Severity 1
+        } catch {
+            Write-DATLogEntry -Value "[ConfigMgr Known Models V2] HP BASE_BOARD query skipped (class not collected): $($_.Exception.Message)" -Severity 1
+        }
+
+        # Dell: SystemSKUNumber lives in SMS_G_System_COMPUTER_SYSTEM (same class, extra property).
+        #       Keyed by Model name so it can be joined during the main loop.
+        $dellSkuMap = @{}   # Model -> SystemSKUNumber
+        try {
+            $dellSkuResults = @(Invoke-DATRemoteQuery -CimSession $cimSession -ComputerName $SiteServer -Namespace $namespace `
+                -Query "SELECT DISTINCT Model, SystemSKUNumber FROM SMS_G_System_COMPUTER_SYSTEM WHERE Manufacturer = 'Dell Inc.' AND SystemSKUNumber IS NOT NULL")
+            foreach ($r in $dellSkuResults) {
+                $sku = [string]$r.SystemSKUNumber
+                if (-not [string]::IsNullOrWhiteSpace($sku) -and -not [string]::IsNullOrWhiteSpace($r.Model)) {
+                    $dellSkuMap[$r.Model.Trim()] = $sku.Trim().ToUpper()
+                }
+            }
+            Write-DATLogEntry -Value "[ConfigMgr Known Models V2] Dell SystemSKUNumber: $($dellSkuMap.Count) entries" -Severity 1
+        } catch {
+            Write-DATLogEntry -Value "[ConfigMgr Known Models V2] Dell SystemSKUNumber query skipped (property not collected): $($_.Exception.Message)" -Severity 1
+        }
+
+        foreach ($oem in $oemQueries) {
+            if ($OnProgress) { & $OnProgress "Querying $($oem.OEM) models..." }
+            Write-DATLogEntry -Value "[ConfigMgr Known Models V2] Querying $($oem.OEM): $($oem.Query)" -Severity 1
+
+            try {
+                $results = @(Invoke-DATRemoteQuery -CimSession $cimSession -ComputerName $SiteServer -Namespace $namespace -Query $oem.Query)
+                Write-DATLogEntry -Value "[ConfigMgr Known Models V2] $($oem.OEM): $($results.Count) raw results" -Severity 1
+
+                foreach ($item in $results) {
+                    $make = $oem.NormalizeMake
+                    $model = $item.($oem.ModelProp)
+                    if ([string]::IsNullOrWhiteSpace($model)) { continue }
+                    $model = $model.Trim()
+                    $baseboard = $null
+
+                    # HP model name normalization + baseboard lookup
+					if($oem.OEM -eq 'HP')
+					{
+						if ($oem.NormalizeModel) {
+							$model = $model -replace '^(HP|Hewlett-Packard|COMPAQ|Hp|Compaq)\s*', ''
+							$model = $model -replace '\sSFF\b', ' Small Form Factor'
+							$model = $model -replace '\sUSDT\b', ' Desktop'
+							$model = $model -replace '\sTWR\b', ' Tower'
+							$model = $model -replace '\s*35W$', ''
+							$model = $model -replace '\s+PC$', ''
+							$model = $model.Trim()
+						}
+						
+                        # Resolve baseboard from BASE_BOARD map if available
+                        $resId = [string]$item.ResourceID
+                        if ($hpBaseboardMap.ContainsKey($resId)) {
+                            $baseboard = $hpBaseboardMap[$resId]
+                        }
+                    }
+
+                    # Lenovo: resolve machine type to friendly model name; machine type IS the baseboard
+                    if ($oem.OEM -eq 'Lenovo' -and $model.Length -ge 4) {
+                        # WMI Model is typically a 4-char machine type (e.g. 21G2) or
+                        # a 10-char MTM (e.g. 21G2001EUS); extract the 4-char type prefix
+                        $machineType = $model.Substring(0, 4)
+                        $baseboard = $machineType.ToUpper()
+                        $friendlyName = Find-DATLenovoModelType -ModelType $machineType
+                        if (-not [string]::IsNullOrEmpty($friendlyName)) {
+                            $model = $friendlyName.Trim()
+                        }
+                    }
+
+                    # Dell: look up SystemSKUNumber by model name
+                    if ($oem.OEM -eq 'Dell' -and $dellSkuMap.ContainsKey($model)) {
+                        $baseboard = $dellSkuMap[$model]
+                    }
+
+                    if (-not [string]::IsNullOrEmpty($model)) {
+                        $key = "$make|$model"
+                        if (-not $devicePairs.ContainsKey($key)) {
+                            $devicePairs[$key] = [PSCustomObject]@{
+                                Make      = $make
+                                Model     = $model
+                                Baseboard = $baseboard   # $null if class not collected
+                            }
+                        } elseif ($null -ne $baseboard -and $null -eq $devicePairs[$key].Baseboard) {
+                            # Enrich existing entry with baseboard if we now have one
+                            $devicePairs[$key].Baseboard = $baseboard
+                        }
+                    }
+                }
+            }
+            catch {
+                Write-DATLogEntry -Value "[ConfigMgr Known Models V2] $($oem.OEM) query failed: $($_.Exception.Message)" -Severity 2
+            }
+        }
+    }
+    catch {
+        Write-DATLogEntry -Value "[ConfigMgr Known Models V2] CIM session failed: $($_.Exception.Message)" -Severity 3
+        throw
+    }
+    finally {
+        if ($cimSession) {
+            Remove-CimSession -CimSession $cimSession -ErrorAction SilentlyContinue
+        }
+    }
+
+    $devices = @($devicePairs.Values | Sort-Object -Property Make, Model)
+    $uniqueMakes = @($devices | Select-Object -ExpandProperty Make -Unique)
+    $uniqueModels = @($devices | Select-Object -ExpandProperty Model -Unique)
+
+    if ($OnProgress) { & $OnProgress "Discovered $($uniqueMakes.Count) makes and $($uniqueModels.Count) models" }
+    Write-DATLogEntry -Value "[ConfigMgr Known Models V2] Complete: $($uniqueMakes.Count) makes, $($uniqueModels.Count) models, $($devices.Count) unique combinations" -Severity 1
+
+    return [PSCustomObject]@{
+        Makes   = [string[]]$uniqueMakes
+        Models  = [string[]]$uniqueModels
+        Devices = $devices
+    }
+}
+
 function Get-DATDistributionPoints {
     param (
         [Parameter(Mandatory = $true)][string]$SiteCode,

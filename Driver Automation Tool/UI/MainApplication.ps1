@@ -5725,7 +5725,7 @@ $grid_Models.Add_SelectionChanged({
     $gridModel = ConvertTo-DATNormalizedModel -Make $item.OEM -Model $item.Model
     if ($script:IntuneKnownDevices -and @($script:IntuneKnownDevices).Count -gt 0) {
         foreach ($device in $script:IntuneKnownDevices) {
-            if (Test-DATKnownDeviceMatch -GridMake $gridMake -GridModel $gridModel -GridBaseboards $item.Baseboards `
+            if (& $script:DATKnownDeviceMatchFn -GridMake $gridMake -GridModel $gridModel -GridBaseboards $item.Baseboards `
                     -DeviceMake $device.Make -DeviceModel $device.Model -DeviceBaseboard $device.Baseboard) {
                 $isKnown = $true; break
             }
@@ -5733,7 +5733,7 @@ $grid_Models.Add_SelectionChanged({
     }
     if (-not $isKnown -and $script:ConfigMgrKnownDevices -and @($script:ConfigMgrKnownDevices).Count -gt 0) {
         foreach ($device in $script:ConfigMgrKnownDevices) {
-            if (Test-DATKnownDeviceMatch -GridMake $gridMake -GridModel $gridModel -GridBaseboards $item.Baseboards `
+            if (& $script:DATKnownDeviceMatchFn -GridMake $gridMake -GridModel $gridModel -GridBaseboards $item.Baseboards `
                     -DeviceMake $device.Make -DeviceModel $device.Model -DeviceBaseboard $device.Baseboard) {
                 $isKnown = $true; break
             }
@@ -6987,6 +6987,38 @@ function ConvertTo-DATNormalizedModel {
     return $m.Trim()
 }
 
+function Get-DATHPModelTokens {
+    <#
+    .SYNOPSIS
+        Extracts discriminating tokens from an HP device model name string.
+        Tokens are checked against the catalog GridModel to confirm or reject a match.
+
+        Brand markers  (Elite, Pro, Book, Desk) — differentiate SKU family and form factor.
+        Numeric tokens (any whitespace-delimited word containing a digit, kept whole) —
+          e.g. G1i, G5, G11, G2, 600, 800, 15.6, 16 — unique series/generation identifiers.
+    #>
+    param ([string]$ModelName)
+
+    $tokens = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+
+    # Brand/SKU markers — substring presence in the full model string
+    foreach ($marker in @('Elite', 'Pro', 'Book', 'Desk')) {
+        if ($ModelName -match [regex]::Escape($marker)) {
+            [void]$tokens.Add($marker)
+        }
+    }
+
+    # Numeric and alphanumeric identifiers — every whitespace-delimited word that
+    # contains at least one digit is kept whole (G1i, G5, G11, 600, 15.6, etc.)
+    foreach ($word in ($ModelName -split '\s+')) {
+        if ($word -match '\d') {
+            [void]$tokens.Add($word)
+        }
+    }
+
+    return $tokens
+}
+
 function Test-DATKnownDeviceMatch {
     <#
     .SYNOPSIS
@@ -7035,6 +7067,118 @@ function Test-DATKnownDeviceMatch {
     return $false
 }
 
+function Test-DATKnownDeviceMatchV2 {
+    <#
+    .SYNOPSIS
+        V2 of Test-DATKnownDeviceMatch.
+        Returns $true when a catalog grid item matches a known device.
+        Baseboard is the primary match when available on both sides;
+        name-based matching is used as a fallback.
+    #>
+    param (
+        [string]$GridMake,
+        [string]$GridModel,
+        [string]$GridBaseboards,   # comma-separated catalog baseboard IDs
+        [string]$DeviceMake,
+        [string]$DeviceModel,
+        [string]$DeviceBaseboard   # single baseboard value from inventory ($null if not collected)
+    )
+
+    $normDeviceMake  = ConvertTo-DATNormalizedMake  -Make $DeviceMake
+    $normDeviceModel = ConvertTo-DATNormalizedModel -Make $DeviceMake -Model $DeviceModel
+
+    # --- Baseboard-primary match (Phase 1) ---
+    # Only attempt if the inventory device has a baseboard value AND the catalog
+    # entry has at least one baseboard value. Both sides must be non-empty.
+    if (-not [string]::IsNullOrWhiteSpace($DeviceBaseboard) -and -not [string]::IsNullOrWhiteSpace($GridBaseboards)) {
+        if ($normDeviceMake -eq $GridMake) {
+            $devBoard      = $DeviceBaseboard.Trim().ToUpper()
+            $catalogBoards = $GridBaseboards -split '[,;\s]+' |
+                             ForEach-Object { $_.Trim().ToUpper() } |
+                             Where-Object { $_ }
+
+            if ($catalogBoards -contains $devBoard) {
+                # Phase 2 (HP only): refine with discriminating model tokens.
+                # Multiple HP models can share the same baseboard ID, so a raw board
+                # hit is not sufficient — token presence in GridModel is required.
+                if ($normDeviceMake -eq 'HP') {
+                    $deviceTokens = Get-DATHPModelTokens -ModelName $normDeviceModel
+
+                    if ($deviceTokens.Count -gt 0) {
+                        $allMatch = $true
+                        foreach ($t in $deviceTokens) {
+                            # Numeric/alphanumeric tokens use word boundaries so "G1" does
+                            # not accidentally match "G10" or "G11" as a substring.
+                            # Brand markers use plain substring match so "Book" finds "EliteBook".
+                            $found = if ($t -match '\d') {
+                                $GridModel -match "\b$([regex]::Escape($t))\b"
+                            } else {
+                                $GridModel -match [regex]::Escape($t)
+                            }
+                            if (-not $found) { $allMatch = $false; break }
+                        }
+                        if ($allMatch) { return $true }
+                        # Token mismatch — fall through to name-based matching
+                    } else {
+                        # No discriminating tokens extracted; trust the baseboard alone.
+                        return $true
+                    }
+                } else {
+                    # Non-HP OEMs: baseboard match is sufficient.
+                    return $true
+                }
+            }
+        }
+    }
+
+    # --- HP: token-based name match ---
+    # Tokens are extracted from the device model and each one is checked for
+    # presence in GridModel. Brand markers use substring match; numeric/alphanumeric
+    # tokens use word boundaries to prevent "G1" from matching "G10" or "G11".
+    if ($normDeviceMake -eq 'HP' -and $GridMake -eq 'HP') {
+        $deviceTokens = Get-DATHPModelTokens -ModelName $normDeviceModel
+        if ($deviceTokens.Count -gt 0) {
+            $allMatch = $true
+            foreach ($t in $deviceTokens) {
+                $found = if ($t -match '\d') {
+                    $GridModel -match "\b$([regex]::Escape($t))\b"
+                } else {
+                    $GridModel -match [regex]::Escape($t)
+                }
+                if (-not $found) { $allMatch = $false; break }
+            }
+            if ($allMatch) { return $true }
+        }
+    }
+
+    # --- Name-based match ---
+    if ($GridModel -eq $normDeviceModel -or "$GridMake|$GridModel" -eq "$normDeviceMake|$normDeviceModel") {
+        return $true
+    }
+
+    # --- Microsoft Surface CPU-qualifier prefix match ---
+    # WMI/Intune returns the base model name (e.g. "Surface Laptop 4") while the OSD
+    # catalog appends a CPU qualifier (e.g. "Surface Laptop 4 AMD" / "Surface Laptop 4 Intel").
+    # If the catalog model name starts with the device model name followed by a space,
+    # treat it as a match so all CPU variants are selected.
+    if ($normDeviceMake -eq 'Microsoft' -and $GridMake -eq 'Microsoft') {
+        return ($GridModel -like "$normDeviceModel *")
+    }
+
+    # --- Lenovo machine-type-as-catalog-model fallback ---
+    # When the Lenovo XML catalog was unavailable at inventory import time, the catalog
+    # may have stored the raw 4-char machine type (e.g. "21G2") as the model name instead
+    # of the friendly name (e.g. "ThinkPad T14 Gen 3"). The device's Baseboard field holds
+    # the machine type, so compare it directly against the catalog model in that case.
+    if ($normDeviceMake -eq 'Lenovo' -and $GridMake -eq 'Lenovo' -and
+        -not [string]::IsNullOrWhiteSpace($DeviceBaseboard) -and
+        $GridModel -eq $DeviceBaseboard.Trim().ToUpper()) {
+        return $true
+    }
+
+    return $false
+}
+
 function Update-DATSelectKnownModelsVisibility {
     <#
     .SYNOPSIS
@@ -7056,7 +7200,7 @@ $btn_SelectKnownModels.Add_Click({
             $gridMake  = ConvertTo-DATNormalizedMake  -Make $item.OEM
             $gridModel = ConvertTo-DATNormalizedModel -Make $item.OEM -Model $item.Model
             foreach ($device in $script:IntuneKnownDevices) {
-                if (Test-DATKnownDeviceMatch -GridMake $gridMake -GridModel $gridModel -GridBaseboards $item.Baseboards `
+                if (& $script:DATKnownDeviceMatchFn -GridMake $gridMake -GridModel $gridModel -GridBaseboards $item.Baseboards `
                         -DeviceMake $device.Make -DeviceModel $device.Model -DeviceBaseboard $device.Baseboard) {
                     $item.Selected = $true; break
                 }
@@ -7071,7 +7215,7 @@ $btn_SelectKnownModels.Add_Click({
                 $gridMake  = ConvertTo-DATNormalizedMake  -Make $item.OEM
                 $gridModel = ConvertTo-DATNormalizedModel -Make $item.OEM -Model $item.Model
                 foreach ($device in $script:ConfigMgrKnownDevices) {
-                    if (Test-DATKnownDeviceMatch -GridMake $gridMake -GridModel $gridModel -GridBaseboards $item.Baseboards `
+                    if (& $script:DATKnownDeviceMatchFn -GridMake $gridMake -GridModel $gridModel -GridBaseboards $item.Baseboards `
                             -DeviceMake $device.Make -DeviceModel $device.Model -DeviceBaseboard $device.Baseboard) {
                         $item.Selected = $true; break
                     }
@@ -8540,6 +8684,9 @@ $txt_SiteServer.Add_TextChanged({
 
 $chk_KnownModels = $Window.FindName('chk_KnownModels')
 $txt_KnownModelsState = $Window.FindName('txt_KnownModelsState')
+$chk_KnownModelsV2 = $Window.FindName('chk_KnownModelsV2')
+$txt_KnownModelsV2State = $Window.FindName('txt_KnownModelsV2State')
+$script:DATKnownDeviceMatchFn = 'Test-DATKnownDeviceMatch'
 $btn_ConfigMgrKnownModelLookup = $Window.FindName('btn_ConfigMgrKnownModelLookup')
 $btn_ConfigMgrViewModels = $Window.FindName('btn_ConfigMgrViewModels')
 $txt_ConfigMgrKnownModelStatus = $Window.FindName('txt_ConfigMgrKnownModelStatus')
@@ -8557,7 +8704,7 @@ function Update-DATConfigMgrKnownModelSelection {
         $gridMake  = ConvertTo-DATNormalizedMake  -Make $item.OEM
         $gridModel = ConvertTo-DATNormalizedModel -Make $item.OEM -Model $item.Model
         foreach ($device in $script:ConfigMgrKnownDevices) {
-            if (Test-DATKnownDeviceMatch -GridMake $gridMake -GridModel $gridModel -GridBaseboards $item.Baseboards `
+            if (& $script:DATKnownDeviceMatchFn -GridMake $gridMake -GridModel $gridModel -GridBaseboards $item.Baseboards `
                     -DeviceMake $device.Make -DeviceModel $device.Model -DeviceBaseboard $device.Baseboard) {
                 $item.Selected = $true
                 $matchCount++
@@ -8619,7 +8766,9 @@ function Invoke-DATConfigMgrKnownModelLookup {
         Import-Module $CoreModulePath -Force
 
         try {
-            $result = Get-DATConfigMgrKnownModels -SiteServer $Server -SiteCode $Code -OnProgress {
+            $useV2 = (Get-ItemProperty -Path $global:RegPath -ErrorAction SilentlyContinue).KnownModelsV2 -eq 1
+            $lookupFn = if ($useV2) { 'Get-DATConfigMgrKnownModelsV2' } else { 'Get-DATConfigMgrKnownModels' }
+            $result = & $lookupFn -SiteServer $Server -SiteCode $Code -OnProgress {
                 param ($msg)
                 $State.Progress = $msg
             }
@@ -8899,6 +9048,19 @@ $chk_KnownModels.Add_Unchecked({
     $txt_KnownModelsState.Foreground = $Window.FindResource('InputPlaceholder')
     $btn_ConfigMgrKnownModelLookup.IsEnabled = $false
     $btn_ConfigMgrViewModels.IsEnabled = $false
+})
+
+$chk_KnownModelsV2.Add_Checked({
+    Set-DATRegistryValue -Name 'KnownModelsV2' -Value 1 -Type DWord
+    $txt_KnownModelsV2State.Text = 'On'
+    $txt_KnownModelsV2State.Foreground = $Window.FindResource('AccentColor')
+    $script:DATKnownDeviceMatchFn = 'Test-DATKnownDeviceMatchV2'
+})
+$chk_KnownModelsV2.Add_Unchecked({
+    Set-DATRegistryValue -Name 'KnownModelsV2' -Value 0 -Type DWord
+    $txt_KnownModelsV2State.Text = 'Off'
+    $txt_KnownModelsV2State.Foreground = $Window.FindResource('InputPlaceholder')
+    $script:DATKnownDeviceMatchFn = 'Test-DATKnownDeviceMatch'
 })
 
 $btn_ConfigMgrKnownModelLookup.Add_Click({
@@ -19219,6 +19381,21 @@ try {
         } else {
             $chk_KnownModels.IsChecked = $false
             $txt_KnownModelsState.Text = 'Off'
+            Write-Host "Disabled" -ForegroundColor DarkYellow
+        }
+
+        # Restore Known Models V2
+        Write-Host "  Known Models V2: " -NoNewline -ForegroundColor DarkGray
+        if ($null -ne $savedConfig.KnownModelsV2 -and $savedConfig.KnownModelsV2 -eq 1) {
+            $chk_KnownModelsV2.IsChecked = $true
+            $txt_KnownModelsV2State.Text = 'On'
+            $txt_KnownModelsV2State.Foreground = $Window.FindResource('AccentColor')
+            $script:DATKnownDeviceMatchFn = 'Test-DATKnownDeviceMatchV2'
+            Write-Host "Enabled" -ForegroundColor Green
+        } else {
+            $chk_KnownModelsV2.IsChecked = $false
+            $txt_KnownModelsV2State.Text = 'Off'
+            $script:DATKnownDeviceMatchFn = 'Test-DATKnownDeviceMatch'
             Write-Host "Disabled" -ForegroundColor DarkYellow
         }
 
