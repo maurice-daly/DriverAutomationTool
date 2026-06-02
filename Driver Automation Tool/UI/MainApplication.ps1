@@ -6013,6 +6013,23 @@ $btn_RefreshModels.Add_Click({
                         # Empty SupportedOS without download: skip (incomplete placeholder entry)
                         if ([string]::IsNullOrEmpty($entryOS)) {
                             if ([string]::IsNullOrEmpty($entry.DownloadURL)) { continue }
+                            # Dell is build-agnostic -- single row with Build='All'
+                            if ($entry.Manufacturer -eq 'Dell') {
+                                $firstOS = ($OSList | Select-Object -First 1).Split(" ")
+                                $dellVer = ''
+                                if (-not [string]::IsNullOrEmpty($entry.Version) -and $entry.Version -notmatch '^\d+H\d+$') { $dellVer = $entry.Version }
+                                elseif (-not [string]::IsNullOrEmpty($entry.ReleaseDate)) { $dellVer = $entry.ReleaseDate }
+                                $OEMSupportedModels += [PSCustomObject]@{
+                                    OEM        = 'Dell'
+                                    Model      = $entry.DisplayName.Trim()
+                                    Baseboards = if ($entry.SupportedDevices) { $entry.SupportedDevices } else { '' }
+                                    OS         = "$($firstOS[0]) $($firstOS[1])"
+                                    'OS Build' = 'All'
+                                    Version    = $dellVer
+                                    DownloadURL = if ($entry.DownloadURL) { $entry.DownloadURL } else { '' }
+                                }
+                                continue
+                            }
                             foreach ($SingleOS in $OSList) {
                                 $osParts = $SingleOS.Split(" ")
                                 $WindowsVersion = "$($osParts[0]) $($osParts[1])"
@@ -6063,6 +6080,9 @@ $btn_RefreshModels.Add_Click({
                             }
 
                             if ($osMatch) {
+                                $matched = $true
+                                # Dell is build-agnostic -- emit one row with Build='All' and stop iterating OS list
+                                if ($entry.Manufacturer -eq 'Dell') { break }
                                 # Determine display version per OEM convention
                                 $displayVersion = ''
                                 if ($entry.Manufacturer -in @('HP', 'Acer')) {
@@ -6082,6 +6102,26 @@ $btn_RefreshModels.Add_Click({
                                     Version    = $displayVersion
                                     DownloadURL = if ($entry.DownloadURL) { $entry.DownloadURL } else { '' }
                                 }
+                            }
+                        }
+
+                        # Dell: emit a single build-agnostic row after the OS loop
+                        if ($entry.Manufacturer -eq 'Dell' -and $matched) {
+                            $firstOS = ($OSList | Select-Object -First 1).Split(" ")
+                            $dellDisplayVersion = ''
+                            if (-not [string]::IsNullOrEmpty($entry.Version) -and $entry.Version -notmatch '^\d+H\d+$') {
+                                $dellDisplayVersion = $entry.Version
+                            } elseif (-not [string]::IsNullOrEmpty($entry.ReleaseDate)) {
+                                $dellDisplayVersion = $entry.ReleaseDate
+                            }
+                            $OEMSupportedModels += [PSCustomObject]@{
+                                OEM        = 'Dell'
+                                Model      = $entry.DisplayName.Trim()
+                                Baseboards = if ($entry.SupportedDevices) { $entry.SupportedDevices } else { '' }
+                                OS         = "$($firstOS[0]) $($firstOS[1])"
+                                'OS Build' = 'All'
+                                Version    = $dellDisplayVersion
+                                DownloadURL = if ($entry.DownloadURL) { $entry.DownloadURL } else { '' }
                             }
                         }
                     }
@@ -6312,15 +6352,17 @@ $btn_RefreshModels.Add_Click({
                         }
                         [xml]$DellModelXML = Get-Content -Path $DellXMLPath -Raw
                         $DellPkgs = $DellModelXML.driverpackmanifest.driverpackage
-                        foreach ($SingleOS in $OSList) {
-                            $WindowsBuild = $($SingleOS).Split(" ")[2]
-                            $WindowsVersion = $SingleOS.Trim("$WindowsBuild").TrimEnd()
-                            $DellWindowsVersion = $WindowsVersion.Replace(" ", "")
-                            Write-Log "[Dell] Filtering for $DellWindowsVersion arch $Architecture (OS: $SingleOS)"
-                            $DellMatchingPkgs = $DellPkgs | Where-Object {
-                                ($_.SupportedOperatingSystems.OperatingSystem.osCode -eq "$DellWindowsVersion") -and
-                                ($_.SupportedOperatingSystems.OperatingSystem.osArch -match $Architecture)
-                            }
+                        # Dell does not use build-specific packages -- process only the first OS
+                        # to get the Windows version (e.g. "Windows11") and deduplicate
+                        $DellFirstOS = $OSList | Select-Object -First 1
+                        $WindowsBuild = $($DellFirstOS).Split(" ")[2]
+                        $WindowsVersion = $DellFirstOS.Trim("$WindowsBuild").TrimEnd()
+                        $DellWindowsVersion = $WindowsVersion.Replace(" ", "")
+                        Write-Log "[Dell] Filtering for $DellWindowsVersion arch $Architecture (build-agnostic)"
+                        $DellMatchingPkgs = $DellPkgs | Where-Object {
+                            ($_.SupportedOperatingSystems.OperatingSystem.osCode -eq "$DellWindowsVersion") -and
+                            ($_.SupportedOperatingSystems.OperatingSystem.osArch -match $Architecture)
+                        }
                             $DellModels = $DellMatchingPkgs | Select-Object @{ Name = "SystemName"; Expression = { $_.SupportedSystems.Brand.Model.name | Select-Object -First 1 } },
                             @{ Name = "SystemID"; Expression = { $_.SupportedSystems.Brand.Model.SystemID } },
                             @{ Name = "DellVersion"; Expression = { $_.dellVersion } } -Unique |
@@ -6338,7 +6380,7 @@ $btn_RefreshModels.Add_Click({
                                 $null -eq $dominated
                             })
                             $count = @($DellModels).Count
-                            Write-Log "Dell: Found $count matching models for $SingleOS." -Level Success
+                            Write-Log "Dell: Found $count unique models (build-agnostic)." -Level Success
                             foreach ($Model in $DellModels) {
                                 $sysIds = $Model.SystemID | Where-Object { $_ } | Select-Object -Unique
                                 $OEMSupportedModels += [PSCustomObject]@{
@@ -6346,13 +6388,12 @@ $btn_RefreshModels.Add_Click({
                                     Model      = $Model.SystemName
                                     Baseboards = $(if ($sysIds) { $sysIds -join "," } else { "" })
                                     OS         = $WindowsVersion
-                                    'OS Build' = $WindowsBuild
+                                    'OS Build' = 'All'
                                     Version    = $Model.DellVersion
                                 }
                             }
-                        }
                         $uniqueCount = @($OEMSupportedModels | Where-Object { $_.OEM -eq 'Dell' } | Select-Object -Property Model -Unique).Count
-                        Write-Log "Dell: $uniqueCount unique models across all selected OS versions." -Level Success
+                        Write-Log "Dell: $uniqueCount unique models." -Level Success
                         $LogQueue.Enqueue("[SOURCE:Dell:OK:$uniqueCount models]")
                     } catch {
                         Write-Log "Dell processing failed: $($_.Exception.Message)" -Level Error
@@ -7742,7 +7783,7 @@ $btn_Build.Add_Click({
             OEM              = $model.OEM
             Model            = $model.Model
             Baseboards       = $model.Baseboards
-            OS               = if ($model.OS -and $model.Build) { "$($model.OS) $($model.Build)" } else { $selectedOS }
+            OS               = if ($model.Build -eq 'All') { $selectedOS } elseif ($model.OS -and $model.Build) { "$($model.OS) $($model.Build)" } else { $selectedOS }
             Architecture     = $selectedArch
             CustomDriverPath = $model.CustomDriverPath
             Version          = $model.Version
@@ -11955,10 +11996,32 @@ $btn_LogRetainUp.Add_Click({
     }
 })
 
+# Backup path browse and persistence
+$btn_BrowseBackup.Add_Click({
+    $dialog = New-Object System.Windows.Forms.FolderBrowserDialog
+    $dialog.Description = "Select Backup Path"
+    if ($dialog.ShowDialog() -eq 'OK') {
+        $txt_BackupPath.Text = $dialog.SelectedPath
+        Set-DATRegistryValue -Name "BackupPath" -Value $dialog.SelectedPath -Type String
+    }
+})
+
+$txt_BackupPath.Add_LostFocus({
+    $path = $txt_BackupPath.Text
+    if (-not [string]::IsNullOrEmpty($path)) {
+        Set-DATRegistryValue -Name "BackupPath" -Value $path -Type String
+    }
+})
+
 $btn_ExportConfig.Add_Click({
     $dialog = New-Object System.Windows.Forms.SaveFileDialog
     $dialog.Filter = "Registry Files (*.reg)|*.reg"
     $dialog.FileName = "DriverAutomationTool_Config.reg"
+    # Default to backup path if configured
+    $backupPath = $txt_BackupPath.Text
+    if (-not [string]::IsNullOrEmpty($backupPath) -and (Test-Path $backupPath)) {
+        $dialog.InitialDirectory = $backupPath
+    }
     if ($dialog.ShowDialog() -eq 'OK') {
         try {
             # Security fix #6: use & reg.exe with an argument array instead of Invoke-Expression.
@@ -18306,21 +18369,25 @@ $script:btn_ApplyUpdate.Add_Click({
             $sourceContents = (Get-ChildItem -Path $sourceDir | Select-Object -ExpandProperty Name) -join ', '
             Write-UpdateLog "Source contents: $sourceContents"
 
-            # Back up current version to Backups folder within the configured temp path
-            $regTempPath = $null
+            # Back up Modules and UI folders to configured Backup path
+            $regBackupPath = $null
             try {
                 $regCfg = Get-ItemProperty -Path 'HKLM:\SOFTWARE\DriverAutomationTool' -ErrorAction SilentlyContinue
-                if ($regCfg -and -not [string]::IsNullOrEmpty($regCfg.TempStoragePath)) {
-                    $regTempPath = $regCfg.TempStoragePath
+                if ($regCfg -and -not [string]::IsNullOrEmpty($regCfg.BackupPath)) {
+                    $regBackupPath = $regCfg.BackupPath
                 }
             } catch { }
-            $backupRoot = if (-not [string]::IsNullOrEmpty($regTempPath) -and (Test-Path $regTempPath)) {
-                Join-Path $regTempPath 'Backups'
-            } else { $env:TEMP }
+            $backupRoot = if (-not [string]::IsNullOrEmpty($regBackupPath)) { $regBackupPath } else { Join-Path $InstallDir 'Backup' }
             if (-not (Test-Path $backupRoot)) { New-Item -Path $backupRoot -ItemType Directory -Force | Out-Null }
             $backupDir = Join-Path $backupRoot "DATBackup_$(Get-Date -Format 'yyyyMMdd_HHmmss')"
-            Write-UpdateLog "Backing up current installation to: $backupDir"
-            Copy-Item -Path $InstallDir -Destination $backupDir -Recurse -Force
+            New-Item -Path $backupDir -ItemType Directory -Force | Out-Null
+            Write-UpdateLog "Backing up Modules and UI to: $backupDir"
+            foreach ($folder in @('Modules', 'UI')) {
+                $src = Join-Path $InstallDir $folder
+                if (Test-Path $src) {
+                    Copy-Item -Path $src -Destination (Join-Path $backupDir $folder) -Recurse -Force
+                }
+            }
             Write-UpdateLog "Backup complete"
 
             # Remove previous DAT backup folders (keep only the one just created)
@@ -18394,9 +18461,14 @@ $script:btn_ApplyUpdate.Add_Click({
             Write-UpdateLog "Self-update failed: $($_.Exception.Message)" -Level Error
             # Attempt restore from backup
             if ($backupDir -and (Test-Path $backupDir)) {
-                Write-UpdateLog "Restoring from backup..." -Level Warn
+                Write-UpdateLog "Restoring Modules and UI from backup..." -Level Warn
                 try {
-                    Copy-Item -Path "$backupDir\*" -Destination $InstallDir -Recurse -Force
+                    foreach ($folder in @('Modules', 'UI')) {
+                        $backupFolder = Join-Path $backupDir $folder
+                        if (Test-Path $backupFolder) {
+                            Copy-Item -Path $backupFolder -Destination (Join-Path $InstallDir $folder) -Recurse -Force
+                        }
+                    }
                     Write-UpdateLog "Backup restored successfully"
                 } catch {
                     Write-UpdateLog "Backup restore failed: $($_.Exception.Message)" -Level Error
@@ -18963,6 +19035,18 @@ try {
         } else {
             Write-Host "  Pkg Storage   : " -NoNewline -ForegroundColor DarkGray
             Write-Host "(not configured)" -ForegroundColor DarkYellow
+        }
+
+        # Restore Backup path
+        $defaultBackupPath = Join-Path $global:ScriptDirectory 'Backup'
+        if (-not [string]::IsNullOrEmpty($savedConfig.BackupPath)) {
+            Write-Host "  Backup Path   : " -NoNewline -ForegroundColor DarkGray
+            Write-Host $savedConfig.BackupPath -ForegroundColor White
+            $txt_BackupPath.Text = $savedConfig.BackupPath
+        } else {
+            Write-Host "  Backup Path   : " -NoNewline -ForegroundColor DarkGray
+            Write-Host "$defaultBackupPath (default)" -ForegroundColor DarkYellow
+            $txt_BackupPath.Text = $defaultBackupPath
         }
 
         # Restore Telemetry opt-out
@@ -19782,7 +19866,7 @@ if (Test-Path $logoPath) {
 
 # Read version from module manifest
 $manifestPath = Join-Path $AppRoot "Modules\DriverAutomationToolCore\DriverAutomationToolCore.psd1"
-$script:versionString = "v10.0.35"
+$script:versionString = "v10.0.36"
 if (Test-Path $manifestPath) {
     $manifestData = Import-PowerShellDataFile $manifestPath
     $ver = [version]$manifestData.ModuleVersion
