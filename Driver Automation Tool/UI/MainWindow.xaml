@@ -902,7 +902,7 @@
                                    Foreground="{DynamicResource AccentColor}" VerticalAlignment="Center" Margin="0,0,8,0"/>
                         <TextBlock Text="Driver Automation Tool" FontSize="13" FontWeight="SemiBold"
                                    Foreground="{DynamicResource WindowForeground}" VerticalAlignment="Center"/>
-                        <TextBlock x:Name="txt_Version" Text=" Version 10.0.35" FontSize="11"
+                        <TextBlock x:Name="txt_Version" Text=" Version 10.0.36" FontSize="11"
                                    Foreground="{DynamicResource InputPlaceholder}" VerticalAlignment="Center" Margin="4,0"/>
                     </StackPanel>
 
@@ -1512,9 +1512,25 @@
                                                 <DataGridTextColumn Header="OS" Width="120"
                                                                     Binding="{Binding OS}" IsReadOnly="True"
                                                                     SortMemberPath="OS"/>
-                                                <DataGridTextColumn Header="Build" Width="80"
-                                                                    Binding="{Binding Build}" IsReadOnly="True"
-                                                                    SortMemberPath="Build"/>
+                                                <DataGridTemplateColumn Header="Build" Width="80" SortMemberPath="Build">
+                                                    <DataGridTemplateColumn.CellTemplate>
+                                                        <DataTemplate>
+                                                            <TextBlock VerticalAlignment="Center">
+                                                                <TextBlock.Style>
+                                                                    <Style TargetType="TextBlock">
+                                                                        <Setter Property="Text" Value="{Binding Build}"/>
+                                                                        <Style.Triggers>
+                                                                            <DataTrigger Binding="{Binding Build}" Value="All">
+                                                                                <Setter Property="Foreground" Value="{DynamicResource DriverNoPackForeground}"/>
+                                                                                <Setter Property="FontWeight" Value="SemiBold"/>
+                                                                            </DataTrigger>
+                                                                        </Style.Triggers>
+                                                                    </Style>
+                                                                </TextBlock.Style>
+                                                            </TextBlock>
+                                                        </DataTemplate>
+                                                    </DataGridTemplateColumn.CellTemplate>
+                                                </DataGridTemplateColumn>
                                                 <DataGridTextColumn Header="Baseboards" Width="140"
                                                                     Binding="{Binding Baseboards}" IsReadOnly="True"
                                                                     SortMemberPath="Baseboards"/>
@@ -5170,6 +5186,22 @@
                                                 <Run Text="&#xE90F;" FontFamily="Segoe MDL2 Assets" FontSize="14"/><Run Text="  Backup / Restore Options"/>
                                             </TextBlock>
 
+                                            <TextBlock FontSize="11" Foreground="{DynamicResource InputPlaceholder}" Margin="0,0,0,4">
+                                                <Run Text="Backup Path" FontWeight="SemiBold"/><Run Text=" -- Used for upgrade backups and configuration exports"/>
+                                            </TextBlock>
+                                            <Grid Margin="0,0,0,12">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*"/>
+                                                    <ColumnDefinition Width="Auto"/>
+                                                </Grid.ColumnDefinitions>
+                                                <TextBox x:Name="txt_BackupPath" Style="{StaticResource RoundedTextBox}" Height="34"/>
+                                                <Button x:Name="btn_BrowseBackup" Grid.Column="1"
+                                                        Style="{StaticResource SecondaryButton}"
+                                                        Height="34" Margin="8,0,0,0">
+                                                    <TextBlock><Run Text="&#xED25;" FontFamily="Segoe MDL2 Assets"/><Run Text="  Browse"/></TextBlock>
+                                                </Button>
+                                            </Grid>
+
                                             <Grid>
                                                 <Grid.ColumnDefinitions>
                                                     <ColumnDefinition Width="Auto"/>
@@ -5661,7 +5693,7 @@
                                     <StackPanel>
                                         <TextBlock Text="Driver Automation Tool" FontSize="22" FontWeight="Bold"
                                                    Foreground="{DynamicResource AccentColor}" Margin="0,0,0,4"/>
-                                        <TextBlock x:Name="txt_AboutVersion" Text="Version 10.0.35" FontSize="14"
+                                        <TextBlock x:Name="txt_AboutVersion" Text="Version 10.0.36" FontSize="14"
                                                    Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,16"/>
 
                                         <TextBlock TextWrapping="Wrap" FontSize="13"
