@@ -5720,25 +5720,7 @@ $grid_Models.Add_SelectionChanged({
     $txt_ModelDetail_Baseboards.Text = if ($item.Baseboards) { $item.Baseboards } else { '--' }
 
     # Known Model indicator -- check Intune and ConfigMgr known device lists
-    $isKnown = $false
-    $gridMake = ConvertTo-DATNormalizedMake -Make $item.OEM
-    $gridModel = ConvertTo-DATNormalizedModel -Make $item.OEM -Model $item.Model
-    if ($script:IntuneKnownDevices -and @($script:IntuneKnownDevices).Count -gt 0) {
-        foreach ($device in $script:IntuneKnownDevices) {
-            if (& $script:DATKnownDeviceMatchFn -GridMake $gridMake -GridModel $gridModel -GridBaseboards $item.Baseboards `
-                    -DeviceMake $device.Make -DeviceModel $device.Model -DeviceBaseboard $device.Baseboard) {
-                $isKnown = $true; break
-            }
-        }
-    }
-    if (-not $isKnown -and $script:ConfigMgrKnownDevices -and @($script:ConfigMgrKnownDevices).Count -gt 0) {
-        foreach ($device in $script:ConfigMgrKnownDevices) {
-            if (& $script:DATKnownDeviceMatchFn -GridMake $gridMake -GridModel $gridModel -GridBaseboards $item.Baseboards `
-                    -DeviceMake $device.Make -DeviceModel $device.Model -DeviceBaseboard $device.Baseboard) {
-                $isKnown = $true; break
-            }
-        }
-    }
+    $isKnown = Test-DATCatalogItemIsKnown -Item $item
     if ($isKnown) {
         $txt_ModelDetail_KnownModel.Text       = 'Yes'
         $txt_ModelDetail_KnownModel.Foreground = [System.Windows.Media.SolidColorBrush]::new(
@@ -7019,6 +7001,28 @@ function Get-DATHPModelTokens {
     return $tokens
 }
 
+function Measure-DATModelTokenScore {
+    <#
+    .SYNOPSIS
+        Counts how many whitespace-delimited tokens from DeviceModel are present
+        (case-insensitive exact word) in GridModel.
+        Returns the matched token count. Caller divides by total device token count
+        to get a match percentage.
+    #>
+    param (
+        [string]$DeviceModel,
+        [string]$GridModel
+    )
+    $deviceTokens = @($DeviceModel -split '\s+' | Where-Object { $_ })
+    if ($deviceTokens.Count -eq 0) { return 0 }
+    $gridTokens = @($GridModel -split '\s+' | Where-Object { $_ })
+    $matched = 0
+    foreach ($t in $deviceTokens) {
+        if ($gridTokens -contains $t) { $matched++ }
+    }
+    return $matched
+}
+
 function Test-DATKnownDeviceMatch {
     <#
     .SYNOPSIS
@@ -7190,58 +7194,275 @@ function Update-DATSelectKnownModelsVisibility {
     $btn_SelectKnownModels.Visibility = if ($hasKnown) { 'Visible' } else { 'Collapsed' }
 }
 
+function Show-DATKnownModelSelectionProgress {
+    param (
+        [int]$Total,
+        [string]$StatusText = 'Scanning inventory devices...'
+    )
+
+    $theme  = Get-DATTheme -ThemeName $script:CurrentTheme
+    $bgColor = [System.Windows.Media.ColorConverter]::ConvertFromString($theme['CardBackground'])
+
+    $dlg = [System.Windows.Window]::new()
+    $dlg.WindowStyle            = 'None'
+    $dlg.AllowsTransparency     = $true
+    $dlg.Background             = [System.Windows.Media.Brushes]::Transparent
+    $dlg.Width                  = 420
+    $dlg.SizeToContent          = 'Height'
+    $dlg.Topmost                = $true
+    $dlg.ResizeMode             = 'NoResize'
+    $dlg.ShowInTaskbar          = $false
+    try { $dlg.Owner = $Window; $dlg.WindowStartupLocation = 'CenterOwner' }
+    catch { $dlg.WindowStartupLocation = 'CenterScreen' }
+
+    # Outer border — same card style used throughout the app
+    $border = [System.Windows.Controls.Border]::new()
+    $border.Background = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.Color]::FromArgb(245, $bgColor.R, $bgColor.G, $bgColor.B))
+    $border.CornerRadius      = [System.Windows.CornerRadius]::new(16)
+    $border.Padding           = [System.Windows.Thickness]::new(28, 24, 28, 24)
+    $border.BorderBrush       = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.ColorConverter]::ConvertFromString($theme['CardBorder']))
+    $border.BorderThickness   = [System.Windows.Thickness]::new(1)
+    $shadow = [System.Windows.Media.Effects.DropShadowEffect]::new()
+    $shadow.BlurRadius = 30; $shadow.ShadowDepth = 0; $shadow.Opacity = 0.5
+    $shadow.Color = [System.Windows.Media.Colors]::Black
+    $border.Effect = $shadow
+
+    $panel = [System.Windows.Controls.StackPanel]::new()
+
+    # Icon
+    $icon = [System.Windows.Controls.TextBlock]::new()
+    $icon.Text            = [string][char]0xE8CB   # SelectAll glyph
+    $icon.FontFamily      = [System.Windows.Media.FontFamily]::new('Segoe MDL2 Assets')
+    $icon.FontSize        = 28
+    $icon.Foreground      = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.ColorConverter]::ConvertFromString($theme['AccentColor']))
+    $icon.HorizontalAlignment = 'Center'
+    $icon.Margin          = [System.Windows.Thickness]::new(0, 0, 0, 12)
+    $panel.Children.Add($icon) | Out-Null
+
+    # Title
+    $title = [System.Windows.Controls.TextBlock]::new()
+    $title.Text               = 'Selecting Known Models'
+    $title.FontSize           = 16
+    $title.FontWeight         = [System.Windows.FontWeights]::Bold
+    $title.Foreground         = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.ColorConverter]::ConvertFromString($theme['WindowForeground']))
+    $title.HorizontalAlignment = 'Center'
+    $title.Margin             = [System.Windows.Thickness]::new(0, 0, 0, 6)
+    $panel.Children.Add($title) | Out-Null
+
+    # Status label — updated dynamically
+    $script:KnownModelProgressStatus = [System.Windows.Controls.TextBlock]::new()
+    $script:KnownModelProgressStatus.Text          = $StatusText
+    $script:KnownModelProgressStatus.FontSize      = 12
+    $script:KnownModelProgressStatus.TextWrapping  = [System.Windows.TextWrapping]::Wrap
+    $script:KnownModelProgressStatus.Foreground    = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.ColorConverter]::ConvertFromString($theme['InputPlaceholder']))
+    $script:KnownModelProgressStatus.HorizontalAlignment = 'Center'
+    $script:KnownModelProgressStatus.TextAlignment = [System.Windows.TextAlignment]::Center
+    $script:KnownModelProgressStatus.Margin        = [System.Windows.Thickness]::new(0, 0, 0, 18)
+    $panel.Children.Add($script:KnownModelProgressStatus) | Out-Null
+
+    # Progress bar
+    $script:KnownModelProgressBar = [System.Windows.Controls.ProgressBar]::new()
+    $script:KnownModelProgressBar.Minimum   = 0
+    $script:KnownModelProgressBar.Maximum   = if ($Total -gt 0) { $Total } else { 1 }
+    $script:KnownModelProgressBar.Value     = 0
+    $script:KnownModelProgressBar.Height    = 8
+    $script:KnownModelProgressBar.IsIndeterminate = ($Total -eq 0)
+    $script:KnownModelProgressBar.Background = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.ColorConverter]::ConvertFromString($theme['ProgressBackground']))
+    $script:KnownModelProgressBar.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.ColorConverter]::ConvertFromString($theme['ProgressForeground']))
+    $script:KnownModelProgressBar.Margin    = [System.Windows.Thickness]::new(0, 0, 0, 8)
+    $panel.Children.Add($script:KnownModelProgressBar) | Out-Null
+
+    # Counter label  e.g. "12 / 45"
+    $script:KnownModelProgressCounter = [System.Windows.Controls.TextBlock]::new()
+    $script:KnownModelProgressCounter.Text          = if ($Total -gt 0) { "0 / $Total" } else { '' }
+    $script:KnownModelProgressCounter.FontSize      = 11
+    $script:KnownModelProgressCounter.Foreground    = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.ColorConverter]::ConvertFromString($theme['InputPlaceholder']))
+    $script:KnownModelProgressCounter.HorizontalAlignment = 'Center'
+    $panel.Children.Add($script:KnownModelProgressCounter) | Out-Null
+
+    $border.Child  = $panel
+    $dlg.Content   = $border
+    $script:KnownModelProgressDlg = $dlg
+    $dlg.Show()
+    # Force WPF to render the window before the blocking loop starts
+    [System.Windows.Forms.Application]::DoEvents()
+    $dlg.Dispatcher.Invoke([System.Windows.Threading.DispatcherPriority]::Render, [action]{})
+}
+
+function Update-DATKnownModelSelectionProgress {
+    param (
+        [int]$Current,
+        [int]$Total,
+        [string]$StatusText
+    )
+    if ($null -eq $script:KnownModelProgressDlg) { return }
+    if ($PSBoundParameters.ContainsKey('StatusText')) {
+        $script:KnownModelProgressStatus.Text = $StatusText
+    }
+    if ($Total -gt 0) {
+        $script:KnownModelProgressBar.IsIndeterminate = $false
+        $script:KnownModelProgressBar.Maximum         = $Total
+        $script:KnownModelProgressBar.Value           = $Current
+        $script:KnownModelProgressCounter.Text        = "$Current / $Total"
+    }
+    # Keep UI responsive during the synchronous loop
+    $script:KnownModelProgressDlg.Dispatcher.Invoke(
+        [System.Windows.Threading.DispatcherPriority]::Render, [action]{})
+}
+
+function Close-DATKnownModelSelectionProgress {
+    if ($null -ne $script:KnownModelProgressDlg) {
+        $script:KnownModelProgressDlg.Close()
+        $script:KnownModelProgressDlg    = $null
+        $script:KnownModelProgressBar    = $null
+        $script:KnownModelProgressStatus = $null
+        $script:KnownModelProgressCounter = $null
+    }
+}
+
+function Test-DATCatalogItemIsKnown {
+    <#
+    .SYNOPSIS
+        Returns $true if the given catalog item matches any device in the known
+        Intune or ConfigMgr device lists, using the active dispatch function.
+    #>
+    param ([Parameter(Mandatory)][object]$Item)
+    $gridMake  = ConvertTo-DATNormalizedMake  -Make $Item.OEM
+    $gridModel = ConvertTo-DATNormalizedModel -Make $Item.OEM -Model $Item.Model
+    $sources   = @()
+    if ($script:IntuneKnownDevices   -and @($script:IntuneKnownDevices).Count   -gt 0) { $sources += $script:IntuneKnownDevices }
+    if ($script:ConfigMgrKnownDevices -and @($script:ConfigMgrKnownDevices).Count -gt 0) { $sources += $script:ConfigMgrKnownDevices }
+    foreach ($device in $sources) {
+        if (& $script:DATKnownDeviceMatchFn `
+                -GridMake $gridMake -GridModel $gridModel -GridBaseboards $Item.Baseboards `
+                -DeviceMake $device.Make -DeviceModel $device.Model -DeviceBaseboard $device.Baseboard) {
+            return $true
+        }
+    }
+    return $false
+}
+
+function Update-DATKnownModelGridSort {
+    <#
+    .SYNOPSIS
+        Sorts the model grid (Selected first, then OEM/Model) and refreshes button state.
+    #>
+    $view = [System.Windows.Data.CollectionViewSource]::GetDefaultView($script:ModelData)
+    $view.SortDescriptions.Clear()
+    $view.SortDescriptions.Add([System.ComponentModel.SortDescription]::new('Selected', [System.ComponentModel.ListSortDirection]::Descending))
+    $view.SortDescriptions.Add([System.ComponentModel.SortDescription]::new('OEM',      [System.ComponentModel.ListSortDirection]::Ascending))
+    $view.SortDescriptions.Add([System.ComponentModel.SortDescription]::new('Model',    [System.ComponentModel.ListSortDirection]::Ascending))
+    foreach ($col in $grid_Models.Columns) {
+        $col.SortDirection = if ($col.SortMemberPath -eq 'Selected') {
+            [System.ComponentModel.ListSortDirection]::Descending
+        } else { $null }
+    }
+    Update-DATBuildButtonState
+}
+
+function Invoke-DATSelectKnownModels {
+    <#
+    .SYNOPSIS
+        Unified known-model selection pass over all catalog items.
+        Respects $script:DATKnownDeviceMatchFn — runs V2 scoring or V1 boolean matching.
+        Returns the number of catalog items newly marked as Selected.
+    #>
+    param (
+        [switch]$ClearFirst,   # deselect all items before the pass (button-click behaviour)
+        [switch]$ShowProgress  # show the progress popup during the pass
+    )
+    if ($script:ModelData.Count -eq 0) { return 0 }
+    $hasIntune    = $script:IntuneKnownDevices   -and @($script:IntuneKnownDevices).Count   -gt 0
+    $hasConfigMgr = $script:ConfigMgrKnownDevices -and @($script:ConfigMgrKnownDevices).Count -gt 0
+    if (-not $hasIntune -and -not $hasConfigMgr) { return 0 }
+
+    if ($ClearFirst) {
+        foreach ($item in $script:ModelData) { $item.Selected = $false }
+    }
+
+    if ($script:DATKnownDeviceMatchFn -eq 'Test-DATKnownDeviceMatchV2') {
+
+        # V2: device-driven best-score (≥75 % of device tokens found in catalog entry)
+        $deviceSources = [System.Collections.Generic.List[object]]::new()
+        if ($hasIntune)    { foreach ($d in $script:IntuneKnownDevices)   { [void]$deviceSources.Add($d) } }
+        if ($hasConfigMgr) { foreach ($d in $script:ConfigMgrKnownDevices) { [void]$deviceSources.Add($d) } }
+
+        $total = $deviceSources.Count
+        if ($ShowProgress) { Show-DATKnownModelSelectionProgress -Total $total -StatusText 'Scoring inventory devices against catalog...' }
+        $idx = 0; $matched = 0
+
+        foreach ($device in $deviceSources) {
+            $idx++
+            if ($ShowProgress) {
+                Update-DATKnownModelSelectionProgress -Current $idx -Total $total `
+                    -StatusText "$($device.Make) - $($device.Model)"
+            }
+            $normMake   = ConvertTo-DATNormalizedMake  -Make $device.Make
+            $normModel  = ConvertTo-DATNormalizedModel -Make $device.Make -Model $device.Model
+            $tokenCount = @($normModel -split '\s+' | Where-Object { $_ }).Count
+            if ($tokenCount -eq 0) { continue }
+
+            $bestScore = 0; $bestItem = $null
+            foreach ($item in $script:ModelData) {
+                if ((ConvertTo-DATNormalizedMake -Make $item.OEM) -ne $normMake) { continue }
+                $score = Measure-DATModelTokenScore -DeviceModel $normModel `
+                             -GridModel (ConvertTo-DATNormalizedModel -Make $item.OEM -Model $item.Model)
+                if ($score -gt $bestScore) { $bestScore = $score; $bestItem = $item }
+            }
+            if ($null -ne $bestItem -and ($bestScore / $tokenCount) -ge 0.75) {
+                $bestItem.Selected = $true; $matched++
+            }
+        }
+
+    } else {
+
+        # V1: catalog-driven boolean matching via the dispatch function
+        $total = @($script:ModelData).Count
+        if ($ShowProgress) { Show-DATKnownModelSelectionProgress -Total $total -StatusText 'Matching catalog entries against inventory...' }
+        $idx = 0; $matched = 0
+
+        $sources = @()
+        if ($hasIntune)    { $sources += $script:IntuneKnownDevices }
+        if ($hasConfigMgr) { $sources += $script:ConfigMgrKnownDevices }
+
+        foreach ($item in $script:ModelData) {
+            $idx++
+            if ($ShowProgress) {
+                Update-DATKnownModelSelectionProgress -Current $idx -Total $total `
+                    -StatusText "$($item.OEM) $($item.Model)"
+            }
+            if ($item.Selected) { continue }
+            $gridMake  = ConvertTo-DATNormalizedMake  -Make $item.OEM
+            $gridModel = ConvertTo-DATNormalizedModel -Make $item.OEM -Model $item.Model
+            foreach ($device in $sources) {
+                if (& $script:DATKnownDeviceMatchFn `
+                        -GridMake $gridMake -GridModel $gridModel -GridBaseboards $item.Baseboards `
+                        -DeviceMake $device.Make -DeviceModel $device.Model -DeviceBaseboard $device.Baseboard) {
+                    $item.Selected = $true; $matched++; break
+                }
+            }
+        }
+    }
+
+    if ($ShowProgress) { Close-DATKnownModelSelectionProgress }
+    return $matched
+}
+
 $btn_SelectKnownModels.Add_Click({
     # Deselect all first so only known models end up selected
     foreach ($item in $script:ModelData) { $item.Selected = $false }
 
-    # Apply Intune known model selection
-    if ($script:IntuneKnownDevices -and @($script:IntuneKnownDevices).Count -gt 0) {
-        foreach ($item in $script:ModelData) {
-            $gridMake  = ConvertTo-DATNormalizedMake  -Make $item.OEM
-            $gridModel = ConvertTo-DATNormalizedModel -Make $item.OEM -Model $item.Model
-            foreach ($device in $script:IntuneKnownDevices) {
-                if (& $script:DATKnownDeviceMatchFn -GridMake $gridMake -GridModel $gridModel -GridBaseboards $item.Baseboards `
-                        -DeviceMake $device.Make -DeviceModel $device.Model -DeviceBaseboard $device.Baseboard) {
-                    $item.Selected = $true; break
-                }
-            }
-        }
-    }
-
-    # Apply ConfigMgr known model selection
-    if ($script:ConfigMgrKnownDevices -and @($script:ConfigMgrKnownDevices).Count -gt 0) {
-        foreach ($item in $script:ModelData) {
-            if (-not $item.Selected) {
-                $gridMake  = ConvertTo-DATNormalizedMake  -Make $item.OEM
-                $gridModel = ConvertTo-DATNormalizedModel -Make $item.OEM -Model $item.Model
-                foreach ($device in $script:ConfigMgrKnownDevices) {
-                    if (& $script:DATKnownDeviceMatchFn -GridMake $gridMake -GridModel $gridModel -GridBaseboards $item.Baseboards `
-                            -DeviceMake $device.Make -DeviceModel $device.Model -DeviceBaseboard $device.Baseboard) {
-                        $item.Selected = $true; break
-                    }
-                }
-            }
-        }
-    }
-
-    $selectedCount = ($script:ModelData | Where-Object { $_.Selected }).Count
-    Write-DATActivityLog "Selected $selectedCount known models from Intune/ConfigMgr device data" -Level Success
-
-    # Sort so selected models appear at the top
-    $view = [System.Windows.Data.CollectionViewSource]::GetDefaultView($script:ModelData)
-    $view.SortDescriptions.Clear()
-    $view.SortDescriptions.Add([System.ComponentModel.SortDescription]::new('Selected', [System.ComponentModel.ListSortDirection]::Descending))
-    $view.SortDescriptions.Add([System.ComponentModel.SortDescription]::new('OEM', [System.ComponentModel.ListSortDirection]::Ascending))
-    $view.SortDescriptions.Add([System.ComponentModel.SortDescription]::new('Model', [System.ComponentModel.ListSortDirection]::Ascending))
-    foreach ($col in $grid_Models.Columns) {
-        if ($col.SortMemberPath -eq 'Selected') {
-            $col.SortDirection = [System.ComponentModel.ListSortDirection]::Descending
-        } else {
-            $col.SortDirection = $null
-        }
-    }
-
-    Update-DATBuildButtonState
+    $count = Invoke-DATSelectKnownModels -ClearFirst -ShowProgress
+    Write-DATActivityLog "Selected $count known models from Intune/ConfigMgr device data" -Level Success
+    Update-DATKnownModelGridSort
     Save-DATModelSelections
 })
 
@@ -8694,42 +8915,13 @@ $txt_ConfigMgrKnownModelStatus = $Window.FindName('txt_ConfigMgrKnownModelStatus
 function Update-DATConfigMgrKnownModelSelection {
     <#
     .SYNOPSIS
-        Checks models in grid_Models that match known ConfigMgr devices.
-        Normalizes OEM make/model names before comparison.
+        Auto-selects catalog models matching known ConfigMgr devices after a query completes.
     #>
     if (-not $script:ConfigMgrKnownDevices -or $script:ModelData.Count -eq 0) { return }
-
-    $matchCount = 0
-    foreach ($item in $script:ModelData) {
-        $gridMake  = ConvertTo-DATNormalizedMake  -Make $item.OEM
-        $gridModel = ConvertTo-DATNormalizedModel -Make $item.OEM -Model $item.Model
-        foreach ($device in $script:ConfigMgrKnownDevices) {
-            if (& $script:DATKnownDeviceMatchFn -GridMake $gridMake -GridModel $gridModel -GridBaseboards $item.Baseboards `
-                    -DeviceMake $device.Make -DeviceModel $device.Model -DeviceBaseboard $device.Baseboard) {
-                $item.Selected = $true
-                $matchCount++
-                break
-            }
-        }
-    }
-
-    if ($matchCount -gt 0) {
-        Write-DATActivityLog "Auto-selected $matchCount models matching known ConfigMgr devices" -Level Success
-        Update-DATBuildButtonState
-
-        $view = [System.Windows.Data.CollectionViewSource]::GetDefaultView($script:ModelData)
-        $view.SortDescriptions.Clear()
-        $view.SortDescriptions.Add([System.ComponentModel.SortDescription]::new('Selected', [System.ComponentModel.ListSortDirection]::Descending))
-        $view.SortDescriptions.Add([System.ComponentModel.SortDescription]::new('OEM', [System.ComponentModel.ListSortDirection]::Ascending))
-        $view.SortDescriptions.Add([System.ComponentModel.SortDescription]::new('Model', [System.ComponentModel.ListSortDirection]::Ascending))
-
-        foreach ($col in $grid_Models.Columns) {
-            if ($col.SortMemberPath -eq 'Selected') {
-                $col.SortDirection = [System.ComponentModel.ListSortDirection]::Descending
-            } else {
-                $col.SortDirection = $null
-            }
-        }
+    $count = Invoke-DATSelectKnownModels
+    if ($count -gt 0) {
+        Write-DATActivityLog "Auto-selected $count models matching known ConfigMgr devices" -Level Success
+        Update-DATKnownModelGridSort
     }
 }
 
@@ -9087,70 +9279,13 @@ $txt_IntuneKnownModelStatus = $Window.FindName('txt_IntuneKnownModelStatus')
 function Update-DATKnownModelSelection {
     <#
     .SYNOPSIS
-        Checks models in grid_Models that match known Intune devices.
-        Normalizes OEM make/model names before comparison to account for
-        differences between Intune Graph data and OEM catalog naming.
+        Auto-selects catalog models matching known Intune devices after a query completes.
     #>
     if (-not $script:IntuneKnownDevices -or $script:ModelData.Count -eq 0) { return }
-
-    # Build normalized lookup sets from Intune known devices
-    $knownModels = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
-    $knownMakeModel = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
-    foreach ($device in $script:IntuneKnownDevices) {
-        $normMake = ConvertTo-DATNormalizedMake -Make $device.Make
-        $normModel = ConvertTo-DATNormalizedModel -Make $device.Make -Model $device.Model
-        [void]$knownModels.Add($normModel)
-        [void]$knownMakeModel.Add("$normMake|$normModel")
-    }
-
-    $matchCount = 0
-    foreach ($item in $script:ModelData) {
-        $gridMake = ConvertTo-DATNormalizedMake -Make $item.OEM
-        $gridModel = ConvertTo-DATNormalizedModel -Make $item.OEM -Model $item.Model
-        # Try model name match first
-        if ($knownModels.Contains($gridModel)) {
-            $item.Selected = $true
-            $matchCount++
-        }
-        # Fall back to make+model match
-        elseif ($knownMakeModel.Contains("$gridMake|$gridModel")) {
-            $item.Selected = $true
-            $matchCount++
-        }
-        # Microsoft Surface CPU-qualifier prefix match:
-        # WMI/Intune returns the base name (e.g. "Surface Laptop 4") while the catalog
-        # appends a CPU qualifier (e.g. "Surface Laptop 4 AMD"). Check if any known device
-        # model is a prefix of the grid model name so all CPU variants are selected.
-        elseif ($gridMake -eq 'Microsoft') {
-            foreach ($knownEntry in $knownModels) {
-                if ($gridModel -like "$knownEntry *") {
-                    $item.Selected = $true
-                    $matchCount++
-                    break
-                }
-            }
-        }
-    }
-
-    if ($matchCount -gt 0) {
-        Write-DATActivityLog "Auto-selected $matchCount models matching known Intune devices" -Level Success
-        Update-DATBuildButtonState
-
-        # Sort grid so checked (known) models appear at the top
-        $view = [System.Windows.Data.CollectionViewSource]::GetDefaultView($script:ModelData)
-        $view.SortDescriptions.Clear()
-        $view.SortDescriptions.Add([System.ComponentModel.SortDescription]::new('Selected', [System.ComponentModel.ListSortDirection]::Descending))
-        $view.SortDescriptions.Add([System.ComponentModel.SortDescription]::new('OEM', [System.ComponentModel.ListSortDirection]::Ascending))
-        $view.SortDescriptions.Add([System.ComponentModel.SortDescription]::new('Model', [System.ComponentModel.ListSortDirection]::Ascending))
-
-        # Update column header sort indicator
-        foreach ($col in $grid_Models.Columns) {
-            if ($col.SortMemberPath -eq 'Selected') {
-                $col.SortDirection = [System.ComponentModel.ListSortDirection]::Descending
-            } else {
-                $col.SortDirection = $null
-            }
-        }
+    $count = Invoke-DATSelectKnownModels
+    if ($count -gt 0) {
+        Write-DATActivityLog "Auto-selected $count models matching known Intune devices" -Level Success
+        Update-DATKnownModelGridSort
     }
 }
 
