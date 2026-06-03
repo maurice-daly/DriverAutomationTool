@@ -3818,7 +3818,7 @@ function Start-DATModelProcessing {
                             }
                         }
                     } elseif ($RunningMode -eq 'Intune') {
-                        $expectedBiosName = "$biosNamePrefix - $oem $modelName - $arch"
+                        $expectedBiosName = "$biosNamePrefix - $oem $modelName"
                         Write-DATLogEntry -Value "[$currentIndex/$totalModels] Checking for existing Intune BIOS package: $expectedBiosName (catalog v${catalogBIOSVersion})" -Severity 1
                         if ($cachedIntuneApps.Count -eq 0) {
                             Write-DATLogEntry -Value "[$currentIndex/$totalModels] WARNING: Intune app cache is empty -- BIOS skip-if-current check disabled" -Severity 2
@@ -3828,7 +3828,7 @@ function Start-DATModelProcessing {
                             } | Sort-Object -Property displayVersion -Descending | Select-Object -First 1
                             # Fallback: try with just the core model identifier
                             if (-not $existingBiosApp -and $coreModelId -ne $modelName) {
-                                $fallbackBiosName = "$biosNamePrefix - $oem $coreModelId - $arch"
+                                $fallbackBiosName = "$biosNamePrefix - $oem $coreModelId"
                                 $existingBiosApp = $cachedIntuneApps | Where-Object {
                                     $_.displayName -eq $fallbackBiosName
                                 } | Sort-Object -Property displayVersion -Descending | Select-Object -First 1
@@ -3946,7 +3946,7 @@ function Start-DATModelProcessing {
                                 if ($null -ne $biosIntuneResult -and -not [string]::IsNullOrEmpty($biosIntuneResult.AppId)) {
                                     $processedBiosModels["$oem|$modelName"] = $biosIntuneResult.AppId
                                     if (-not $biosIntuneResult.Skipped) {
-                                        $biosDisplayName = "$biosNamePrefix - $oem $modelName - $arch"
+                                        $biosDisplayName = "$biosNamePrefix - $oem $modelName"
                                         $biosCacheVersion = if (-not [string]::IsNullOrEmpty($biosEntry.Version)) { $biosEntry.Version } else { Get-Date -Format "ddMMyyyy" }
                                         $cachedIntuneApps += [PSCustomObject]@{
                                             id             = $biosIntuneResult.AppId
@@ -9372,7 +9372,7 @@ function Invoke-DATIntunePackageCreation {
     $installScriptName = if ($UpdateType -eq 'BIOS') { 'Install-BIOS.ps1' } else { 'Install-Drivers.ps1' }
     $displayPrefix = if (-not [string]::IsNullOrEmpty($NamePrefix)) { $NamePrefix } else { $UpdateType }
     $displayName = if ($UpdateType -eq 'BIOS') {
-        "$displayPrefix - $OEM $Model - $Architecture"
+        "$displayPrefix - $OEM $Model"
     } else {
         "$displayPrefix - $OEM $Model - $OS $Architecture"
     }
@@ -11083,11 +11083,12 @@ function Repair-DATBiosPackageNames {
         Scans Intune and/or ConfigMgr for BIOS packages using the old naming convention
         (with OS version) and renames them to the new convention (architecture only).
     .DESCRIPTION
-        Old Intune naming:   "BIOS - Dell Precision 5690 - Windows 11 25H2 x64"
-        New Intune naming:   "BIOS - Dell Precision 5690 - x64"
+        Old Intune naming:   "BIOS - Dell Precision 5690 - Windows 11 25H2 x64" or
+                             "BIOS - Dell Precision 5690 - x64"
+        New Intune naming:   "BIOS - Dell Precision 5690" (no OS version, no architecture suffix)
 
-        Old ConfigMgr naming: "BIOS Update - Dell Precision 5690" (no arch)
-        New ConfigMgr naming:  "BIOS Update - Dell Precision 5690 - x64"
+        Old ConfigMgr naming: "BIOS Update - Dell Precision 5690 - x64" (with architecture suffix)
+        New ConfigMgr naming:  "BIOS Update - Dell Precision 5690" (no architecture suffix)
 
         Returns an array of result objects with OldName, NewName, Platform, Status, and Error.
     #>
@@ -11114,7 +11115,8 @@ function Repair-DATBiosPackageNames {
             } else {
                 $allApps = Get-DATIntuneWin32Apps | Where-Object {
                     $_.notes -eq 'Created by the Driver Automation Tool' -and
-                    $_.displayName -match '^BIOS\s*-\s*.+\s*-\s*Windows\s'
+                    ($_.displayName -match '^BIOS\s*-\s*.+\s*-\s*Windows\s' -or
+                     $_.displayName -match '^BIOS\s*-\s*.+\s*-\s*(x64|Arm64)\s*$')
                 }
                 if ($allApps.Count -eq 0) {
                     Write-DATLogEntry -Value "[BIOS Repair] No Intune BIOS packages with old naming found" -Severity 1
@@ -11128,12 +11130,14 @@ function Repair-DATBiosPackageNames {
 
                 foreach ($app in $allApps) {
                     $oldName = $app.displayName
-                    # Extract architecture from end (x64 or Arm64), strip OS portion
+                    # Strip OS + arch suffix (e.g. "- Windows 11 25H2 x64") or arch-only suffix (e.g. "- x64")
+                    $newName = $null
                     if ($oldName -match '^(BIOS\s*-\s*.+?)\s*-\s*Windows\s+\d+\s+\S+\s+(x64|Arm64)\s*$') {
-                        $prefix = $Matches[1].Trim()
-                        $arch   = $Matches[2]
-                        $newName = "$prefix - $arch"
-
+                        $newName = $Matches[1].Trim()
+                    } elseif ($oldName -match '^(BIOS\s*-\s*.+?)\s*-\s*(x64|Arm64)\s*$') {
+                        $newName = $Matches[1].Trim()
+                    }
+                    if ($null -ne $newName) {
                         try {
                             # Update displayName via Graph PATCH
                             $patchBody = @{
@@ -11203,12 +11207,11 @@ function Repair-DATBiosPackageNames {
                 $cmPackages = Invoke-DATRemoteQuery -CimSession $cimSession -ComputerName $SiteServer -Namespace $smsNamespace `
                     -Query $wmiQuery
 
-                # Filter to packages missing architecture suffix (old format)
+                # Filter to packages WITH architecture suffix (old format — new format has no arch in name)
                 $oldFormatPkgs = @($cmPackages | Where-Object {
-                    # Old format: no " - x64" or " - Arm64" suffix, OR MIFVersion contains OS
                     $name = $_.Name
                     $mif = $_.MIFVersion
-                    $needsNameFix = $name -notmatch '\s*-\s*(x64|Arm64)\s*$'
+                    $needsNameFix = $name -match '\s*-\s*(x64|Arm64)\s*$'
                     $needsMifFix = $mif -match 'Windows\s+\d+'
                     $needsNameFix -or $needsMifFix
                 })
@@ -11227,18 +11230,16 @@ function Repair-DATBiosPackageNames {
                     $oldName = $pkg.Name
                     $oldMif = $pkg.MIFVersion
 
-                    # Determine architecture from MIFVersion or default to x64
+                    # Determine architecture from name or MIFVersion (for log only)
                     $arch = 'x64'
-                    if ($oldMif -match '(x64|Arm64)') { $arch = $Matches[1] }
+                    if ($oldName -match '\s*-\s*(x64|Arm64)\s*$') { $arch = $Matches[1] }
+                    elseif ($oldMif -match '(x64|Arm64)') { $arch = $Matches[1] }
 
-                    # Build new name: add architecture if missing
-                    $newName = $oldName
-                    if ($oldName -notmatch '\s*-\s*(x64|Arm64)\s*$') {
-                        $newName = "$oldName - $arch"
-                    }
+                    # Build new name: strip architecture suffix if present
+                    $newName = $oldName -replace '\s*-\s*(x64|Arm64)\s*$', ''
 
-                    # Build new MIFVersion: strip OS, keep architecture only
-                    $newMif = $arch
+                    # New BIOS packages have empty MIFVersion
+                    $newMif = ''
 
                     try {
                         if ($null -ne $cimSession) {
@@ -11299,15 +11300,15 @@ function Remove-DATBiosDuplicatePackages {
     <#
     .SYNOPSIS
         Resolves duplicate BIOS packages in ConfigMgr by keeping the newest version,
-        normalizing the kept package name to include architecture, and removing stale duplicates.
+        normalizing the kept package name to remove any architecture suffix, and removing stale duplicates.
     .DESCRIPTION
         Detects ConfigMgr BIOS package duplicates:
-        - Old naming: "BIOS Update - Dell Latitude 5540" (no architecture)
-        - New naming: "BIOS Update - Dell Latitude 5540 - x64" (with architecture)
+        - Old naming: "BIOS Update - Dell Latitude 5540 - x64" (with architecture suffix)
+        - New naming: "BIOS Update - Dell Latitude 5540" (no architecture suffix)
 
-        When duplicates are found, the package with the highest BIOS version (from MIFVersion)
+        When duplicates are found, the package with the highest BIOS version (from SMS_Package.Version)
         is kept. Any stale duplicates are removed, including package source folders.
-        If the kept package is missing architecture suffix, it is renamed to include it.
+        If the kept package has an architecture suffix, it is renamed to remove it.
 
         Returns an array of result objects with OldName, Platform, Status, and Error.
     #>
@@ -11315,7 +11316,8 @@ function Remove-DATBiosDuplicatePackages {
     param (
         [string]$SiteServer,
         [string]$SiteCode,
-        [System.Collections.Concurrent.ConcurrentQueue[object]]$ProgressQueue
+        [System.Collections.Concurrent.ConcurrentQueue[object]]$ProgressQueue,
+        [switch]$ScanOnly
     )
 
     $results = [System.Collections.ArrayList]::new()
@@ -11324,6 +11326,9 @@ function Remove-DATBiosDuplicatePackages {
         Write-DATLogEntry -Value "[BIOS Duplicate Removal] ConfigMgr not configured, skipping" -Severity 1
         return $results
     }
+
+    $scanMode = if ($ScanOnly) { 'scan' } else { 'full'  }
+    Write-DATLogEntry -Value "[BIOS Duplicate Removal] Starting ($scanMode mode)..." -Severity 1
 
     try {
         Write-DATLogEntry -Value "[BIOS Duplicate Removal] Scanning ConfigMgr for duplicate BIOS packages..." -Severity 1
@@ -11397,6 +11402,21 @@ function Remove-DATBiosDuplicatePackages {
                 @{ Expression = { [int](-not $_.HasArch) }; Descending = $true } | Select-Object -First 1
             $keepPkg = $keepMeta.Package
             Write-DATLogEntry -Value "[BIOS Duplicate Removal] Keeping newest package -- Model: '$modelKey', PackageID: '$($keepPkg.PackageID)', Name: '$($keepPkg.Name)', Version: '$($keepPkg.Version)', ParsedVersion: '$($keepMeta.ParsedVersion)'" -Severity 1
+
+            # In ScanOnly mode: record what would be removed and move on without making changes
+            if ($ScanOnly) {
+                $removePkgsScan = $entries | Where-Object { $_.Package.PackageID -ne $keepPkg.PackageID } | ForEach-Object { $_.Package }
+                foreach ($oldPkgScan in $removePkgsScan) {
+                    [void]$results.Add([PSCustomObject]@{
+                        OldName  = $oldPkgScan.Name
+                        KeepName = $keepPkg.Name
+                        Platform = 'ConfigMgr'
+                        Status   = 'WouldRemove'
+                        Error    = ''
+                    })
+                }
+                continue
+            }
 
             # Normalise kept package name: new Dell BIOS names do NOT include an arch suffix -- strip it if present
             if ($keepPkg.Name -match '^(.+?)\s*-\s*(x64|Arm64)\s*$') {

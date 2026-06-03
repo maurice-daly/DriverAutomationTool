@@ -2227,7 +2227,7 @@ function Show-DATBiosNamePromptModal {
     )
 
     # Check "do not remind" preference
-    $dismissedValue = (Get-ItemProperty -Path $global:RegPath -Name 'DismissBiosNamePrompt' -ErrorAction SilentlyContinue).DismissBiosNamePrompt
+    $dismissedValue = (Get-ItemProperty -Path $global:RegPath -Name 'DismissBiosNamePrompt2' -ErrorAction SilentlyContinue).DismissBiosNamePrompt2
     if ($dismissedValue -eq 1) { return }
 
     $theme = Get-DATTheme -ThemeName $script:CurrentTheme
@@ -2293,7 +2293,11 @@ function Show-DATBiosNamePromptModal {
     # Explanation
     $platformLabel = if ($Platform -eq 'Intune') { 'Intune' } else { 'ConfigMgr' }
     $explanationText = [System.Windows.Controls.TextBlock]::new()
-    $explanationText.Text = "$Count BIOS package$(if ($Count -ne 1) { 's' }) in $platformLabel use$(if ($Count -eq 1) { 's' }) an outdated naming convention. BIOS packages no longer include the OS version in their name, since BIOS updates are OS-independent."
+    if ($Platform -eq 'Intune') {
+        $explanationText.Text = "$Count BIOS package$(if ($Count -ne 1) { 's' }) in Intune use$(if ($Count -eq 1) { 's' }) an outdated naming convention. BIOS packages no longer include the OS version or architecture suffix in their name."
+    } else {
+        $explanationText.Text = "$Count BIOS package$(if ($Count -ne 1) { 's' }) in ConfigMgr use$(if ($Count -eq 1) { 's' }) an outdated naming convention. BIOS packages no longer include the architecture suffix in their name."
+    }
     $explanationText.FontSize = 13
     $explanationText.TextWrapping = [System.Windows.TextWrapping]::Wrap
     $explanationText.Foreground = [System.Windows.Media.SolidColorBrush]::new($dimColor)
@@ -2315,10 +2319,10 @@ function Show-DATBiosNamePromptModal {
     $infoText.Foreground = [System.Windows.Media.SolidColorBrush]::new($fgColor)
     if ($Platform -eq 'Intune') {
         $oldExample = "BIOS - Dell Precision 5690 - Windows 11 25H2 x64"
-        $newExample = "BIOS - Dell Precision 5690 - x64"
+        $newExample = "BIOS - Dell Precision 5690"
     } else {
-        $oldExample = "BIOS Update - Dell Precision 5690"
-        $newExample = "BIOS Update - Dell Precision 5690 - x64"
+        $oldExample = "BIOS Update - Dell Precision 5690 - x64"
+        $newExample = "BIOS Update - Dell Precision 5690"
     }
     $infoRun1 = [System.Windows.Documents.Run]::new("Old: ")
     $infoRun1.FontWeight = [System.Windows.FontWeights]::SemiBold
@@ -2436,7 +2440,7 @@ function Show-DATBiosNamePromptModal {
     $btnFix.Add_Click({
         # Save dismiss preference if checked
         if ($toggleCheck.IsChecked -eq $true) {
-            Set-DATRegistryValue -Name 'DismissBiosNamePrompt' -Value 1 -Type DWord
+            Set-DATRegistryValue -Name 'DismissBiosNamePrompt2' -Value 1 -Type DWord
         }
         $script:biosPromptResult = $true
         $dlg.Close()
@@ -2470,7 +2474,7 @@ function Show-DATBiosNamePromptModal {
     $btnDismiss.Add_Click({
         # Save dismiss preference if checked
         if ($toggleCheck.IsChecked -eq $true) {
-            Set-DATRegistryValue -Name 'DismissBiosNamePrompt' -Value 1 -Type DWord
+            Set-DATRegistryValue -Name 'DismissBiosNamePrompt2' -Value 1 -Type DWord
         }
         $script:biosPromptResult = $false
         $dlg.Close()
@@ -8906,16 +8910,33 @@ function Invoke-DATConfigMgrConnect {
                 Write-DATActivityLog "[Package Repair] Error scanning for repairs: $($_.Exception.Message)" -Level Warn
             }
 
-            # Resolve duplicate BIOS packages by keeping newest version and removing stale duplicates
+            # Resolve duplicate BIOS packages -- scan first, then prompt for opt-in before removing
             try {
-                Write-DATActivityLog "[BIOS Duplicate] Starting BIOS package duplicate removal scan..." -Level Info
-                $duplicateResults = Remove-DATBiosDuplicatePackages -SiteServer $SiteServer -SiteCode $global:SiteCode
-                $removedCount = ($duplicateResults | Where-Object { $_.Status -eq 'Removed' } | Measure-Object).Count
-                if ($removedCount -gt 0) {
-                    Write-DATActivityLog "[BIOS Duplicate] Removed $removedCount duplicate BIOS package(s)" -Level Info
-                    Show-DATInfoDialog -Title 'Duplicate BIOS Packages Removed' `
-                        -Message "Cleaned up $removedCount duplicate BIOS package$(if ($removedCount -ne 1) { 's' }) by keeping the newest BIOS version and removing stale duplicates.`n`nRemaining BIOS packages are normalized to include architecture suffix, and removed packages have their source folders deleted from Configuration Manager." `
-                        -Type Success -ButtonLabel 'OK'
+                Write-DATActivityLog "[BIOS Duplicate] Scanning for duplicate BIOS packages..." -Level Info
+                $scanResults = Remove-DATBiosDuplicatePackages -SiteServer $SiteServer -SiteCode $global:SiteCode -ScanOnly
+                $wouldRemoveCount = ($scanResults | Where-Object { $_.Status -eq 'WouldRemove' } | Measure-Object).Count
+                if ($wouldRemoveCount -gt 0) {
+                    Write-DATActivityLog "[BIOS Duplicate] Found $wouldRemoveCount duplicate BIOS package(s) -- prompting user" -Level Info
+                    $userConfirmed = Show-DATConfirmDialog `
+                        -Title 'Duplicate BIOS Packages Found' `
+                        -Message "Found $wouldRemoveCount duplicate BIOS package$(if ($wouldRemoveCount -ne 1) { 's' }) in ConfigMgr. The newest version of each model will be kept and stale duplicates removed.`n`nDo you want to clean up the duplicate packages now?" `
+                        -Type Warning `
+                        -ConfirmLabel 'Remove Duplicates' `
+                        -CancelLabel 'Skip'
+                    if ($userConfirmed) {
+                        $duplicateResults = Remove-DATBiosDuplicatePackages -SiteServer $SiteServer -SiteCode $global:SiteCode
+                        $removedCount = ($duplicateResults | Where-Object { $_.Status -eq 'Removed' } | Measure-Object).Count
+                        if ($removedCount -gt 0) {
+                            Write-DATActivityLog "[BIOS Duplicate] Removed $removedCount duplicate BIOS package(s)" -Level Info
+                            Show-DATInfoDialog -Title 'Duplicate BIOS Packages Removed' `
+                                -Message "Cleaned up $removedCount duplicate BIOS package$(if ($removedCount -ne 1) { 's' }) by keeping the newest BIOS version and removing stale duplicates.`n`nRemoved packages and their source folders have been deleted from Configuration Manager." `
+                                -Type Success -ButtonLabel 'OK'
+                        } else {
+                            Write-DATActivityLog "[BIOS Duplicate] Removal run completed with no removals (may have already been cleaned)" -Level Info
+                        }
+                    } else {
+                        Write-DATActivityLog "[BIOS Duplicate] User opted to skip duplicate removal" -Level Info
+                    }
                 } else {
                     Write-DATActivityLog "[BIOS Duplicate] No duplicate BIOS packages found" -Level Info
                 }
@@ -10819,18 +10840,6 @@ function Invoke-DATPackageRefresh {
                     }
                     $restore = $cmb_CmPkgOS.Items | Where-Object { $_.Content -eq $prevOS }
                     $cmb_CmPkgOS.SelectedItem = if ($restore) { $restore } else { $cmb_CmPkgOS.Items[0] }
-
-                    # Detect old-format BIOS package names and prompt user
-                    $oldBiosNames = @($script:PackageData | Where-Object {
-                        $_.Name -match '^BIOS Update' -and $_.Name -notmatch '\s*-\s*(x64|Arm64)\s*$'
-                    })
-                    if ($oldBiosNames.Count -gt 0) {
-                        $fixNow = Show-DATBiosNamePromptModal -Platform 'ConfigMgr' -Count $oldBiosNames.Count
-                        if ($fixNow) {
-                            Show-DATBiosNameRepairModal -Platform 'ConfigMgr'
-                            Invoke-DATPackageRefresh
-                        }
-                    }
                 }
             } catch {
                 $txt_PkgStatus.Foreground = $Window.FindResource('StatusError')
@@ -10841,12 +10850,31 @@ function Invoke-DATPackageRefresh {
                 $script:PkgRefreshRunspace.Dispose()
                 $btn_RefreshPkgs.IsEnabled = $true
             }
+
+            # Detect old-format BIOS package names AFTER cleanup so any subsequent
+            # Invoke-DATPackageRefresh does not conflict with the disposed runspace
+            Invoke-DATCmBiosNameCheck
         }
     })
     $script:PkgRefreshTimer.Start()
 }
 
 $btn_RefreshPkgs.Add_Click({ Invoke-DATPackageRefresh })
+
+# Check loaded ConfigMgr BIOS packages for old-format names and prompt if needed
+function Invoke-DATCmBiosNameCheck {
+    if ($script:PackageData.Count -eq 0) { return }
+    $oldBiosNames = @($script:PackageData | Where-Object {
+        $_.Name -match '^BIOS Update' -and $_.Name -match '\s*-\s*(x64|Arm64)\s*$'
+    })
+    if ($oldBiosNames.Count -gt 0) {
+        $fixNow = Show-DATBiosNamePromptModal -Platform 'ConfigMgr' -Count $oldBiosNames.Count
+        if ($fixNow) {
+            Show-DATBiosNameRepairModal -Platform 'ConfigMgr'
+            Invoke-DATPackageRefresh
+        }
+    }
+}
 
 $cmb_PkgPackageType.Add_SelectionChanged({
     $pkgType = if ($null -ne $cmb_PkgPackageType.SelectedItem) { $cmb_PkgPackageType.SelectedItem.Content } else { 'Drivers' }
@@ -17611,18 +17639,6 @@ function Invoke-DATIntuneAppRefresh {
 
             # Apply package type + search filter to the refreshed data
             Update-DATIntuneAppFilter
-
-            # Detect old-format BIOS package names and prompt user
-            $oldIntuneBiosNames = @($script:IntuneAppsData | Where-Object {
-                $_.DisplayName -match '^BIOS\s*-\s*.+\s*-\s*Windows\s'
-            })
-            if ($oldIntuneBiosNames.Count -gt 0) {
-                $fixNow = Show-DATBiosNamePromptModal -Platform 'Intune' -Count $oldIntuneBiosNames.Count
-                if ($fixNow) {
-                    Show-DATBiosNameRepairModal -Platform 'Intune'
-                    Invoke-DATIntuneAppRefresh
-                }
-            }
         } else {
             $errMsg = $script:AppRefreshState.Error
             if ($errMsg -match "expired|re-authenticate|401") {
@@ -17643,6 +17659,22 @@ function Invoke-DATIntuneAppRefresh {
 
         $btn_RefreshIntuneApps.IsEnabled = $true
         try { $script:AppRefreshPS.Dispose(); $script:AppRefreshPS = $null } catch {}
+
+        # Detect old-format BIOS package names AFTER cleanup so any subsequent
+        # Invoke-DATIntuneAppRefresh does not conflict with the disposed runspace
+        if ($script:IntuneAppsData.Count -gt 0) {
+            $oldIntuneBiosNames = @($script:IntuneAppsData | Where-Object {
+                $_.DisplayName -match '^BIOS\s*-\s*.+\s*-\s*Windows\s' -or
+                $_.DisplayName -match '^BIOS\s*-\s*.+\s*-\s*(x64|Arm64)\s*$'
+            })
+            if ($oldIntuneBiosNames.Count -gt 0) {
+                $fixNow = Show-DATBiosNamePromptModal -Platform 'Intune' -Count $oldIntuneBiosNames.Count
+                if ($fixNow) {
+                    Show-DATBiosNameRepairModal -Platform 'Intune'
+                    Invoke-DATIntuneAppRefresh
+                }
+            }
+        }
     })
     $script:AppRefreshTimer.Start()
 }

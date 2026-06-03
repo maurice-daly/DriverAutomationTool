@@ -3,6 +3,11 @@ Release Notes
 IMPORTANT
 - DAT Downloads have been moved to GitHub - https://github.com/maurice-daly/DriverAutomationTool
 
+Version 10.0.39
+Fixes
+- Duplicate entry clean up is not opt in
+- Rename prompt will appear on package management for both Configuration Manager and Intune BIOS packages. Removing the Windows version and architecture names.
+
 Version 10.0.38
 Fixes
 - Rename fix introduced a Windows build issue for new Dell packages. Fixed.
