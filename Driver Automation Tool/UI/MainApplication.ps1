@@ -5542,12 +5542,14 @@ $script:OSCheckboxes = [ordered]@{
     'Windows 11 24H2' = $Window.FindName('chk_OS_Win11_24H2')
     'Windows 11 23H2' = $Window.FindName('chk_OS_Win11_23H2')
     'Windows 11 22H2' = $Window.FindName('chk_OS_Win11_22H2')
+    'Windows 11 21H2' = $Window.FindName('chk_OS_Win11_21H2')
 }
 $script:OSBorders = [ordered]@{
     'Windows 11 25H2' = $Window.FindName('border_OS_Win11_25H2')
     'Windows 11 24H2' = $Window.FindName('border_OS_Win11_24H2')
     'Windows 11 23H2' = $Window.FindName('border_OS_Win11_23H2')
     'Windows 11 22H2' = $Window.FindName('border_OS_Win11_22H2')
+    'Windows 11 21H2' = $Window.FindName('border_OS_Win11_21H2')
 }
 
 # Backing store for selected OS values -- survives regardless of popup/checkbox state
@@ -6190,7 +6192,12 @@ $btn_RefreshModels.Add_Click({
                             }
                             continue
                         }
-                        $devices = $bEntry.SupportedDevices -split '[;\s]+' | ForEach-Object { $_.Trim().ToUpper() } | Where-Object { $_ }
+                        # Acer model names contain spaces (e.g. "TravelMate P214-42") -- don't split on whitespace
+                        $devices = if ($bEntry.Manufacturer -eq 'Acer') {
+                            @($bEntry.SupportedDevices.Trim().ToUpper())
+                        } else {
+                            $bEntry.SupportedDevices -split '[;\s]+' | ForEach-Object { $_.Trim().ToUpper() } | Where-Object { $_ }
+                        }
                         foreach ($dev in $devices) {
                             $bKey = "$($bEntry.Manufacturer)|$dev"
                             if (-not $biosDeviceMap.ContainsKey($bKey)) { $biosDeviceMap[$bKey] = $bEntry }
@@ -6211,7 +6218,12 @@ $btn_RefreshModels.Add_Click({
                                 continue
                             }
                             if ($model.OEM -eq 'Acer') {
-                                $biosEntry = $biosNameMap["Acer|$($model.Model)"]
+                                # Acer SupportedDevices == model name; look up by uppercased model name
+                                $biosEntry = $biosDeviceMap["Acer|$($model.Model.ToUpper())"]
+                                if ($null -eq $biosEntry) {
+                                    # Fallback: DisplayName-keyed map (legacy entries without SupportedDevices)
+                                    $biosEntry = $biosNameMap["Acer|$($model.Model)"]
+                                }
                             } else {
                                 $biosEntry = $null
                                 $boards = $model.Baseboards -split '[,;\s]+' | ForEach-Object { $_.Trim().ToUpper() } | Where-Object { $_ }
@@ -6691,7 +6703,12 @@ $btn_RefreshModels.Add_Click({
                     }
                     continue
                 }
-                $devices = $entry.SupportedDevices -split '[;\s]+' | ForEach-Object { $_.Trim().ToUpper() } | Where-Object { $_ }
+                # Acer model names contain spaces (e.g. "TravelMate P214-42") -- don't split on whitespace
+                $devices = if ($entry.Manufacturer -eq 'Acer') {
+                    @($entry.SupportedDevices.Trim().ToUpper())
+                } else {
+                    $entry.SupportedDevices -split '[;\s]+' | ForEach-Object { $_.Trim().ToUpper() } | Where-Object { $_ }
+                }
                 foreach ($dev in $devices) {
                     $key = "$($entry.Manufacturer)|$dev"
                     $existing = $biosDeviceMap[$key]
@@ -6720,8 +6737,12 @@ $btn_RefreshModels.Add_Click({
                         continue
                     }
                     if ($model.OEM -eq 'Acer') {
-                        # Acer: match by DisplayName from JSON BIOS catalog
-                        $biosEntry = $biosNameMap["Acer|$($model.Model)"]
+                        # Acer SupportedDevices == model name; look up by uppercased model name
+                        $biosEntry = $biosDeviceMap["Acer|$($model.Model.ToUpper())"]
+                        if ($null -eq $biosEntry) {
+                            # Fallback: DisplayName-keyed map (legacy entries without SupportedDevices)
+                            $biosEntry = $biosNameMap["Acer|$($model.Model)"]
+                        }
                     } else {
                         # Fast hashtable lookup for Dell/HP/Lenovo/Microsoft
                         $biosEntry = $null
@@ -10436,7 +10457,7 @@ function Invoke-DATPackageRefresh {
                     Update-DATPackageRowHighlighting -DataGrid $grid_Packages -ItemsSource $script:PackageData -MakeProperty 'Manufacturer' -ModelProperty 'Model' -VersionProperty 'Version'
 
                     # Populate the OS filter dropdown: merge static builds with distinct values from loaded data
-                    $staticBuilds = @('Windows 11 25H2', 'Windows 11 24H2', 'Windows 11 23H2', 'Windows 11 22H2')
+                    $staticBuilds = @('Windows 11 25H2', 'Windows 11 24H2', 'Windows 11 23H2', 'Windows 11 22H2', 'Windows 11 21H2')
                     $packageOSValues = $script:PackageData | Where-Object { -not [string]::IsNullOrEmpty($_.OperatingSystem) } |
                         Select-Object -ExpandProperty OperatingSystem -Unique
                     $allOSValues = @($staticBuilds) + @($packageOSValues) | Select-Object -Unique | Sort-Object
