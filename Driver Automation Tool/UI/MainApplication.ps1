@@ -7201,7 +7201,7 @@ function Test-DATKnownDeviceMatchV2 {
     # Tokens are extracted from the device model and each one is checked for
     # presence in GridModel. Brand markers use substring match; numeric/alphanumeric
     # tokens use word boundaries to prevent "G1" from matching "G10" or "G11".
-    if ($normDeviceMake -eq 'HP' -and $GridMake -eq 'HP') {
+<#     if ($normDeviceMake -eq 'HP' -and $GridMake -eq 'HP') {
         $deviceTokens = Get-DATHPModelTokens -ModelName $normDeviceModel
         if ($deviceTokens.Count -gt 0) {
             $allMatch = $true
@@ -7215,7 +7215,7 @@ function Test-DATKnownDeviceMatchV2 {
             }
             if ($allMatch) { return $true }
         }
-    }
+    } #>
 
     # --- Name-based match ---
     if ($GridModel -eq $normDeviceModel -or "$GridMake|$GridModel" -eq "$normDeviceMake|$normDeviceModel") {
