@@ -697,6 +697,9 @@
             <Setter Property="BorderThickness" Value="0"/>
             <Setter Property="Background" Value="Transparent"/>
             <Setter Property="Foreground" Value="{DynamicResource SidebarForeground}"/>
+            <Setter Property="ToolTip" Value="{Binding RelativeSource={RelativeSource Self}, Path=Content.Text}"/>
+            <Setter Property="ToolTipService.ShowDuration" Value="30000"/>
+            <Setter Property="ToolTipService.InitialShowDelay" Value="500"/>
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="DataGridCell">
@@ -902,7 +905,7 @@
                                    Foreground="{DynamicResource AccentColor}" VerticalAlignment="Center" Margin="0,0,8,0"/>
                         <TextBlock Text="Driver Automation Tool" FontSize="13" FontWeight="SemiBold"
                                    Foreground="{DynamicResource WindowForeground}" VerticalAlignment="Center"/>
-                        <TextBlock x:Name="txt_Version" Text=" Version 10.0.36" FontSize="11"
+                        <TextBlock x:Name="txt_Version" Text=" Version 10.0.37" FontSize="11"
                                    Foreground="{DynamicResource InputPlaceholder}" VerticalAlignment="Center" Margin="4,0"/>
                     </StackPanel>
 
@@ -1269,6 +1272,18 @@
                                                             </Border.Style>
                                                             <CheckBox x:Name="chk_OS_Win11_22H2" Content="Windows 11 22H2" Margin="0"/>
                                                         </Border>
+                                                        <Border x:Name="border_OS_Win11_21H2" Background="Transparent" CornerRadius="8" Padding="12,7" Margin="0,1" Cursor="Hand">
+                                                            <Border.Style>
+                                                                <Style TargetType="Border">
+                                                                    <Style.Triggers>
+                                                                        <Trigger Property="IsMouseOver" Value="True">
+                                                                            <Setter Property="Background" Value="{DynamicResource SidebarHover}"/>
+                                                                        </Trigger>
+                                                                    </Style.Triggers>
+                                                                </Style>
+                                                            </Border.Style>
+                                                            <CheckBox x:Name="chk_OS_Win11_21H2" Content="Windows 11 21H2" Margin="0"/>
+                                                        </Border>
                                                     </StackPanel>
                                                 </Border>
                                             </Popup>
@@ -1515,7 +1530,8 @@
                                                 <DataGridTemplateColumn Header="Build" Width="80" SortMemberPath="Build">
                                                     <DataGridTemplateColumn.CellTemplate>
                                                         <DataTemplate>
-                                                            <TextBlock VerticalAlignment="Center">
+                                                            <TextBlock VerticalAlignment="Center"
+                                                                       ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}">
                                                                 <TextBlock.Style>
                                                                     <Style TargetType="TextBlock">
                                                                         <Setter Property="Text" Value="{Binding Build}"/>
@@ -1538,7 +1554,8 @@
                                                     <DataGridTemplateColumn.CellTemplate>
                                                         <DataTemplate>
                                                             <TextBlock VerticalAlignment="Center"
-                                                                       TextTrimming="CharacterEllipsis">
+                                                                       TextTrimming="CharacterEllipsis"
+                                                                       ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}">
                                                                 <TextBlock.Style>
                                                                     <Style TargetType="TextBlock">
                                                                         <!-- Default: show driver Version -->
@@ -1561,7 +1578,8 @@
                                                     <DataGridTemplateColumn.CellTemplate>
                                                         <DataTemplate>
                                                             <TextBlock VerticalAlignment="Center"
-                                                                       TextTrimming="CharacterEllipsis">
+                                                                       TextTrimming="CharacterEllipsis"
+                                                                       ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}">
                                                                 <TextBlock.Style>
                                                                     <Style TargetType="TextBlock">
                                                                         <Setter Property="Text" Value="{Binding BIOSVersion}"/>
@@ -1875,6 +1893,7 @@
                                     <ComboBoxItem Content="Windows 11 24H2"/>
                                     <ComboBoxItem Content="Windows 11 23H2"/>
                                     <ComboBoxItem Content="Windows 11 22H2"/>
+                                    <ComboBoxItem Content="Windows 11 21H2"/>
                                 </ComboBox>
                             </Grid>
 
@@ -3972,6 +3991,7 @@
                                     <ComboBoxItem Content="Windows 11 24H2"/>
                                     <ComboBoxItem Content="Windows 11 23H2"/>
                                     <ComboBoxItem Content="Windows 11 22H2"/>
+                                    <ComboBoxItem Content="Windows 11 21H2"/>
                                 </ComboBox>
                             </Grid>
 
@@ -5456,6 +5476,7 @@
                                                     <ComboBoxItem Content="Windows 11 24H2"/>
                                                     <ComboBoxItem Content="Windows 11 23H2"/>
                                                     <ComboBoxItem Content="Windows 11 22H2"/>
+                                                    <ComboBoxItem Content="Windows 11 21H2"/>
                                                 </ComboBox>
                                             </Grid>
 
@@ -5712,7 +5733,7 @@
                                     <StackPanel>
                                         <TextBlock Text="Driver Automation Tool" FontSize="22" FontWeight="Bold"
                                                    Foreground="{DynamicResource AccentColor}" Margin="0,0,0,4"/>
-                                        <TextBlock x:Name="txt_AboutVersion" Text="Version 10.0.36" FontSize="14"
+                                        <TextBlock x:Name="txt_AboutVersion" Text="Version 10.0.37" FontSize="14"
                                                    Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,16"/>
 
                                         <TextBlock TextWrapping="Wrap" FontSize="13"

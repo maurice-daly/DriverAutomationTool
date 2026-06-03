@@ -5542,12 +5542,14 @@ $script:OSCheckboxes = [ordered]@{
     'Windows 11 24H2' = $Window.FindName('chk_OS_Win11_24H2')
     'Windows 11 23H2' = $Window.FindName('chk_OS_Win11_23H2')
     'Windows 11 22H2' = $Window.FindName('chk_OS_Win11_22H2')
+    'Windows 11 21H2' = $Window.FindName('chk_OS_Win11_21H2')
 }
 $script:OSBorders = [ordered]@{
     'Windows 11 25H2' = $Window.FindName('border_OS_Win11_25H2')
     'Windows 11 24H2' = $Window.FindName('border_OS_Win11_24H2')
     'Windows 11 23H2' = $Window.FindName('border_OS_Win11_23H2')
     'Windows 11 22H2' = $Window.FindName('border_OS_Win11_22H2')
+    'Windows 11 21H2' = $Window.FindName('border_OS_Win11_21H2')
 }
 
 # Backing store for selected OS values -- survives regardless of popup/checkbox state
@@ -6172,7 +6174,12 @@ $btn_RefreshModels.Add_Click({
                             }
                             continue
                         }
-                        $devices = $bEntry.SupportedDevices -split '[;\s]+' | ForEach-Object { $_.Trim().ToUpper() } | Where-Object { $_ }
+                        # Acer model names contain spaces (e.g. "TravelMate P214-42") -- don't split on whitespace
+                        $devices = if ($bEntry.Manufacturer -eq 'Acer') {
+                            @($bEntry.SupportedDevices.Trim().ToUpper())
+                        } else {
+                            $bEntry.SupportedDevices -split '[;\s]+' | ForEach-Object { $_.Trim().ToUpper() } | Where-Object { $_ }
+                        }
                         foreach ($dev in $devices) {
                             $bKey = "$($bEntry.Manufacturer)|$dev"
                             if (-not $biosDeviceMap.ContainsKey($bKey)) { $biosDeviceMap[$bKey] = $bEntry }
@@ -6193,7 +6200,12 @@ $btn_RefreshModels.Add_Click({
                                 continue
                             }
                             if ($model.OEM -eq 'Acer') {
-                                $biosEntry = $biosNameMap["Acer|$($model.Model)"]
+                                # Acer SupportedDevices == model name; look up by uppercased model name
+                                $biosEntry = $biosDeviceMap["Acer|$($model.Model.ToUpper())"]
+                                if ($null -eq $biosEntry) {
+                                    # Fallback: DisplayName-keyed map (legacy entries without SupportedDevices)
+                                    $biosEntry = $biosNameMap["Acer|$($model.Model)"]
+                                }
                             } else {
                                 $biosEntry = $null
                                 $boards = $model.Baseboards -split '[,;\s]+' | ForEach-Object { $_.Trim().ToUpper() } | Where-Object { $_ }
@@ -6673,7 +6685,12 @@ $btn_RefreshModels.Add_Click({
                     }
                     continue
                 }
-                $devices = $entry.SupportedDevices -split '[;\s]+' | ForEach-Object { $_.Trim().ToUpper() } | Where-Object { $_ }
+                # Acer model names contain spaces (e.g. "TravelMate P214-42") -- don't split on whitespace
+                $devices = if ($entry.Manufacturer -eq 'Acer') {
+                    @($entry.SupportedDevices.Trim().ToUpper())
+                } else {
+                    $entry.SupportedDevices -split '[;\s]+' | ForEach-Object { $_.Trim().ToUpper() } | Where-Object { $_ }
+                }
                 foreach ($dev in $devices) {
                     $key = "$($entry.Manufacturer)|$dev"
                     $existing = $biosDeviceMap[$key]
@@ -6702,8 +6719,12 @@ $btn_RefreshModels.Add_Click({
                         continue
                     }
                     if ($model.OEM -eq 'Acer') {
-                        # Acer: match by DisplayName from JSON BIOS catalog
-                        $biosEntry = $biosNameMap["Acer|$($model.Model)"]
+                        # Acer SupportedDevices == model name; look up by uppercased model name
+                        $biosEntry = $biosDeviceMap["Acer|$($model.Model.ToUpper())"]
+                        if ($null -eq $biosEntry) {
+                            # Fallback: DisplayName-keyed map (legacy entries without SupportedDevices)
+                            $biosEntry = $biosNameMap["Acer|$($model.Model)"]
+                        }
                     } else {
                         # Fast hashtable lookup for Dell/HP/Lenovo/Microsoft
                         $biosEntry = $null
@@ -7717,6 +7738,18 @@ $btn_Build.Add_Click({
         }
     }
 
+    # Pre-flight: validate that package storage path is configured and accessible
+    # This must happen BEFORE showing the progress modal to avoid showing both warning and progress modals
+    $regConfig = Get-ItemProperty -Path $global:RegPath -ErrorAction SilentlyContinue
+    $packageStoragePath = if ($regConfig -and -not [string]::IsNullOrEmpty($regConfig.PackageStoragePath)) { $regConfig.PackageStoragePath } else { $null }
+    if ([string]::IsNullOrEmpty($packageStoragePath) -or -not (Test-Path $packageStoragePath)) {
+        Show-DATInfoDialog -Title 'Package Storage Path Required' `
+            -Message 'A valid Package Storage Path must be specified before building packages. Please configure it in Common Settings > Storage Path Configuration.' `
+            -Type Warning -ButtonLabel 'OK'
+        Write-DATActivityLog "Build blocked -- Package Storage Path is not configured or does not exist" -Level Warn
+        return
+    }
+
     # Pre-flight: check for paths that may exceed MAX_PATH (260 chars)
     $pfSelectedOSes = Get-DATSelectedOSes
     $pfSelectedOS = if ($pfSelectedOSes.Count -gt 0) { $pfSelectedOSes[0] } else { 'Windows 11' }
@@ -7779,11 +7812,25 @@ $btn_Build.Add_Click({
 
     $global:SelectedModels = [System.Collections.ArrayList]::new()
     foreach ($model in $selectedModels) {
+        # Extract base OS version (e.g. "Windows 11" from "Windows 11 24H2")
+        # If multiple OSes selected, use the first one for package naming
+        $osForPackage = if ($model.Build -eq 'All') {
+            # When 'All' is selected, use just the base version from first selected OS
+            $baseOSVersion = ($selectedOSes[0] -split '\s+')[0..1] -join ' '  # "Windows 11" from "Windows 11 24H2"
+            $baseOSVersion
+        } elseif ($model.OS -and $model.Build -and $model.Build -ne 'All') {
+            # Specific build selected, use "OS Build" format
+            "$($model.OS) $($model.Build)"
+        } else {
+            # Default: just the base OS version
+            ($selectedOSes[0] -split '\s+')[0..1] -join ' '  # "Windows 11"
+        }
+        
         $modelObj = [PSCustomObject]@{
             OEM              = $model.OEM
             Model            = $model.Model
             Baseboards       = $model.Baseboards
-            OS               = if ($model.Build -eq 'All') { $selectedOS } elseif ($model.OS -and $model.Build) { "$($model.OS) $($model.Build)" } else { $selectedOS }
+            OS               = $osForPackage
             Architecture     = $selectedArch
             CustomDriverPath = $model.CustomDriverPath
             Version          = $model.Version
@@ -7899,19 +7946,8 @@ $btn_Build.Add_Click({
     })
     $modulePath = Join-Path $PSScriptRoot "..\Modules\DriverAutomationToolCore\DriverAutomationToolCore.psd1"
 
-    # Read user-configured storage paths from registry
-    $regConfig = Get-ItemProperty -Path $global:RegPath -ErrorAction SilentlyContinue
+    # Read user-configured storage paths from registry (already validated above)
     $tempStoragePath = if ($regConfig -and -not [string]::IsNullOrEmpty($regConfig.TempStoragePath)) { $regConfig.TempStoragePath } else { Join-Path $global:ScriptDirectory 'Temp' }
-    $packageStoragePath = if ($regConfig -and -not [string]::IsNullOrEmpty($regConfig.PackageStoragePath)) { $regConfig.PackageStoragePath } else { $null }
-
-    # Guard: Package Storage Path must be configured and valid
-    if ([string]::IsNullOrEmpty($packageStoragePath) -or -not (Test-Path $packageStoragePath)) {
-        Show-DATInfoDialog -Title 'Package Storage Path Required' `
-            -Message 'A valid Package Storage Path must be specified before building packages. Please configure it in Common Settings > Storage Path Configuration.' `
-            -Type Warning -ButtonLabel 'OK'
-        Write-DATActivityLog "Build blocked -- Package Storage Path is not configured or does not exist" -Level Warn
-        return
-    }
 
     # Pass Intune auth token, refresh token, and real expiry for Intune mode
     $intuneToken = $null
@@ -8851,6 +8887,40 @@ function Invoke-DATConfigMgrConnect {
                 $panel_PackageChart.Visibility = 'Visible'
             } catch {
                 $txt_ServerPackageCount.Text = 'Not available'
+            }
+
+            # Repair driver packages with incorrect naming (multi-build format)
+            try {
+                Write-DATActivityLog "[Package Repair] Starting driver package name repair scan..." -Level Info
+                $repairResults = Repair-DATDriverPackageNames -SiteServer $SiteServer -SiteCode $global:SiteCode
+                $successCount = ($repairResults | Where-Object { $_.Status -eq 'Renamed' } | Measure-Object).Count
+                if ($successCount -gt 0) {
+                    Write-DATActivityLog "[Package Repair] Repaired $successCount driver package(s)" -Level Info
+                    Show-DATInfoDialog -Title 'Driver Packages Repaired' `
+                        -Message "Fixed $successCount driver package name$(if ($successCount -ne 1) { 's' }) that were using the old naming format with multiple build versions.`n`nPackage names have been updated to use the base Windows version only (e.g., 'Windows 11' instead of 'Windows 11 24H2;Windows 11 23H2')." `
+                        -Type Success -ButtonLabel 'OK'
+                } else {
+                    Write-DATActivityLog "[Package Repair] No driver packages needing repair found" -Level Info
+                }
+            } catch {
+                Write-DATActivityLog "[Package Repair] Error scanning for repairs: $($_.Exception.Message)" -Level Warn
+            }
+
+            # Resolve duplicate BIOS packages by keeping newest version and removing stale duplicates
+            try {
+                Write-DATActivityLog "[BIOS Duplicate] Starting BIOS package duplicate removal scan..." -Level Info
+                $duplicateResults = Remove-DATBiosDuplicatePackages -SiteServer $SiteServer -SiteCode $global:SiteCode
+                $removedCount = ($duplicateResults | Where-Object { $_.Status -eq 'Removed' } | Measure-Object).Count
+                if ($removedCount -gt 0) {
+                    Write-DATActivityLog "[BIOS Duplicate] Removed $removedCount duplicate BIOS package(s)" -Level Info
+                    Show-DATInfoDialog -Title 'Duplicate BIOS Packages Removed' `
+                        -Message "Cleaned up $removedCount duplicate BIOS package$(if ($removedCount -ne 1) { 's' }) by keeping the newest BIOS version and removing stale duplicates.`n`nRemaining BIOS packages are normalized to include architecture suffix, and removed packages have their source folders deleted from Configuration Manager." `
+                        -Type Success -ButtonLabel 'OK'
+                } else {
+                    Write-DATActivityLog "[BIOS Duplicate] No duplicate BIOS packages found" -Level Info
+                }
+            } catch {
+                Write-DATActivityLog "[BIOS Duplicate] Error scanning for duplicates: $($_.Exception.Message)" -Level Warn
             }
 
             $panel_SiteServerInfo.Visibility = 'Visible'
@@ -10733,7 +10803,7 @@ function Invoke-DATPackageRefresh {
                     Update-DATPackageRowHighlighting -DataGrid $grid_Packages -ItemsSource $script:PackageData -MakeProperty 'Manufacturer' -ModelProperty 'Model' -VersionProperty 'Version'
 
                     # Populate the OS filter dropdown: merge static builds with distinct values from loaded data
-                    $staticBuilds = @('Windows 11 25H2', 'Windows 11 24H2', 'Windows 11 23H2', 'Windows 11 22H2')
+                    $staticBuilds = @('Windows 11 25H2', 'Windows 11 24H2', 'Windows 11 23H2', 'Windows 11 22H2', 'Windows 11 21H2')
                     $packageOSValues = $script:PackageData | Where-Object { -not [string]::IsNullOrEmpty($_.OperatingSystem) } |
                         Select-Object -ExpandProperty OperatingSystem -Unique
                     $allOSValues = @($staticBuilds) + @($packageOSValues) | Select-Object -Unique | Sort-Object
@@ -16845,6 +16915,35 @@ $btn_ConnectIntune.Add_Click({
 
                     Update-DATIntuneAuthUI
                     $script:IntuneTokenTimer.Start()
+
+                    # Repair Intune driver packages with multi-build naming right after Graph API connection
+                    Write-DATActivityLog "[Driver Repair - Intune] Checking for driver packages with multi-build naming..." -Level Info
+                    $statusDlg = Show-DATProgressDialog -Title 'Checking Driver Packages' `
+                        -Message 'Scanning Intune for driver packages with multi-build naming...' `
+                        -IsModal $true
+                    
+                    try {
+                        $intuneRepairResults = Repair-DATIntuneDriverPackageNames
+                        $intuneFixedCount = ($intuneRepairResults | Where-Object { $_.Status -eq 'Renamed' } | Measure-Object).Count
+                        $intuneErrorCount = ($intuneRepairResults | Where-Object { $_.Status -eq 'Failed' } | Measure-Object).Count
+                        
+                        if ($statusDlg) { $statusDlg.Close() }
+                        
+                        if ($intuneFixedCount -gt 0) {
+                            Write-DATActivityLog "[Driver Repair - Intune] Repaired $intuneFixedCount Intune driver package(s)" -Level Info
+                            $message = "Fixed $intuneFixedCount Intune driver package$(if ($intuneFixedCount -ne 1) { 's' }) that were using the old naming format with multiple build versions.`n`nPackage names have been updated to use the base Windows version only (e.g., 'Windows 11' instead of 'Windows 11 25H2;Windows 11 24H2')."
+                            if ($intuneErrorCount -gt 0) {
+                                $message += "`n`nWarning: $intuneErrorCount package(s) could not be renamed. Check the activity log for details."
+                            }
+                            Show-DATInfoDialog -Title 'Intune Driver Packages Repaired' -Message $message -Type Success -ButtonLabel 'OK'
+                        } else {
+                            Write-DATActivityLog "[Driver Repair - Intune] No Intune driver packages needing repair found" -Level Info
+                        }
+                    } catch {
+                        Write-DATActivityLog "[Driver Repair - Intune] Error scanning for repairs: $($_.Exception.Message)" -Level Warn
+                        if ($statusDlg) { $statusDlg.Close() }
+                    }
+
                     Invoke-DATIntuneAppRefresh
 
                     Invoke-DATIntunePermissionCheckAsync -OnComplete {
@@ -16907,7 +17006,37 @@ $btn_ConnectIntune.Add_Click({
         if ($result.Success) {
             Update-DATIntuneAuthUI
             $script:IntuneTokenTimer.Start()
+
+            # Repair Intune driver packages with multi-build naming right after Graph API connection
+            Write-DATActivityLog "[Driver Repair - Intune] Checking for driver packages with multi-build naming..." -Level Info
+            $statusDlg = Show-DATProgressDialog -Title 'Checking Driver Packages' `
+                -Message 'Scanning Intune for driver packages with multi-build naming...' `
+                -IsModal $true
+            
+            try {
+                $intuneRepairResults = Repair-DATIntuneDriverPackageNames
+                $intuneFixedCount = ($intuneRepairResults | Where-Object { $_.Status -eq 'Renamed' } | Measure-Object).Count
+                $intuneErrorCount = ($intuneRepairResults | Where-Object { $_.Status -eq 'Failed' } | Measure-Object).Count
+                
+                if ($statusDlg) { $statusDlg.Close() }
+                
+                if ($intuneFixedCount -gt 0) {
+                    Write-DATActivityLog "[Driver Repair - Intune] Repaired $intuneFixedCount Intune driver package(s)" -Level Info
+                    $message = "Fixed $intuneFixedCount Intune driver package$(if ($intuneFixedCount -ne 1) { 's' }) that were using the old naming format with multiple build versions.`n`nPackage names have been updated to use the base Windows version only (e.g., 'Windows 11' instead of 'Windows 11 25H2;Windows 11 24H2')."
+                    if ($intuneErrorCount -gt 0) {
+                        $message += "`n`nWarning: $intuneErrorCount package(s) could not be renamed. Check the activity log for details."
+                    }
+                    Show-DATInfoDialog -Title 'Intune Driver Packages Repaired' -Message $message -Type Success -ButtonLabel 'OK'
+                } else {
+                    Write-DATActivityLog "[Driver Repair - Intune] No Intune driver packages needing repair found" -Level Info
+                }
+            } catch {
+                Write-DATActivityLog "[Driver Repair - Intune] Error scanning for repairs: $($_.Exception.Message)" -Level Warn
+                if ($statusDlg) { $statusDlg.Close() }
+            }
+
             Invoke-DATIntuneAppRefresh
+
             $btn_ConnectIntune.IsEnabled = $true
 
             # Persist credentials -- TenantId and AppId as plaintext, ClientSecret DPAPI-encrypted
@@ -17000,6 +17129,35 @@ $btn_ConnectIntune.Add_Click({
 
                     Update-DATIntuneAuthUI
                     $script:IntuneTokenTimer.Start()
+
+                    # Repair Intune driver packages with multi-build naming right after Graph API connection
+                    Write-DATActivityLog "[Driver Repair - Intune] Checking for driver packages with multi-build naming..." -Level Info
+                    $statusDlg = Show-DATProgressDialog -Title 'Checking Driver Packages' `
+                        -Message 'Scanning Intune for driver packages with multi-build naming...' `
+                        -IsModal $true
+                    
+                    try {
+                        $intuneRepairResults = Repair-DATIntuneDriverPackageNames
+                        $intuneFixedCount = ($intuneRepairResults | Where-Object { $_.Status -eq 'Renamed' } | Measure-Object).Count
+                        $intuneErrorCount = ($intuneRepairResults | Where-Object { $_.Status -eq 'Failed' } | Measure-Object).Count
+                        
+                        if ($statusDlg) { $statusDlg.Close() }
+                        
+                        if ($intuneFixedCount -gt 0) {
+                            Write-DATActivityLog "[Driver Repair - Intune] Repaired $intuneFixedCount Intune driver package(s)" -Level Info
+                            $message = "Fixed $intuneFixedCount Intune driver package$(if ($intuneFixedCount -ne 1) { 's' }) that were using the old naming format with multiple build versions.`n`nPackage names have been updated to use the base Windows version only (e.g., 'Windows 11' instead of 'Windows 11 25H2;Windows 11 24H2')."
+                            if ($intuneErrorCount -gt 0) {
+                                $message += "`n`nWarning: $intuneErrorCount package(s) could not be renamed. Check the activity log for details."
+                            }
+                            Show-DATInfoDialog -Title 'Intune Driver Packages Repaired' -Message $message -Type Success -ButtonLabel 'OK'
+                        } else {
+                            Write-DATActivityLog "[Driver Repair - Intune] No Intune driver packages needing repair found" -Level Info
+                        }
+                    } catch {
+                        Write-DATActivityLog "[Driver Repair - Intune] Error scanning for repairs: $($_.Exception.Message)" -Level Warn
+                        if ($statusDlg) { $statusDlg.Close() }
+                    }
+
                     Invoke-DATIntuneAppRefresh
 
                     # Check permissions in background to avoid UI freeze
@@ -19866,7 +20024,7 @@ if (Test-Path $logoPath) {
 
 # Read version from module manifest
 $manifestPath = Join-Path $AppRoot "Modules\DriverAutomationToolCore\DriverAutomationToolCore.psd1"
-$script:versionString = "v10.0.36"
+$script:versionString = "v10.0.37"
 if (Test-Path $manifestPath) {
     $manifestData = Import-PowerShellDataFile $manifestPath
     $ver = [version]$manifestData.ModuleVersion
