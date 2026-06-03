@@ -4,7 +4,7 @@
      Organization:  MSEndpointMgr / Patch My PC
      Filename:      DriverAutomationToolCore.psm1
      Purpose:       Core functions for Driver Automation Tool v2.0
-     Version:       10.0.36.0
+     Version:       10.0.37.0
     ===========================================================================
 #>
 
@@ -27,8 +27,8 @@ if ($PSVersionTable.PSVersion.Major -le 5) {
 
 #region Variables
 
-[version]$global:ScriptRelease = "10.0.36.0"
-$global:ScriptBuildDate = "01-06-2026"
+[version]$global:ScriptRelease = "10.0.37.0"
+$global:ScriptBuildDate = "03-06-2026"
 $global:ReleaseNotesURL = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/DriverAutomationToolNotes.txt"
 $OEMLinksURL = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/OEMLinks.xml"
 
@@ -11064,4 +11064,458 @@ function Repair-DATBiosPackageNames {
     return $results
 }
 
+function Remove-DATBiosDuplicatePackages {
+    <#
+    .SYNOPSIS
+        Resolves duplicate BIOS packages in ConfigMgr by keeping the newest version,
+        normalizing the kept package name to include architecture, and removing stale duplicates.
+    .DESCRIPTION
+        Detects ConfigMgr BIOS package duplicates:
+        - Old naming: "BIOS Update - Dell Latitude 5540" (no architecture)
+        - New naming: "BIOS Update - Dell Latitude 5540 - x64" (with architecture)
+
+        When duplicates are found, the package with the highest BIOS version (from MIFVersion)
+        is kept. Any stale duplicates are removed, including package source folders.
+        If the kept package is missing architecture suffix, it is renamed to include it.
+
+        Returns an array of result objects with OldName, Platform, Status, and Error.
+    #>
+    [CmdletBinding()]
+    param (
+        [string]$SiteServer,
+        [string]$SiteCode,
+        [System.Collections.Concurrent.ConcurrentQueue[object]]$ProgressQueue
+    )
+
+    $results = [System.Collections.ArrayList]::new()
+
+    if (-not $SiteServer -or -not $SiteCode) {
+        Write-DATLogEntry -Value "[BIOS Duplicate Removal] ConfigMgr not configured, skipping" -Severity 1
+        return $results
+    }
+
+    try {
+        Write-DATLogEntry -Value "[BIOS Duplicate Removal] Scanning ConfigMgr for duplicate BIOS packages..." -Severity 1
+        $smsNamespace = "root\SMS\Site_$SiteCode"
+        $cimSession = New-DATCimSession -ComputerName $SiteServer
+
+        # Get all BIOS packages (Version = BIOS version number set by DAT; MIFVersion is intentionally empty for BIOS)
+        $allBiosPkgs = @(Invoke-DATRemoteQuery -CimSession $cimSession -ComputerName $SiteServer `
+            -Namespace $smsNamespace -Query "SELECT PackageID, Name, PkgSourcePath, Version FROM SMS_Package WHERE Name LIKE 'BIOS Update -%'")
+
+        if ($allBiosPkgs.Count -eq 0) {
+            Write-DATLogEntry -Value "[BIOS Duplicate Removal] No BIOS packages found" -Severity 1
+            return $results
+        }
+
+        # Group all BIOS packages by model base name (strip trailing arch suffix if present)
+        $grouped = @{}
+        foreach ($pkg in $allBiosPkgs) {
+            if ($pkg.Name -match '^(BIOS Update\s*-\s*.+?)(?:\s*-\s*(x64|Arm64))?\s*$') {
+                $baseModel = $Matches[1].Trim()
+                $hasArch   = [bool]$Matches[2]
+
+                if (-not $grouped.ContainsKey($baseModel)) {
+                    $grouped[$baseModel] = [System.Collections.ArrayList]::new()
+                }
+                [void]$grouped[$baseModel].Add([PSCustomObject]@{
+                    Package = $pkg
+                    HasArch = $hasArch
+                })
+            }
+        }
+
+        # Find and resolve duplicates: any model with more than one package (regardless of naming style)
+        $duplicatesFound = $false
+        foreach ($modelKey in $grouped.Keys) {
+            $entries = $grouped[$modelKey]
+
+            # Only act when there are duplicates for this model
+            if ($entries.Count -lt 2) { continue }
+            $duplicatesFound = $true
+
+            Write-DATLogEntry -Value "[BIOS Duplicate Removal] Found $($entries.Count) packages for model: $modelKey" -Severity 1
+            if ($ProgressQueue) {
+                [void]$ProgressQueue.Enqueue([PSCustomObject]@{ Status = 'Info'; Message = "Found $($entries.Count) duplicate BIOS packages for: $modelKey" })
+            }
+
+            # Build metadata using the package Version field (BIOS version number set by DAT)
+            $pkgMeta = foreach ($entry in $entries) {
+                $pkg = $entry.Package
+                $versionString = [string]$pkg.Version
+                $parsedVersion = [version]'0.0.0.0'
+                if ($versionString -match '(\d+(?:\.\d+)+)') {
+                    try { $parsedVersion = [version]$Matches[1] } catch { }
+                }
+                [PSCustomObject]@{
+                    Package       = $pkg
+                    ParsedVersion = $parsedVersion
+                    HasArch       = $entry.HasArch
+                }
+            }
+
+            # Audit log every candidate before deciding
+            foreach ($meta in $pkgMeta) {
+                $candidatePkg = $meta.Package
+                Write-DATLogEntry -Value "[BIOS Duplicate Removal] Candidate -- Model: '$modelKey', PackageID: '$($candidatePkg.PackageID)', Name: '$($candidatePkg.Name)', Version: '$($candidatePkg.Version)', ParsedVersion: '$($meta.ParsedVersion)', HasArchSuffix: '$($meta.HasArch)'" -Severity 1
+            }
+
+            # Keep the highest-version package; use HasArch as tiebreaker only when versions are identical
+            $keepMeta = $pkgMeta | Sort-Object -Property `
+                @{ Expression = { $_.ParsedVersion };       Descending = $true }, `
+                @{ Expression = { [int](-not $_.HasArch) }; Descending = $true } | Select-Object -First 1
+            $keepPkg = $keepMeta.Package
+            Write-DATLogEntry -Value "[BIOS Duplicate Removal] Keeping newest package -- Model: '$modelKey', PackageID: '$($keepPkg.PackageID)', Name: '$($keepPkg.Name)', Version: '$($keepPkg.Version)', ParsedVersion: '$($keepMeta.ParsedVersion)'" -Severity 1
+
+            # Normalise kept package name: new Dell BIOS names do NOT include an arch suffix -- strip it if present
+            if ($keepPkg.Name -match '^(.+?)\s*-\s*(x64|Arm64)\s*$') {
+                $renameTarget = $Matches[1].Trim()
+                try {
+                    if ($null -ne $cimSession) {
+                        $liveKeepPkg = Get-CimInstance -CimSession $cimSession -Namespace $smsNamespace `
+                            -Query "SELECT * FROM SMS_Package WHERE PackageID = '$($keepPkg.PackageID)'" -ErrorAction Stop |
+                            Select-Object -First 1
+                        Set-CimInstance -CimSession $cimSession -InputObject $liveKeepPkg `
+                            -Property @{ Name = $renameTarget } -ErrorAction Stop
+                    } else {
+                        $wmiKeepPkg = [wmi]"\\$SiteServer\$($smsNamespace):SMS_Package.PackageID='$($keepPkg.PackageID)'"
+                        $wmiKeepPkg.Name = $renameTarget
+                        $wmiKeepPkg.Put() | Out-Null
+                    }
+                    Write-DATLogEntry -Value "[BIOS Duplicate Removal] Normalised kept package name '$($keepPkg.Name)' -> '$renameTarget'" -Severity 1
+                    $keepPkg.Name = $renameTarget
+                } catch {
+                    Write-DATLogEntry -Value "[BIOS Duplicate Removal] Failed to normalise kept package name '$($keepPkg.Name)': $($_.Exception.Message)" -Severity 2
+                }
+            }
+
+            $removePkgs = $entries | Where-Object { $_.Package.PackageID -ne $keepPkg.PackageID } | ForEach-Object { $_.Package }
+            foreach ($oldPkg in $removePkgs) {
+                Write-DATLogEntry -Value "[BIOS Duplicate Removal] Removing stale package -- Model: '$modelKey', PackageID: '$($oldPkg.PackageID)', Name: '$($oldPkg.Name)', Version: '$($oldPkg.Version)', SourcePath: '$($oldPkg.PkgSourcePath)'" -Severity 1
+                try {
+                    $oldName = $oldPkg.Name
+                    $pkgPath = $oldPkg.PkgSourcePath
+
+                    # Delete package from ConfigMgr
+                    if ($null -ne $cimSession) {
+                        Get-CimInstance -CimSession $cimSession -Namespace $smsNamespace `
+                            -Query "SELECT * FROM SMS_Package WHERE PackageID = '$($oldPkg.PackageID)'" -ErrorAction Stop |
+                            Remove-CimInstance -ErrorAction Stop
+                    } else {
+                        $wmiPkg = [wmi]"\\$SiteServer\$($smsNamespace):SMS_Package.PackageID='$($oldPkg.PackageID)'"
+                        $wmiPkg.Delete() | Out-Null
+                    }
+
+                    # Delete source folder only when it is NOT shared with the package being kept
+                    # (identical source paths would destroy the surviving package's content)
+                    $keepPath = $keepPkg.PkgSourcePath
+                    $sourceIsSame = (-not [string]::IsNullOrEmpty($pkgPath)) -and
+                                    (-not [string]::IsNullOrEmpty($keepPath)) -and
+                                    ($pkgPath.TrimEnd('\', '/') -ieq $keepPath.TrimEnd('\', '/'))
+
+                    if ($sourceIsSame) {
+                        Write-DATLogEntry -Value "[BIOS Duplicate Removal] Skipping source folder deletion -- path is shared with kept package '$($keepPkg.Name)': $pkgPath" -Severity 2
+                    } elseif (-not [string]::IsNullOrEmpty($pkgPath) -and (Test-Path $pkgPath)) {
+                        try {
+                            Remove-Item -Path $pkgPath -Recurse -Force -ErrorAction Stop
+                            Write-DATLogEntry -Value "[BIOS Duplicate Removal] Deleted package source folder: $pkgPath" -Severity 1
+                        } catch {
+                            Write-DATLogEntry -Value "[BIOS Duplicate Removal] Warning: Failed to delete source folder '$pkgPath': $($_.Exception.Message)" -Severity 2
+                        }
+                    }
+
+                    Write-DATLogEntry -Value "[BIOS Duplicate Removal] Removed duplicate package: '$oldName'" -Severity 1
+                    [void]$results.Add([PSCustomObject]@{
+                        OldName  = $oldName
+                        Platform = 'ConfigMgr'
+                        Status   = 'Removed'
+                        Error    = ''
+                    })
+
+                    if ($ProgressQueue) {
+                        [void]$ProgressQueue.Enqueue([PSCustomObject]@{ Status = 'Removed'; OldName = $oldName; Platform = 'ConfigMgr' })
+                    }
+                } catch {
+                    Write-DATLogEntry -Value "[BIOS Duplicate Removal] Failed to remove duplicate: $($_.Exception.Message)" -Severity 3
+                    [void]$results.Add([PSCustomObject]@{
+                        OldName  = $oldPkg.Name
+                        Platform = 'ConfigMgr'
+                        Status   = 'Failed'
+                        Error    = $_.Exception.Message
+                    })
+
+                    if ($ProgressQueue) {
+                        [void]$ProgressQueue.Enqueue([PSCustomObject]@{ Status = 'Failed'; OldName = $oldPkg.Name; Platform = 'ConfigMgr'; Error = $_.Exception.Message })
+                    }
+                }
+            }
+        }
+
+        if (-not $duplicatesFound) {
+            Write-DATLogEntry -Value "[BIOS Duplicate Removal] No duplicate BIOS packages found" -Severity 1
+        }
+
+        if ($cimSession) { Remove-CimSession -CimSession $cimSession -ErrorAction SilentlyContinue }
+    } catch {
+        Write-DATLogEntry -Value "[BIOS Duplicate Removal] Error scanning ConfigMgr: $($_.Exception.Message)" -Severity 3
+        [void]$results.Add([PSCustomObject]@{
+            OldName  = ''
+            Platform = 'ConfigMgr'
+            Status   = 'Error'
+            Error    = $_.Exception.Message
+        })
+    }
+
+    return $results
+}
+
 #endregion BIOS Package Name Repair
+
+#region Driver Package Naming Repair - Intune
+
+function Repair-DATIntuneDriverPackageNames {
+    <#
+    .SYNOPSIS
+        Scans Intune for driver packages using the old multi-build naming convention
+        and renames them to the correct single-OS format.
+    .DESCRIPTION
+        Old naming: "Drivers - Dell Latitude 5540 - Windows 11 25H2;Windows 11 24H2;Windows 11 23H2 x64"
+        New naming: "Drivers - Dell Latitude 5540 - Windows 11 x64"
+
+        Extracts the base OS version (first part before semicolon) and renames packages accordingly.
+        Returns an array of result objects with OldName, NewName, Platform, Status, and Error.
+    #>
+    [CmdletBinding()]
+    param (
+        [System.Collections.Concurrent.ConcurrentQueue[object]]$ProgressQueue
+    )
+
+    $results = [System.Collections.ArrayList]::new()
+
+    Write-DATLogEntry -Value "[Driver Repair - Intune] Scanning Intune for driver packages with multi-build naming..." -Severity 1
+
+    try {
+        if (-not (Test-DATIntuneAuth)) {
+            Write-DATLogEntry -Value "[Driver Repair - Intune] Not authenticated to Intune, skipping" -Severity 1
+            [void]$results.Add([PSCustomObject]@{
+                OldName  = ''; NewName = ''; Platform = 'Intune'
+                Status   = 'Skipped'; Error = 'Not authenticated to Intune'
+            })
+            return $results
+        }
+
+        # Get all driver packages (Win32 apps starting with "Drivers -")
+        $allApps = @(Get-DATIntuneWin32Apps | Where-Object {
+            $_.displayName -like 'Drivers -*' -and
+            $_.notes -eq 'Created by the Driver Automation Tool'
+        })
+
+        if ($allApps.Count -eq 0) {
+            Write-DATLogEntry -Value "[Driver Repair - Intune] No Intune driver packages found" -Severity 1
+            return $results
+        }
+
+        # Find packages with multi-build naming (semicolons in OS portion)
+        $packagesToFix = @()
+        foreach ($app in $allApps) {
+            # Pattern: "Drivers - OEM Model - Windows 11 25H2;Windows 11 24H2;... x64"
+            if ($app.displayName -match '^(Drivers\s+-\s+[^\-]+\s+[^\-]+)\s+-\s+(Windows\s+\d+(?:H\d)?(?:;[^;]*)*?)\s+(x64|Arm64)\s*$') {
+                $prefix = $Matches[1].Trim()           # "Drivers - Dell Latitude 5540"
+                $osBuilds = $Matches[2].Trim()         # "Windows 11 25H2;Windows 11 24H2;..."
+                $arch = $Matches[3]                    # "x64" or "Arm64"
+
+                # Check if there are multiple builds (semicolon present)
+                if ($osBuilds -match ';') {
+                    # Extract base OS only (first part before semicolon)
+                    $baseOS = ($osBuilds -split ';')[0].Trim()  # "Windows 11"
+                    $newName = "$prefix - $baseOS $arch"
+                    
+                    $packagesToFix += [PSCustomObject]@{
+                        App     = $app
+                        OldName = $app.displayName
+                        NewName = $newName
+                    }
+                }
+            }
+        }
+
+        if ($packagesToFix.Count -eq 0) {
+            Write-DATLogEntry -Value "[Driver Repair - Intune] No Intune driver packages with multi-build naming found" -Severity 1
+            return $results
+        }
+
+        Write-DATLogEntry -Value "[Driver Repair - Intune] Found $($packagesToFix.Count) package(s) to rename" -Severity 1
+        if ($ProgressQueue) {
+            [void]$ProgressQueue.Enqueue([PSCustomObject]@{ Status = 'Info'; Message = "Found $($packagesToFix.Count) Intune driver package(s) to rename" })
+            [void]$ProgressQueue.Enqueue([PSCustomObject]@{ Status = 'ExpectedCount'; Count = $packagesToFix.Count })
+        }
+
+        # Rename each package
+        foreach ($pkg in $packagesToFix) {
+            try {
+                $patchBody = @{
+                    '@odata.type' = '#microsoft.graph.win32LobApp'
+                    displayName   = $pkg.NewName
+                }
+                
+                Invoke-DATGraphRequest -Uri "/deviceAppManagement/mobileApps/$($pkg.App.id)" `
+                    -Method PATCH -Body $patchBody -ErrorAction Stop | Out-Null
+
+                Write-DATLogEntry -Value "[Driver Repair - Intune] Renamed: '$($pkg.OldName)' -> '$($pkg.NewName)'" -Severity 1
+                [void]$results.Add([PSCustomObject]@{
+                    OldName  = $pkg.OldName
+                    NewName  = $pkg.NewName
+                    Platform = 'Intune'
+                    Status   = 'Renamed'
+                    Error    = ''
+                })
+                
+                if ($ProgressQueue) {
+                    [void]$ProgressQueue.Enqueue([PSCustomObject]@{ Status = 'Renamed'; OldName = $pkg.OldName; NewName = $pkg.NewName; Platform = 'Intune' })
+                }
+            } catch {
+                Write-DATLogEntry -Value "[Driver Repair - Intune] Failed to rename '$($pkg.OldName)': $($_.Exception.Message)" -Severity 3
+                [void]$results.Add([PSCustomObject]@{
+                    OldName  = $pkg.OldName
+                    NewName  = $pkg.NewName
+                    Platform = 'Intune'
+                    Status   = 'Failed'
+                    Error    = $_.Exception.Message
+                })
+                
+                if ($ProgressQueue) {
+                    [void]$ProgressQueue.Enqueue([PSCustomObject]@{ Status = 'Failed'; OldName = $pkg.OldName; NewName = $pkg.NewName; Platform = 'Intune'; Error = $_.Exception.Message })
+                }
+            }
+        }
+    } catch {
+        Write-DATLogEntry -Value "[Driver Repair - Intune] Error scanning Intune: $($_.Exception.Message)" -Severity 3
+        [void]$results.Add([PSCustomObject]@{
+            OldName  = ''; NewName = ''; Platform = 'Intune'
+            Status   = 'Error'; Error = $_.Exception.Message
+        })
+    }
+
+    return $results
+}
+
+#endregion Driver Package Naming Repair - Intune
+
+#region Driver Package Name Repair
+
+function Repair-DATDriverPackageNames {
+    <#
+    .SYNOPSIS
+        Scans ConfigMgr for driver packages using the incorrect naming convention
+        (with all selected builds instead of just base OS version) and renames them to the correct format.
+    .DESCRIPTION
+        Incorrect naming: "Drivers - Dell Latitude 5540 - Windows 11 24H2;Windows 11 23H2;Windows 11 22H2 x64"
+        Correct naming:   "Drivers - Dell Latitude 5540 - Windows 11 x64"
+
+        This function detects packages with semicolons or multiple build versions in the name
+        and extracts just the base OS version (e.g. "Windows 11") for the corrected name.
+
+        Returns an array of result objects with OldName, NewName, Platform, Status, and Error.
+    #>
+    [CmdletBinding()]
+    param (
+        [string]$SiteServer,
+        [string]$SiteCode,
+        [System.Collections.Concurrent.ConcurrentQueue[object]]$ProgressQueue
+    )
+
+    $results = [System.Collections.ArrayList]::new()
+
+    # --- ConfigMgr driver package rename ---
+    if (-not $SiteServer -or -not $SiteCode) {
+        Write-DATLogEntry -Value "[Driver Repair] ConfigMgr not configured, skipping driver package name repair" -Severity 1
+        return $results
+    }
+
+    try {
+        Write-DATLogEntry -Value "[Driver Repair] Scanning ConfigMgr for driver packages with incorrect naming..." -Severity 1
+        $smsNamespace = "root\SMS\Site_$SiteCode"
+        $cimSess = New-DATCimSession -ComputerName $SiteServer
+
+        # Find all driver packages that contain semicolons (multi-build format) or multiple Windows versions
+        $allPkgs = @(Invoke-DATRemoteQuery -CimSession $cimSess -ComputerName $SiteServer `
+            -Namespace $smsNamespace -Query "SELECT PackageID, Name, Version FROM SMS_Package WHERE Name LIKE 'Drivers -%'")
+
+        if ($allPkgs.Count -eq 0) {
+            Write-DATLogEntry -Value "[Driver Repair] No driver packages found" -Severity 1
+            return $results
+        }
+
+        $packagesToFix = @($allPkgs | Where-Object { $_.Name -match ';' -or ($_.Name -match 'Drivers\s+-\s+.+?\s+-\s+Windows\s+\d+\s+\S+;') })
+
+        if ($packagesToFix.Count -eq 0) {
+            Write-DATLogEntry -Value "[Driver Repair] No driver packages with incorrect naming found" -Severity 1
+            return $results
+        }
+
+        Write-DATLogEntry -Value "[Driver Repair] Found $($packagesToFix.Count) driver package(s) to fix" -Severity 1
+        if ($ProgressQueue) {
+            [void]$ProgressQueue.Enqueue([PSCustomObject]@{ Status = 'Info'; Message = "Found $($packagesToFix.Count) driver package(s) to rename" })
+            [void]$ProgressQueue.Enqueue([PSCustomObject]@{ Status = 'ExpectedCount'; Count = $packagesToFix.Count })
+        }
+
+        foreach ($pkg in $packagesToFix) {
+            $oldName = $pkg.Name
+            
+            # Pattern: "Drivers - OEM Model - Windows 11 24H2;Windows 11 23H2;... x64"
+            # Extract: prefix (Drivers - OEM Model), base OS version, and architecture
+            if ($oldName -match '^(Drivers\s+-\s+.+?)\s+-\s+Windows\s+(\d+).*?([x86][a-z0-9]*)\s*$') {
+                $prefix = $Matches[1].Trim()
+                $osVersion = "Windows $($Matches[2])"  # e.g. "Windows 11"
+                $arch = $Matches[3]  # e.g. "x64", "Arm64"
+                $newName = "$prefix - $osVersion $arch"
+
+                try {
+                    # Rename the package via WMI
+                    $pkg | Set-CimInstance -Property @{ Name = $newName } -CimSession $cimSess -ErrorAction Stop
+                    
+                    Write-DATLogEntry -Value "[Driver Repair] ConfigMgr: '$oldName' -> '$newName'" -Severity 1
+                    [void]$results.Add([PSCustomObject]@{
+                        OldName  = $oldName
+                        NewName  = $newName
+                        Platform = 'ConfigMgr'
+                        Status   = 'Renamed'
+                        Error    = ''
+                    })
+                    if ($ProgressQueue) {
+                        [void]$ProgressQueue.Enqueue([PSCustomObject]@{ Status = 'Renamed'; OldName = $oldName; NewName = $newName; Platform = 'ConfigMgr' })
+                    }
+                } catch {
+                    Write-DATLogEntry -Value "[Driver Repair] Failed to rename '$oldName': $($_.Exception.Message)" -Severity 3
+                    [void]$results.Add([PSCustomObject]@{
+                        OldName  = $oldName
+                        NewName  = $newName
+                        Platform = 'ConfigMgr'
+                        Status   = 'Failed'
+                        Error    = $_.Exception.Message
+                    })
+                    if ($ProgressQueue) {
+                        [void]$ProgressQueue.Enqueue([PSCustomObject]@{ Status = 'Failed'; OldName = $oldName; NewName = $newName; Platform = 'ConfigMgr'; Error = $_.Exception.Message })
+                    }
+                }
+            } else {
+                Write-DATLogEntry -Value "[Driver Repair] Could not parse package name format: '$oldName'" -Severity 2
+                [void]$results.Add([PSCustomObject]@{
+                    OldName  = $oldName
+                    NewName  = ''
+                    Platform = 'ConfigMgr'
+                    Status   = 'Skipped'
+                    Error    = 'Could not parse package name format'
+                })
+            }
+        }
+
+        if ($cimSess) { Remove-CimSession -CimSession $cimSess -ErrorAction SilentlyContinue }
+    } catch {
+        Write-DATLogEntry -Value "[Driver Repair] Error scanning ConfigMgr: $($_.Exception.Message)" -Severity 3
+    }
+
+    return $results
+}
+
+#endregion Driver Package Name Repair

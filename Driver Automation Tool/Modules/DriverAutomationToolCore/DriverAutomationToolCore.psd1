@@ -1,6 +1,6 @@
 @{
     RootModule        = 'DriverAutomationToolCore.psm1'
-    ModuleVersion     = '10.0.36.0'
+    ModuleVersion     = '10.0.37.0'
     GUID              = 'a3e0e746-8e3a-4c5b-b8d0-3b2e4f6a9c1d'
     Author            = 'Maurice Daly'
     CompanyName       = 'MSEndpointMgr'
@@ -102,6 +102,9 @@
         'Get-DATAvailableUpdate',
         'Update-DATApplication',
         'Repair-DATBiosPackageNames',
+        'Remove-DATBiosDuplicatePackages',
+        'Repair-DATDriverPackageNames',
+        'Repair-DATIntuneDriverPackageNames',
         'New-DATCimSession',
         'Invoke-DATRemoteQuery'
     )
