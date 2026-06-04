@@ -5560,7 +5560,12 @@ $script:OSBorders = [ordered]@{
 $script:SelectedOSValues = [System.Collections.Generic.List[string]]::new()
 
 function Get-DATSelectedOSes {
-    return @($script:SelectedOSValues)
+    # Use Write-Output -NoEnumerate so callers always receive an array, even when
+    # only a single OS is selected. Without this, PowerShell unwraps the single-element
+    # array at the function boundary and the caller gets a bare string -- then
+    # $selectedOSes[0] returns the first CHARACTER (e.g. 'W' from "Windows 11"), which
+    # has previously caused ConfigMgr package folder paths like "Packages\Dell\Latitude 5400\W\x64\A00".
+    Write-Output -NoEnumerate @($script:SelectedOSValues)
 }
 
 function Update-DATOSDisplayText {

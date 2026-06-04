@@ -11481,10 +11481,10 @@ function Repair-DATDriverPackageNames {
             
             # Pattern: "Drivers - OEM Model - Windows 11 24H2;Windows 11 23H2;... x64"
             # Extract: prefix (Drivers - OEM Model), base OS version, and architecture
-            if ($oldName -match '^(Drivers\s+-\s+.+?)\s+-\s+Windows\s+(\d+).*?([x86][a-z0-9]*)\s*$') {
+            if ($oldName -match '^(Drivers\s+-\s+.+?)\s+-\s+Windows\s+(\d+).*?(x64|x86|Arm64)\s*$') {
                 $prefix = $Matches[1].Trim()
                 $osVersion = "Windows $($Matches[2])"  # e.g. "Windows 11"
-                $arch = $Matches[3]  # e.g. "x64", "Arm64"
+                $arch = $Matches[3]  # e.g. "x64", "x86", "Arm64"
                 $newName = "$prefix - $osVersion $arch"
 
                 try {
