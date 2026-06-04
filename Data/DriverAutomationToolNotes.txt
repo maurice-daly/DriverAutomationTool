@@ -3,14 +3,20 @@ Release Notes
 IMPORTANT
 - DAT Downloads have been moved to GitHub - https://github.com/maurice-daly/DriverAutomationTool
 
+Version 10.0.40
+Fixes
+- Windows build strip causing unexpected shortening of the path for Dell devices to \W\ instead of \Windows
+- Dedupe of HP devices with the same model name/SKU applied on the API
+- Backup ZIP containing multiple previous backups
+
 Version 10.0.39
 Fixes
 - Duplicate entry clean up is not opt in
-- Rename prompt will appear on package management for both Configuration Manager and Intune BIOS packages. Removing the Windows version and architecture names.
+- Rename prompt will appear on package management for both Configuration Manager and Intune BIOS packages. Removing the Windows version and architecture names
 
 Version 10.0.38
 Fixes
-- Rename fix introduced a Windows build issue for new Dell packages. Fixed.
+- Rename fix introduced a Windows build issue for new Dell packages
 
 Version 10.0.37
 Updates

@@ -4,7 +4,7 @@
      Organization:  MSEndpointMgr / Patch My PC
      Filename:      DriverAutomationToolCore.psm1
      Purpose:       Core functions for Driver Automation Tool v2.0
-     Version:       10.0.39.0
+     Version:       10.0.40.0
     ===========================================================================
 #>
 
@@ -27,7 +27,7 @@ if ($PSVersionTable.PSVersion.Major -le 5) {
 
 #region Variables
 
-[version]$global:ScriptRelease = "10.0.39.0"
+[version]$global:ScriptRelease = "10.0.40.0"
 $global:ScriptBuildDate = "03-06-2026"
 $global:ReleaseNotesURL = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/DriverAutomationToolNotes.txt"
 $OEMLinksURL = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/OEMLinks.xml"
@@ -3132,8 +3132,9 @@ function Start-DATModelProcessing {
 
         Write-DATLogEntry -Value "[$currentIndex/$totalModels] Processing $oem $modelName ($os $arch)" -Severity 1
 
-        $windowsBuild = $os.Split(" ")[2]
-        $windowsVersion = $os.Replace(" $windowsBuild", "").TrimEnd()
+        $osParts = $os.Split(" ")
+        $windowsBuild = if ($osParts.Count -ge 3) { $osParts[2] } else { $null }
+        $windowsVersion = if ($windowsBuild) { $os.Replace(" $windowsBuild", "").TrimEnd() } else { $os.TrimEnd() }
 
         # Dell does not use Windows build-specific driver packages -- omit build from package name
         $osPkgLabel = if ($oem -eq 'Dell') { $windowsVersion } else { "$windowsVersion $windowsBuild" }
@@ -4333,31 +4334,32 @@ function Update-DATApplication {
             }
         }
 
-        # Back up Modules and UI folders to configured Backup path
-        $regBackupPath = (Get-ItemProperty -Path $global:RegPath -Name "BackupPath" -ErrorAction SilentlyContinue).BackupPath
-        $backupRoot = if (-not [string]::IsNullOrEmpty($regBackupPath)) { $regBackupPath } else { Join-Path $InstallDirectory 'Backup' }
+        # Back up Modules and UI folders as a ZIP to the install directory's Backup folder
+        $backupRoot = Join-Path $InstallDirectory 'Backup'
         if (-not (Test-Path $backupRoot)) { New-Item -Path $backupRoot -ItemType Directory -Force | Out-Null }
-        $backupDir = Join-Path $backupRoot "DATBackup_$(Get-Date -Format 'yyyyMMdd_HHmmss')"
-        New-Item -Path $backupDir -ItemType Directory -Force | Out-Null
-        Write-DATLogEntry -Value "[Update] Backing up Modules and UI to $backupDir..." -Severity 1
+        $backupZip = Join-Path $backupRoot "DATBackup_$(Get-Date -Format 'yyyyMMdd_HHmmss').zip"
+        Write-DATLogEntry -Value "[Update] Backing up Modules and UI to $backupZip..." -Severity 1
+        $backupSources = @()
         foreach ($folder in @('Modules', 'UI')) {
             $src = Join-Path $InstallDirectory $folder
-            if (Test-Path $src) {
-                Copy-Item -Path $src -Destination (Join-Path $backupDir $folder) -Recurse -Force
-            }
+            if (Test-Path $src) { $backupSources += $src }
         }
+        Compress-Archive -Path $backupSources -DestinationPath $backupZip -Force
 
-        # Remove previous DAT backup folders (keep only the one just created)
-        $backupDirName = Split-Path -Leaf $backupDir
-        Get-ChildItem -Path $backupRoot -Directory -Filter 'DATBackup_*' -ErrorAction SilentlyContinue |
-            Where-Object { $_.Name -ne $backupDirName } |
+        # Remove previous backup ZIPs (keep only the one just created)
+        $backupZipName = Split-Path -Leaf $backupZip
+        Get-ChildItem -Path $backupRoot -File -Filter 'DATBackup_*.zip' -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -ne $backupZipName } |
             ForEach-Object {
                 Write-DATLogEntry -Value "[Update] Removing previous backup: $($_.Name)" -Severity 1
-                Remove-Item -Path $_.FullName -Recurse -Force -ErrorAction SilentlyContinue
+                Remove-Item -Path $_.FullName -Force -ErrorAction SilentlyContinue
             }
+        # Clean up any legacy uncompressed backup folders
+        Get-ChildItem -Path $backupRoot -Directory -Filter 'DATBackup_*' -ErrorAction SilentlyContinue |
+            ForEach-Object { Remove-Item -Path $_.FullName -Recurse -Force -ErrorAction SilentlyContinue }
 
         # Copy new files over existing installation (preserve user data like Settings, Logs, Temp)
-        $preserveFolders = @('Settings', 'Logs', 'Temp', 'Packages')
+        $preserveFolders = @('Settings', 'Logs', 'Temp', 'Packages', 'Backup')
         Write-DATLogEntry -Value "[Update] Applying update files..." -Severity 1
         $sourceItems = Get-ChildItem -Path $sourceDir
         foreach ($item in $sourceItems) {
@@ -4393,28 +4395,23 @@ function Update-DATApplication {
             }
         }
 
-        Write-DATLogEntry -Value "[Update] Update applied successfully. Backup saved to $backupDir" -Severity 1
+        Write-DATLogEntry -Value "[Update] Update applied successfully. Backup saved to $backupZip" -Severity 1
 
         # Clean up temp download
         Remove-Item -Path $tempDir -Recurse -Force -ErrorAction SilentlyContinue
 
         return @{
             Success   = $true
-            BackupDir = $backupDir
+            BackupDir = $backupZip
             Error     = $null
         }
     } catch {
         Write-DATLogEntry -Value "[Update] Self-update failed: $($_.Exception.Message)" -Severity 3
         # Attempt restore from backup if it exists
-        if ($backupDir -and (Test-Path $backupDir)) {
-            Write-DATLogEntry -Value "[Update] Restoring Modules and UI from backup..." -Severity 2
+        if ($backupZip -and (Test-Path $backupZip)) {
+            Write-DATLogEntry -Value "[Update] Restoring Modules and UI from backup ZIP..." -Severity 2
             try {
-                foreach ($folder in @('Modules', 'UI')) {
-                    $backupFolder = Join-Path $backupDir $folder
-                    if (Test-Path $backupFolder) {
-                        Copy-Item -Path $backupFolder -Destination (Join-Path $InstallDirectory $folder) -Recurse -Force
-                    }
-                }
+                Expand-Archive -Path $backupZip -DestinationPath $InstallDirectory -Force
                 Write-DATLogEntry -Value "[Update] Backup restored successfully" -Severity 1
             } catch {
                 Write-DATLogEntry -Value "[Update] Backup restore also failed: $($_.Exception.Message)" -Severity 3
@@ -4425,7 +4422,7 @@ function Update-DATApplication {
 
         return @{
             Success   = $false
-            BackupDir = $backupDir
+            BackupDir = $backupZip
             Error     = $_.Exception.Message
         }
     }

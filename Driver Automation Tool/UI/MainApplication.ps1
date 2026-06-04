@@ -6324,7 +6324,7 @@ $btn_RefreshModels.Add_Click({
                         $totalPacks = @($HPPacks).Count
                         foreach ($SingleOS in $OSList) {
                             $WindowsBuild = $($SingleOS).Split(" ")[2]
-                            $WindowsVersion = $SingleOS.Trim("$WindowsBuild").TrimEnd()
+                            $WindowsVersion = $SingleOS.Replace(" $WindowsBuild", "").TrimEnd()
                             Write-Log "[HP] Filtering for $WindowsVersion build $WindowsBuild (total packs: $totalPacks)"
                             $HPMatches = $HPPacks | Where-Object { $_.OSName -match $WindowsVersion -and $_.OSName -match $WindowsBuild }
                             $count = @($HPMatches).Count
@@ -6390,7 +6390,7 @@ $btn_RefreshModels.Add_Click({
                         # to get the Windows version (e.g. "Windows11") and deduplicate
                         $DellFirstOS = $OSList | Select-Object -First 1
                         $WindowsBuild = $($DellFirstOS).Split(" ")[2]
-                        $WindowsVersion = $DellFirstOS.Trim("$WindowsBuild").TrimEnd()
+                        $WindowsVersion = $DellFirstOS.Replace(" $WindowsBuild", "").TrimEnd()
                         $DellWindowsVersion = $WindowsVersion.Replace(" ", "")
                         Write-Log "[Dell] Filtering for $DellWindowsVersion arch $Architecture (build-agnostic)"
                         $DellMatchingPkgs = $DellPkgs | Where-Object {
@@ -6457,7 +6457,7 @@ $btn_RefreshModels.Add_Click({
                         $LenovoDrivers = $LenovoModelXML.ModelList.Model
                         foreach ($SingleOS in $OSList) {
                             $WindowsBuild = $($SingleOS).Split(" ")[2]
-                            $WindowsVersion = $SingleOS.Trim("$WindowsBuild").TrimEnd()
+                            $WindowsVersion = $SingleOS.Replace(" $WindowsBuild", "").TrimEnd()
                             $WinVer = "Win" + "$($WindowsVersion.Split(' ')[1])"
                             Write-Log "Filtering Lenovo models for $WinVer build $WindowsBuild..."
                             $LenovoModels = ($LenovoDrivers | Where-Object {
@@ -6509,7 +6509,7 @@ $btn_RefreshModels.Add_Click({
                         if ($DATCatalog -and @($DATCatalog).Count -gt 0) {
                             foreach ($SingleOS in $OSList) {
                                 $WindowsBuild   = $($SingleOS).Split(" ")[2]
-                                $WindowsVersion = $SingleOS.Trim("$WindowsBuild").TrimEnd()
+                                $WindowsVersion = $SingleOS.Replace(" $WindowsBuild", "").TrimEnd()
                                 $DATMSFiltered  = $DATCatalog | Where-Object {
                                     $_.Manufacturer -eq 'Microsoft' -and
                                     $_.SupportedOS  -match $WindowsVersion -and
@@ -6555,7 +6555,7 @@ $btn_RefreshModels.Add_Click({
                         Write-Log "Microsoft OSD catalog: $MSModelTotal total entries."
                         foreach ($SingleOS in $OSList) {
                             $WindowsBuild   = $($SingleOS).Split(" ")[2]
-                            $WindowsVersion = $SingleOS.Trim("$WindowsBuild").TrimEnd()
+                            $WindowsVersion = $SingleOS.Replace(" $WindowsBuild", "").TrimEnd()
                             $MSFiltered = $MSModelList | Where-Object { $_.OperatingSystem -match $WindowsVersion -and $_.OSArchitecture -eq $MSArchFilter }
                             $MSModels   = $MSFiltered | Group-Object -Property Model
                             $count      = @($MSModels).Count
@@ -6615,7 +6615,7 @@ $btn_RefreshModels.Add_Click({
                         $allAcerDriverModels = @()
                         foreach ($SingleOS in $OSList) {
                             $WindowsBuild = $($SingleOS).Split(" ")[2]
-                            $WindowsVersion = $SingleOS.Trim("$WindowsBuild").TrimEnd()
+                            $WindowsVersion = $SingleOS.Replace(" $WindowsBuild", "").TrimEnd()
                             $WinVer = "Win" + "$($WindowsVersion.Split(' ')[1])"
                             $AcerModels = ($AcerDrivers | Where-Object {
                                 ($_.SCCM.Version -eq $WindowsBuild -and $_.SCCM.OS -eq $WinVer)
@@ -6644,7 +6644,7 @@ $btn_RefreshModels.Add_Click({
                             # Use the first OS for BIOS-only entries (BIOS is OS-agnostic)
                             $firstOS = $OSList | Select-Object -First 1
                             $firstWindowsBuild = $($firstOS).Split(" ")[2]
-                            $firstWindowsVersion = $firstOS.Trim("$firstWindowsBuild").TrimEnd()
+                            $firstWindowsVersion = $firstOS.Replace(" $firstWindowsBuild", "").TrimEnd()
                             foreach ($extraModel in $allAcerNames) {
                                 if ($extraModel -notin $existingAcerNames) {
                                     $OEMSupportedModels += [PSCustomObject]@{
@@ -18262,38 +18262,33 @@ $script:btn_ApplyUpdate.Add_Click({
             $sourceContents = (Get-ChildItem -Path $sourceDir | Select-Object -ExpandProperty Name) -join ', '
             Write-UpdateLog "Source contents: $sourceContents"
 
-            # Back up Modules and UI folders to configured Backup path
-            $regBackupPath = $null
-            try {
-                $regCfg = Get-ItemProperty -Path 'HKLM:\SOFTWARE\DriverAutomationTool' -ErrorAction SilentlyContinue
-                if ($regCfg -and -not [string]::IsNullOrEmpty($regCfg.BackupPath)) {
-                    $regBackupPath = $regCfg.BackupPath
-                }
-            } catch { }
-            $backupRoot = if (-not [string]::IsNullOrEmpty($regBackupPath)) { $regBackupPath } else { Join-Path $InstallDir 'Backup' }
+            # Back up Modules and UI folders as a ZIP to the install directory's Backup folder
+            $backupRoot = Join-Path $InstallDir 'Backup'
             if (-not (Test-Path $backupRoot)) { New-Item -Path $backupRoot -ItemType Directory -Force | Out-Null }
-            $backupDir = Join-Path $backupRoot "DATBackup_$(Get-Date -Format 'yyyyMMdd_HHmmss')"
-            New-Item -Path $backupDir -ItemType Directory -Force | Out-Null
-            Write-UpdateLog "Backing up Modules and UI to: $backupDir"
+            $backupZip = Join-Path $backupRoot "DATBackup_$(Get-Date -Format 'yyyyMMdd_HHmmss').zip"
+            Write-UpdateLog "Backing up Modules and UI to: $backupZip"
+            $backupSources = @()
             foreach ($folder in @('Modules', 'UI')) {
                 $src = Join-Path $InstallDir $folder
-                if (Test-Path $src) {
-                    Copy-Item -Path $src -Destination (Join-Path $backupDir $folder) -Recurse -Force
-                }
+                if (Test-Path $src) { $backupSources += $src }
             }
+            Compress-Archive -Path $backupSources -DestinationPath $backupZip -Force
             Write-UpdateLog "Backup complete"
 
-            # Remove previous DAT backup folders (keep only the one just created)
-            $backupDirName = Split-Path -Leaf $backupDir
-            Get-ChildItem -Path $backupRoot -Directory -Filter 'DATBackup_*' -ErrorAction SilentlyContinue |
-                Where-Object { $_.Name -ne $backupDirName } |
+            # Remove previous backup ZIPs (keep only the one just created)
+            $backupZipName = Split-Path -Leaf $backupZip
+            Get-ChildItem -Path $backupRoot -File -Filter 'DATBackup_*.zip' -ErrorAction SilentlyContinue |
+                Where-Object { $_.Name -ne $backupZipName } |
                 ForEach-Object {
                     Write-UpdateLog "Removing previous backup: $($_.Name)"
-                    Remove-Item -Path $_.FullName -Recurse -Force -ErrorAction SilentlyContinue
+                    Remove-Item -Path $_.FullName -Force -ErrorAction SilentlyContinue
                 }
+            # Clean up any legacy uncompressed backup folders
+            Get-ChildItem -Path $backupRoot -Directory -Filter 'DATBackup_*' -ErrorAction SilentlyContinue |
+                ForEach-Object { Remove-Item -Path $_.FullName -Recurse -Force -ErrorAction SilentlyContinue }
 
             # Copy new files -- preserve user data folders
-            $preserveFolders = @('Settings', 'Logs', 'Temp', 'Packages')
+            $preserveFolders = @('Settings', 'Logs', 'Temp', 'Packages', 'Backup')
             Write-UpdateLog "Replacing application files (preserving: $($preserveFolders -join ', '))..."
             $sourceItems = Get-ChildItem -Path $sourceDir
             $copiedCount = 0
@@ -18347,21 +18342,16 @@ $script:btn_ApplyUpdate.Add_Click({
 
             return @{
                 Success   = $true
-                BackupDir = $backupDir
+                BackupDir = $backupZip
                 Error     = $null
             }
         } catch {
             Write-UpdateLog "Self-update failed: $($_.Exception.Message)" -Level Error
             # Attempt restore from backup
-            if ($backupDir -and (Test-Path $backupDir)) {
-                Write-UpdateLog "Restoring Modules and UI from backup..." -Level Warn
+            if ($backupZip -and (Test-Path $backupZip)) {
+                Write-UpdateLog "Restoring Modules and UI from backup ZIP..." -Level Warn
                 try {
-                    foreach ($folder in @('Modules', 'UI')) {
-                        $backupFolder = Join-Path $backupDir $folder
-                        if (Test-Path $backupFolder) {
-                            Copy-Item -Path $backupFolder -Destination (Join-Path $InstallDir $folder) -Recurse -Force
-                        }
-                    }
+                    Expand-Archive -Path $backupZip -DestinationPath $InstallDir -Force
                     Write-UpdateLog "Backup restored successfully"
                 } catch {
                     Write-UpdateLog "Backup restore failed: $($_.Exception.Message)" -Level Error
@@ -18371,7 +18361,7 @@ $script:btn_ApplyUpdate.Add_Click({
 
             return @{
                 Success   = $false
-                BackupDir = $backupDir
+                BackupDir = $backupZip
                 Error     = $_.Exception.Message
             }
         }
@@ -19744,7 +19734,7 @@ if (Test-Path $logoPath) {
 
 # Read version from module manifest
 $manifestPath = Join-Path $AppRoot "Modules\DriverAutomationToolCore\DriverAutomationToolCore.psd1"
-$script:versionString = "v10.0.39"
+$script:versionString = "v10.0.40"
 if (Test-Path $manifestPath) {
     $manifestData = Import-PowerShellDataFile $manifestPath
     $ver = [version]$manifestData.ModuleVersion
