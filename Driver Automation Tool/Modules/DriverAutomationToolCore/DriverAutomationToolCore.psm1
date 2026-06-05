@@ -7636,7 +7636,7 @@ try { Stop-Transcript } catch {}
         $fullScript = $scriptContent + "`n" + $imageDropBlock + "`n" + $xamlContent + $bodyXaml + $buttonsXaml + $eventHandlerBlock
     }
 
-    [System.IO.File]::WriteAllText($OutputPath, $fullScript, [System.Text.UTF8Encoding]::new($false))
+    [System.IO.File]::WriteAllText($OutputPath, $fullScript, [System.Text.UTF8Encoding]::new($true))
     Write-DATLogEntry -Value "[Intune] Toast notification script generated: $OutputPath (Type: $UpdateType)" -Severity 1
     Invoke-DATCodeSign -ScriptPath $OutputPath
     return $OutputPath
@@ -8100,7 +8100,7 @@ function Show-DATStatusToast {
     $scriptContent = $scriptContent.Replace('{{RESTART_DELAY_SECONDS}}', [string]$RestartDelaySeconds)
     $scriptContent = $scriptContent.Replace('{{DISABLE_RESTART}}', $(if ($DisableRestart) { '$true' } else { '$false' }))
 
-    [System.IO.File]::WriteAllText($OutputPath, $scriptContent, [System.Text.UTF8Encoding]::new($false))
+    [System.IO.File]::WriteAllText($OutputPath, $scriptContent, [System.Text.UTF8Encoding]::new($true))
     Write-DATLogEntry -Value "[Intune] Install script generated: $OutputPath (Toast: $(if ($DisableToast) { 'Disabled' } else { 'Enabled' }))" -Severity 1
     Invoke-DATCodeSign -ScriptPath $OutputPath
     return $OutputPath
@@ -8297,7 +8297,7 @@ if ($RequirementMet) {{
 
     $scriptContent = $scriptContent.Replace('%%VERSION_CHECK%%', $versionCheckBlock)
 
-    [System.IO.File]::WriteAllText($OutputPath, $scriptContent, [System.Text.UTF8Encoding]::new($false))
+    [System.IO.File]::WriteAllText($OutputPath, $scriptContent, [System.Text.UTF8Encoding]::new($true))
     Write-DATLogEntry -Value "[Intune] Requirement script generated: $OutputPath (UpdateType: $UpdateType)" -Severity 1
     Invoke-DATCodeSign -ScriptPath $OutputPath
     return $OutputPath
@@ -8454,7 +8454,7 @@ catch {{
 
     $scriptContent = $scriptContent.Replace('%%DETECTION_CHECK%%', $detectionCheckBlock)
 
-    [System.IO.File]::WriteAllText($OutputPath, $scriptContent, [System.Text.UTF8Encoding]::new($false))
+    [System.IO.File]::WriteAllText($OutputPath, $scriptContent, [System.Text.UTF8Encoding]::new($true))
     Write-DATLogEntry -Value "[Intune] Detection script generated: $OutputPath (UpdateType: $UpdateType)" -Severity 1
     Invoke-DATCodeSign -ScriptPath $OutputPath
     return $OutputPath
