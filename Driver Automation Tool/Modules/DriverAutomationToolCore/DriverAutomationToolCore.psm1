@@ -11304,12 +11304,13 @@ function Repair-DATIntuneDriverPackageNames {
     #>
     [CmdletBinding()]
     param (
-        [System.Collections.Concurrent.ConcurrentQueue[object]]$ProgressQueue
+        [System.Collections.Concurrent.ConcurrentQueue[object]]$ProgressQueue,
+        [string]$CorrectOSVersion = 'Windows 11'
     )
 
     $results = [System.Collections.ArrayList]::new()
 
-    Write-DATLogEntry -Value "[Driver Repair - Intune] Scanning Intune for driver packages with multi-build naming..." -Severity 1
+    Write-DATLogEntry -Value "[Driver Repair - Intune] Scanning Intune for driver packages with multi-build naming or truncated OS..." -Severity 1
 
     try {
         if (-not (Test-DATIntuneAuth)) {
@@ -11332,32 +11333,32 @@ function Repair-DATIntuneDriverPackageNames {
             return $results
         }
 
-        # Find packages with multi-build naming (semicolons in OS portion)
+        # Find packages with multi-build naming (semicolons) or truncated OS ("W x64")
         $packagesToFix = @()
         foreach ($app in $allApps) {
             # Pattern: "Drivers - OEM Model - Windows 11 25H2;Windows 11 24H2;... x64"
             if ($app.displayName -match '^(Drivers\s+-\s+[^\-]+\s+[^\-]+)\s+-\s+(Windows\s+\d+(?:H\d)?(?:;[^;]*)*?)\s+(x64|Arm64)\s*$') {
-                $prefix = $Matches[1].Trim()           # "Drivers - Dell Latitude 5540"
-                $osBuilds = $Matches[2].Trim()         # "Windows 11 25H2;Windows 11 24H2;..."
-                $arch = $Matches[3]                    # "x64" or "Arm64"
+                $prefix = $Matches[1].Trim()
+                $osBuilds = $Matches[2].Trim()
+                $arch = $Matches[3]
 
-                # Check if there are multiple builds (semicolon present)
                 if ($osBuilds -match ';') {
-                    # Extract base OS only (first part before semicolon)
-                    $baseOS = ($osBuilds -split ';')[0].Trim()  # "Windows 11"
+                    $baseOS = ($osBuilds -split ';')[0].Trim()
                     $newName = "$prefix - $baseOS $arch"
-                    
-                    $packagesToFix += [PSCustomObject]@{
-                        App     = $app
-                        OldName = $app.displayName
-                        NewName = $newName
-                    }
+                    $packagesToFix += [PSCustomObject]@{ App = $app; OldName = $app.displayName; NewName = $newName }
                 }
+            }
+            # Truncated OS pattern: "Drivers - OEM Model - W x64" (single character from array unwrap bug)
+            elseif ($app.displayName -match '^(Drivers\s+-\s+.+?)\s+-\s+W\s+(x64|x86|Arm64)\s*$') {
+                $prefix  = $Matches[1].Trim()
+                $arch    = $Matches[2]
+                $newName = "$prefix - $CorrectOSVersion $arch"
+                $packagesToFix += [PSCustomObject]@{ App = $app; OldName = $app.displayName; NewName = $newName }
             }
         }
 
         if ($packagesToFix.Count -eq 0) {
-            Write-DATLogEntry -Value "[Driver Repair - Intune] No Intune driver packages with multi-build naming found" -Severity 1
+            Write-DATLogEntry -Value "[Driver Repair - Intune] No Intune driver packages with multi-build naming or truncated OS found" -Severity 1
             return $results
         }
 
@@ -11438,7 +11439,8 @@ function Repair-DATDriverPackageNames {
     param (
         [string]$SiteServer,
         [string]$SiteCode,
-        [System.Collections.Concurrent.ConcurrentQueue[object]]$ProgressQueue
+        [System.Collections.Concurrent.ConcurrentQueue[object]]$ProgressQueue,
+        [string]$CorrectOSVersion = 'Windows 11'
     )
 
     $results = [System.Collections.ArrayList]::new()
@@ -11525,6 +11527,68 @@ function Repair-DATDriverPackageNames {
                     Error    = 'Could not parse package name format'
                 })
             }
+        }
+
+        # --- Second pass: fix "W x64/x86/Arm64" truncation bug ---
+        # Packages named "Drivers - OEM Model - W x64" were created when a single OS selection
+        # caused the backing array to be unwrapped and $selectedOSes[0] returned just the first
+        # character ("W") of the OS string (e.g. "Windows 11 24H2"). Fix both Name and MIFVersion.
+        $truncatedPkgs = @(Invoke-DATRemoteQuery -CimSession $cimSess -ComputerName $SiteServer `
+            -Namespace $smsNamespace `
+            -Query "SELECT PackageID, Name, MIFVersion FROM SMS_Package WHERE Name LIKE 'Drivers -%'" |
+            Where-Object { $_.Name -match '^Drivers\s+-\s+.+\s+-\s+W\s+(x64|x86|Arm64)\s*$' })
+
+        if ($truncatedPkgs.Count -gt 0) {
+            Write-DATLogEntry -Value "[Driver Repair] Found $($truncatedPkgs.Count) package(s) with truncated OS ('W') in name -- repairing to '$CorrectOSVersion'" -Severity 1
+            if ($ProgressQueue) {
+                [void]$ProgressQueue.Enqueue([PSCustomObject]@{ Status = 'Info'; Message = "Found $($truncatedPkgs.Count) package(s) with truncated OS name to repair" })
+            }
+
+            foreach ($pkg in $truncatedPkgs) {
+                $oldName = $pkg.Name
+                $oldMif  = $pkg.MIFVersion
+                if ($oldName -match '^(Drivers\s+-\s+.+?)\s+-\s+W\s+(x64|x86|Arm64)\s*$') {
+                    $prefix  = $Matches[1].Trim()
+                    $arch    = $Matches[2]
+                    $newName = "$prefix - $CorrectOSVersion $arch"
+                    $newMif  = "$CorrectOSVersion $arch"
+
+                    try {
+                        $livePkg = Get-CimInstance -CimSession $cimSess -Namespace $smsNamespace `
+                            -ClassName SMS_Package -Filter "PackageID='$($pkg.PackageID)'" -ErrorAction Stop |
+                            Select-Object -First 1
+                        if ($livePkg) {
+                            Set-CimInstance -CimSession $cimSess -InputObject $livePkg `
+                                -Property @{ Name = $newName; MIFVersion = $newMif } -ErrorAction Stop
+                        } else {
+                            $wmiPkg = [wmi]"\\$SiteServer\$($smsNamespace):SMS_Package.PackageID='$($pkg.PackageID)'"
+                            $wmiPkg.Name = $newName
+                            $wmiPkg.MIFVersion = $newMif
+                            $wmiPkg.Put() | Out-Null
+                        }
+
+                        Write-DATLogEntry -Value "[Driver Repair] Truncated OS: '$oldName' -> '$newName' (MIFVersion: '$oldMif' -> '$newMif')" -Severity 1
+                        [void]$results.Add([PSCustomObject]@{
+                            OldName  = $oldName; NewName = $newName; Platform = 'ConfigMgr'
+                            Status   = 'Renamed'; Error = ''
+                        })
+                        if ($ProgressQueue) {
+                            [void]$ProgressQueue.Enqueue([PSCustomObject]@{ Status = 'Renamed'; OldName = $oldName; NewName = $newName; Platform = 'ConfigMgr' })
+                        }
+                    } catch {
+                        Write-DATLogEntry -Value "[Driver Repair] Failed to repair '$oldName': $($_.Exception.Message)" -Severity 3
+                        [void]$results.Add([PSCustomObject]@{
+                            OldName  = $oldName; NewName = $newName; Platform = 'ConfigMgr'
+                            Status   = 'Failed'; Error = $_.Exception.Message
+                        })
+                        if ($ProgressQueue) {
+                            [void]$ProgressQueue.Enqueue([PSCustomObject]@{ Status = 'Failed'; OldName = $oldName; NewName = $newName; Platform = 'ConfigMgr'; Error = $_.Exception.Message })
+                        }
+                    }
+                }
+            }
+        } else {
+            Write-DATLogEntry -Value "[Driver Repair] No packages with truncated OS name found" -Severity 1
         }
 
         if ($cimSess) { Remove-CimSession -CimSession $cimSess -ErrorAction SilentlyContinue }
