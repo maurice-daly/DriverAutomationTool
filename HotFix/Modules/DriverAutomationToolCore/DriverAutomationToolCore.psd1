@@ -23,7 +23,6 @@
         'Start-DATModelProcessing',
         'Connect-DATConfigMgr',
         'Get-DATConfigMgrKnownModels',
-        'Get-DATConfigMgrKnownModelsV2',
         'Get-DATSiteCode',
         'Get-DATDistributionPoints',
         'Get-DATDistributionPointGroups',
