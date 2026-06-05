@@ -4239,9 +4239,10 @@ function Unregister-DATScheduledBuild {
     param ()
     $taskFolder = '\Driver Automation Tool'
     $taskName   = 'Scheduled Package Build'
-    $existing = Get-ScheduledTask -TaskPath $taskFolder -TaskName $taskName -ErrorAction SilentlyContinue
+    $existing = Get-ScheduledTask -TaskPath "$taskFolder\" -ErrorAction SilentlyContinue |
+        Where-Object { $_.TaskName -eq $taskName }
     if ($existing) {
-        Unregister-ScheduledTask -TaskPath $taskFolder -TaskName $taskName -Confirm:$false
+        Unregister-ScheduledTask -InputObject $existing -Confirm:$false -ErrorAction Stop
         Write-DATLogEntry -Value "[Schedule] Unregistered scheduled build task" -Severity 1
         return $true
     }
