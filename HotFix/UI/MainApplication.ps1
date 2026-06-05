@@ -8533,10 +8533,12 @@ function Invoke-DATConfigMgrConnect {
                 $txt_ServerPackageCount.Text = 'Not available'
             }
 
-            # Repair driver packages with incorrect naming (multi-build format)
+            # Repair driver packages with incorrect naming (multi-build format or truncated OS)
             try {
                 Write-DATActivityLog "[Package Repair] Starting driver package name repair scan..." -Level Info
-                $repairResults = Repair-DATDriverPackageNames -SiteServer $SiteServer -SiteCode $global:SiteCode
+                $repairBaseOS = $((Get-DATSelectedOSes | Select-Object -First 1) -replace '\s+\S+$', '')
+                if ([string]::IsNullOrEmpty($repairBaseOS)) { $repairBaseOS = 'Windows 11' }
+                $repairResults = Repair-DATDriverPackageNames -SiteServer $SiteServer -SiteCode $global:SiteCode -CorrectOSVersion $repairBaseOS
                 $successCount = ($repairResults | Where-Object { $_.Status -eq 'Renamed' } | Measure-Object).Count
                 if ($successCount -gt 0) {
                     Write-DATActivityLog "[Package Repair] Repaired $successCount driver package(s)" -Level Info
@@ -16659,7 +16661,9 @@ $btn_ConnectIntune.Add_Click({
                         -IsModal $true
                     
                     try {
-                        $intuneRepairResults = Repair-DATIntuneDriverPackageNames
+                        $intuneBaseOS = $((Get-DATSelectedOSes | Select-Object -First 1) -replace '\s+\S+$', '')
+                        if ([string]::IsNullOrEmpty($intuneBaseOS)) { $intuneBaseOS = 'Windows 11' }
+                        $intuneRepairResults = Repair-DATIntuneDriverPackageNames -CorrectOSVersion $intuneBaseOS
                         $intuneFixedCount = ($intuneRepairResults | Where-Object { $_.Status -eq 'Renamed' } | Measure-Object).Count
                         $intuneErrorCount = ($intuneRepairResults | Where-Object { $_.Status -eq 'Failed' } | Measure-Object).Count
                         
@@ -16873,7 +16877,9 @@ $btn_ConnectIntune.Add_Click({
                         -IsModal $true
                     
                     try {
-                        $intuneRepairResults = Repair-DATIntuneDriverPackageNames
+                        $intuneBaseOS = $((Get-DATSelectedOSes | Select-Object -First 1) -replace '\s+\S+$', '')
+                        if ([string]::IsNullOrEmpty($intuneBaseOS)) { $intuneBaseOS = 'Windows 11' }
+                        $intuneRepairResults = Repair-DATIntuneDriverPackageNames -CorrectOSVersion $intuneBaseOS
                         $intuneFixedCount = ($intuneRepairResults | Where-Object { $_.Status -eq 'Renamed' } | Measure-Object).Count
                         $intuneErrorCount = ($intuneRepairResults | Where-Object { $_.Status -eq 'Failed' } | Measure-Object).Count
                         
