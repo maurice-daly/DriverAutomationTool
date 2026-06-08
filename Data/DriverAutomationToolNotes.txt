@@ -3,6 +3,16 @@ Release Notes
 IMPORTANT
 - DAT Downloads have been moved to GitHub - https://github.com/maurice-daly/DriverAutomationTool
 
+Version 10.0.41
+What's New & Fixed
+- Model Matching — Overhauled model matching logic for improved accuracy and reliability when identifying supported hardware models.
+- Toast Notifications — Toast notification buttons are now fully customisable. A reset button has been added to restore default notification settings.
+- Scheduled Tasks — Resolved an issue with scheduled task creation and fixed OS export values written to scheduled tasks.
+- Authentication — Fixed a bug where the authentication button was not responding correctly under certain conditions.
+- MIF Generation — Corrected a bug affecting Management Information File (MIF) output.
+- WMI / Baseboard Detection — Updated the WMI Baseboard query instructions displayed in the UI.
+- UI Colour Fixes — Corrected colour resource definitions in the main window to ensure consistent theming across views.
+
 Version 10.0.40
 Fixes
 - Windows build strip causing unexpected shortening of the path for Dell devices to \W\ instead of \Windows

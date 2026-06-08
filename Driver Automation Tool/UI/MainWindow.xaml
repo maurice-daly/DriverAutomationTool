@@ -905,7 +905,7 @@
                                    Foreground="{DynamicResource AccentColor}" VerticalAlignment="Center" Margin="0,0,8,0"/>
                         <TextBlock Text="Driver Automation Tool" FontSize="13" FontWeight="SemiBold"
                                    Foreground="{DynamicResource WindowForeground}" VerticalAlignment="Center"/>
-                        <TextBlock x:Name="txt_Version" Text=" Version 10.0.40" FontSize="11"
+                        <TextBlock x:Name="txt_Version" Text=" Version 10.0.41" FontSize="11"
                                    Foreground="{DynamicResource InputPlaceholder}" VerticalAlignment="Center" Margin="4,0"/>
                     </StackPanel>
 
@@ -2249,11 +2249,20 @@
                                         <TextBlock FontSize="12" FontStyle="Italic" Foreground="{DynamicResource InputPlaceholder}">
                                             <Run Text="&#x2022;  Win32_ComputerSystem"/>
                                         </TextBlock>
+                                        <TextBlock FontSize="11" FontStyle="Italic" Foreground="{DynamicResource StatusWarning}" Margin="20,0,0,0">
+                                            <Run Text="&#x25E6;  Model, Manufacturer"/>
+                                        </TextBlock>
                                         <TextBlock FontSize="12" FontStyle="Italic" Foreground="{DynamicResource InputPlaceholder}">
                                             <Run Text="&#x2022;  MS_SystemInformation"/>
                                         </TextBlock>
+                                        <TextBlock FontSize="11" FontStyle="Italic" Foreground="{DynamicResource StatusWarning}" Margin="20,0,0,0">
+                                            <Run Text="&#x25E6;  SystemSKU"/>
+                                        </TextBlock>
                                         <TextBlock FontSize="12" FontStyle="Italic" Foreground="{DynamicResource InputPlaceholder}">
                                             <Run Text="&#x2022;  Win32_BaseBoard"/>
+                                        </TextBlock>
+                                        <TextBlock FontSize="11" FontStyle="Italic" Foreground="{DynamicResource StatusWarning}" Margin="20,0,0,0">
+                                            <Run Text="&#x25E6;  Product"/>
                                         </TextBlock>
                                     </StackPanel>
                                     <Grid>
@@ -3542,6 +3551,19 @@
                                                 </ControlTemplate>
                                             </Button.Template>
                                         </Button>
+                                        <Button x:Name="btn_ResetToastDefaults" Content="Reset" Height="30" Margin="8,0,0,0"
+                                                Padding="12,0" FontSize="11" VerticalAlignment="Center" Cursor="Hand"
+                                                Background="{DynamicResource InputBackground}" Foreground="{DynamicResource WindowForeground}"
+                                                BorderBrush="{DynamicResource CardBorder}" BorderThickness="1">
+                                            <Button.Template>
+                                                <ControlTemplate TargetType="Button">
+                                                    <Border Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}"
+                                                            BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="6" Padding="{TemplateBinding Padding}">
+                                                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                                    </Border>
+                                                </ControlTemplate>
+                                            </Button.Template>
+                                        </Button>
                                     </StackPanel>
 
                                     <!-- Update toast mockup (Driver / BIOS) -->
@@ -3585,14 +3607,14 @@
                                                     </Grid.ColumnDefinitions>
                                                     <Border Grid.Column="0" CornerRadius="8" Background="#0B84F1"
                                                             Height="36" Cursor="Arrow">
-                                                        <TextBlock Text="Update Now" HorizontalAlignment="Center"
+                                                        <TextBlock x:Name="txt_ToastActionBtn" Text="Update Now" HorizontalAlignment="Center"
                                                                    VerticalAlignment="Center" FontSize="13"
                                                                    FontWeight="SemiBold" Foreground="#FFFFFF"/>
                                                     </Border>
                                                     <Border Grid.Column="2" CornerRadius="8" Background="#334155"
                                                             Height="36" BorderBrush="#475569" BorderThickness="1"
                                                             Cursor="Arrow">
-                                                        <TextBlock Text="Remind Me Later" HorizontalAlignment="Center"
+                                                        <TextBlock x:Name="txt_ToastDismissBtn" Text="Remind Me Later" HorizontalAlignment="Center"
                                                                    VerticalAlignment="Center" FontSize="13"
                                                                    FontWeight="SemiBold" Foreground="#F8FAFC"/>
                                                     </Border>
@@ -3640,7 +3662,7 @@
                                                         <Border Grid.Column="0" CornerRadius="8" Background="#334155" Height="34"
                                                                 HorizontalAlignment="Stretch"
                                                                 BorderBrush="#475569" BorderThickness="1" Cursor="Arrow">
-                                                            <TextBlock Text="Close" HorizontalAlignment="Center"
+                                                            <TextBlock x:Name="txt_ToastStatusCloseBtn" Text="Close" HorizontalAlignment="Center"
                                                                        VerticalAlignment="Center" FontSize="13"
                                                                        FontWeight="SemiBold" Foreground="#F8FAFC"/>
                                                         </Border>
@@ -3648,7 +3670,7 @@
                                                                 HorizontalAlignment="Stretch"
                                                                 BorderBrush="#3B82F6" BorderThickness="1" Cursor="Arrow"
                                                                 Background="#2563EB" Visibility="Collapsed">
-                                                            <TextBlock Text="Restart Now" HorizontalAlignment="Center"
+                                                            <TextBlock x:Name="txt_ToastRestartBtn" Text="Restart Now" HorizontalAlignment="Center"
                                                                        VerticalAlignment="Center" FontSize="13"
                                                                        FontWeight="SemiBold" Foreground="#F8FAFC"/>
                                                         </Border>
@@ -3711,6 +3733,29 @@
                                                         <Run Text="&#xE121;" FontFamily="Segoe MDL2 Assets" FontSize="10"/><Run Text="  {{MINUTES}}"/>
                                                     </TextBlock>
                                                 </Button>
+                                            </StackPanel>
+
+                                            <!-- Button Text Customization -->
+                                            <StackPanel x:Name="panel_ToastButtonText" Margin="0,12,0,0">
+                                                <TextBlock Text="Button Text" FontSize="11" FontWeight="SemiBold"
+                                                           Foreground="{DynamicResource InputPlaceholder}" Margin="0,0,0,4"/>
+                                                <Grid Margin="0,0,0,6">
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="*"/>
+                                                        <ColumnDefinition Width="8"/>
+                                                        <ColumnDefinition Width="*"/>
+                                                    </Grid.ColumnDefinitions>
+                                                    <StackPanel Grid.Column="0">
+                                                        <TextBlock x:Name="lbl_ToastActionBtn" Text="Action Button" FontSize="10"
+                                                                   Foreground="{DynamicResource InputPlaceholder}" Margin="0,0,0,3"/>
+                                                        <TextBox x:Name="txt_CustomActionBtn" Style="{StaticResource RoundedTextBox}" Height="34"/>
+                                                    </StackPanel>
+                                                    <StackPanel Grid.Column="2">
+                                                        <TextBlock x:Name="lbl_ToastDismissBtn" Text="Dismiss Button" FontSize="10"
+                                                                   Foreground="{DynamicResource InputPlaceholder}" Margin="0,0,0,3"/>
+                                                        <TextBox x:Name="txt_CustomDismissBtn" Style="{StaticResource RoundedTextBox}" Height="34"/>
+                                                    </StackPanel>
+                                                </Grid>
                                             </StackPanel>
                                         </StackPanel>
                                     </Border>
@@ -5714,7 +5759,7 @@
                                     <StackPanel>
                                         <TextBlock Text="Driver Automation Tool" FontSize="22" FontWeight="Bold"
                                                    Foreground="{DynamicResource AccentColor}" Margin="0,0,0,4"/>
-                                        <TextBlock x:Name="txt_AboutVersion" Text="Version 10.0.40" FontSize="14"
+                                        <TextBlock x:Name="txt_AboutVersion" Text="Version 10.0.41" FontSize="14"
                                                    Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,16"/>
 
                                         <TextBlock TextWrapping="Wrap" FontSize="13"

@@ -4,7 +4,7 @@
      Organization:  MSEndpointMgr / Patch My PC
      Filename:      DriverAutomationToolCore.psm1
      Purpose:       Core functions for Driver Automation Tool v2.0
-     Version:       10.0.40.0
+     Version:       10.0.41.0
     ===========================================================================
 #>
 
@@ -27,8 +27,8 @@ if ($PSVersionTable.PSVersion.Major -le 5) {
 
 #region Variables
 
-[version]$global:ScriptRelease = "10.0.40.0"
-$global:ScriptBuildDate = "03-06-2026"
+[version]$global:ScriptRelease = "10.0.41.0"
+$global:ScriptBuildDate = "06-06-2026"
 $global:ReleaseNotesURL = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/DriverAutomationToolNotes.txt"
 $OEMLinksURL = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/OEMLinks.xml"
 
@@ -2285,9 +2285,13 @@ function Get-DATConfigMgrKnownModels {
         Queries ConfigMgr hardware inventory via CIM to discover known device makes and models.
     .DESCRIPTION
         Connects to the ConfigMgr site server's SMS WMI namespace and queries hardware inventory
-        classes (SMS_G_System_COMPUTER_SYSTEM and SMS_G_System_MS_SYSTEMINFORMATION) to identify
-        distinct device makes and models actively deployed in the environment.
-        Supports HP, Dell, Lenovo, Microsoft, and Acer.
+        classes (SMS_G_System_COMPUTER_SYSTEM, SMS_G_System_MS_SYSTEMINFORMATION, and
+        SMS_G_System_BASE_BOARD) to identify distinct device makes and models actively deployed
+        in the environment. Supports HP, Dell, Lenovo, Microsoft, and Acer.
+
+        Baseboard matching uses Win32_BaseBoard.Product for HP/Dell/Lenovo/Acer (providing
+        system board IDs, SKUs, and machine types) and MS_SystemInformation.SystemSKU for
+        Microsoft Surface devices (uniquely identifying device variants).
     #>
     [CmdletBinding()]
     param (
@@ -2334,10 +2338,11 @@ function Get-DATConfigMgrKnownModels {
 
         # --- OEM query definitions ---
         # Each entry: OEM display name, WQL query, Make property, Model property
+        # Queries include ResourceID to enable joining against the baseboard/SKU maps.
         $oemQueries = @(
             @{
                 OEM   = 'HP'
-                Query = "SELECT DISTINCT Manufacturer, Model FROM SMS_G_System_COMPUTER_SYSTEM WHERE (Manufacturer = 'Hewlett-Packard' OR Manufacturer = 'HP') AND Model NOT LIKE '%Proliant%'"
+                Query = "SELECT ResourceID, Manufacturer, Model FROM SMS_G_System_COMPUTER_SYSTEM WHERE (Manufacturer = 'Hewlett-Packard' OR Manufacturer = 'HP') AND Model NOT LIKE '%Proliant%'"
                 MakeProp  = 'Manufacturer'
                 ModelProp = 'Model'
                 NormalizeMake  = 'HP'
@@ -2345,7 +2350,7 @@ function Get-DATConfigMgrKnownModels {
             },
             @{
                 OEM   = 'Dell'
-                Query = "SELECT DISTINCT Manufacturer, Model FROM SMS_G_System_COMPUTER_SYSTEM WHERE Manufacturer = 'Dell Inc.'"
+                Query = "SELECT ResourceID, Manufacturer, Model FROM SMS_G_System_COMPUTER_SYSTEM WHERE Manufacturer = 'Dell Inc.'"
                 MakeProp  = 'Manufacturer'
                 ModelProp = 'Model'
                 NormalizeMake  = 'Dell'
@@ -2353,7 +2358,7 @@ function Get-DATConfigMgrKnownModels {
             },
             @{
                 OEM   = 'Lenovo'
-                Query = "SELECT DISTINCT Manufacturer, Model FROM SMS_G_System_COMPUTER_SYSTEM WHERE Manufacturer = 'LENOVO'"
+                Query = "SELECT ResourceID, Manufacturer, Model FROM SMS_G_System_COMPUTER_SYSTEM WHERE Manufacturer = 'LENOVO'"
                 MakeProp  = 'Manufacturer'
                 ModelProp = 'Model'
                 NormalizeMake  = 'Lenovo'
@@ -2361,7 +2366,7 @@ function Get-DATConfigMgrKnownModels {
             },
             @{
                 OEM   = 'Microsoft'
-                Query = "SELECT DISTINCT SystemManufacturer, SystemProductName FROM SMS_G_System_MS_SYSTEMINFORMATION WHERE SystemManufacturer LIKE 'Microsoft%' AND SystemProductName LIKE 'Surface%'"
+                Query = "SELECT ResourceID, SystemManufacturer, SystemProductName FROM SMS_G_System_MS_SYSTEMINFORMATION WHERE SystemManufacturer LIKE 'Microsoft%' AND SystemProductName LIKE 'Surface%'"
                 MakeProp  = 'SystemManufacturer'
                 ModelProp = 'SystemProductName'
                 NormalizeMake  = 'Microsoft'
@@ -2369,7 +2374,7 @@ function Get-DATConfigMgrKnownModels {
             },
             @{
                 OEM   = 'Acer'
-                Query = "SELECT DISTINCT Manufacturer, Model FROM SMS_G_System_COMPUTER_SYSTEM WHERE Manufacturer = 'Acer'"
+                Query = "SELECT ResourceID, Manufacturer, Model FROM SMS_G_System_COMPUTER_SYSTEM WHERE Manufacturer = 'Acer'"
                 MakeProp  = 'Manufacturer'
                 ModelProp = 'Model'
                 NormalizeMake  = 'Acer'
@@ -2378,37 +2383,67 @@ function Get-DATConfigMgrKnownModels {
         )
 
         # --- Supplemental baseboard queries (optional classes; silently ignored if not collected) ---
-        # HP: SMS_G_System_BASE_BOARD.Product holds the 4-char system ID (e.g. 8B4F).
-        #     Keyed by ResourceID so it can be joined to COMPUTER_SYSTEM results.
-        $hpBaseboardMap = @{}   # ResourceID -> Product
+        # Win32_BaseBoard.Product provides the primary matching identifier for all non-Microsoft OEMs:
+        #   HP:     4-char system board ID (e.g. 8B4F)
+        #   Dell:   SystemSKU (e.g. 0C6F)
+        #   Lenovo: 4-char machine type (e.g. 21G2)
+        #   Acer:   Board product ID
+        # A single query retrieves all entries; keyed by ResourceID for joining to COMPUTER_SYSTEM results.
+        $baseboardMap = @{}   # ResourceID -> Product
+        $useBaseboardFallback = $false
         try {
-            $hpBBResults = @(Invoke-DATRemoteQuery -CimSession $cimSession -ComputerName $SiteServer -Namespace $namespace `
-                -Query "SELECT ResourceID, Product FROM SMS_G_System_BASE_BOARD WHERE Manufacturer LIKE 'HP%' OR Manufacturer LIKE 'Hewlett%'")
-            foreach ($r in $hpBBResults) {
+            if ($OnProgress) { & $OnProgress "Querying baseboard inventory..." }
+            $bbResults = @(Invoke-DATRemoteQuery -CimSession $cimSession -ComputerName $SiteServer -Namespace $namespace `
+                -Query "SELECT ResourceID, Product FROM SMS_G_System_BASE_BOARD WHERE Product IS NOT NULL")
+            foreach ($r in $bbResults) {
                 if (-not [string]::IsNullOrWhiteSpace($r.Product)) {
-                    $hpBaseboardMap[[string]$r.ResourceID] = $r.Product.Trim().ToUpper()
+                    $baseboardMap[[string]$r.ResourceID] = $r.Product.Trim().ToUpper()
                 }
             }
-            Write-DATLogEntry -Value "[ConfigMgr Known Models] HP BASE_BOARD: $($hpBaseboardMap.Count) entries" -Severity 1
+            if ($baseboardMap.Count -eq 0) {
+                $useBaseboardFallback = $true
+                Write-DATLogEntry -Value "[ConfigMgr Known Models] WARNING: Win32_BaseBoard class returned no results. Ensure the BaseBoard (Win32_BaseBoard) class is enabled in hardware inventory and clients have completed an inventory cycle. Falling back to legacy matching (Dell SystemSKUNumber, Lenovo machine type extraction)." -Severity 2
+            } else {
+                Write-DATLogEntry -Value "[ConfigMgr Known Models] BASE_BOARD: $($baseboardMap.Count) entries" -Severity 1
+            }
         } catch {
-            Write-DATLogEntry -Value "[ConfigMgr Known Models] HP BASE_BOARD query skipped (class not collected): $($_.Exception.Message)" -Severity 1
+            $useBaseboardFallback = $true
+            Write-DATLogEntry -Value "[ConfigMgr Known Models] BASE_BOARD query failed (class not collected): $($_.Exception.Message). Falling back to legacy matching." -Severity 2
         }
 
-        # Dell: SystemSKUNumber lives in SMS_G_System_COMPUTER_SYSTEM (same class, extra property).
-        #       Keyed by Model name so it can be joined during the main loop.
+        # Legacy fallback: Dell SystemSKUNumber (only used when BASE_BOARD is unavailable)
         $dellSkuMap = @{}   # Model -> SystemSKUNumber
+        if ($useBaseboardFallback) {
+            try {
+                $dellSkuResults = @(Invoke-DATRemoteQuery -CimSession $cimSession -ComputerName $SiteServer -Namespace $namespace `
+                    -Query "SELECT DISTINCT Model, SystemSKUNumber FROM SMS_G_System_COMPUTER_SYSTEM WHERE Manufacturer = 'Dell Inc.' AND SystemSKUNumber IS NOT NULL")
+                foreach ($r in $dellSkuResults) {
+                    $sku = [string]$r.SystemSKUNumber
+                    if (-not [string]::IsNullOrWhiteSpace($sku) -and -not [string]::IsNullOrWhiteSpace($r.Model)) {
+                        $dellSkuMap[$r.Model.Trim()] = $sku.Trim().ToUpper()
+                    }
+                }
+                Write-DATLogEntry -Value "[ConfigMgr Known Models] Dell SystemSKUNumber fallback: $($dellSkuMap.Count) entries" -Severity 1
+            } catch {
+                Write-DATLogEntry -Value "[ConfigMgr Known Models] Dell SystemSKUNumber fallback query failed: $($_.Exception.Message)" -Severity 2
+            }
+        }
+
+        # Microsoft Surface: SystemSKU from MS_SystemInformation uniquely identifies device variants
+        # (e.g. Surface_Pro_9_for_Business_2038 vs Surface_Pro_9_With_5G_1997).
+        # Keyed by ResourceID for joining to the MS_SYSTEMINFORMATION model query results.
+        $surfaceSkuMap = @{}   # ResourceID -> SystemSKU
         try {
-            $dellSkuResults = @(Invoke-DATRemoteQuery -CimSession $cimSession -ComputerName $SiteServer -Namespace $namespace `
-                -Query "SELECT DISTINCT Model, SystemSKUNumber FROM SMS_G_System_COMPUTER_SYSTEM WHERE Manufacturer = 'Dell Inc.' AND SystemSKUNumber IS NOT NULL")
-            foreach ($r in $dellSkuResults) {
-                $sku = [string]$r.SystemSKUNumber
-                if (-not [string]::IsNullOrWhiteSpace($sku) -and -not [string]::IsNullOrWhiteSpace($r.Model)) {
-                    $dellSkuMap[$r.Model.Trim()] = $sku.Trim().ToUpper()
+            $surfaceSkuResults = @(Invoke-DATRemoteQuery -CimSession $cimSession -ComputerName $SiteServer -Namespace $namespace `
+                -Query "SELECT ResourceID, SystemSKU FROM SMS_G_System_MS_SYSTEMINFORMATION WHERE SystemManufacturer LIKE 'Microsoft%' AND SystemSKU LIKE 'Surface%'")
+            foreach ($r in $surfaceSkuResults) {
+                if (-not [string]::IsNullOrWhiteSpace($r.SystemSKU)) {
+                    $surfaceSkuMap[[string]$r.ResourceID] = $r.SystemSKU.Trim()
                 }
             }
-            Write-DATLogEntry -Value "[ConfigMgr Known Models] Dell SystemSKUNumber: $($dellSkuMap.Count) entries" -Severity 1
+            Write-DATLogEntry -Value "[ConfigMgr Known Models] Surface SystemSKU: $($surfaceSkuMap.Count) entries" -Severity 1
         } catch {
-            Write-DATLogEntry -Value "[ConfigMgr Known Models] Dell SystemSKUNumber query skipped (property not collected): $($_.Exception.Message)" -Severity 1
+            Write-DATLogEntry -Value "[ConfigMgr Known Models] Surface SystemSKU query skipped (property not collected): $($_.Exception.Message)" -Severity 1
         }
 
         foreach ($oem in $oemQueries) {
@@ -2426,7 +2461,7 @@ function Get-DATConfigMgrKnownModels {
                     $model = $model.Trim()
                     $baseboard = $null
 
-                    # HP model name normalization + baseboard lookup
+                    # HP model name normalization
                     if ($oem.NormalizeModel) {
                         $model = $model -replace '^(HP|Hewlett-Packard|COMPAQ|Hp|Compaq)\s*', ''
                         $model = $model -replace '\sSFF\b', ' Small Form Factor'
@@ -2435,28 +2470,41 @@ function Get-DATConfigMgrKnownModels {
                         $model = $model -replace '\s*35W$', ''
                         $model = $model -replace '\s+PC$', ''
                         $model = $model.Trim()
-                        # Resolve baseboard from BASE_BOARD map if available
-                        $resId = [string]$item.ResourceID
-                        if ($hpBaseboardMap.ContainsKey($resId)) {
-                            $baseboard = $hpBaseboardMap[$resId]
-                        }
                     }
 
-                    # Lenovo: resolve machine type to friendly model name; machine type IS the baseboard
+                    # Lenovo: resolve machine type to friendly model name
                     if ($oem.OEM -eq 'Lenovo' -and $model.Length -ge 4) {
-                        # WMI Model is typically a 4-char machine type (e.g. 21G2) or
-                        # a 10-char MTM (e.g. 21G2001EUS); extract the 4-char type prefix
                         $machineType = $model.Substring(0, 4)
-                        $baseboard = $machineType.ToUpper()
                         $friendlyName = Find-DATLenovoModelType -ModelType $machineType
                         if (-not [string]::IsNullOrEmpty($friendlyName)) {
                             $model = $friendlyName.Trim()
                         }
+                        # Fallback: use extracted machine type as baseboard when BASE_BOARD unavailable
+                        if ($useBaseboardFallback) {
+                            $baseboard = $machineType.ToUpper()
+                        }
                     }
 
-                    # Dell: look up SystemSKUNumber by model name
-                    if ($oem.OEM -eq 'Dell' -and $dellSkuMap.ContainsKey($model)) {
-                        $baseboard = $dellSkuMap[$model]
+                    # Baseboard resolution for non-Microsoft OEMs
+                    if ($oem.OEM -ne 'Microsoft') {
+                        if (-not $useBaseboardFallback) {
+                            # Primary path: Win32_BaseBoard.Product
+                            $resId = [string]$item.ResourceID
+                            if ($baseboardMap.ContainsKey($resId)) {
+                                $baseboard = $baseboardMap[$resId]
+                            }
+                        } elseif ($oem.OEM -eq 'Dell' -and $dellSkuMap.ContainsKey($model)) {
+                            # Fallback: Dell SystemSKUNumber
+                            $baseboard = $dellSkuMap[$model]
+                        }
+                    }
+
+                    # Microsoft Surface: use SystemSKU as the baseboard identifier
+                    if ($oem.OEM -eq 'Microsoft') {
+                        $resId = [string]$item.ResourceID
+                        if ($surfaceSkuMap.ContainsKey($resId)) {
+                            $baseboard = $surfaceSkuMap[$resId]
+                        }
                     }
 
                     if (-not [string]::IsNullOrEmpty($model)) {
@@ -2993,27 +3041,36 @@ function Start-DATModelProcessing {
     if (-not [string]::IsNullOrEmpty($CustomToastTextsJson)) {
         try { $customToastTexts = $CustomToastTextsJson | ConvertFrom-Json -AsHashtable -ErrorAction Stop }
         catch {
-            try { $customToastTexts = @{}; ($CustomToastTextsJson | ConvertFrom-Json).PSObject.Properties | ForEach-Object { $customToastTexts[$_.Name] = @{ Title = $_.Value.Title; Body = $_.Value.Body; Greeting = $_.Value.Greeting; Subtitle = $_.Value.Subtitle } } }
+            try { $customToastTexts = @{}; ($CustomToastTextsJson | ConvertFrom-Json).PSObject.Properties | ForEach-Object { $customToastTexts[$_.Name] = @{ Title = $_.Value.Title; Body = $_.Value.Body; Greeting = $_.Value.Greeting; Subtitle = $_.Value.Subtitle; ActionButton = $_.Value.ActionButton; DismissButton = $_.Value.DismissButton } } }
             catch { $customToastTexts = @{} }
         }
     }
-    # Extract per-type title/body/greeting/subtitle for backward-compatible passing
+    # Extract per-type title/body/greeting/subtitle/buttons for backward-compatible passing
     $CustomToastTitle = if ($customToastTexts.ContainsKey('Toast_Drivers')) { $customToastTexts['Toast_Drivers'].Title } else { '' }
     $CustomToastBody  = if ($customToastTexts.ContainsKey('Toast_Drivers')) { $customToastTexts['Toast_Drivers'].Body } else { '' }
     $CustomToastGreeting = if ($customToastTexts.ContainsKey('Toast_Drivers')) { $customToastTexts['Toast_Drivers'].Greeting } else { '' }
     $CustomToastSubtitle = if ($customToastTexts.ContainsKey('Toast_Drivers')) { $customToastTexts['Toast_Drivers'].Subtitle } else { '' }
+    $CustomToastActionButton = if ($customToastTexts.ContainsKey('Toast_Drivers')) { $customToastTexts['Toast_Drivers'].ActionButton } else { '' }
+    $CustomToastDismissButton = if ($customToastTexts.ContainsKey('Toast_Drivers')) { $customToastTexts['Toast_Drivers'].DismissButton } else { '' }
     $CustomBIOSToastTitle = if ($customToastTexts.ContainsKey('Toast_BIOS')) { $customToastTexts['Toast_BIOS'].Title } else { '' }
     $CustomBIOSToastBody  = if ($customToastTexts.ContainsKey('Toast_BIOS')) { $customToastTexts['Toast_BIOS'].Body } else { '' }
     $CustomBIOSToastGreeting = if ($customToastTexts.ContainsKey('Toast_BIOS')) { $customToastTexts['Toast_BIOS'].Greeting } else { '' }
     $CustomBIOSToastSubtitle = if ($customToastTexts.ContainsKey('Toast_BIOS')) { $customToastTexts['Toast_BIOS'].Subtitle } else { '' }
+    $CustomBIOSToastActionButton = if ($customToastTexts.ContainsKey('Toast_BIOS')) { $customToastTexts['Toast_BIOS'].ActionButton } else { '' }
+    $CustomBIOSToastDismissButton = if ($customToastTexts.ContainsKey('Toast_BIOS')) { $customToastTexts['Toast_BIOS'].DismissButton } else { '' }
     $CustomSuccessTitle = if ($customToastTexts.ContainsKey('Toast_Success')) { $customToastTexts['Toast_Success'].Title } else { '' }
     $CustomSuccessBody  = if ($customToastTexts.ContainsKey('Toast_Success')) { $customToastTexts['Toast_Success'].Body } else { '' }
+    $CustomSuccessActionButton = if ($customToastTexts.ContainsKey('Toast_Success')) { $customToastTexts['Toast_Success'].ActionButton } else { '' }
     $CustomBIOSSuccessTitle = if ($customToastTexts.ContainsKey('Toast_BIOSSuccess')) { $customToastTexts['Toast_BIOSSuccess'].Title } else { '' }
     $CustomBIOSSuccessBody  = if ($customToastTexts.ContainsKey('Toast_BIOSSuccess')) { $customToastTexts['Toast_BIOSSuccess'].Body } else { '' }
+    $CustomBIOSSuccessActionButton = if ($customToastTexts.ContainsKey('Toast_BIOSSuccess')) { $customToastTexts['Toast_BIOSSuccess'].ActionButton } else { '' }
+    $CustomBIOSSuccessDismissButton = if ($customToastTexts.ContainsKey('Toast_BIOSSuccess')) { $customToastTexts['Toast_BIOSSuccess'].DismissButton } else { '' }
     $CustomIssuesTitle = if ($customToastTexts.ContainsKey('Toast_Issues')) { $customToastTexts['Toast_Issues'].Title } else { '' }
     $CustomIssuesBody  = if ($customToastTexts.ContainsKey('Toast_Issues')) { $customToastTexts['Toast_Issues'].Body } else { '' }
+    $CustomIssuesActionButton = if ($customToastTexts.ContainsKey('Toast_Issues')) { $customToastTexts['Toast_Issues'].ActionButton } else { '' }
     $CustomBIOSIssuesTitle = if ($customToastTexts.ContainsKey('Toast_BIOSIssues')) { $customToastTexts['Toast_BIOSIssues'].Title } else { '' }
     $CustomBIOSIssuesBody  = if ($customToastTexts.ContainsKey('Toast_BIOSIssues')) { $customToastTexts['Toast_BIOSIssues'].Body } else { '' }
+    $CustomBIOSIssuesActionButton = if ($customToastTexts.ContainsKey('Toast_BIOSIssues')) { $customToastTexts['Toast_BIOSIssues'].ActionButton } else { '' }
 
     # Use user-configured paths if provided, otherwise default to ScriptDirectory sub-folders
     if ([string]::IsNullOrEmpty($StoragePath)) { $StoragePath = Join-Path $ScriptDirectory "Downloads" }
@@ -3304,10 +3361,14 @@ function Start-DATModelProcessing {
                         if (-not [string]::IsNullOrEmpty($CustomToastBody)) { $intuneParams['CustomToastBody'] = $CustomToastBody }
                         if (-not [string]::IsNullOrEmpty($CustomToastGreeting)) { $intuneParams['CustomToastGreeting'] = $CustomToastGreeting }
                         if (-not [string]::IsNullOrEmpty($CustomToastSubtitle)) { $intuneParams['CustomToastSubtitle'] = $CustomToastSubtitle }
+                        if (-not [string]::IsNullOrEmpty($CustomToastActionButton)) { $intuneParams['CustomToastActionButton'] = $CustomToastActionButton }
+                        if (-not [string]::IsNullOrEmpty($CustomToastDismissButton)) { $intuneParams['CustomToastDismissButton'] = $CustomToastDismissButton }
                         if (-not [string]::IsNullOrEmpty($CustomSuccessTitle)) { $intuneParams['CustomSuccessTitle'] = $CustomSuccessTitle }
                         if (-not [string]::IsNullOrEmpty($CustomSuccessBody)) { $intuneParams['CustomSuccessBody'] = $CustomSuccessBody }
+                        if (-not [string]::IsNullOrEmpty($CustomSuccessActionButton)) { $intuneParams['CustomSuccessActionButton'] = $CustomSuccessActionButton }
                         if (-not [string]::IsNullOrEmpty($CustomIssuesTitle)) { $intuneParams['CustomIssuesTitle'] = $CustomIssuesTitle }
                         if (-not [string]::IsNullOrEmpty($CustomIssuesBody)) { $intuneParams['CustomIssuesBody'] = $CustomIssuesBody }
+                        if (-not [string]::IsNullOrEmpty($CustomIssuesActionButton)) { $intuneParams['CustomIssuesActionButton'] = $CustomIssuesActionButton }
                         if ($modelForceUpdate) { $intuneParams['ForceUpdate'] = $true }
                         $intuneResult = Invoke-DATIntunePackageCreation @intuneParams
 
@@ -3703,10 +3764,15 @@ function Start-DATModelProcessing {
                                 if (-not [string]::IsNullOrEmpty($CustomBIOSToastBody)) { $intuneParams['CustomToastBody'] = $CustomBIOSToastBody }
                                 if (-not [string]::IsNullOrEmpty($CustomBIOSToastGreeting)) { $intuneParams['CustomToastGreeting'] = $CustomBIOSToastGreeting }
                                 if (-not [string]::IsNullOrEmpty($CustomBIOSToastSubtitle)) { $intuneParams['CustomToastSubtitle'] = $CustomBIOSToastSubtitle }
+                                if (-not [string]::IsNullOrEmpty($CustomBIOSToastActionButton)) { $intuneParams['CustomToastActionButton'] = $CustomBIOSToastActionButton }
+                                if (-not [string]::IsNullOrEmpty($CustomBIOSToastDismissButton)) { $intuneParams['CustomToastDismissButton'] = $CustomBIOSToastDismissButton }
                                 if (-not [string]::IsNullOrEmpty($CustomBIOSSuccessTitle)) { $intuneParams['CustomBIOSSuccessTitle'] = $CustomBIOSSuccessTitle }
                                 if (-not [string]::IsNullOrEmpty($CustomBIOSSuccessBody)) { $intuneParams['CustomBIOSSuccessBody'] = $CustomBIOSSuccessBody }
+                                if (-not [string]::IsNullOrEmpty($CustomBIOSSuccessActionButton)) { $intuneParams['CustomBIOSSuccessActionButton'] = $CustomBIOSSuccessActionButton }
+                                if (-not [string]::IsNullOrEmpty($CustomBIOSSuccessDismissButton)) { $intuneParams['CustomBIOSSuccessDismissButton'] = $CustomBIOSSuccessDismissButton }
                                 if (-not [string]::IsNullOrEmpty($CustomBIOSIssuesTitle)) { $intuneParams['CustomBIOSIssuesTitle'] = $CustomBIOSIssuesTitle }
                                 if (-not [string]::IsNullOrEmpty($CustomBIOSIssuesBody)) { $intuneParams['CustomBIOSIssuesBody'] = $CustomBIOSIssuesBody }
+                                if (-not [string]::IsNullOrEmpty($CustomBIOSIssuesActionButton)) { $intuneParams['CustomBIOSIssuesActionButton'] = $CustomBIOSIssuesActionButton }
                                 if ($modelForceUpdate) { $intuneParams['ForceUpdate'] = $true }
                                 $biosIntuneResult = Invoke-DATIntunePackageCreation @intuneParams
 
@@ -4085,6 +4151,7 @@ function Export-DATBuildConfig {
             Model = $m.Model
         }
         if (-not [string]::IsNullOrEmpty($m.Baseboards)) { $entry['Baseboards'] = $m.Baseboards }
+        if (-not [string]::IsNullOrEmpty($m.OS)) { $entry['OS'] = $m.OS }
         $entry
     }
 
@@ -4145,8 +4212,14 @@ function Import-DATBuildConfig {
     }
 
     # Build model objects matching the pipeline format (one entry per model per OS)
+    # When a model has a per-model OS property, use only that OS instead of the global list
     $models = foreach ($m in $config.Models) {
-        foreach ($osValue in $osList) {
+        $modelOSList = if (-not [string]::IsNullOrEmpty($m.OS)) {
+            @($m.OS)
+        } else {
+            $osList
+        }
+        foreach ($osValue in $modelOSList) {
             [PSCustomObject]@{
                 OEM              = $m.OEM
                 Model            = $m.Model
@@ -4239,9 +4312,9 @@ function Unregister-DATScheduledBuild {
     param ()
     $taskFolder = '\Driver Automation Tool'
     $taskName   = 'Scheduled Package Build'
-    $existing = Get-ScheduledTask -TaskPath $taskFolder -TaskName $taskName -ErrorAction SilentlyContinue
+    $existing = Get-ScheduledTask -TaskPath "$taskFolder\" -TaskName $taskName -ErrorAction SilentlyContinue
     if ($existing) {
-        Unregister-ScheduledTask -TaskPath $taskFolder -TaskName $taskName -Confirm:$false
+        Unregister-ScheduledTask -InputObject $existing -Confirm:$false -ErrorAction Stop
         Write-DATLogEntry -Value "[Schedule] Unregistered scheduled build task" -Severity 1
         return $true
     }
@@ -7027,6 +7100,8 @@ function New-DATIntuneToastScript {
         [string]$CustomToastBody = '',
         [string]$CustomToastGreeting = '',
         [string]$CustomToastSubtitle = '',
+        [string]$CustomActionButton = '',
+        [string]$CustomDismissButton = '',
         [int]$RestartDelayMinutes = 10,
         [switch]$DisableRestart
     )
@@ -7089,6 +7164,15 @@ function New-DATIntuneToastScript {
     # Resolve greeting prefix and subtitle
     $greetingPrefix = if (-not [string]::IsNullOrEmpty($CustomToastGreeting)) { $CustomToastGreeting } else { 'Hi' }
     $subtitle = if (-not [string]::IsNullOrEmpty($CustomToastSubtitle)) { $CustomToastSubtitle } else { 'Driver Automation Tool V10' }
+
+    # Resolve button text per update type
+    if ($isStatusType) {
+        $actionButtonText  = if (-not [string]::IsNullOrEmpty($CustomActionButton))  { $CustomActionButton }  else { 'Close' }
+        $dismissButtonText = if (-not [string]::IsNullOrEmpty($CustomDismissButton)) { $CustomDismissButton } else { 'Restart Now' }
+    } else {
+        $actionButtonText  = if (-not [string]::IsNullOrEmpty($CustomActionButton))  { $CustomActionButton }  else { 'Update Now' }
+        $dismissButtonText = if (-not [string]::IsNullOrEmpty($CustomDismissButton)) { $CustomDismissButton } else { 'Remind Me Later' }
+    }
 
     # Read module version from manifest for embedding in generated scripts
     $moduleManifest = Import-PowerShellDataFile -Path (Join-Path $PSScriptRoot 'DriverAutomationToolCore.psd1') -ErrorAction SilentlyContinue
@@ -7286,10 +7370,10 @@ try {
                            LineHeight="20">$body</TextBlock>
             </StackPanel>
 "@
-        $statusCloseButton = @'
+        $statusCloseButton = @"
             <!-- Close Button -->
             <Grid Grid.Row="2" Margin="24,0,24,20">
-                <Button x:Name="btnClose" Content="Close"
+                <Button x:Name="btnClose" Content="$actionButtonText"
                         Height="40" Width="160" FontSize="14" FontWeight="SemiBold"
                         HorizontalAlignment="Center"
                         Foreground="#F8FAFC" Cursor="Hand" BorderThickness="0">
@@ -7312,7 +7396,6 @@ try {
     </Border>
 </Window>
 "@
-'@
         $statusEventBlock = @'
 
 try {
@@ -7446,7 +7529,7 @@ try {
             </StackPanel>
 "@
 
-        $buttonsXaml = @'
+        $buttonsXaml = @"
 
             <!-- Action Buttons -->
             <Grid Grid.Row="2" Margin="24,0,24,20">
@@ -7455,7 +7538,7 @@ try {
                     <ColumnDefinition Width="12"/>
                     <ColumnDefinition Width="*"/>
                 </Grid.ColumnDefinitions>
-                <Button x:Name="btnUpdate" Grid.Column="0" Content="Update Now"
+                <Button x:Name="btnUpdate" Grid.Column="0" Content="$actionButtonText"
                         Height="40" FontSize="14" FontWeight="SemiBold"
                         Foreground="#FFFFFF" Cursor="Hand" BorderThickness="0">
                     <Button.Template>
@@ -7471,7 +7554,7 @@ try {
                         </ControlTemplate>
                     </Button.Template>
                 </Button>
-                <Button x:Name="btnSnooze" Grid.Column="2" Content="Remind Me Later"
+                <Button x:Name="btnSnooze" Grid.Column="2" Content="$dismissButtonText"
                         Height="40" FontSize="14" FontWeight="SemiBold"
                         Foreground="#F8FAFC" Cursor="Hand" BorderThickness="0">
                     <Button.Template>
@@ -7493,7 +7576,6 @@ try {
     </Border>
 </Window>
 "@
-'@
 
         $eventHandlerBlock = @'
 
@@ -7636,7 +7718,10 @@ try { Stop-Transcript } catch {}
         $fullScript = $scriptContent + "`n" + $imageDropBlock + "`n" + $xamlContent + $bodyXaml + $buttonsXaml + $eventHandlerBlock
     }
 
-    [System.IO.File]::WriteAllText($OutputPath, $fullScript, [System.Text.UTF8Encoding]::new($false))
+    # Write with UTF-8 BOM so PowerShell 5.1 correctly reads non-ASCII characters
+    # (e.g. Swedish ä/ö/å). Without BOM, PS 5.1 reads files using the system's ANSI
+    # code page (Windows-1252), corrupting multi-byte UTF-8 characters.
+    [System.IO.File]::WriteAllText($OutputPath, $fullScript, [System.Text.UTF8Encoding]::new($true))
     Write-DATLogEntry -Value "[Intune] Toast notification script generated: $OutputPath (Type: $UpdateType)" -Severity 1
     Invoke-DATCodeSign -ScriptPath $OutputPath
     return $OutputPath
@@ -7990,16 +8075,16 @@ function Show-DATStatusToast {
             -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Minutes 2)
         Write-CMTraceLog "[StatusToast] Registering task '$taskFolder\$taskName' -- Execute: $ps64"
         Write-CMTraceLog "[StatusToast] Toast script: $ToastScript"
-        Unregister-ScheduledTask -TaskPath $taskFolder -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
+        Unregister-ScheduledTask -TaskPath "$taskFolder\" -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
         Register-ScheduledTask -TaskPath $taskFolder -TaskName $taskName -Action $taskAction -Principal $taskPrincipal `
             -Settings $taskSettings -Force | Out-Null
-        Start-ScheduledTask -TaskPath $taskFolder -TaskName $taskName
-        $taskState = (Get-ScheduledTask -TaskPath $taskFolder -TaskName $taskName -ErrorAction SilentlyContinue).State
+        Start-ScheduledTask -TaskPath "$taskFolder\" -TaskName $taskName
+        $taskState = (Get-ScheduledTask -TaskPath "$taskFolder\" -TaskName $taskName -ErrorAction SilentlyContinue).State
         Write-CMTraceLog "[StatusToast] Task started -- state: $taskState"
         # Brief delay then clean up the task registration (toast is already running)
         Start-Sleep -Seconds 5
-        $taskStateAfter = (Get-ScheduledTask -TaskPath $taskFolder -TaskName $taskName -ErrorAction SilentlyContinue).State
-        $taskInfoObj = Get-ScheduledTaskInfo -TaskPath $taskFolder -TaskName $taskName -ErrorAction SilentlyContinue
+        $taskStateAfter = (Get-ScheduledTask -TaskPath "$taskFolder\" -TaskName $taskName -ErrorAction SilentlyContinue).State
+        $taskInfoObj = Get-ScheduledTaskInfo -TaskPath "$taskFolder\" -TaskName $taskName -ErrorAction SilentlyContinue
         $lastResult = if ($taskInfoObj) { "0x{0:X}" -f $taskInfoObj.LastTaskResult } else { 'N/A' }
         Write-CMTraceLog "[StatusToast] After 5s wait -- state: $taskStateAfter, last result: $lastResult"
 
@@ -8100,7 +8185,8 @@ function Show-DATStatusToast {
     $scriptContent = $scriptContent.Replace('{{RESTART_DELAY_SECONDS}}', [string]$RestartDelaySeconds)
     $scriptContent = $scriptContent.Replace('{{DISABLE_RESTART}}', $(if ($DisableRestart) { '$true' } else { '$false' }))
 
-    [System.IO.File]::WriteAllText($OutputPath, $scriptContent, [System.Text.UTF8Encoding]::new($false))
+    # UTF-8 with BOM ensures PS 5.1 reads non-ASCII characters correctly
+    [System.IO.File]::WriteAllText($OutputPath, $scriptContent, [System.Text.UTF8Encoding]::new($true))
     Write-DATLogEntry -Value "[Intune] Install script generated: $OutputPath (Toast: $(if ($DisableToast) { 'Disabled' } else { 'Enabled' }))" -Severity 1
     Invoke-DATCodeSign -ScriptPath $OutputPath
     return $OutputPath
@@ -8297,7 +8383,8 @@ if ($RequirementMet) {{
 
     $scriptContent = $scriptContent.Replace('%%VERSION_CHECK%%', $versionCheckBlock)
 
-    [System.IO.File]::WriteAllText($OutputPath, $scriptContent, [System.Text.UTF8Encoding]::new($false))
+    # UTF-8 with BOM ensures PS 5.1 reads non-ASCII characters correctly
+    [System.IO.File]::WriteAllText($OutputPath, $scriptContent, [System.Text.UTF8Encoding]::new($true))
     Write-DATLogEntry -Value "[Intune] Requirement script generated: $OutputPath (UpdateType: $UpdateType)" -Severity 1
     Invoke-DATCodeSign -ScriptPath $OutputPath
     return $OutputPath
@@ -8454,7 +8541,8 @@ catch {{
 
     $scriptContent = $scriptContent.Replace('%%DETECTION_CHECK%%', $detectionCheckBlock)
 
-    [System.IO.File]::WriteAllText($OutputPath, $scriptContent, [System.Text.UTF8Encoding]::new($false))
+    # UTF-8 with BOM ensures PS 5.1 reads non-ASCII characters correctly
+    [System.IO.File]::WriteAllText($OutputPath, $scriptContent, [System.Text.UTF8Encoding]::new($true))
     Write-DATLogEntry -Value "[Intune] Detection script generated: $OutputPath (UpdateType: $UpdateType)" -Severity 1
     Invoke-DATCodeSign -ScriptPath $OutputPath
     return $OutputPath
@@ -9245,6 +9333,8 @@ function Invoke-DATIntunePackageCreation {
             if (-not [string]::IsNullOrEmpty($CustomToastBody))  { $toastParams['CustomToastBody']  = $CustomToastBody  }
             if (-not [string]::IsNullOrEmpty($CustomToastGreeting))  { $toastParams['CustomToastGreeting']  = $CustomToastGreeting  }
             if (-not [string]::IsNullOrEmpty($CustomToastSubtitle))  { $toastParams['CustomToastSubtitle']  = $CustomToastSubtitle  }
+            if (-not [string]::IsNullOrEmpty($CustomToastActionButton))  { $toastParams['CustomActionButton']  = $CustomToastActionButton  }
+            if (-not [string]::IsNullOrEmpty($CustomToastDismissButton)) { $toastParams['CustomDismissButton'] = $CustomToastDismissButton }
             New-DATIntuneToastScript @toastParams
             Write-DATLogEntry -Value "[Intune Pipeline] Toast script created: $toastScriptPath" -Severity 1 -UpdateUI
 
@@ -9261,6 +9351,7 @@ function Invoke-DATIntunePackageCreation {
             $successParams = @{} + $statusToastParams
             if (-not [string]::IsNullOrEmpty($CustomSuccessTitle)) { $successParams['CustomToastTitle'] = $CustomSuccessTitle }
             if (-not [string]::IsNullOrEmpty($CustomSuccessBody))  { $successParams['CustomToastBody']  = $CustomSuccessBody  }
+            if (-not [string]::IsNullOrEmpty($CustomSuccessActionButton)) { $successParams['CustomActionButton'] = $CustomSuccessActionButton }
             New-DATIntuneToastScript -OutputPath $successToastPath -UpdateType 'Success' @successParams
             Write-DATLogEntry -Value "[Intune Pipeline] Success toast script created: $successToastPath" -Severity 1 -UpdateUI
 
@@ -9270,6 +9361,8 @@ function Invoke-DATIntunePackageCreation {
                 $biosSuccessParams = @{} + $statusToastParams
                 if (-not [string]::IsNullOrEmpty($CustomBIOSSuccessTitle)) { $biosSuccessParams['CustomToastTitle'] = $CustomBIOSSuccessTitle }
                 if (-not [string]::IsNullOrEmpty($CustomBIOSSuccessBody))  { $biosSuccessParams['CustomToastBody']  = $CustomBIOSSuccessBody  }
+                if (-not [string]::IsNullOrEmpty($CustomBIOSSuccessActionButton))  { $biosSuccessParams['CustomActionButton']  = $CustomBIOSSuccessActionButton  }
+                if (-not [string]::IsNullOrEmpty($CustomBIOSSuccessDismissButton)) { $biosSuccessParams['CustomDismissButton'] = $CustomBIOSSuccessDismissButton }
                 if ($DisableRestart) { $biosSuccessParams['DisableRestart'] = $true }
                 New-DATIntuneToastScript -OutputPath $biosSuccessToastPath -UpdateType 'BIOSSuccess' @biosSuccessParams
                 Write-DATLogEntry -Value "[Intune Pipeline] BIOS prestaged toast script created: $biosSuccessToastPath" -Severity 1 -UpdateUI
@@ -9279,6 +9372,7 @@ function Invoke-DATIntunePackageCreation {
             $issuesParams = @{} + $statusToastParams
             if (-not [string]::IsNullOrEmpty($CustomIssuesTitle)) { $issuesParams['CustomToastTitle'] = $CustomIssuesTitle }
             if (-not [string]::IsNullOrEmpty($CustomIssuesBody))  { $issuesParams['CustomToastBody']  = $CustomIssuesBody  }
+            if (-not [string]::IsNullOrEmpty($CustomIssuesActionButton)) { $issuesParams['CustomActionButton'] = $CustomIssuesActionButton }
             New-DATIntuneToastScript -OutputPath $issuesToastPath -UpdateType 'Issues' @issuesParams
             Write-DATLogEntry -Value "[Intune Pipeline] Issues toast script created: $issuesToastPath" -Severity 1 -UpdateUI
 
@@ -9288,6 +9382,7 @@ function Invoke-DATIntunePackageCreation {
                 $biosIssuesParams = @{} + $statusToastParams
                 if (-not [string]::IsNullOrEmpty($CustomBIOSIssuesTitle)) { $biosIssuesParams['CustomToastTitle'] = $CustomBIOSIssuesTitle }
                 if (-not [string]::IsNullOrEmpty($CustomBIOSIssuesBody))  { $biosIssuesParams['CustomToastBody']  = $CustomBIOSIssuesBody  }
+                if (-not [string]::IsNullOrEmpty($CustomBIOSIssuesActionButton)) { $biosIssuesParams['CustomActionButton'] = $CustomBIOSIssuesActionButton }
                 New-DATIntuneToastScript -OutputPath $biosIssuesToastPath -UpdateType 'BIOSIssues' @biosIssuesParams
                 Write-DATLogEntry -Value "[Intune Pipeline] BIOS issues toast script created: $biosIssuesToastPath" -Severity 1 -UpdateUI
             }

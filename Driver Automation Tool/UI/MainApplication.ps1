@@ -7064,6 +7064,10 @@ function Test-DATKnownDeviceMatch {
         Returns $true when a catalog grid item matches a known device.
         Baseboard is the primary match when available on both sides;
         name-based matching is used as a fallback.
+    .NOTES
+        Baseboard sources by OEM:
+          HP/Dell/Lenovo/Acer: Win32_BaseBoard.Product
+          Microsoft Surface:   MS_SystemInformation.SystemSKU
     #>
     param (
         [string]$GridMake,
@@ -7094,11 +7098,10 @@ function Test-DATKnownDeviceMatch {
         return $true
     }
 
-    # --- Microsoft Surface CPU-qualifier prefix match ---
-    # WMI/Intune returns the base model name (e.g. "Surface Laptop 4") while the OSD
-    # catalog appends a CPU qualifier (e.g. "Surface Laptop 4 AMD" / "Surface Laptop 4 Intel").
-    # If the catalog model name starts with the device model name followed by a space,
-    # treat it as a match so all CPU variants are selected.
+    # --- Microsoft Surface prefix match (fallback when SystemSKU is unavailable) ---
+    # WMI returns the base model name (e.g. "Surface Laptop 4") while the catalog may
+    # append a CPU qualifier (e.g. "Surface Laptop 4 AMD"). If baseboard/SKU matching
+    # did not fire (no baseboard data on either side), use prefix matching as a last resort.
     if ($normDeviceMake -eq 'Microsoft' -and $GridMake -eq 'Microsoft') {
         return ($GridModel -like "$normDeviceModel *")
     }
@@ -7456,18 +7459,22 @@ $btn_Build.Add_Click({
 
     $global:SelectedModels = [System.Collections.ArrayList]::new()
     foreach ($model in $selectedModels) {
-        # Extract base OS version (e.g. "Windows 11" from "Windows 11 24H2")
-        # If multiple OSes selected, use the first one for package naming
+        # Determine the OS label for package naming
         $osForPackage = if ($model.Build -eq 'All') {
-            # When 'All' is selected, use just the base version from first selected OS
-            $baseOSVersion = ($selectedOSes[0] -split '\s+')[0..1] -join ' '  # "Windows 11" from "Windows 11 24H2"
-            $baseOSVersion
+            # Dell uses build-agnostic packages -- use the model's own OS property directly (e.g. "Windows 11")
+            if (-not [string]::IsNullOrEmpty($model.OS)) {
+                $model.OS
+            } else {
+                [array]$osArr = $selectedOSes
+                ($osArr[0] -split '\s+')[0..1] -join ' '
+            }
         } elseif ($model.OS -and $model.Build -and $model.Build -ne 'All') {
             # Specific build selected, use "OS Build" format
             "$($model.OS) $($model.Build)"
         } else {
             # Default: just the base OS version
-            ($selectedOSes[0] -split '\s+')[0..1] -join ' '  # "Windows 11"
+            [array]$osArr = $selectedOSes
+            ($osArr[0] -split '\s+')[0..1] -join ' '  # "Windows 11"
         }
         
         $modelObj = [PSCustomObject]@{
@@ -7691,8 +7698,10 @@ $btn_Build.Add_Click({
             $tBody     = (Get-ItemProperty -Path $global:RegPath -Name "${typeKey}_Body" -ErrorAction SilentlyContinue)."${typeKey}_Body"
             $tGreeting = (Get-ItemProperty -Path $global:RegPath -Name "${typeKey}_Greeting" -ErrorAction SilentlyContinue)."${typeKey}_Greeting"
             $tSubtitle = (Get-ItemProperty -Path $global:RegPath -Name "${typeKey}_Subtitle" -ErrorAction SilentlyContinue)."${typeKey}_Subtitle"
-            if (-not [string]::IsNullOrEmpty($tTitle) -or -not [string]::IsNullOrEmpty($tBody) -or -not [string]::IsNullOrEmpty($tGreeting) -or -not [string]::IsNullOrEmpty($tSubtitle)) {
-                $toastTexts[$typeKey] = @{ Title = $tTitle; Body = $tBody; Greeting = $tGreeting; Subtitle = $tSubtitle }
+            $tActionBtn  = (Get-ItemProperty -Path $global:RegPath -Name "${typeKey}_ActionButton" -ErrorAction SilentlyContinue)."${typeKey}_ActionButton"
+            $tDismissBtn = (Get-ItemProperty -Path $global:RegPath -Name "${typeKey}_DismissButton" -ErrorAction SilentlyContinue)."${typeKey}_DismissButton"
+            if (-not [string]::IsNullOrEmpty($tTitle) -or -not [string]::IsNullOrEmpty($tBody) -or -not [string]::IsNullOrEmpty($tGreeting) -or -not [string]::IsNullOrEmpty($tSubtitle) -or -not [string]::IsNullOrEmpty($tActionBtn) -or -not [string]::IsNullOrEmpty($tDismissBtn)) {
+                $toastTexts[$typeKey] = @{ Title = $tTitle; Body = $tBody; Greeting = $tGreeting; Subtitle = $tSubtitle; ActionButton = $tActionBtn; DismissButton = $tDismissBtn }
             }
         }
         if ($toastTexts.Count -gt 0) {
@@ -14749,6 +14758,15 @@ $txt_ToastStatusBody      = $Window.FindName('txt_ToastStatusBody')
 $bd_ToastRestartBtn       = $Window.FindName('bd_ToastRestartBtn')
 $col_ToastRestartGap      = $Window.FindName('col_ToastRestartGap')
 $col_ToastRestart         = $Window.FindName('col_ToastRestart')
+$txt_ToastActionBtn       = $Window.FindName('txt_ToastActionBtn')
+$txt_ToastDismissBtn      = $Window.FindName('txt_ToastDismissBtn')
+$txt_ToastStatusCloseBtn  = $Window.FindName('txt_ToastStatusCloseBtn')
+$txt_ToastRestartBtn      = $Window.FindName('txt_ToastRestartBtn')
+$txt_CustomActionBtn      = $Window.FindName('txt_CustomActionBtn')
+$txt_CustomDismissBtn     = $Window.FindName('txt_CustomDismissBtn')
+$lbl_ToastActionBtn       = $Window.FindName('lbl_ToastActionBtn')
+$lbl_ToastDismissBtn      = $Window.FindName('lbl_ToastDismissBtn')
+$panel_ToastButtonText    = $Window.FindName('panel_ToastButtonText')
 
 # Load banner image
 $script:DefaultBannerPath = Join-Path (Split-Path $UIPath -Parent) 'Branding\DATLogo_Wide.png'
@@ -14877,12 +14895,12 @@ function Get-DATToastRegistryPrefix {
 
 # Default texts for each notification type (used when no custom text is set)
 $script:ToastDefaults = @{
-    'Toast_Drivers'     = @{ Title = 'Driver Updates Pending'; Body = 'Your device has pending updates which are required for security / stability reasons. Pressing the Update button can result in temporary network or display interruption.'; Greeting = 'Hi'; Subtitle = 'Driver Automation Tool V10' }
-    'Toast_BIOS'        = @{ Title = 'BIOS Update Pending'; Body = 'Your device has pending updates which are required for security / stability reasons. Pressing the Update button will trigger a restart of your device. DO NOT power off the device during the update process.'; Greeting = 'Hi'; Subtitle = 'Driver Automation Tool V10' }
-    'Toast_Success'     = @{ Title = 'Drivers Successfully Updated'; Body = 'Your device drivers have been successfully updated. No restart is required unless indicated by your IT department.'; Greeting = 'Hi'; Subtitle = 'Driver Automation Tool V10' }
-    'Toast_BIOSSuccess' = @{ Title = 'BIOS Firmware Prestaged'; Body = 'Your system has a pending BIOS update and will be restarted in {{MINUTES}} minute(s). Please save your work. Do NOT power off the device during the update process.'; Greeting = 'Hi'; Subtitle = 'Driver Automation Tool V10' }
-    'Toast_Issues'      = @{ Title = 'Driver Update Issues Detected'; Body = 'One or more driver updates encountered errors during installation. Please contact your IT department or check the device logs for details.'; Greeting = 'Hi'; Subtitle = 'Driver Automation Tool V10' }
-    'Toast_BIOSIssues'  = @{ Title = 'BIOS Update Issues Detected'; Body = 'The BIOS firmware update encountered errors during installation. Please contact your IT department or check the device logs for details.'; Greeting = 'Hi'; Subtitle = 'Driver Automation Tool V10' }
+    'Toast_Drivers'     = @{ Title = 'Driver Updates Pending'; Body = 'Your device has pending updates which are required for security / stability reasons. Pressing the Update button can result in temporary network or display interruption.'; Greeting = 'Hi'; Subtitle = 'Driver Automation Tool V10'; ActionButton = 'Update Now'; DismissButton = 'Remind Me Later' }
+    'Toast_BIOS'        = @{ Title = 'BIOS Update Pending'; Body = 'Your device has pending updates which are required for security / stability reasons. Pressing the Update button will trigger a restart of your device. DO NOT power off the device during the update process.'; Greeting = 'Hi'; Subtitle = 'Driver Automation Tool V10'; ActionButton = 'Update Now'; DismissButton = 'Remind Me Later' }
+    'Toast_Success'     = @{ Title = 'Drivers Successfully Updated'; Body = 'Your device drivers have been successfully updated. No restart is required unless indicated by your IT department.'; Greeting = 'Hi'; Subtitle = 'Driver Automation Tool V10'; ActionButton = 'Close'; DismissButton = '' }
+    'Toast_BIOSSuccess' = @{ Title = 'BIOS Firmware Prestaged'; Body = 'Your system has a pending BIOS update and will be restarted in {{MINUTES}} minute(s). Please save your work. Do NOT power off the device during the update process.'; Greeting = 'Hi'; Subtitle = 'Driver Automation Tool V10'; ActionButton = 'Close'; DismissButton = 'Restart Now' }
+    'Toast_Issues'      = @{ Title = 'Driver Update Issues Detected'; Body = 'One or more driver updates encountered errors during installation. Please contact your IT department or check the device logs for details.'; Greeting = 'Hi'; Subtitle = 'Driver Automation Tool V10'; ActionButton = 'Close'; DismissButton = '' }
+    'Toast_BIOSIssues'  = @{ Title = 'BIOS Update Issues Detected'; Body = 'The BIOS firmware update encountered errors during installation. Please contact your IT department or check the device logs for details.'; Greeting = 'Hi'; Subtitle = 'Driver Automation Tool V10'; ActionButton = 'Close'; DismissButton = '' }
 }
 
 # Suppress TextChanged events during programmatic loads
@@ -14894,12 +14912,19 @@ $savedTitle = (Get-ItemProperty -Path $global:RegPath -Name "${initPrefix}_Title
 $savedBody  = (Get-ItemProperty -Path $global:RegPath -Name "${initPrefix}_Body" -ErrorAction SilentlyContinue)."${initPrefix}_Body"
 $savedGreeting  = (Get-ItemProperty -Path $global:RegPath -Name "${initPrefix}_Greeting" -ErrorAction SilentlyContinue)."${initPrefix}_Greeting"
 $savedSubtitle  = (Get-ItemProperty -Path $global:RegPath -Name "${initPrefix}_Subtitle" -ErrorAction SilentlyContinue)."${initPrefix}_Subtitle"
+$savedActionBtn  = (Get-ItemProperty -Path $global:RegPath -Name "${initPrefix}_ActionButton" -ErrorAction SilentlyContinue)."${initPrefix}_ActionButton"
+$savedDismissBtn = (Get-ItemProperty -Path $global:RegPath -Name "${initPrefix}_DismissButton" -ErrorAction SilentlyContinue)."${initPrefix}_DismissButton"
 $defaults = $script:ToastDefaults[$initPrefix]
 $script:ToastTextLoading = $true
 $txt_CustomToastTitle.Text    = if (-not [string]::IsNullOrEmpty($savedTitle))    { $savedTitle }    else { $defaults.Title }
 $txt_CustomToastBody.Text     = if (-not [string]::IsNullOrEmpty($savedBody))     { $savedBody }     else { $defaults.Body }
 $txt_CustomToastGreeting.Text = if (-not [string]::IsNullOrEmpty($savedGreeting)) { $savedGreeting } else { $defaults.Greeting }
 $txt_CustomToastSubtitle.Text = if (-not [string]::IsNullOrEmpty($savedSubtitle)) { $savedSubtitle } else { $defaults.Subtitle }
+$txt_CustomActionBtn.Text     = if (-not [string]::IsNullOrEmpty($savedActionBtn))  { $savedActionBtn }  else { $defaults.ActionButton }
+$txt_CustomDismissBtn.Text    = if (-not [string]::IsNullOrEmpty($savedDismissBtn)) { $savedDismissBtn } else { $defaults.DismissButton }
+# Show/hide dismiss button field based on whether this type has one
+$lbl_ToastDismissBtn.Visibility = if ([string]::IsNullOrEmpty($defaults.DismissButton)) { 'Collapsed' } else { 'Visible' }
+$txt_CustomDismissBtn.Visibility = if ([string]::IsNullOrEmpty($defaults.DismissButton)) { 'Collapsed' } else { 'Visible' }
 $script:ToastTextLoading = $false
 
 $txt_CustomToastTitle.Add_TextChanged({
@@ -14946,6 +14971,24 @@ $txt_CustomToastSubtitle.Add_TextChanged({
     Update-DATToastPreview -Type $selectedType
 })
 
+$txt_CustomActionBtn.Add_TextChanged({
+    if ($script:ToastTextLoading) { return }
+    $val = $txt_CustomActionBtn.Text.Trim()
+    $selectedType = if ($null -ne $cmb_ToastPreviewType.SelectedItem) { $cmb_ToastPreviewType.SelectedItem.Content } else { 'Driver Update' }
+    $prefix = Get-DATToastRegistryPrefix -PreviewType $selectedType
+    Set-DATRegistryValue -Name "${prefix}_ActionButton" -Value $val -Type String
+    Update-DATToastPreview -Type $selectedType
+})
+
+$txt_CustomDismissBtn.Add_TextChanged({
+    if ($script:ToastTextLoading) { return }
+    $val = $txt_CustomDismissBtn.Text.Trim()
+    $selectedType = if ($null -ne $cmb_ToastPreviewType.SelectedItem) { $cmb_ToastPreviewType.SelectedItem.Content } else { 'Driver Update' }
+    $prefix = Get-DATToastRegistryPrefix -PreviewType $selectedType
+    Set-DATRegistryValue -Name "${prefix}_DismissButton" -Value $val -Type String
+    Update-DATToastPreview -Type $selectedType
+})
+
 function Update-DATToastPreview {
     param([string]$Type)
 
@@ -14955,6 +14998,8 @@ function Update-DATToastPreview {
     $customBody  = $txt_CustomToastBody.Text.Trim()
     $customGreeting  = $txt_CustomToastGreeting.Text.Trim()
     $customSubtitle  = $txt_CustomToastSubtitle.Text.Trim()
+    $customActionBtn  = $txt_CustomActionBtn.Text.Trim()
+    $customDismissBtn = $txt_CustomDismissBtn.Text.Trim()
     $defaults = $script:ToastDefaults[$prefix]
 
     # Update greeting and subtitle on the update mockup preview
@@ -14971,6 +15016,18 @@ function Update-DATToastPreview {
         $bd_ToastRestartBtn.Visibility = 'Collapsed'
         $col_ToastRestartGap.Width = [System.Windows.GridLength]::new(0)
         $col_ToastRestart.Width    = [System.Windows.GridLength]::new(0)
+    }
+
+    # Update button text in mockup previews
+    $actionBtnText  = if (-not [string]::IsNullOrEmpty($customActionBtn))  { $customActionBtn }  else { $defaults.ActionButton }
+    $dismissBtnText = if (-not [string]::IsNullOrEmpty($customDismissBtn)) { $customDismissBtn } else { $defaults.DismissButton }
+    # Update toast (Drivers/BIOS) buttons
+    $txt_ToastActionBtn.Text  = $actionBtnText
+    $txt_ToastDismissBtn.Text = $dismissBtnText
+    # Status toast (Success/Issues/BIOSSuccess/BIOSIssues) buttons
+    $txt_ToastStatusCloseBtn.Text = $actionBtnText
+    if (-not [string]::IsNullOrEmpty($dismissBtnText)) {
+        $txt_ToastRestartBtn.Text = $dismissBtnText
     }
 
     switch ($Type) {
@@ -15090,6 +15147,15 @@ $cmb_ToastPreviewType.Add_SelectionChanged({
     $txt_CustomToastBody.Text     = if (-not [string]::IsNullOrEmpty($savedBody))     { $savedBody }     else { $effectiveBody }
     $txt_CustomToastGreeting.Text = if (-not [string]::IsNullOrEmpty($savedGreeting)) { $savedGreeting } else { $defaults.Greeting }
     $txt_CustomToastSubtitle.Text = if (-not [string]::IsNullOrEmpty($savedSubtitle)) { $savedSubtitle } else { $defaults.Subtitle }
+    $savedActionBtn  = (Get-ItemProperty -Path $global:RegPath -Name "${prefix}_ActionButton" -ErrorAction SilentlyContinue)."${prefix}_ActionButton"
+    $savedDismissBtn = (Get-ItemProperty -Path $global:RegPath -Name "${prefix}_DismissButton" -ErrorAction SilentlyContinue)."${prefix}_DismissButton"
+    $txt_CustomActionBtn.Text     = if (-not [string]::IsNullOrEmpty($savedActionBtn))  { $savedActionBtn }  else { $defaults.ActionButton }
+    $txt_CustomDismissBtn.Text    = if (-not [string]::IsNullOrEmpty($savedDismissBtn)) { $savedDismissBtn } else { $defaults.DismissButton }
+    # Show/hide dismiss button field based on whether this type has one
+    $lbl_ToastDismissBtn.Visibility = if ([string]::IsNullOrEmpty($defaults.DismissButton)) { 'Collapsed' } else { 'Visible' }
+    $txt_CustomDismissBtn.Visibility = if ([string]::IsNullOrEmpty($defaults.DismissButton)) { 'Collapsed' } else { 'Visible' }
+    # Update action button label based on toast type
+    $lbl_ToastActionBtn.Text = if ($selectedType -in @('Driver Update', 'BIOS Update')) { 'Action Button' } else { 'Close Button' }
     $script:ToastTextLoading = $false
     # Show variables panel only for BIOS Prestaged
     $panel_ToastBodyVariables.Visibility = if ($selectedType -eq 'BIOS Prestaged') { 'Visible' } else { 'Collapsed' }
@@ -15411,6 +15477,31 @@ $btn_ShowToastPreview.Add_Click({
 
     $previewWin.ShowDialog() | Out-Null
     $previewTimer.Stop()
+})
+
+# Reset button -- restores default text for the currently selected toast type
+$btn_ResetToastDefaults = $Window.FindName('btn_ResetToastDefaults')
+$btn_ResetToastDefaults.Add_Click({
+    $selectedType = if ($null -ne $cmb_ToastPreviewType.SelectedItem) { $cmb_ToastPreviewType.SelectedItem.Content } else { 'Driver Update' }
+    $prefix = Get-DATToastRegistryPrefix -PreviewType $selectedType
+    $defaults = $script:ToastDefaults[$prefix]
+
+    # Remove saved custom values from registry
+    foreach ($suffix in @('Title', 'Body', 'Greeting', 'Subtitle', 'ActionButton', 'DismissButton')) {
+        Remove-ItemProperty -Path $global:RegPath -Name "${prefix}_${suffix}" -ErrorAction SilentlyContinue
+    }
+
+    # Repopulate fields with defaults (suppress TextChanged persistence)
+    $script:ToastTextLoading = $true
+    $txt_CustomToastTitle.Text    = $defaults.Title
+    $txt_CustomToastBody.Text     = $defaults.Body
+    $txt_CustomToastGreeting.Text = $defaults.Greeting
+    $txt_CustomToastSubtitle.Text = $defaults.Subtitle
+    $txt_CustomActionBtn.Text     = $defaults.ActionButton
+    $txt_CustomDismissBtn.Text    = $defaults.DismissButton
+    $script:ToastTextLoading = $false
+
+    Update-DATToastPreview -Type $selectedType
 })
 
 #endregion Toast Notification Preview
@@ -16584,6 +16675,7 @@ $btn_IntunePkgSelectNone.Add_Click({
 # Connect button - initiate auth based on selected mode
 $btn_ConnectIntune.Add_Click({
     $btn_ConnectIntune.IsEnabled = $false
+    try {
     $txt_IntuneStatus.Foreground = [System.Windows.Media.SolidColorBrush]::new(
         [System.Windows.Media.ColorConverter]::ConvertFromString(
             (Get-DATTheme -ThemeName $script:CurrentTheme)['StatusInfo']))
@@ -16936,6 +17028,14 @@ $btn_ConnectIntune.Add_Click({
             }
         })
         $script:AuthPollTimer.Start()
+    }
+    } catch {
+        $txt_IntuneStatus.Text = "Unexpected error: $($_.Exception.Message)"
+        $txt_IntuneStatus.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+            [System.Windows.Media.ColorConverter]::ConvertFromString(
+                (Get-DATTheme -ThemeName $script:CurrentTheme)['StatusError']))
+        Write-DATActivityLog "Authentication error: $($_.Exception.Message)" -Level Error
+        $btn_ConnectIntune.IsEnabled = $true
     }
 })
 
@@ -19739,7 +19839,7 @@ if (Test-Path $logoPath) {
 
 # Read version from module manifest
 $manifestPath = Join-Path $AppRoot "Modules\DriverAutomationToolCore\DriverAutomationToolCore.psd1"
-$script:versionString = "v10.0.40"
+$script:versionString = "v10.0.41"
 if (Test-Path $manifestPath) {
     $manifestData = Import-PowerShellDataFile $manifestPath
     $ver = [version]$manifestData.ModuleVersion
