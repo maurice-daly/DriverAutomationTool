@@ -7090,6 +7090,11 @@ function New-DATIntuneToastScript {
     $greetingPrefix = if (-not [string]::IsNullOrEmpty($CustomToastGreeting)) { $CustomToastGreeting } else { 'Hi' }
     $subtitle = if (-not [string]::IsNullOrEmpty($CustomToastSubtitle)) { $CustomToastSubtitle } else { 'Driver Automation Tool V10' }
 
+    # XML-safe body for embedding in XAML Text attributes.
+    # Using element content collapses newlines via XAML whitespace normalization; the Text
+    # attribute with &#x0a; character references preserves line breaks at parse time.
+    $bodyXamlSafe = $body -replace '&','&amp;' -replace '<','&lt;' -replace '>','&gt;' -replace '"','&quot;' -replace "`r`n",'&#x0a;' -replace "`r",'&#x0a;' -replace "`n",'&#x0a;'
+
     # Read module version from manifest for embedding in generated scripts
     $moduleManifest = Import-PowerShellDataFile -Path (Join-Path $PSScriptRoot 'DriverAutomationToolCore.psd1') -ErrorAction SilentlyContinue
     $scriptVersion = if ($moduleManifest.ModuleVersion) { $moduleManifest.ModuleVersion } else { 'Unknown' }
@@ -7283,7 +7288,7 @@ try {
                            TextAlignment="Center" TextWrapping="Wrap" Margin="0,0,0,10"/>
                 <TextBlock TextWrapping="Wrap" FontSize="13" Foreground="#CBD5E1"
                            HorizontalAlignment="Center" TextAlignment="Center"
-                           LineHeight="20">$body</TextBlock>
+                           LineHeight="20" Text="$bodyXamlSafe"/>
             </StackPanel>
 "@
         $statusCloseButton = @'
@@ -7442,7 +7447,7 @@ try {
                 <TextBlock Text="$heading" FontSize="20" FontWeight="Bold"
                            Foreground="#F8FAFC" Margin="0,0,0,10"/>
                 <TextBlock TextWrapping="Wrap" FontSize="13" Foreground="#CBD5E1"
-                           LineHeight="20">$body</TextBlock>
+                           LineHeight="20" Text="$bodyXamlSafe"/>
             </StackPanel>
 "@
 
