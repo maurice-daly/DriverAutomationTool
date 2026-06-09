@@ -3,6 +3,17 @@ Release Notes
 IMPORTANT
 - DAT Downloads have been moved to GitHub - https://github.com/maurice-daly/DriverAutomationTool
 
+Version 10.0.42
+What's New & Fixed
+- Model Matching — Improved model-matching logic for more accurate driver and BIOS lookups across all OEMs.
+Toast Notifications — Added customisable action buttons on toast notifications, a reset button to restore defaults, and fixed multi-line toast display issues.
+- Scheduled Tasks — Fixed scheduled task creation failures and corrected OS export handling when tasks run unattended.
+- Authentication — Fixed the authentication button not responding in certain UI states.
+- MIF Generation — Resolved MIF file generation errors that could occur during packaging.
+- WMI / Baseboard Detection — Updated on-screen instructions for WMI baseboard product lookup.
+- UI / Theme Fixes — Corrected dynamic resource colour bindings so controls render properly in both Light and Dark themes.
+- OEM Support (HP) — Fixed HP Softpaq download failures caused by CMSL module changes, corrected HP known-model detection for Intune deployments, and improved HP CMSL troubleshooting diagnostics.
+
 Version 10.0.41
 What's New & Fixed
 - Model Matching — Overhauled model matching logic for improved accuracy and reliability when identifying supported hardware models.

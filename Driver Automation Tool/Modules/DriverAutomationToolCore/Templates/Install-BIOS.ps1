@@ -589,7 +589,7 @@ try {
                     # Check for HP CMSL module availability
                     if (-not (Get-Command -Name 'Write-HPFirmwarePasswordFile' -ErrorAction SilentlyContinue)) {
                         Write-CMTraceLog "HP CMSL module not found -- attempting to install HPCMSL" -Severity 2
-                        Install-Module -Name 'HPCMSL' -Force -AcceptLicense -Scope AllUsers -ErrorAction Stop
+                        Install-Module -Name 'HPCMSL' -Force -Scope AllUsers -ErrorAction Stop
                         Import-Module -Name 'HPCMSL' -ErrorAction Stop
                         Write-CMTraceLog "HPCMSL module installed and imported successfully"
                     }

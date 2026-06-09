@@ -4,7 +4,7 @@
      Organization:  MSEndpointMgr / Patch My PC
      Filename:      DriverAutomationToolCore.psm1
      Purpose:       Core functions for Driver Automation Tool v2.0
-     Version:       10.0.41.0
+     Version:       10.0.42.0
     ===========================================================================
 #>
 
@@ -27,8 +27,8 @@ if ($PSVersionTable.PSVersion.Major -le 5) {
 
 #region Variables
 
-[version]$global:ScriptRelease = "10.0.41.0"
-$global:ScriptBuildDate = "06-06-2026"
+[version]$global:ScriptRelease = "10.0.42.0"
+$global:ScriptBuildDate = "09-06-2026"
 $global:ReleaseNotesURL = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/DriverAutomationToolNotes.txt"
 $OEMLinksURL = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/OEMLinks.xml"
 
@@ -4538,14 +4538,14 @@ function Test-DATHPCMSLReady {
                     $installScope = 'CurrentUser'
                     Write-DATLogEntry -Value "[HP] Running without admin rights -- falling back to Scope CurrentUser" -Severity 2
                 }
-                Install-Module -Name HPCMSL -Force -AcceptLicense -Scope $installScope -ErrorAction Stop
+                Install-Module -Name HPCMSL -Force -Scope $installScope -ErrorAction Stop
                 $hpModule = Get-Module -ListAvailable -Name HPCMSL -ErrorAction SilentlyContinue | Sort-Object Version -Descending | Select-Object -First 1
             } catch {
                 $result.Error = "Failed to install HPCMSL: $($_.Exception.Message)"
                 return $result
             }
         } else {
-            $result.Error = "HPCMSL module is not installed. Install it with: Install-Module -Name HPCMSL -Force -AcceptLicense"
+            $result.Error = "HPCMSL module is not installed. Install it with: Install-Module -Name HPCMSL -Force"
             return $result
         }
     }
@@ -4592,7 +4592,7 @@ function Test-DATHPCMSLReady {
                     $repairScope = 'AllUsers'
                     $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
                     if (-not $isAdmin) { $repairScope = 'CurrentUser' }
-                    Install-Module -Name HPCMSL -Force -AcceptLicense -Scope $repairScope -AllowClobber -ErrorAction Stop
+                    Install-Module -Name HPCMSL -Force -Scope $repairScope -AllowClobber -ErrorAction Stop
                     Import-Module -Name HPCMSL -Force -ErrorAction Stop
                     $result.Ready = $true
                     $result.Version = (Get-Module HPCMSL).Version
@@ -4601,7 +4601,7 @@ function Test-DATHPCMSLReady {
                     $result.Error = "Failed to repair HPCMSL: $($_.Exception.Message)"
                 }
             } else {
-                $result.Error = "HPCMSL v$($hpModule.Version) cannot load -- required module '$missingModule' is missing. Reinstall with: Install-Module -Name HPCMSL -Force -AcceptLicense -AllowClobber"
+                $result.Error = "HPCMSL v$($hpModule.Version) cannot load -- required module '$missingModule' is missing. Reinstall with: Install-Module -Name HPCMSL -Force -AllowClobber"
             }
         } else {
             $result.Error = "HPCMSL v$($hpModule.Version) cannot load: $errMsg"
@@ -4696,13 +4696,23 @@ function Invoke-DATOEMDownloadModule {
     # If a direct download URL was provided from the DAT API catalog, use it and skip OEM catalog lookup
     # Only accept URLs that point to a downloadable file (not info/landing pages)
     if (-not [string]::IsNullOrEmpty($CatalogDownloadURL) -and $CatalogDownloadURL -match '\.(msi|exe|cab|zip|wim)(\?|$)') {
-        $downloadURL = $CatalogDownloadURL
-        $downloadFileName = ($CatalogDownloadURL -split '\?')[0] | Split-Path -Leaf
-        if (-not [string]::IsNullOrEmpty($callerCatalogVersion)) {
-            $catalogVersion = $callerCatalogVersion
-            Write-DATLogEntry -Value "[$OEM] Using catalog version from DAT API: $catalogVersion" -Severity 1
+        # HP Individual SoftPaqs mode: ignore the pre-resolved driver pack URL so the HP SoftPaq
+        # discovery block runs instead of downloading the monolithic pack.
+        $HPDriverPackSource = if ($OEM -eq 'HP') {
+            (Get-ItemProperty -Path $global:RegPath -Name 'HPDriverPackSource' -ErrorAction SilentlyContinue).HPDriverPackSource
+        } else { $null }
+        if ($OEM -eq 'HP' -and $HPDriverPackSource -eq 'SoftPaqs') {
+            Write-DATLogEntry -Value "[HP] Individual SoftPaqs mode -- ignoring pre-resolved driver pack URL: $CatalogDownloadURL" -Severity 1
+            # Leave $downloadURL null so the HP SoftPaq switch block runs
+        } else {
+            $downloadURL = $CatalogDownloadURL
+            $downloadFileName = ($CatalogDownloadURL -split '\?')[0] | Split-Path -Leaf
+            if (-not [string]::IsNullOrEmpty($callerCatalogVersion)) {
+                $catalogVersion = $callerCatalogVersion
+                Write-DATLogEntry -Value "[$OEM] Using catalog version from DAT API: $catalogVersion" -Severity 1
+            }
+            Write-DATLogEntry -Value "[$OEM] Using pre-resolved download URL from DAT API catalog: $downloadFileName" -Severity 1
         }
-        Write-DATLogEntry -Value "[$OEM] Using pre-resolved download URL from DAT API catalog: $downloadFileName" -Severity 1
     } elseif (-not [string]::IsNullOrEmpty($CatalogDownloadURL)) {
         Write-DATLogEntry -Value "[$OEM] DAT API catalog URL is not a direct download link, falling back to OEM catalog: $CatalogDownloadURL" -Severity 2
     }
@@ -4791,9 +4801,77 @@ function Invoke-DATOEMDownloadModule {
             }
         }
         "HP" {
+            # Check user preference for HP driver source: DriverPack (single SCCM pack) or SoftPaqs (individual drivers)
+            $HPDriverPackSource = (Get-ItemProperty -Path $global:RegPath -Name 'HPDriverPackSource' -ErrorAction SilentlyContinue).HPDriverPackSource
+            if ([string]::IsNullOrEmpty($HPDriverPackSource)) { $HPDriverPackSource = 'DriverPack' }
+            Write-DATLogEntry -Value "[HP] Driver pack source mode: $HPDriverPackSource" -Severity 1
+
+            if ($HPDriverPackSource -eq 'DriverPack') {
+                # ── SCCM Driver Pack mode: use HP catalog XML to find the monolithic driver pack ──
+                # This downloads a single .exe driver pack from ftp.hp.com (like Dell/Lenovo)
+                $HPXMLCabinetSource = ($OEMLinks.OEM.Manufacturer | Where-Object { $_.Name -match "HP" }).Link |
+                    Where-Object { $_.Type -eq "XMLCabinetSource" } | Select-Object -ExpandProperty URL -First 1
+                if ([string]::IsNullOrEmpty($HPXMLCabinetSource)) { throw "HP catalog URL not found in OEM links" }
+
+                $HPCabFile = [string]($HPXMLCabinetSource | Split-Path -Leaf)
+                $HPXMLFile = $HPCabFile.TrimEnd(".cab") + ".xml"
+                $HPCabPath = Join-Path $TempDirectory $HPCabFile
+                $HPXMLPath = Join-Path $TempDirectory $HPXMLFile
+
+                if (-not (Test-Path $HPXMLPath)) {
+                    Write-DATLogEntry -Value "[HP] Downloading HP catalog..." -Severity 1
+                    Set-DATRegistryValue -Name "RunningMessage" -Value "Downloading HP driver catalog..." -Type String
+                    if (-not (Test-Path $HPCabPath)) {
+                        Invoke-CatalogDownload -Uri $HPXMLCabinetSource -OutFile $HPCabPath
+                    }
+                    & expand.exe "$HPCabPath" -F:* "$TempDirectory" -R 2>&1 | Out-Null
+                } else {
+                    Write-DATLogEntry -Value "[HP] Using cached HP catalog: $HPXMLPath" -Severity 1
+                }
+
+                if (-not (Test-Path $HPXMLPath)) { throw "HP catalog XML not found after extraction" }
+
+                [xml]$HPModelXML = Get-Content -Path $HPXMLPath -Raw
+                $HPModelSoftPaqs = $HPModelXML.NewDataSet.HPClientDriverPackCatalog.ProductOSDriverPackList.ProductOSDriverPack
+
+                # Match by model name and OS
+                $matchingPack = $HPModelSoftPaqs | Where-Object {
+                    ($_.SystemName -replace '^HP\s+', '').Trim() -eq $Model -and
+                    $_.OSName -match $WindowsVersion -and $_.OSName -match $WindowsBuild
+                } | Select-Object -First 1
+
+                # Fallback: match by baseboard/platform ID
+                if ($null -eq $matchingPack) {
+                    $SKUList = $SystemSKU -split ',' | ForEach-Object { $_.Trim().ToLower() } | Where-Object { $_ -match '^[a-f0-9]{4}$' }
+                    $matchingPack = $HPModelSoftPaqs | Where-Object {
+                        $packMatch = $_.OSName -match $WindowsVersion -and $_.OSName -match $WindowsBuild
+                        if ($packMatch) {
+                            $sysIds = @($_.SystemId | ForEach-Object { $_.ToLower() })
+                            $packMatch = @($SKUList | Where-Object { $_ -in $sysIds }).Count -gt 0
+                        }
+                        $packMatch
+                    } | Select-Object -First 1
+                }
+
+                if ($null -ne $matchingPack) {
+                    $spId = $matchingPack.SoftPaqId
+                    $downloadURL = $matchingPack.Url
+                    if ([string]::IsNullOrEmpty($downloadURL)) {
+                        $downloadURL = "https://ftp.hp.com/pub/softpaq/sp$($spId.Substring(0,$spId.Length-3))001-$($spId.Substring(0,$spId.Length-3))500/sp$spId.exe"
+                    }
+                    $downloadFileName = "sp$spId.exe"
+                    $catalogVersion = $matchingPack.Version
+                    if ([string]::IsNullOrEmpty($catalogVersion)) { $catalogVersion = (Get-Date -Format 'ddMMyyyy') }
+                    Write-DATLogEntry -Value "[HP] Found SCCM driver pack: SP$spId ($downloadFileName)" -Severity 1
+                    Write-DATLogEntry -Value "[HP] Download URL: $downloadURL" -Severity 1
+                    # Fall through to common download path below (same as Dell/Lenovo)
+                } else {
+                    throw "No matching HP SCCM driver pack found for $Model ($WindowsVersion $WindowsBuild)"
+                }
+            } else {
+            # ── Individual SoftPaqs mode: use HPCMSL to discover and download each driver ──
             # HP uses HPCMSL to discover required SoftPaqs, then downloads, extracts, and
             # copies only the INF-targeted driver folders to a staging directory.
-            # WIM creation reuses the common Invoke-DATDriverFilePackaging path.
 
             # Validate HPCMSL
             Write-DATLogEntry -Value "[HP] Validating HPCMSL module before starting build..." -Severity 1
@@ -4858,27 +4936,45 @@ function Invoke-DATOEMDownloadModule {
             $SoftPaqIDs = @()
             $DiscoveryPlatformID = $null
 
+            # Resolve PowerShell executable for child processes
+            $discoveryPwshExe = if ($PSVersionTable.PSVersion.Major -ge 7) {
+                (Get-Process -Id $PID).Path
+            } else {
+                "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
+            }
+
             foreach ($PlatformID in $SKUList) {
                 Write-DATLogEntry -Value "[HP] Querying required SoftPaqs for platform $PlatformID (WhatIf)..." -Severity 1
                 Set-DATRegistryValue -Name "RunningMessage" -Value "Querying HP SoftPaqs for platform $PlatformID..." -Type String
 
                 try {
-                    $SoftPaqInfo = $null
-                    $SoftPaqStdOut = New-HPDriverPack -Platform "$PlatformID" -Os "$HPOS" -OSVer "$WindowsBuild" -Format wim `
-                        -Path "$DownloadDestination" -TempDownloadPath "$HPTempDirectory" `
-                        -WhatIf -InformationVariable SoftPaqInfo -ErrorVariable SoftPaqError -ErrorAction SilentlyContinue
+                    # Run New-HPDriverPack -WhatIf in a child process to capture Write-Host output.
+                    # HPCMSL writes the SoftPaq list via Write-Host which cannot be captured in-process
+                    # on PS 5.1 (the WPF app host swallows it). A child process redirects all output to stdout.
+                    $discoveryOutputFile = Join-Path $HPTempDirectory "discovery_${PlatformID}.txt"
+                    $discoveryScript = Join-Path ([System.IO.Path]::GetTempPath()) "DAT_HPDiscovery_${PlatformID}_$([System.IO.Path]::GetRandomFileName()).ps1"
+                    $discoveryScriptContent = @"
+`$ErrorActionPreference = 'Stop'
+Import-Module HPCMSL -Force
+New-HPDriverPack -Platform "$PlatformID" -Os "$HPOS" -OSVer "$WindowsBuild" -Format wim -Path "$DownloadDestination" -TempDownloadPath "$HPTempDirectory" -WhatIf *>&1
+"@
+                    Set-Content -Path $discoveryScript -Value $discoveryScriptContent -Encoding UTF8
 
-                    # Parse SoftPaq IDs from all output streams
-                    $allLines = @()
-                    if ($SoftPaqInfo) {
-                        $allLines += @($SoftPaqInfo | ForEach-Object {
-                            if ($_ -is [System.Management.Automation.InformationRecord]) { $_.MessageData.ToString() }
-                            else { "$_" }
-                        })
+                    $discoveryProc = Start-Process -FilePath $discoveryPwshExe `
+                        -ArgumentList '-NoProfile', '-NoLogo', '-ExecutionPolicy', 'Bypass', '-File', $discoveryScript `
+                        -WindowStyle Hidden -PassThru -Wait `
+                        -RedirectStandardOutput $discoveryOutputFile -RedirectStandardError ([System.IO.Path]::Combine([System.IO.Path]::GetTempPath(), "DAT_HPDiscovery_err.txt"))
+
+                    Remove-Item -Path $discoveryScript -Force -ErrorAction SilentlyContinue
+
+                    if (Test-Path $discoveryOutputFile) {
+                        $allLines = @(Get-Content -Path $discoveryOutputFile -ErrorAction SilentlyContinue)
+                        Remove-Item -Path $discoveryOutputFile -Force -ErrorAction SilentlyContinue
+                    } else {
+                        $allLines = @()
                     }
-                    if ($SoftPaqStdOut) {
-                        $allLines += @($SoftPaqStdOut | ForEach-Object { "$_" })
-                    }
+
+                    Write-DATLogEntry -Value "[HP] Discovery output: $($allLines.Count) lines captured for platform $PlatformID" -Severity 1
 
                     $SoftPaqIDs = @($allLines | Where-Object { $_ -match '^\s+(?:sp)?(\d{4,})' } | ForEach-Object {
                         if ($_ -match '^\s+(?:sp)?(\d{4,})') { $Matches[1] }
@@ -4892,6 +4988,10 @@ function Invoke-DATOEMDownloadModule {
                         }
                         break
                     } else {
+                        # Log the output for debugging
+                        foreach ($line in $allLines) {
+                            Write-DATLogEntry -Value "[HP] Discovery output: $line" -Severity 1
+                        }
                         Write-DATLogEntry -Value "[HP] No SoftPaqs found for platform $PlatformID -- trying next" -Severity 2
                     }
                 } catch {
@@ -5216,8 +5316,9 @@ function Invoke-DATOEMDownloadModule {
             Set-DATRegistryValue -Name "RunningMode" -Value "Download Completed" -Type String
             Write-DATLogEntry -Value "[HP] Driver package process completed successfully" -Severity 1 -UpdateUI
 
-            # HP handles its own multi-SoftPaq download -- skip common single-file download path
+            # HP SoftPaqs mode handles its own multi-file download -- skip common single-file download path
             return $null
+            } # end else (Individual SoftPaqs mode)
         }
         "Lenovo" {
             $LenovoLink = ($OEMLinks.OEM.Manufacturer | Where-Object { $_.Name -match "Lenovo" }).Link |
@@ -7005,6 +7106,12 @@ function Invoke-DATAutoAssignmentFilter {
         } else {
             $newFilter = New-DATIntuneAssignmentFilter -FilterName $filterName -Manufacturer $Manufacturer
         }
+
+        if ($null -eq $newFilter -or [string]::IsNullOrEmpty($newFilter.id)) {
+            Write-DATLogEntry -Value "[Intune] Assignment filter creation failed -- skipping assignment to prevent unfiltered All Devices deployment" -Severity 3
+            throw "Assignment filter creation returned no filter ID. Cannot assign without a valid filter."
+        }
+
         $filterId = $newFilter.id
         Write-DATLogEntry -Value "[Intune] Created assignment filter: $filterName ($filterId)" -Severity 1
     }
@@ -7164,6 +7271,11 @@ function New-DATIntuneToastScript {
     # Resolve greeting prefix and subtitle
     $greetingPrefix = if (-not [string]::IsNullOrEmpty($CustomToastGreeting)) { $CustomToastGreeting } else { 'Hi' }
     $subtitle = if (-not [string]::IsNullOrEmpty($CustomToastSubtitle)) { $CustomToastSubtitle } else { 'Driver Automation Tool V10' }
+
+    # XML-safe body for embedding in XAML Text attributes.
+    # Using element content collapses newlines via XAML whitespace normalization; the Text
+    # attribute with &#x0a; character references preserves line breaks at parse time.
+    $bodyXamlSafe = $body -replace '&','&amp;' -replace '<','&lt;' -replace '>','&gt;' -replace '"','&quot;' -replace "`r`n",'&#x0a;' -replace "`r",'&#x0a;' -replace "`n",'&#x0a;'
 
     # Resolve button text per update type
     if ($isStatusType) {
@@ -7367,7 +7479,7 @@ try {
                            TextAlignment="Center" TextWrapping="Wrap" Margin="0,0,0,10"/>
                 <TextBlock TextWrapping="Wrap" FontSize="13" Foreground="#CBD5E1"
                            HorizontalAlignment="Center" TextAlignment="Center"
-                           LineHeight="20">$body</TextBlock>
+                           LineHeight="20" Text="$bodyXamlSafe"/>
             </StackPanel>
 "@
         $statusCloseButton = @"
@@ -7525,7 +7637,7 @@ try {
                 <TextBlock Text="$heading" FontSize="20" FontWeight="Bold"
                            Foreground="#F8FAFC" Margin="0,0,0,10"/>
                 <TextBlock TextWrapping="Wrap" FontSize="13" Foreground="#CBD5E1"
-                           LineHeight="20">$body</TextBlock>
+                           LineHeight="20" Text="$bodyXamlSafe"/>
             </StackPanel>
 "@
 
@@ -9203,7 +9315,14 @@ function Invoke-DATIntunePackageCreation {
         [string]$CustomIssuesTitle,
         [string]$CustomIssuesBody,
         [string]$CustomBIOSIssuesTitle,
-        [string]$CustomBIOSIssuesBody
+        [string]$CustomBIOSIssuesBody,
+        [string]$CustomToastActionButton,
+        [string]$CustomToastDismissButton,
+        [string]$CustomSuccessActionButton,
+        [string]$CustomIssuesActionButton,
+        [string]$CustomBIOSSuccessActionButton,
+        [string]$CustomBIOSSuccessDismissButton,
+        [string]$CustomBIOSIssuesActionButton
     )
     if (-not [string]::IsNullOrEmpty($IntuneAuthToken)) {
         $script:IntuneAuthToken = $IntuneAuthToken

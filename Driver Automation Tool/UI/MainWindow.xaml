@@ -905,7 +905,7 @@
                                    Foreground="{DynamicResource AccentColor}" VerticalAlignment="Center" Margin="0,0,8,0"/>
                         <TextBlock Text="Driver Automation Tool" FontSize="13" FontWeight="SemiBold"
                                    Foreground="{DynamicResource WindowForeground}" VerticalAlignment="Center"/>
-                        <TextBlock x:Name="txt_Version" Text=" Version 10.0.41" FontSize="11"
+                        <TextBlock x:Name="txt_Version" Text=" Version 10.0.42" FontSize="11"
                                    Foreground="{DynamicResource InputPlaceholder}" VerticalAlignment="Center" Margin="4,0"/>
                     </StackPanel>
 
@@ -2242,23 +2242,23 @@
                                         in the model selection list, making it easy to target only the devices you manage.
                                     </TextBlock>
                                     <TextBlock FontSize="12" FontStyle="Italic"
-                                               Foreground="{DynamicResource InputPlaceholder}" Margin="0,0,0,4">
-                                        Note: Requires the following WMI classes enabled in client hardware inventory:
+                                               Foreground="{DynamicResource StatusWarning}" Margin="0,0,0,4">
+                                        <Run Text="Note:" FontWeight="Bold"/> Requires the following WMI classes enabled in client hardware inventory:
                                     </TextBlock>
                                     <StackPanel Margin="12,0,0,16">
-                                        <TextBlock FontSize="12" FontStyle="Italic" Foreground="{DynamicResource InputPlaceholder}">
+                                        <TextBlock FontSize="12" FontStyle="Italic" Foreground="{DynamicResource StatusWarning}">
                                             <Run Text="&#x2022;  Win32_ComputerSystem"/>
                                         </TextBlock>
                                         <TextBlock FontSize="11" FontStyle="Italic" Foreground="{DynamicResource StatusWarning}" Margin="20,0,0,0">
                                             <Run Text="&#x25E6;  Model, Manufacturer"/>
                                         </TextBlock>
-                                        <TextBlock FontSize="12" FontStyle="Italic" Foreground="{DynamicResource InputPlaceholder}">
+                                        <TextBlock FontSize="12" FontStyle="Italic" Foreground="{DynamicResource StatusWarning}">
                                             <Run Text="&#x2022;  MS_SystemInformation"/>
                                         </TextBlock>
                                         <TextBlock FontSize="11" FontStyle="Italic" Foreground="{DynamicResource StatusWarning}" Margin="20,0,0,0">
                                             <Run Text="&#x25E6;  SystemSKU"/>
                                         </TextBlock>
-                                        <TextBlock FontSize="12" FontStyle="Italic" Foreground="{DynamicResource InputPlaceholder}">
+                                        <TextBlock FontSize="12" FontStyle="Italic" Foreground="{DynamicResource StatusWarning}">
                                             <Run Text="&#x2022;  Win32_BaseBoard"/>
                                         </TextBlock>
                                         <TextBlock FontSize="11" FontStyle="Italic" Foreground="{DynamicResource StatusWarning}" Margin="20,0,0,0">
@@ -4800,17 +4800,32 @@
                                                 </Grid>
                                             </Border>
 
-                                            <!-- HP Concurrent SoftPaq Downloads -->
-                                            <TextBlock Text="Concurrent SoftPaq Downloads" FontSize="13" FontWeight="SemiBold"
+                                            <!-- HP Driver Pack Source -->
+                                            <TextBlock Text="Driver Pack Source" FontSize="13" FontWeight="SemiBold"
                                                        Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,4"/>
-                                            <TextBlock Text="Number of HP SoftPaq files downloaded simultaneously during driver pack creation. Higher values speed up downloads but increase network and memory usage."
+                                            <TextBlock Text="Choose how HP drivers are obtained. SCCM Driver Pack downloads a single monolithic pack from HP's catalog. Individual SoftPaqs downloads each driver component separately using HPCMSL, giving more granular and up-to-date drivers."
                                                        FontSize="12" Foreground="{DynamicResource InputPlaceholder}" Margin="0,0,0,8" TextWrapping="Wrap" LineHeight="18"/>
+                                            <Grid Margin="0,0,0,16">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="250"/>
+                                                </Grid.ColumnDefinitions>
+                                                <ComboBox x:Name="cmb_HPDriverPackSource" Grid.Column="0" Height="34">
+                                                    <ComboBoxItem Content="SCCM Driver Pack" Tag="DriverPack" IsSelected="True"/>
+                                                    <ComboBoxItem Content="Individual SoftPaqs" Tag="SoftPaqs"/>
+                                                </ComboBox>
+                                            </Grid>
+
+                                            <!-- HP Concurrent SoftPaq Downloads -->
+                                            <TextBlock x:Name="lbl_HPConcurrentTitle" Text="Concurrent SoftPaq Downloads" FontSize="13" FontWeight="SemiBold"
+                                                       Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,4" Opacity="0.4"/>
+                                            <TextBlock x:Name="lbl_HPConcurrentDesc" Text="Number of HP SoftPaq files downloaded simultaneously during driver pack creation. Higher values speed up downloads but increase network and memory usage."
+                                                       FontSize="12" Foreground="{DynamicResource InputPlaceholder}" Margin="0,0,0,8" TextWrapping="Wrap" LineHeight="18" Opacity="0.4"/>
                                             <Grid Margin="0,0,0,16">
                                                 <Grid.ColumnDefinitions>
                                                     <ColumnDefinition Width="200"/>
                                                     <ColumnDefinition Width="Auto"/>
                                                 </Grid.ColumnDefinitions>
-                                                <ComboBox x:Name="cmb_HPConcurrentDownloads" Grid.Column="0" Height="34">
+                                                <ComboBox x:Name="cmb_HPConcurrentDownloads" Grid.Column="0" Height="34" IsEnabled="False">
                                                     <ComboBoxItem Content="1 (Sequential)" Tag="1"/>
                                                     <ComboBoxItem Content="2 (Default)" Tag="2" IsSelected="True"/>
                                                     <ComboBoxItem Content="3" Tag="3"/>
@@ -4819,7 +4834,7 @@
                                                 <TextBlock Grid.Column="1" FontSize="11"
                                                            Foreground="{DynamicResource InputPlaceholder}"
                                                            VerticalAlignment="Center" Margin="12,0,0,0"
-                                                           Text="Recommended: 2 for most connections"/>
+                                                           Text="Recommended: 2 for most connections" x:Name="lbl_HPConcurrentHint" Opacity="0.4"/>
                                             </Grid>
 
                                             <!-- Divider -->
@@ -5759,7 +5774,7 @@
                                     <StackPanel>
                                         <TextBlock Text="Driver Automation Tool" FontSize="22" FontWeight="Bold"
                                                    Foreground="{DynamicResource AccentColor}" Margin="0,0,0,4"/>
-                                        <TextBlock x:Name="txt_AboutVersion" Text="Version 10.0.41" FontSize="14"
+                                        <TextBlock x:Name="txt_AboutVersion" Text="Version 10.0.42" FontSize="14"
                                                    Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,16"/>
 
                                         <TextBlock TextWrapping="Wrap" FontSize="13"

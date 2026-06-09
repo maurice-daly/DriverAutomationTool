@@ -1100,6 +1100,135 @@ function Show-DATInfoDialog {
     $dlg.ShowDialog() | Out-Null
 }
 
+function Show-DATProgressDialog {
+    param (
+        [string]$Title = "Please Wait",
+        [string]$Message = "Working...",
+        [bool]$IsModal = $false
+    )
+
+    $theme = Get-DATTheme -ThemeName $script:CurrentTheme
+    $bgColor = [System.Windows.Media.ColorConverter]::ConvertFromString($theme['CardBackground'])
+
+    $dlg = [System.Windows.Window]::new()
+    $dlg.WindowStyle = 'None'
+    $dlg.AllowsTransparency = $true
+    $dlg.Background = [System.Windows.Media.Brushes]::Transparent
+    if ($Window -and $Window.IsVisible) {
+        $dlg.WindowStartupLocation = 'CenterOwner'
+        $dlg.Owner = $Window
+    } else {
+        $dlg.WindowStartupLocation = 'CenterScreen'
+    }
+    $dlg.Width = 380
+    $dlg.SizeToContent = 'Height'
+    $dlg.Topmost = $true
+    $dlg.ResizeMode = 'NoResize'
+    $dlg.ShowInTaskbar = $false
+
+    $border = [System.Windows.Controls.Border]::new()
+    $border.Background = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.Color]::FromArgb(245, $bgColor.R, $bgColor.G, $bgColor.B))
+    $border.CornerRadius = [System.Windows.CornerRadius]::new(16)
+    $border.Padding = [System.Windows.Thickness]::new(28, 24, 28, 24)
+    $border.BorderBrush = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.ColorConverter]::ConvertFromString($theme['CardBorder']))
+    $border.BorderThickness = [System.Windows.Thickness]::new(1)
+    $shadow = [System.Windows.Media.Effects.DropShadowEffect]::new()
+    $shadow.BlurRadius = 30; $shadow.ShadowDepth = 0; $shadow.Opacity = 0.5
+    $shadow.Color = [System.Windows.Media.Colors]::Black
+    $border.Effect = $shadow
+
+    # Use a Grid so we can overlay the close button in the top-right corner
+    $grid = [System.Windows.Controls.Grid]::new()
+
+    $panel = [System.Windows.Controls.StackPanel]::new()
+    $panel.Margin = [System.Windows.Thickness]::new(0, 8, 0, 0)
+
+    # Spinner icon
+    $iconText = [System.Windows.Controls.TextBlock]::new()
+    $iconText.Text = [string][char]0xE895
+    $iconText.FontFamily = [System.Windows.Media.FontFamily]::new('Segoe MDL2 Assets')
+    $iconText.FontSize = 24
+    $iconText.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.ColorConverter]::ConvertFromString($theme['StatusInfo']))
+    $iconText.HorizontalAlignment = 'Center'
+    $iconText.Margin = [System.Windows.Thickness]::new(0, 0, 0, 12)
+    $panel.Children.Add($iconText) | Out-Null
+
+    # Title
+    $titleText = [System.Windows.Controls.TextBlock]::new()
+    $titleText.Text = $Title
+    $titleText.FontSize = 15
+    $titleText.FontWeight = [System.Windows.FontWeights]::Bold
+    $titleText.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.ColorConverter]::ConvertFromString($theme['WindowForeground']))
+    $titleText.HorizontalAlignment = 'Center'
+    $titleText.Margin = [System.Windows.Thickness]::new(0, 0, 0, 8)
+    $panel.Children.Add($titleText) | Out-Null
+
+    # Message
+    $msgText = [System.Windows.Controls.TextBlock]::new()
+    $msgText.Text = $Message
+    $msgText.FontSize = 13
+    $msgText.TextWrapping = [System.Windows.TextWrapping]::Wrap
+    $msgText.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.ColorConverter]::ConvertFromString($theme['InputPlaceholder']))
+    $msgText.HorizontalAlignment = 'Center'
+    $msgText.TextAlignment = [System.Windows.TextAlignment]::Center
+    $msgText.Margin = [System.Windows.Thickness]::new(0, 0, 0, 12)
+    $panel.Children.Add($msgText) | Out-Null
+
+    # Progress bar (indeterminate)
+    $progressBar = [System.Windows.Controls.ProgressBar]::new()
+    $progressBar.IsIndeterminate = $true
+    $progressBar.Height = 4
+    $progressBar.HorizontalAlignment = 'Stretch'
+    $progressBar.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.ColorConverter]::ConvertFromString($theme['ButtonPrimary']))
+    $panel.Children.Add($progressBar) | Out-Null
+
+    $grid.Children.Add($panel) | Out-Null
+
+    # Close (X) button in top-right corner
+    $btnClose = [System.Windows.Controls.Button]::new()
+    $btnClose.Width = 28
+    $btnClose.Height = 28
+    $btnClose.HorizontalAlignment = 'Right'
+    $btnClose.VerticalAlignment = 'Top'
+    $btnClose.Margin = [System.Windows.Thickness]::new(0, -8, -12, 0)
+    $btnClose.Cursor = [System.Windows.Input.Cursors]::Hand
+    $closeTemplate = [System.Windows.Markup.XamlReader]::Parse(@"
+<ControlTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" TargetType="Button">
+    <Border x:Name="bd" Background="Transparent" CornerRadius="14">
+        <TextBlock Text="&#xE711;" FontFamily="Segoe MDL2 Assets" FontSize="12"
+                   HorizontalAlignment="Center" VerticalAlignment="Center"
+                   Foreground="$($theme['InputPlaceholder'])"/>
+    </Border>
+    <ControlTemplate.Triggers>
+        <Trigger Property="IsMouseOver" Value="True">
+            <Setter TargetName="bd" Property="Background" Value="$($theme['ButtonSecondaryHover'])"/>
+        </Trigger>
+    </ControlTemplate.Triggers>
+</ControlTemplate>
+"@)
+    $btnClose.Template = $closeTemplate
+    $btnClose.Add_Click({ $dlg.Close() })
+    $grid.Children.Add($btnClose) | Out-Null
+
+    $border.Child = $grid
+    $dlg.Content = $border
+
+    # Show non-blocking so caller can continue work then close
+    $dlg.Show()
+    # Force render so the dialog is visible immediately
+    # Pipe to Out-Null to prevent Dispatcher.Invoke leaking $null onto the pipeline
+    [System.Windows.Threading.Dispatcher]::CurrentDispatcher.Invoke(
+        [System.Windows.Threading.DispatcherPriority]::Render, [action]{}) | Out-Null
+
+    return $dlg
+}
+
 function Test-DATConnectivity {
     <#
     .SYNOPSIS
@@ -7098,6 +7227,18 @@ function Test-DATKnownDeviceMatch {
         return $true
     }
 
+    # --- HP prefix match (Intune returns full names with suffixes like "Notebook PC") ---
+    # Intune model: "HP EliteBook 840 14 inch G11 Notebook PC"
+    # Catalog model: "EliteBook 840 14 inch G11"
+    # Strip the manufacturer prefix from the Intune name, then check if the catalog
+    # model name appears at the start of the Intune name (followed by space or end).
+    if ($normDeviceMake -eq 'HP' -and $GridMake -eq 'HP') {
+        $hpStripped = ($DeviceModel -replace '^(HP|Hewlett-Packard|COMPAQ|Compaq)\s+', '').Trim()
+        if ($hpStripped -eq $GridModel -or $hpStripped -like "$GridModel *") {
+            return $true
+        }
+    }
+
     # --- Microsoft Surface prefix match (fallback when SystemSKU is unavailable) ---
     # WMI returns the base model name (e.g. "Surface Laptop 4") while the catalog may
     # append a CPU qualifier (e.g. "Surface Laptop 4 AMD"). If baseboard/SKU matching
@@ -9080,11 +9221,17 @@ function Update-DATKnownModelSelection {
     # Build normalized lookup sets from Intune known devices
     $knownModels = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
     $knownMakeModel = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    # HP-specific: store HP-prefix-stripped Intune names (preserving suffixes like "Notebook PC")
+    $knownHPStripped = [System.Collections.Generic.List[string]]::new()
     foreach ($device in $script:IntuneKnownDevices) {
         $normMake = ConvertTo-DATNormalizedMake -Make $device.Make
         $normModel = ConvertTo-DATNormalizedModel -Make $device.Make -Model $device.Model
         [void]$knownModels.Add($normModel)
         [void]$knownMakeModel.Add("$normMake|$normModel")
+        if ($normMake -eq 'HP') {
+            $hpStripped = ($device.Model -replace '^(HP|Hewlett-Packard|COMPAQ|Compaq)\s+', '').Trim()
+            $knownHPStripped.Add($hpStripped)
+        }
     }
 
     $matchCount = 0
@@ -9100,6 +9247,18 @@ function Update-DATKnownModelSelection {
         elseif ($knownMakeModel.Contains("$gridMake|$gridModel")) {
             $item.Selected = $true
             $matchCount++
+        }
+        # HP prefix match: Intune returns full names with suffixes (e.g. "Notebook PC",
+        # "Desktop PC", "2-in-1 Notebook PC") that aren't in the catalog. Check if the
+        # catalog model name appears at the start of any known HP Intune model name.
+        elseif ($gridMake -eq 'HP') {
+            foreach ($hpName in $knownHPStripped) {
+                if ($hpName -eq $item.Model -or $hpName -like "$($item.Model) *") {
+                    $item.Selected = $true
+                    $matchCount++
+                    break
+                }
+            }
         }
         # Microsoft Surface CPU-qualifier prefix match:
         # WMI/Intune returns the base name (e.g. "Surface Laptop 4") while the catalog
@@ -12511,71 +12670,211 @@ $btn_InstallHpcmsl.Add_Click({
     $txt_HpcmslStatusIcon.Text = [string][char]0xE946
     $txt_HpcmslStatusIcon.Foreground = $Window.FindResource('InputPlaceholder')
     $txt_HpcmslStatus.Foreground = $Window.FindResource('InputPlaceholder')
-    # Determine install scope -- prefer AllUsers for headless/scheduled task compatibility
+    # Determine install scope -- always AllUsers for headless/scheduled task compatibility
     $installScope = 'AllUsers'
     $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
     if (-not $isAdmin) {
-        $installScope = 'CurrentUser'
+        Write-DATActivityLog "WARNING: Not running as administrator -- HPCMSL install may fail for AllUsers scope" -Level Warn
     }
     Write-DATActivityLog "Installing HPCMSL module from PSGallery (Scope: $installScope)..." -Level Info
     Write-DATLogEntry -Value "[HP CMSL] Installing HPCMSL module from PSGallery (Scope: $installScope)..." -Severity 1
 
-    $script:hpcmslInstallJob = [PowerShell]::Create()
-    $script:hpcmslInstallJob.AddScript({
-        param([string]$Scope)
+    # Use a child process -- PowerShellGet/PackageManagement have persistent issues in
+    # isolated runspaces (missing NuGet provider, module resolution failures, TLS not inherited).
+    $script:hpcmslResultFile = Join-Path ([System.IO.Path]::GetTempPath()) "DATHPCMSLInstall_$([guid]::NewGuid().ToString('N').Substring(0,8)).json"
 
-        # Ensure PowerShellGet is new enough to install from PSGallery reliably
-        $psGetVer = (Get-Module -ListAvailable -Name PowerShellGet -ErrorAction SilentlyContinue | Sort-Object Version -Descending | Select-Object -First 1).Version
-        if ($null -eq $psGetVer -or $psGetVer -lt [version]'2.2.5') {
-            Write-Verbose "PowerShellGet v$psGetVer is outdated -- upgrading..."
-            Install-Module -Name PowerShellGet -Force -AllowClobber -Scope $Scope -ErrorAction Stop
-            Import-Module -Name PowerShellGet -Force -ErrorAction SilentlyContinue
-            Write-Verbose "PowerShellGet upgraded successfully"
+    $installScript = @"
+`$ErrorActionPreference = 'Stop'
+`$ProgressPreference = 'SilentlyContinue'
+`$warnings = [System.Collections.Generic.List[string]]::new()
+`$allUsersPath = Join-Path `$env:ProgramFiles 'WindowsPowerShell\Modules'
+try {
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+
+    # --- Step 1: Try Install-Module (fast path) ---
+    `$installWorked = `$false
+    try {
+        # Bootstrap NuGet provider
+        Import-Module PackageManagement -Force -ErrorAction SilentlyContinue
+        `$nuget = Get-PackageProvider -Name NuGet -ListAvailable -ErrorAction SilentlyContinue |
+            Sort-Object Version -Descending | Select-Object -First 1
+        if (-not `$nuget -or `$nuget.Version -lt [version]'2.8.5.201') {
+            Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force -ErrorAction Stop
+            Import-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force -ErrorAction SilentlyContinue
+            `$warnings.Add('NuGet provider was installed/upgraded')
+        }
+        `$repo = Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue
+        if (-not `$repo) {
+            Register-PSRepository -Default -ErrorAction SilentlyContinue
+            `$warnings.Add('PSGallery repository was re-registered')
+        }
+        Set-PSRepository -Name PSGallery -InstallationPolicy Trusted -ErrorAction SilentlyContinue
+
+        Install-Module -Name HPCMSL -Force -SkipPublisherCheck -AllowClobber -Scope AllUsers -ErrorAction Stop
+        `$hpCheck = Join-Path `$allUsersPath 'HPCMSL'
+        if (Test-Path `$hpCheck) {
+            `$installWorked = `$true
+        } else {
+            `$warnings.Add('Install-Module completed without error but produced no files on disk')
+        }
+    } catch {
+        `$warnings.Add("Install-Module failed: `$(`$_.Exception.Message)")
+    }
+
+    # --- Step 2: Fallback -- download .nupkg files directly from PSGallery ---
+    if (-not `$installWorked) {
+        `$warnings.Add('Using direct download from PSGallery (bypassing PowerShellGet)')
+        Add-Type -AssemblyName System.IO.Compression.FileSystem
+
+        `$queue = [System.Collections.Queue]::new()
+        `$queue.Enqueue('HPCMSL')
+        `$done = @{}
+
+        while (`$queue.Count -gt 0) {
+            `$pkgName = `$queue.Dequeue()
+            if (`$done.ContainsKey(`$pkgName)) { continue }
+
+            # Download latest .nupkg from PSGallery
+            `$nupkgPath = Join-Path `$env:TEMP "`$pkgName.nupkg"
+            `$downloadUrl = "https://www.powershellgallery.com/api/v2/package/`$pkgName"
+            Invoke-WebRequest -Uri `$downloadUrl -OutFile `$nupkgPath -UseBasicParsing -ErrorAction Stop
+
+            # Extract to temp directory
+            `$extractDir = Join-Path `$env:TEMP "DATHP_`$pkgName"
+            if (Test-Path `$extractDir) { Remove-Item `$extractDir -Recurse -Force }
+            [System.IO.Compression.ZipFile]::ExtractToDirectory(`$nupkgPath, `$extractDir)
+
+            # Parse .nuspec for version and dependencies
+            `$nuspecFile = Get-ChildItem -Path `$extractDir -Filter '*.nuspec' -ErrorAction SilentlyContinue | Select-Object -First 1
+            `$pkgVersion = '0.0.0'
+            if (`$nuspecFile) {
+                [xml]`$nuspecXml = Get-Content `$nuspecFile.FullName -Raw
+                `$pkgVersion = `$nuspecXml.package.metadata.version
+                # Discover dependencies
+                `$depMeta = `$nuspecXml.package.metadata.dependencies
+                if (`$depMeta) {
+                    # Flat dependency list
+                    if (`$depMeta.dependency) {
+                        foreach (`$d in @(`$depMeta.dependency)) {
+                            if (`$d.id -and -not `$done.ContainsKey(`$d.id)) { `$queue.Enqueue(`$d.id) }
+                        }
+                    }
+                    # Grouped dependencies (by target framework)
+                    if (`$depMeta.group) {
+                        foreach (`$g in @(`$depMeta.group)) {
+                            if (`$g.dependency) {
+                                foreach (`$d in @(`$g.dependency)) {
+                                    if (`$d.id -and -not `$done.ContainsKey(`$d.id)) { `$queue.Enqueue(`$d.id) }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            # Copy module files to AllUsers path (skip NuGet packaging artifacts)
+            `$modDest = Join-Path `$allUsersPath "`$pkgName\`$pkgVersion"
+            if (Test-Path `$modDest) { Remove-Item `$modDest -Recurse -Force }
+            New-Item -Path `$modDest -ItemType Directory -Force | Out-Null
+            Get-ChildItem -Path `$extractDir | ForEach-Object {
+                `$skip = `$_.Name -eq '_rels' -or `$_.Name -eq 'package' -or `$_.Name -eq '[Content_Types].xml' -or `$_.Extension -eq '.nuspec'
+                if (-not `$skip) {
+                    Copy-Item -Path `$_.FullName -Destination `$modDest -Recurse -Force
+                }
+            }
+
+            # Cleanup temp files
+            Remove-Item `$extractDir -Recurse -Force -ErrorAction SilentlyContinue
+            Remove-Item `$nupkgPath -Force -ErrorAction SilentlyContinue
+            `$done[`$pkgName] = `$pkgVersion
         }
 
-        Write-Verbose "Checking PSGallery for HPCMSL package..."
-        $pkg = Find-Module -Name HPCMSL -Repository PSGallery -ErrorAction Stop
-        Write-Verbose "Found HPCMSL v$($pkg.Version) -- downloading and installing..."
-        Install-Module -Name HPCMSL -Force -AcceptLicense -Scope $Scope -ErrorAction Stop
-        Write-Verbose "Module files installed. Validating import..."
+        `$warnings.Add("Direct download installed `$(`$done.Count) package(s): `$((`$done.Keys | Sort-Object) -join ', ')")
+    }
+
+    # --- Step 3: Final verification ---
+    `$mod = Get-Module -ListAvailable -Name HPCMSL -ErrorAction SilentlyContinue |
+        Sort-Object Version -Descending | Select-Object -First 1
+    if (-not `$mod) {
+        `$hpCheck = Join-Path `$allUsersPath 'HPCMSL'
+        if (Test-Path `$hpCheck) {
+            throw "HPCMSL files exist at `$hpCheck but PowerShell cannot load the module manifest"
+        }
+        throw "HPCMSL was not found after installation attempts"
+    }
+
+    try {
         Import-Module -Name HPCMSL -Force -ErrorAction Stop
-        $mod = Get-Module -Name HPCMSL
-        Write-Verbose "HPCMSL v$($mod.Version) imported successfully. Cleaning up..."
         Remove-Module -Name HPCMSL -Force -ErrorAction SilentlyContinue
-        return $mod.Version.ToString()
-    }).AddArgument($installScope)
-    $script:hpcmslInstallJob.Streams.Verbose.Add_DataAdded({
-        # Cannot write to UI directly from stream event -- enqueue for drain
-    })
-    $script:hpcmslAsyncResult = $script:hpcmslInstallJob.BeginInvoke()
+    } catch {
+        `$warnings.Add("Import test warning: `$(`$_.Exception.Message)")
+    }
 
-    # Track how many verbose messages we've relayed so far
-    $script:hpcmslVerboseIndex = 0
+    @{ Status = 'Success'; Version = `$mod.Version.ToString(); Warnings = `$warnings } |
+        ConvertTo-Json -Depth 2 |
+        Set-Content -Path '$($script:hpcmslResultFile)' -Encoding UTF8
+} catch {
+    @{ Status = 'Error'; Message = `$_.Exception.Message; Warnings = `$warnings } |
+        ConvertTo-Json -Depth 2 |
+        Set-Content -Path '$($script:hpcmslResultFile)' -Encoding UTF8
+}
+"@
 
-    # Poll for completion via dispatcher timer to avoid blocking the UI
+    $encodedCmd = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($installScript))
+    # Always use powershell.exe (PS 5.1) for module installation -- HPCMSL is a Windows-only module
+    # and PS 5.1's PowerShellGet is what populates the WindowsPowerShell module path.
+    # Using pwsh.exe can install to a PS7-only path that PS 5.1 (and SYSTEM context) can't find.
+    $psExe = 'powershell.exe'
+
+    # If running as admin the child process inherits elevation; if not, use -Verb RunAs
+    $startArgs = @{
+        FilePath     = $psExe
+        ArgumentList = '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', $encodedCmd
+        PassThru     = $true
+    }
+    if ($isAdmin) {
+        $startArgs['WindowStyle'] = 'Hidden'
+    } else {
+        $startArgs['Verb'] = 'RunAs'
+        $startArgs['WindowStyle'] = 'Hidden'
+    }
+    $script:hpcmslProcess = Start-Process @startArgs
+
+    # Poll for completion via dispatcher timer
     $script:hpcmslInstallTimer = [System.Windows.Threading.DispatcherTimer]::new()
-    $script:hpcmslInstallTimer.Interval = [TimeSpan]::FromMilliseconds(500)
+    $script:hpcmslInstallTimer.Interval = [TimeSpan]::FromMilliseconds(1000)
     $script:hpcmslInstallTimer.Add_Tick({
-        # Relay any new verbose messages to the activity log
-        $verboseStream = $script:hpcmslInstallJob.Streams.Verbose
-        while ($script:hpcmslVerboseIndex -lt $verboseStream.Count) {
-            $msg = $verboseStream[$script:hpcmslVerboseIndex].Message
-            Write-DATActivityLog "HPCMSL: $msg" -Level Info
-            Write-DATLogEntry -Value "[HP CMSL] $msg" -Severity 1
-            $txt_HpcmslStatus.Text = $msg
-            $script:hpcmslVerboseIndex++
-        }
-
-        if ($script:hpcmslAsyncResult.IsCompleted) {
+        if ($script:hpcmslProcess.HasExited) {
             $script:hpcmslInstallTimer.Stop()
             try {
-                $version = $script:hpcmslInstallJob.EndInvoke($script:hpcmslAsyncResult)
-                if ($script:hpcmslInstallJob.Streams.Error.Count -gt 0) {
-                    throw $script:hpcmslInstallJob.Streams.Error[0].Exception
+                if (Test-Path $script:hpcmslResultFile) {
+                    $result = Get-Content -Path $script:hpcmslResultFile -Raw -ErrorAction Stop | ConvertFrom-Json
+                    Remove-Item -Path $script:hpcmslResultFile -Force -ErrorAction SilentlyContinue
+
+                    # Log any warnings from the install process
+                    if ($result.Warnings) {
+                        foreach ($w in $result.Warnings) {
+                            Write-DATActivityLog "[HP CMSL] $w" -Level Warn
+                        }
+                    }
+
+                    if ($result.Status -eq 'Success') {
+                        Write-DATActivityLog "HPCMSL module installed successfully (v$($result.Version))" -Level Success
+                        Write-DATLogEntry -Value "[HP CMSL] HPCMSL module installed successfully (v$($result.Version))" -Severity 1
+                        Update-DATHpcmslStatus
+                        # Re-enable HP OEM checkbox now that HPCMSL is available
+                        $script:HPCMSLAvailable = $true
+                        if ($script:OEMCheckboxes.Contains('HP')) {
+                            $script:OEMCheckboxes['HP'].IsEnabled = $true
+                            $script:OEMCheckboxes['HP'].Content = 'HP'
+                            $script:OEMCheckboxes['HP'].ToolTip = $null
+                        }
+                    } else {
+                        throw $result.Message
+                    }
+                } else {
+                    throw "Installation process completed but produced no result (exit code: $($script:hpcmslProcess.ExitCode))"
                 }
-                Write-DATActivityLog "HPCMSL module installed successfully (v$version)" -Level Success
-                Write-DATLogEntry -Value "[HP CMSL] HPCMSL module installed successfully (v$version)" -Severity 1
-                Update-DATHpcmslStatus
             } catch {
                 $errMsg = $_.Exception.Message
                 Write-DATActivityLog "Failed to install HPCMSL: $errMsg" -Level Error
@@ -12585,11 +12884,13 @@ $btn_InstallHpcmsl.Add_Click({
                 $txt_HpcmslStatus.Text = "Installation failed -- $errMsg"
                 $txt_HpcmslStatus.Foreground = $Window.FindResource('StatusError')
             } finally {
-                $script:hpcmslInstallJob.Dispose()
-                $script:hpcmslInstallJob = $null
-                $script:hpcmslAsyncResult = $null
+                $script:hpcmslProcess = $null
                 $btn_InstallHpcmsl.IsEnabled = $true
             }
+        } else {
+            # Still running -- update status with elapsed time
+            $elapsed = ((Get-Date) - $script:hpcmslProcess.StartTime).TotalSeconds
+            $txt_HpcmslStatus.Text = "Installing from PSGallery... ($([math]::Floor($elapsed))s)"
         }
     })
     $script:hpcmslInstallTimer.Start()
@@ -14640,6 +14941,28 @@ $btn_QueryFilters.Add_Click({
 # Package Upload settings
 $cmb_IntuneChunkSize = $Window.FindName('cmb_IntuneChunkSize')
 $cmb_IntuneParallelUploads = $Window.FindName('cmb_IntuneParallelUploads')
+
+# HP Driver Pack Source setting
+$cmb_HPDriverPackSource = $Window.FindName('cmb_HPDriverPackSource')
+$lbl_HPConcurrentTitle = $Window.FindName('lbl_HPConcurrentTitle')
+$lbl_HPConcurrentDesc = $Window.FindName('lbl_HPConcurrentDesc')
+$lbl_HPConcurrentHint = $Window.FindName('lbl_HPConcurrentHint')
+
+$cmb_HPDriverPackSource.Add_SelectionChanged({
+    $selected = $cmb_HPDriverPackSource.SelectedItem
+    if ($selected) {
+        $val = [string]$selected.Tag
+        Set-DATRegistryValue -Name "HPDriverPackSource" -Value $val -Type String
+        Write-DATActivityLog "HP driver pack source set to $val" -Level Info
+        # Enable/disable concurrent downloads based on selection
+        $isSoftPaqs = ($val -eq 'SoftPaqs')
+        $cmb_HPConcurrentDownloads.IsEnabled = $isSoftPaqs
+        $opacity = if ($isSoftPaqs) { 1.0 } else { 0.4 }
+        $lbl_HPConcurrentTitle.Opacity = $opacity
+        $lbl_HPConcurrentDesc.Opacity = $opacity
+        $lbl_HPConcurrentHint.Opacity = $opacity
+    }
+})
 
 # HP Concurrent Downloads setting
 $cmb_HPConcurrentDownloads = $Window.FindName('cmb_HPConcurrentDownloads')
@@ -19331,6 +19654,21 @@ try {
             Write-Host "2 threads (Default)" -ForegroundColor DarkYellow
         }
 
+        # Restore HP Driver Pack Source
+        Write-Host "  HP Pack Src   : " -NoNewline -ForegroundColor DarkGray
+        $savedHPSource = $savedConfig.HPDriverPackSource
+        if (-not [string]::IsNullOrEmpty($savedHPSource)) {
+            foreach ($item in $cmb_HPDriverPackSource.Items) {
+                if ([string]$item.Tag -eq $savedHPSource) {
+                    $cmb_HPDriverPackSource.SelectedItem = $item
+                    break
+                }
+            }
+            Write-Host "$savedHPSource" -ForegroundColor White
+        } else {
+            Write-Host "DriverPack (Default)" -ForegroundColor DarkYellow
+        }
+
         # Restore HP Concurrent Downloads
         Write-Host "  HP Downloads  : " -NoNewline -ForegroundColor DarkGray
         if ($null -ne $savedConfig.HPConcurrentDownloads -and $savedConfig.HPConcurrentDownloads -gt 0) {
@@ -19392,44 +19730,49 @@ try {
                     Write-Host "v$($hpInstalled.Version) installed -- update check running in background" -ForegroundColor White
                     Write-DATLogEntry -Value "[HP] HPCMSL v$($hpInstalled.Version) detected at startup -- background update check started" -Severity 1
 
-                    # Run the PSGallery check in a background runspace to avoid blocking startup
-                    $script:HPCMSLUpdateRunspace = [runspacefactory]::CreateRunspace()
-                    $script:HPCMSLUpdateRunspace.Open()
-                    $script:HPCMSLUpdatePS = [powershell]::Create()
-                    $script:HPCMSLUpdatePS.Runspace = $script:HPCMSLUpdateRunspace
-                    [void]$script:HPCMSLUpdatePS.AddScript({
-                        param($CurrentVersion)
-                        try {
-                            $gallery = Find-Module -Name HPCMSL -Repository PSGallery -ErrorAction Stop
-                            if ($gallery.Version -gt $CurrentVersion) {
-                                Install-Module -Name HPCMSL -Force -AllowClobber -SkipPublisherCheck -AcceptLicense -Scope AllUsers -ErrorAction Stop
-                                return [PSCustomObject]@{ Status = 'Updated'; OldVersion = $CurrentVersion.ToString(); NewVersion = $gallery.Version.ToString() }
-                            } else {
-                                return [PSCustomObject]@{ Status = 'Current'; Version = $CurrentVersion.ToString() }
-                            }
-                        } catch {
-                            return [PSCustomObject]@{ Status = 'Failed'; Error = $_.Exception.Message }
-                        }
-                    })
-                    [void]$script:HPCMSLUpdatePS.AddArgument($hpInstalled.Version)
-                    $script:HPCMSLUpdateAsyncResult = $script:HPCMSLUpdatePS.BeginInvoke()
+                    # Use a child process for the update check -- bare runspaces break
+                    # PackageManagement/PowerShellGet module resolution.
+                    $script:HPCMSLUpdateResultFile = Join-Path ([System.IO.Path]::GetTempPath()) "DATHPCMSLUpdate_$([guid]::NewGuid().ToString('N').Substring(0,8)).json"
+                    $currentVer = $hpInstalled.Version.ToString()
+                    $updateScript = @"
+`$ErrorActionPreference = 'Stop'
+try {
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    Set-PSRepository -Name PSGallery -InstallationPolicy Trusted -ErrorAction SilentlyContinue
+    `$gallery = Find-Module -Name HPCMSL -Repository PSGallery -ErrorAction Stop
+    if (`$gallery.Version -gt [version]'$currentVer') {
+        Install-Module -Name HPCMSL -Force -AllowClobber -SkipPublisherCheck -Scope AllUsers -ErrorAction Stop
+        @{ Status = 'Updated'; OldVersion = '$currentVer'; NewVersion = `$gallery.Version.ToString() } | ConvertTo-Json | Set-Content -Path '$($script:HPCMSLUpdateResultFile)' -Encoding UTF8
+    } else {
+        @{ Status = 'Current'; Version = '$currentVer' } | ConvertTo-Json | Set-Content -Path '$($script:HPCMSLUpdateResultFile)' -Encoding UTF8
+    }
+} catch {
+    @{ Status = 'Failed'; Error = `$_.Exception.Message } | ConvertTo-Json | Set-Content -Path '$($script:HPCMSLUpdateResultFile)' -Encoding UTF8
+}
+"@
+                    $encodedCmd = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($updateScript))
+                    $psExe = if ($PSVersionTable.PSVersion.Major -ge 7) { 'pwsh.exe' } else { 'powershell.exe' }
+                    $script:HPCMSLUpdateProcess = Start-Process -FilePath $psExe `
+                        -ArgumentList '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', $encodedCmd `
+                        -WindowStyle Hidden -PassThru
 
                     # Poll for completion via a DispatcherTimer (non-blocking)
                     $script:HPCMSLUpdateTimer = New-Object System.Windows.Threading.DispatcherTimer
-                    $script:HPCMSLUpdateTimer.Interval = [TimeSpan]::FromSeconds(2)
+                    $script:HPCMSLUpdateTimer.Interval = [TimeSpan]::FromSeconds(3)
                     $script:HPCMSLUpdateTimer.Add_Tick({
-                        if ($script:HPCMSLUpdateAsyncResult.IsCompleted) {
+                        if ($script:HPCMSLUpdateProcess.HasExited) {
                             $script:HPCMSLUpdateTimer.Stop()
                             try {
-                                $result = $script:HPCMSLUpdatePS.EndInvoke($script:HPCMSLUpdateAsyncResult)
-                                if ($result -and $result.Count -gt 0) {
-                                    $r = $result[0]
+                                if (Test-Path $script:HPCMSLUpdateResultFile) {
+                                    $r = Get-Content -Path $script:HPCMSLUpdateResultFile -Raw -ErrorAction Stop | ConvertFrom-Json
+                                    Remove-Item -Path $script:HPCMSLUpdateResultFile -Force -ErrorAction SilentlyContinue
                                     switch ($r.Status) {
                                         'Updated' {
                                             Remove-Module -Name HPCMSL -Force -ErrorAction SilentlyContinue
                                             Import-Module -Name HPCMSL -Force -ErrorAction SilentlyContinue
                                             Write-DATLogEntry -Value "[HP] HPCMSL upgraded in background: v$($r.OldVersion) -> v$($r.NewVersion)" -Severity 1
                                             Write-DATActivityLog "HP CMSL updated to v$($r.NewVersion)" -Level Info
+                                            Update-DATHpcmslStatus
                                         }
                                         'Current' {
                                             Write-DATLogEntry -Value "[HP] HPCMSL v$($r.Version) is already the latest version" -Severity 1
@@ -19442,9 +19785,7 @@ try {
                             } catch {
                                 Write-DATLogEntry -Value "[HP] HPCMSL background update timer error: $($_.Exception.Message)" -Severity 2
                             } finally {
-                                $script:HPCMSLUpdatePS.Dispose()
-                                $script:HPCMSLUpdateRunspace.Dispose()
-                                $script:HPCMSLUpdateChecked = $true
+                                $script:HPCMSLUpdateProcess = $null
                             }
                         }
                     })
@@ -19839,7 +20180,7 @@ if (Test-Path $logoPath) {
 
 # Read version from module manifest
 $manifestPath = Join-Path $AppRoot "Modules\DriverAutomationToolCore\DriverAutomationToolCore.psd1"
-$script:versionString = "v10.0.41"
+$script:versionString = "v10.0.42"
 if (Test-Path $manifestPath) {
     $manifestData = Import-PowerShellDataFile $manifestPath
     $ver = [version]$manifestData.ModuleVersion
@@ -19847,6 +20188,14 @@ if (Test-Path $manifestPath) {
 }
 
 #region Splash Screen
+
+# Resolve theme colors for splash/shutdown (these run before main window theme resources are available)
+$splashTheme = Get-DATTheme -ThemeName $script:CurrentTheme
+$splashBgColor    = [System.Windows.Media.ColorConverter]::ConvertFromString($splashTheme['CardBackground'])
+$splashFgBrush    = [System.Windows.Media.SolidColorBrush]::new(
+    [System.Windows.Media.ColorConverter]::ConvertFromString($splashTheme['WindowForeground']))
+$splashMutedBrush = [System.Windows.Media.SolidColorBrush]::new(
+    [System.Windows.Media.ColorConverter]::ConvertFromString($splashTheme['InputPlaceholder']))
 
 # Build splash screen window programmatically
 $script:splash = [System.Windows.Window]::new()
@@ -19863,7 +20212,7 @@ $script:splash.ShowInTaskbar = $false
 # Semi-transparent rounded card
 $splashBorder = [System.Windows.Controls.Border]::new()
 $splashBorder.Background = [System.Windows.Media.SolidColorBrush]::new(
-    [System.Windows.Media.Color]::FromArgb(230, 30, 30, 30))
+    [System.Windows.Media.Color]::FromArgb(230, $splashBgColor.R, $splashBgColor.G, $splashBgColor.B))
 $splashBorder.CornerRadius = [System.Windows.CornerRadius]::new(20)
 $splashBorder.Padding = [System.Windows.Thickness]::new(30, 24, 30, 24)
 $splashBorder.HorizontalAlignment = 'Stretch'
@@ -19897,7 +20246,7 @@ $splashTitle = [System.Windows.Controls.TextBlock]::new()
 $splashTitle.Text = "Driver Automation Tool"
 $splashTitle.FontSize = 22
 $splashTitle.FontWeight = [System.Windows.FontWeights]::Bold
-$splashTitle.Foreground = [System.Windows.Media.Brushes]::White
+$splashTitle.Foreground = $splashFgBrush
 $splashTitle.HorizontalAlignment = 'Center'
 $splashTitle.Margin = [System.Windows.Thickness]::new(0, 0, 0, 8)
 $splashPanel.Children.Add($splashTitle) | Out-Null
@@ -19906,8 +20255,7 @@ $splashPanel.Children.Add($splashTitle) | Out-Null
 $splashVersionText = [System.Windows.Controls.TextBlock]::new()
 $splashVersionText.Text = $script:versionString
 $splashVersionText.FontSize = 12
-$splashVersionText.Foreground = [System.Windows.Media.SolidColorBrush]::new(
-    [System.Windows.Media.Color]::FromRgb(140, 140, 140))
+$splashVersionText.Foreground = $splashMutedBrush
 $splashVersionText.HorizontalAlignment = 'Center'
 $splashVersionText.Margin = [System.Windows.Thickness]::new(0, 0, 0, 20)
 $splashPanel.Children.Add($splashVersionText) | Out-Null
@@ -19916,8 +20264,7 @@ $splashPanel.Children.Add($splashVersionText) | Out-Null
 $splashLoading = [System.Windows.Controls.TextBlock]::new()
 $splashLoading.Text = "Reading Registry Settings..."
 $splashLoading.FontSize = 11
-$splashLoading.Foreground = [System.Windows.Media.SolidColorBrush]::new(
-    [System.Windows.Media.Color]::FromRgb(100, 100, 100))
+$splashLoading.Foreground = $splashMutedBrush
 $splashLoading.HorizontalAlignment = 'Center'
 $splashPanel.Children.Add($splashLoading) | Out-Null
 
@@ -20595,6 +20942,13 @@ $Window.Add_Closing({
     }
 
     # Build shutdown modal (same visual style as splash screen)
+    $sdTheme = Get-DATTheme -ThemeName $script:CurrentTheme
+    $sdBgColor    = [System.Windows.Media.ColorConverter]::ConvertFromString($sdTheme['CardBackground'])
+    $sdFgBrush    = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.ColorConverter]::ConvertFromString($sdTheme['WindowForeground']))
+    $sdMutedBrush = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.ColorConverter]::ConvertFromString($sdTheme['InputPlaceholder']))
+
     $shutdownWin = [System.Windows.Window]::new()
     $shutdownWin.WindowStyle = 'None'
     $shutdownWin.AllowsTransparency = $true
@@ -20608,7 +20962,7 @@ $Window.Add_Closing({
 
     $sdBorder = [System.Windows.Controls.Border]::new()
     $sdBorder.Background = [System.Windows.Media.SolidColorBrush]::new(
-        [System.Windows.Media.Color]::FromArgb(230, 30, 30, 30))
+        [System.Windows.Media.Color]::FromArgb(230, $sdBgColor.R, $sdBgColor.G, $sdBgColor.B))
     $sdBorder.CornerRadius = [System.Windows.CornerRadius]::new(20)
     $sdBorder.Padding = [System.Windows.Thickness]::new(36, 28, 36, 28)
     $sdBorder.HorizontalAlignment = 'Stretch'
@@ -20628,7 +20982,7 @@ $Window.Add_Closing({
     $sdIcon.FontFamily = [System.Windows.Media.FontFamily]::new('Segoe MDL2 Assets')
     $sdIcon.FontSize = 32
     $sdIcon.Foreground = [System.Windows.Media.SolidColorBrush]::new(
-        [System.Windows.Media.ColorConverter]::ConvertFromString('#FFAA44'))
+        [System.Windows.Media.ColorConverter]::ConvertFromString($sdTheme['StatusWarning']))
     $sdIcon.HorizontalAlignment = 'Center'
     $sdIcon.Margin = [System.Windows.Thickness]::new(0, 0, 0, 12)
     $sdPanel.Children.Add($sdIcon) | Out-Null
@@ -20638,7 +20992,7 @@ $Window.Add_Closing({
     $sdTitle.Text = "Shutting Down"
     $sdTitle.FontSize = 18
     $sdTitle.FontWeight = [System.Windows.FontWeights]::Bold
-    $sdTitle.Foreground = [System.Windows.Media.Brushes]::White
+    $sdTitle.Foreground = $sdFgBrush
     $sdTitle.HorizontalAlignment = 'Center'
     $sdTitle.Margin = [System.Windows.Thickness]::new(0, 0, 0, 6)
     $sdPanel.Children.Add($sdTitle) | Out-Null
@@ -20647,8 +21001,7 @@ $Window.Add_Closing({
     $sdSubtitle = [System.Windows.Controls.TextBlock]::new()
     $sdSubtitle.Text = "Please wait while cleanup tasks complete"
     $sdSubtitle.FontSize = 12
-    $sdSubtitle.Foreground = [System.Windows.Media.SolidColorBrush]::new(
-        [System.Windows.Media.Color]::FromRgb(140, 140, 140))
+    $sdSubtitle.Foreground = $sdMutedBrush
     $sdSubtitle.HorizontalAlignment = 'Center'
     $sdSubtitle.Margin = [System.Windows.Thickness]::new(0, 0, 0, 16)
     $sdPanel.Children.Add($sdSubtitle) | Out-Null
@@ -20657,8 +21010,7 @@ $Window.Add_Closing({
     $sdStatus = [System.Windows.Controls.TextBlock]::new()
     $sdStatus.Text = "Preparing..."
     $sdStatus.FontSize = 11
-    $sdStatus.Foreground = [System.Windows.Media.SolidColorBrush]::new(
-        [System.Windows.Media.Color]::FromRgb(100, 100, 100))
+    $sdStatus.Foreground = $sdMutedBrush
     $sdStatus.HorizontalAlignment = 'Center'
     $sdStatus.TextTrimming = [System.Windows.TextTrimming]::CharacterEllipsis
     $sdStatus.MaxWidth = 380
