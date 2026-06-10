@@ -4,7 +4,7 @@
      Organization:  MSEndpointMgr / Patch My PC
      Filename:      DriverAutomationToolCore.psm1
      Purpose:       Core functions for Driver Automation Tool v2.0
-     Version:       10.0.42.0
+     Version:       10.0.43.0
     ===========================================================================
 #>
 
@@ -27,8 +27,8 @@ if ($PSVersionTable.PSVersion.Major -le 5) {
 
 #region Variables
 
-[version]$global:ScriptRelease = "10.0.42.0"
-$global:ScriptBuildDate = "09-06-2026"
+[version]$global:ScriptRelease = "10.0.43.0"
+$global:ScriptBuildDate = "10-06-2026"
 $global:ReleaseNotesURL = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/DriverAutomationToolNotes.txt"
 $OEMLinksURL = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/OEMLinks.xml"
 
@@ -430,8 +430,13 @@ function global:Write-DATLogEntry {
     }
 
     # Use .NET TimeZoneInfo instead of WMI for reliability (#9)
-    $tzBias = try { [System.TimeZoneInfo]::Local.BaseUtcOffset.TotalMinutes } catch { 0 }
-    $Time = -join @((Get-Date -Format "HH:mm:ss.fff"), " ", $tzBias)
+    # CMTrace expects the timezone bias appended directly to the millisecond value with a
+    # sign character and NO space, e.g. "02:51:35.517-600" (#781). The bias sign is inverted
+    # because CMTrace stores the offset required to convert local time to UTC.
+    $tzBias = try { [System.TimeZoneInfo]::Local.GetUtcOffset((Get-Date)).TotalMinutes } catch { 0 }
+    $tzBiasString = [string]$tzBias
+    if ($tzBiasString -match "^-") { $tzBiasString = $tzBiasString.Replace("-", "+") } else { $tzBiasString = "-" + $tzBiasString }
+    $Time = -join @((Get-Date -Format "HH:mm:ss.fff"), $tzBiasString)
     $Date = (Get-Date -Format "MM-dd-yyyy")
     $Context = $([System.Security.Principal.WindowsIdentity]::GetCurrent().Name)
     $LogText = "<![LOG[$($Value)]LOG]!><time=""$($Time)"" date=""$($Date)"" component=""$global:ProductName"" context=""$($Context)"" type=""$($Severity)"" thread=""$($PID)"" file="""">"
@@ -622,6 +627,11 @@ function Get-DATOEMModelInfo {
         Write-DATLogEntry -Value "- Loading $OEM model compatibility" -Severity 1
         switch ($OEM) {
             "HP" {
+                # Determine the user's HP driver source mode. In SCCM DriverPack mode the
+                # version must come from the HP catalog (e.g. "7.00 A 1"); only the SoftPaq
+                # mode uses a date stamp (its real version is fingerprint-based at build time).
+                $HPDriverPackSource = (Get-ItemProperty -Path $global:RegPath -Name 'HPDriverPackSource' -ErrorAction SilentlyContinue).HPDriverPackSource
+                if ([string]::IsNullOrEmpty($HPDriverPackSource)) { $HPDriverPackSource = 'DriverPack' }
                 $HPXMLCabinetSource = ($OEMLinks.OEM.Manufacturer | Where-Object { $_.Name -match "HP" }).Link | Where-Object { $_.Type -eq "XMLCabinetSource" } | Select-Object -ExpandProperty URL -First 1
                 $HPCabFile = [string]($HPXMLCabinetSource | Split-Path -Leaf)
                 $HPXMLFile = $HPCabFile.TrimEnd(".cab") + ".xml"
@@ -645,13 +655,20 @@ function Get-DATOEMModelInfo {
                         $Model.SystemName = ($Model.SystemName -replace '^HP\s+', '').Trim()
                         # Null-safe SystemId join (#16)
                         $sysIds = $Model.SystemId | Where-Object { $_ } | Select-Object -Unique
+                        # SCCM DriverPack mode uses the HP catalog version; SoftPaq mode uses a
+                        # date stamp (its definitive version is computed from the SoftPaq fingerprint).
+                        $hpModelVersion = if ($HPDriverPackSource -eq 'DriverPack' -and -not [string]::IsNullOrEmpty($Model.Version)) {
+                            $Model.Version
+                        } else {
+                            (Get-Date -Format 'ddMMyyyy')
+                        }
                         $OEMSupportedModels += [PSCustomObject]@{
                             OEM        = "HP"
                             Model      = $Model.SystemName
                             Baseboards = $(if ($sysIds) { $sysIds -join "," } else { "" })
                             OS         = $WindowsVersion
                             'OS Build' = $WindowsBuild
-                            Version    = (Get-Date -Format 'ddMMyyyy')
+                            Version    = $hpModelVersion
                         }
                     }
                 } catch {
@@ -840,14 +857,39 @@ function Get-DATOEMModelInfo {
                             ($_.SCCM.Version -eq $WindowsBuild -and $_.SCCM.OS -eq $("Win" + "$($WindowsVersion.Split(' ')[1])"))
                         } | Sort-Object).Name
                     }
+                    # Load the DAT API driver catalog (preferred version source -- exposes a 'Version' field)
+                    $AcerDATCatalog = $null
+                    try { $AcerDATCatalog = Get-DATDriverCatalog } catch {
+                        Write-DATLogEntry -Value "[Acer] DAT catalog unavailable for version lookup: $($_.Exception.Message)" -Severity 2
+                    }
+                    $AcerArchFilter = if ($Architecture -eq 'Arm64') { 'arm64' } else { 'x64' }
                     foreach ($Model in $AcerModels) {
+                        $modelNode = $global:AcerModelDrivers | Where-Object { $_.Name -eq $Model } | Select-Object -First 1
+                        # Prefer the DAT API catalog Version field; fall back to the XML SCCM node date
+                        $acerVersion = ''
+                        if ($AcerDATCatalog) {
+                            $datEntry = $AcerDATCatalog | Where-Object {
+                                $_.Manufacturer -eq 'Acer' -and
+                                $_.DisplayName -eq $Model -and
+                                $_.SupportedOS -match $WindowsVersion -and
+                                $_.SupportedArchitecture -eq $AcerArchFilter
+                            } | Select-Object -First 1
+                            if ($datEntry -and -not [string]::IsNullOrEmpty($datEntry.Version)) {
+                                $acerVersion = $datEntry.Version
+                            }
+                        }
+                        if ([string]::IsNullOrEmpty($acerVersion)) {
+                            # Catalog-provided date from the matching SCCM node
+                            $sccmNode = $modelNode.SCCM | Where-Object { $_.Version -eq $WindowsBuild -and $_.OS -eq $("Win" + "$($WindowsVersion.Split(' ')[1])") } | Select-Object -First 1
+                            $acerVersion = if ($sccmNode.date) { $sccmNode.date } else { '' }
+                        }
                         $OEMSupportedModels += [PSCustomObject]@{
                             OEM        = "Acer"
                             Model      = $Model
                             Baseboards = $Model
                             OS         = $WindowsVersion
                             'OS Build' = $WindowsBuild
-                            Version    = (Get-Date -Format 'ddMMyyyy')
+                            Version    = $acerVersion
                         }
                     }
                 } catch {
@@ -2652,7 +2694,7 @@ function New-DATConfigMgrPkg {
 
         if ($matchingPkg -and -not $ForceUpdate) {
             Write-DATLogEntry -Value "- [ConfigMgr] SKIPPED: '$CMPackage' version $Version already exists ($($matchingPkg.PackageID))" -Severity 1
-            return $true
+            return $matchingPkg.PackageID
         }
 
         # Force Update path: update existing package in-place
@@ -2753,7 +2795,7 @@ function New-DATConfigMgrPkg {
                 }
             }
 
-            return $true
+            return $pkgId
         }
 
         # --- Stage 2: Copy WIM to destination (filesystem, no CM drive needed) ---
@@ -2924,7 +2966,7 @@ function New-DATConfigMgrPkg {
             }
         }
 
-        return $true
+        return $packageId
     } catch {
         Write-DATLogEntry -Value "[Error] - ConfigMgr package creation failed: $($_.Exception.Message)" -Severity 3
         Write-DATLogEntry -Value "[Error] - Stack: $($_.ScriptStackTrace)" -Severity 3
@@ -3134,15 +3176,19 @@ function Start-DATModelProcessing {
 
     # Pre-build ConfigMgr package version cache (Name → Version hashtable) for O(1) lookups
     $cmPkgVersionCache = @{}
+    $cmPkgIdSet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
     if ($RunningMode -eq 'Configuration Manager' -and -not [string]::IsNullOrEmpty($SiteServer) -and -not [string]::IsNullOrEmpty($SiteCode)) {
         try {
             $smsNs = "root\SMS\Site_$SiteCode"
             Write-DATLogEntry -Value "[ConfigMgr] Pre-fetching package versions for skip-if-current checks..." -Severity 1
             $cimSess = New-DATCimSession -ComputerName $SiteServer
-            $cmPkgs = Invoke-DATRemoteQuery -CimSession $cimSess -ComputerName $SiteServer -Namespace $smsNs -Query "SELECT Name, Version FROM SMS_Package"
+            $cmPkgs = Invoke-DATRemoteQuery -CimSession $cimSess -ComputerName $SiteServer -Namespace $smsNs -Query "SELECT Name, Version, PackageID FROM SMS_Package"
             foreach ($p in $cmPkgs) {
                 if (-not [string]::IsNullOrEmpty($p.Name) -and -not [string]::IsNullOrEmpty($p.Version)) {
                     $cmPkgVersionCache[$p.Name] = $p.Version
+                }
+                if (-not [string]::IsNullOrEmpty($p.PackageID)) {
+                    [void]$cmPkgIdSet.Add($p.PackageID)
                 }
             }
             Write-DATLogEntry -Value "[ConfigMgr] Cached $($cmPkgVersionCache.Count) package versions" -Severity 1
@@ -3314,6 +3360,20 @@ function Start-DATModelProcessing {
                 }
 
                 if (-not $skipDriverDownload) {
+                $global:DATSoftPaqBuildSkipped = $false
+
+                # Build the list of remote package identifiers so the HP SoftPaq short-circuit
+                # can confirm a previously built package still exists before skipping a rebuild.
+                $existingRemoteIds = @()
+                $verifyRemote = $false
+                if ($RunningMode -eq 'Intune' -and $cachedIntuneApps.Count -gt 0) {
+                    $existingRemoteIds = @($cachedIntuneApps | ForEach-Object { "$($_.id)" } | Where-Object { -not [string]::IsNullOrEmpty($_) })
+                    $verifyRemote = $true
+                } elseif ($RunningMode -eq 'Configuration Manager' -and $cmPkgIdSet.Count -gt 0) {
+                    $existingRemoteIds = @($cmPkgIdSet)
+                    $verifyRemote = $true
+                }
+
                 $catalogVersion = Invoke-DATOEMDownloadModule -OEM $oem `
                     -Model $modelName `
                     -SystemSKU "$baseboards" `
@@ -3328,7 +3388,15 @@ function Start-DATModelProcessing {
                     -RunningMode $RunningMode `
                     -CustomDriverPath $customDriverPath `
                     -CatalogDownloadURL $modelDownloadURL `
-                    -CatalogVersion $catalogDriverVersion
+                    -CatalogVersion $catalogDriverVersion `
+                    -ForceRebuild:$modelForceUpdate `
+                    -ExistingPackageIds $existingRemoteIds `
+                    -VerifyRemoteExistence:$verifyRemote
+
+                if ($global:DATSoftPaqBuildSkipped) {
+                    Write-DATLogEntry -Value "[$currentIndex/$totalModels] $oem $modelName -- driver package unchanged (SoftPaq list identical); existing package retained" -Severity 1
+                    $script:driverPipelineSuccess = $true
+                }
 
                 # Intune: Create and upload Win32 app after packaging
                 if ($RunningMode -eq 'Intune') {
@@ -3384,6 +3452,13 @@ function Start-DATModelProcessing {
                                 displayVersion = $driverCacheVersion
                             }
                             Write-DATLogEntry -Value "[Intune] Added driver package to session cache: $driverDisplayName (v$driverCacheVersion)" -Severity 1
+                        }
+
+                        # Record the Intune application id on the HP SoftPaq manifest so a future
+                        # run can confirm the app still exists before skipping a rebuild.
+                        if ($oem -eq 'HP' -and $null -ne $intuneResult -and -not [string]::IsNullOrEmpty($intuneResult.AppId)) {
+                            $spRefKey = Get-DATHPSoftPaqManifestKey -Model $modelName -OSVersion $windowsVersion -Build $windowsBuild -Architecture $arch
+                            [void](Update-DATHPSoftPaqManifestReference -Key $spRefKey -Field 'intuneAppId' -Value "$($intuneResult.AppId)")
                         }
 
                         # Auto-deploy and auto-assignment-filter for driver packages
@@ -3447,7 +3522,9 @@ function Start-DATModelProcessing {
                             Write-DATLogEntry -Value "[Telemetry] Driver report failed: $($_.Exception.Message)" -Severity 2
                         }
                     } else {
-                        Write-DATLogEntry -Value "[Warning] - Driver WIM not found for Intune upload: $wimPath" -Severity 2
+                        if (-not $global:DATSoftPaqBuildSkipped) {
+                            Write-DATLogEntry -Value "[Warning] - Driver WIM not found for Intune upload: $wimPath" -Severity 2
+                        }
                     }
                 }
 
@@ -3491,6 +3568,13 @@ function Start-DATModelProcessing {
                             if ($cmResult) {
                                 Write-DATLogEntry -Value "- $oem $modelName ConfigMgr driver package created" -Severity 1
 
+                                # Record the ConfigMgr package id on the HP SoftPaq manifest so a
+                                # future run can confirm the package still exists before skipping.
+                                if ($oem -eq 'HP') {
+                                    $spRefKey = Get-DATHPSoftPaqManifestKey -Model $modelName -OSVersion $windowsVersion -Build $windowsBuild -Architecture $arch
+                                    [void](Update-DATHPSoftPaqManifestReference -Key $spRefKey -Field 'configMgrPackageId' -Value "$cmResult")
+                                }
+
                                 # Telemetry: driver report with WIM hash (before cleanup)
                                 try {
                                     $drvHash = Get-DATPackageHash -FilePath $wimPath
@@ -3520,7 +3604,9 @@ function Start-DATModelProcessing {
                             Write-DATLogEntry -Value "[Warning] - ConfigMgr not connected -- driver package saved locally only" -Severity 2
                         }
                     } else {
-                        Write-DATLogEntry -Value "[Warning] - Driver WIM not found for ConfigMgr: $wimPath" -Severity 2
+                        if (-not $global:DATSoftPaqBuildSkipped) {
+                            Write-DATLogEntry -Value "[Warning] - Driver WIM not found for ConfigMgr: $wimPath" -Severity 2
+                        }
                     }
                 }
 
@@ -4315,9 +4401,16 @@ function Unregister-DATScheduledBuild {
     $existing = Get-ScheduledTask -TaskPath "$taskFolder\" -TaskName $taskName -ErrorAction SilentlyContinue
     if ($existing) {
         Unregister-ScheduledTask -InputObject $existing -Confirm:$false -ErrorAction Stop
+        # Verify the task was actually removed -- Unregister can silently no-op if the
+        # caller lacks rights to a SYSTEM/Highest task, leaving it running (#759)
+        $stillThere = Get-ScheduledTask -TaskPath "$taskFolder\" -TaskName $taskName -ErrorAction SilentlyContinue
+        if ($stillThere) {
+            throw "Scheduled task '$taskName' could not be removed. Run the tool elevated (as Administrator) and try again."
+        }
         Write-DATLogEntry -Value "[Schedule] Unregistered scheduled build task" -Severity 1
         return $true
     }
+    Write-DATLogEntry -Value "[Schedule] No scheduled build task found to remove" -Severity 2
     return $false
 }
 
@@ -4631,7 +4724,10 @@ function Invoke-DATOEMDownloadModule {
         [string]$RunningMode = "Download Only",
         [string]$CustomDriverPath,
         [string]$CatalogDownloadURL,
-        [string]$CatalogVersion
+        [string]$CatalogVersion,
+        [switch]$ForceRebuild,
+        [string[]]$ExistingPackageIds = @(),
+        [switch]$VerifyRemoteExistence
     )
 
     [Net.ServicePointManager]::SecurityProtocol = (
@@ -4861,6 +4957,12 @@ function Invoke-DATOEMDownloadModule {
                     }
                     $downloadFileName = "sp$spId.exe"
                     $catalogVersion = $matchingPack.Version
+                    # Fallback: if the catalog entry has no version, use the version passed from the
+                    # caller (HP catalog version resolved during model enumeration), then a date stamp.
+                    if ([string]::IsNullOrEmpty($catalogVersion) -and -not [string]::IsNullOrEmpty($callerCatalogVersion)) {
+                        $catalogVersion = $callerCatalogVersion
+                        Write-DATLogEntry -Value "[HP] Catalog entry missing version -- using caller-provided version: $catalogVersion" -Severity 1
+                    }
                     if ([string]::IsNullOrEmpty($catalogVersion)) { $catalogVersion = (Get-Date -Format 'ddMMyyyy') }
                     Write-DATLogEntry -Value "[HP] Found SCCM driver pack: SP$spId ($downloadFileName)" -Severity 1
                     Write-DATLogEntry -Value "[HP] Download URL: $downloadURL" -Severity 1
@@ -5006,6 +5108,100 @@ New-HPDriverPack -Platform "$PlatformID" -Os "$HPOS" -OSVer "$WindowsBuild" -For
             if ($SoftPaqIDs.Count -eq 0) {
                 throw "No HP SoftPaqs found for any platform ID: $($SKUList -join ', ')"
             }
+
+            # ── SoftPaq fingerprint check: skip rebuild when the list is unchanged ──
+            # The discovered SoftPaq set is fingerprinted and compared against the stored
+            # manifest. If unchanged (and not forced), the existing package is retained and
+            # we short-circuit before any download/extract/packaging work.
+            $spManifestKey = Get-DATHPSoftPaqManifestKey -Model $Model -OSVersion $WindowsVersion -Build $WindowsBuild -Architecture $Architecture
+            $spFingerprint = Get-DATSoftPaqFingerprint -SoftPaqIds $SoftPaqIDs
+            $spManifest    = Get-DATHPSoftPaqManifest
+            $spEntry       = $spManifest[$spManifestKey]
+            $spListUnchanged = ($null -ne $spEntry) -and (-not [string]::IsNullOrEmpty($spFingerprint)) -and ("$($spEntry.fingerprint)" -eq $spFingerprint)
+
+            if ($spListUnchanged) {
+                # Verify the previously built package still exists before skipping. For on-disk
+                # delivery modes this is a file check; for Intune/ConfigMgr we confirm the stored
+                # remote reference (app id / package name) is still present in the live environment.
+                $packageStillExists = $true
+                $missingReason = ''
+                switch ($RunningMode) {
+                    'Intune' {
+                        if ($VerifyRemoteExistence) {
+                            $storedRef = "$($spEntry.intuneAppId)"
+                            if ([string]::IsNullOrEmpty($storedRef)) {
+                                $packageStillExists = $false; $missingReason = 'no Intune application id was recorded'
+                            } elseif ($ExistingPackageIds -notcontains $storedRef) {
+                                $packageStillExists = $false; $missingReason = "Intune application $storedRef no longer exists"
+                            }
+                        }
+                    }
+                    'Configuration Manager' {
+                        if ($VerifyRemoteExistence) {
+                            $storedRef = "$($spEntry.configMgrPackageId)"
+                            if ([string]::IsNullOrEmpty($storedRef)) {
+                                $packageStillExists = $false; $missingReason = 'no ConfigMgr package was recorded'
+                            } elseif ($ExistingPackageIds -notcontains $storedRef) {
+                                $packageStillExists = $false; $missingReason = "ConfigMgr package $storedRef no longer exists"
+                            }
+                        }
+                    }
+                    'WIM Package Only' {
+                        $wimFinalPath = Join-Path $PackageDestination "$OEM\$Model\$WindowsVersion $WindowsBuild\DriverPackage.wim"
+                        if (-not (Test-Path -LiteralPath $wimFinalPath)) {
+                            $packageStillExists = $false; $missingReason = 'the WIM package is missing'
+                        }
+                    }
+                    'Download Only' {
+                        if (-not ((Test-Path -LiteralPath $DownloadDestination) -and (@(Get-ChildItem -LiteralPath $DownloadDestination -File -ErrorAction SilentlyContinue).Count -gt 0))) {
+                            $packageStillExists = $false; $missingReason = 'the downloaded files are missing'
+                        }
+                    }
+                }
+
+                if ($ForceRebuild) {
+                    Write-DATLogEntry -Value "[HP] SoftPaq list unchanged for $Model but Force Update is set -- rebuilding" -Severity 1
+                } elseif (-not $packageStillExists) {
+                    Write-DATLogEntry -Value "[HP] SoftPaq list unchanged for $Model but $missingReason -- rebuilding" -Severity 1
+                } else {
+                    $spStableVersion = "$($spEntry.version)"
+                    Write-DATLogEntry -Value "[HP] SoftPaq list unchanged since last build for $Model ($($SoftPaqIDs.Count) SoftPaqs, v$spStableVersion) -- skipping rebuild" -Severity 1 -UpdateUI
+                    # Surface the matched SoftPaqs, fingerprint and the verified package reference so
+                    # the user can see exactly what was compared and which existing package was retained.
+                    $spSortedIds = @($SoftPaqIDs | Sort-Object { [long]$_ })
+                    $spShortFingerprint = if (-not [string]::IsNullOrEmpty($spFingerprint)) { $spFingerprint.Substring(0, [Math]::Min(8, $spFingerprint.Length)) } else { 'n/a' }
+                    Write-DATLogEntry -Value "[HP] Matched SoftPaqs (SP$($spSortedIds -join ', SP')) | fingerprint $spShortFingerprint" -Severity 1
+                    switch ($RunningMode) {
+                        'Intune' {
+                            if ($VerifyRemoteExistence -and -not [string]::IsNullOrEmpty($spEntry.intuneAppId)) {
+                                Write-DATLogEntry -Value "[HP] Verified existing Intune application $($spEntry.intuneAppId) still present -- retaining package" -Severity 1
+                            }
+                        }
+                        'Configuration Manager' {
+                            if ($VerifyRemoteExistence -and -not [string]::IsNullOrEmpty($spEntry.configMgrPackageId)) {
+                                Write-DATLogEntry -Value "[HP] Verified existing ConfigMgr package $($spEntry.configMgrPackageId) still present -- retaining package" -Severity 1
+                            }
+                        }
+                        default {
+                            Write-DATLogEntry -Value "[HP] Verified existing driver package on disk -- retaining package" -Severity 1
+                        }
+                    }
+                    try {
+                        $spEntry | Add-Member -NotePropertyName lastVerified -NotePropertyValue (Get-Date -Format 'o') -Force
+                        $spManifest[$spManifestKey] = $spEntry
+                        [void](Save-DATHPSoftPaqManifest -Manifest $spManifest)
+                    } catch {
+                        Write-DATLogEntry -Value "[HP] Failed to update SoftPaq manifest verification time: $($_.Exception.Message)" -Severity 2
+                    }
+                    $global:DATSoftPaqBuildSkipped = $true
+                    Set-DATRegistryValue -Name "RunningMode" -Value "Download Completed" -Type String
+                    return $spStableVersion
+                }
+            }
+
+            # Version stamp for this build: reuse the stored version when the SoftPaq set is
+            # unchanged (e.g. a forced rebuild of the same set), otherwise assign a fresh one.
+            $spBuildVersion = if ($spListUnchanged) { "$($spEntry.version)" } else { (Get-Date -Format 'ddMMyyyy') }
 
             $totalSoftPaqs = $SoftPaqIDs.Count
             Set-DATRegistryValue -Name "DownloadBytes" -Value "0" -Type String
@@ -5316,8 +5512,28 @@ New-HPDriverPack -Platform "$PlatformID" -Os "$HPOS" -OSVer "$WindowsBuild" -For
             Set-DATRegistryValue -Name "RunningMode" -Value "Download Completed" -Type String
             Write-DATLogEntry -Value "[HP] Driver package process completed successfully" -Severity 1 -UpdateUI
 
+            # Persist the SoftPaq manifest so an unchanged list skips rebuild next time.
+            try {
+                $spManifestSave = Get-DATHPSoftPaqManifest
+                $existingRef = $spManifestSave[$spManifestKey]
+                $spManifestSave[$spManifestKey] = [PSCustomObject]@{
+                    platformId           = "$DiscoveryPlatformID"
+                    softPaqIds           = @($SoftPaqIDs | Sort-Object { [long]$_ })
+                    fingerprint          = $spFingerprint
+                    version              = $spBuildVersion
+                    lastBuilt            = (Get-Date -Format 'o')
+                    lastVerified         = (Get-Date -Format 'o')
+                    intuneAppId          = if ($existingRef) { "$($existingRef.intuneAppId)" } else { '' }
+                    configMgrPackageId   = if ($existingRef) { "$($existingRef.configMgrPackageId)" } else { '' }
+                }
+                [void](Save-DATHPSoftPaqManifest -Manifest $spManifestSave)
+                Write-DATLogEntry -Value "[HP] SoftPaq manifest updated for $Model (v$spBuildVersion, $($SoftPaqIDs.Count) SoftPaqs)" -Severity 1
+            } catch {
+                Write-DATLogEntry -Value "[HP] Failed to update SoftPaq manifest: $($_.Exception.Message)" -Severity 2
+            }
+
             # HP SoftPaqs mode handles its own multi-file download -- skip common single-file download path
-            return $null
+            return $spBuildVersion
             } # end else (Individual SoftPaqs mode)
         }
         "Lenovo" {
@@ -6594,7 +6810,7 @@ function Get-DATIntuneKnownModels {
         "Content-Type"  = "application/json"
     }
 
-    $uri = "$baseUrl/deviceManagement/managedDevices?`$select=manufacturer,model&`$filter=operatingSystem eq 'Windows'&`$top=999"
+    $uri = "$baseUrl/deviceManagement/managedDevices?`$select=manufacturer,model,skuNumber&`$filter=operatingSystem eq 'Windows'&`$top=999"
     $pageNumber = 0
     $devicePairs = [System.Collections.Generic.Dictionary[string, PSCustomObject]]::new([System.StringComparer]::OrdinalIgnoreCase)
 
@@ -6610,12 +6826,21 @@ function Get-DATIntuneKnownModels {
 
             if ($response.value) {
                 foreach ($device in $response.value) {
-                    $mfr = if ($device.manufacturer) { $device.manufacturer.Trim() } else { $null }
-                    $mdl = if ($device.model) { $device.model.Trim() } else { $null }
+                    $mfr = if ($device.manufacturer) { ([string]$device.manufacturer).Trim() } else { $null }
+                    $mdl = if ($device.model) { ([string]$device.model).Trim() } else { $null }
+                    # skuNumber maps to Win32_ComputerSystem.SystemSKUNumber -- for Dell this is the
+                    # 4-char system ID (e.g. 0CFB) that matches the catalog SystemID/baseboard, enabling
+                    # baseboard-primary matching that distinguishes Pro vs non-Pro models by name (#Dell Pro)
+                    # Cast to [string] first -- Graph may return a numeric SKU as JSON int (no .Trim()).
+                    $sku = if ($null -ne $device.skuNumber) { ([string]$device.skuNumber).Trim() } else { $null }
+                    if ($sku -eq '' -or $sku -eq 'Unknown' -or $sku -eq '0') { $sku = $null }
                     if ($mfr -and $mfr -ne '' -and $mfr -ne 'Unknown' -and $mdl -and $mdl -ne '' -and $mdl -ne 'Unknown') {
                         $key = "$mfr|$mdl"
                         if (-not $devicePairs.ContainsKey($key)) {
-                            $devicePairs[$key] = [PSCustomObject]@{ Make = $mfr; Model = $mdl }
+                            $devicePairs[$key] = [PSCustomObject]@{ Make = $mfr; Model = $mdl; Baseboard = $sku }
+                        } elseif ($null -ne $sku -and $null -eq $devicePairs[$key].Baseboard) {
+                            # Enrich existing entry with a baseboard/SKU if we now have one
+                            $devicePairs[$key].Baseboard = $sku
                         }
                     }
                 }
@@ -8495,8 +8720,9 @@ if ($RequirementMet) {{
 
     $scriptContent = $scriptContent.Replace('%%VERSION_CHECK%%', $versionCheckBlock)
 
-    # UTF-8 with BOM ensures PS 5.1 reads non-ASCII characters correctly
-    [System.IO.File]::WriteAllText($OutputPath, $scriptContent, [System.Text.UTF8Encoding]::new($true))
+    # UTF-8 WITHOUT BOM -- Intune requirement rule scripts must not carry a BOM, otherwise
+    # the portal/IME treats it as literal content (surfaces as mojibake at the top of the script).
+    [System.IO.File]::WriteAllText($OutputPath, $scriptContent, [System.Text.UTF8Encoding]::new($false))
     Write-DATLogEntry -Value "[Intune] Requirement script generated: $OutputPath (UpdateType: $UpdateType)" -Severity 1
     Invoke-DATCodeSign -ScriptPath $OutputPath
     return $OutputPath
@@ -8653,8 +8879,9 @@ catch {{
 
     $scriptContent = $scriptContent.Replace('%%DETECTION_CHECK%%', $detectionCheckBlock)
 
-    # UTF-8 with BOM ensures PS 5.1 reads non-ASCII characters correctly
-    [System.IO.File]::WriteAllText($OutputPath, $scriptContent, [System.Text.UTF8Encoding]::new($true))
+    # UTF-8 WITHOUT BOM -- Intune detection rule scripts must not carry a BOM, otherwise
+    # the portal/IME treats it as literal content (surfaces as mojibake at the top of the script).
+    [System.IO.File]::WriteAllText($OutputPath, $scriptContent, [System.Text.UTF8Encoding]::new($false))
     Write-DATLogEntry -Value "[Intune] Detection script generated: $OutputPath (UpdateType: $UpdateType)" -Severity 1
     Invoke-DATCodeSign -ScriptPath $OutputPath
     return $OutputPath
@@ -8821,6 +9048,32 @@ function Get-DATIntuneWinEncryptionInfo {
     }
 }
 
+function ConvertTo-DATNoBomScriptBase64 {
+    <#
+    .SYNOPSIS
+        Reads a script file and returns its base64 representation with any leading
+        UTF-8 BOM (0xEF 0xBB 0xBF) removed. Intune requirement/detection rule scripts
+        must be plain UTF-8 (no BOM) -- the Intune portal and the Intune Management
+        Extension treat a BOM as literal script content, so it surfaces as the mojibake
+        sequence "i>?" at the top of the script and can break parsing. This is the
+        authoritative enforcement point: regardless of how the on-disk file was encoded,
+        the BOM is stripped here before the content is handed to Graph.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param (
+        [Parameter(Mandatory)][string]$Path
+    )
+    $bytes = [System.IO.File]::ReadAllBytes($Path)
+    $hasBom = $bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF
+    if ($hasBom) {
+        $stripped = New-Object byte[] ($bytes.Length - 3)
+        [System.Buffer]::BlockCopy($bytes, 3, $stripped, 0, $stripped.Length)
+        $bytes = $stripped
+    }
+    return [Convert]::ToBase64String($bytes)
+}
+
 function Invoke-DATIntuneWin32AppUpload {
     <#
     .SYNOPSIS
@@ -8857,9 +9110,12 @@ function Invoke-DATIntuneWin32AppUpload {
     $encInfo = Get-DATIntuneWinEncryptionInfo -IntuneWinFile $IntuneWinFile
 
     try {
-        # Step 2: Read detection and requirement scripts as base64
-        $detectionScriptContent = [Convert]::ToBase64String([System.IO.File]::ReadAllBytes($DetectionScriptPath))
-        $requirementScriptContent = [Convert]::ToBase64String([System.IO.File]::ReadAllBytes($RequirementScriptPath))
+        # Step 2: Read detection and requirement scripts as base64.
+        # Both are uploaded as Intune PowerShell rule scripts and must be plain UTF-8
+        # (no BOM) -- a BOM is treated as literal content by Intune and appears as the
+        # mojibake sequence at the top of the script content, breaking the rule.
+        $detectionScriptContent = ConvertTo-DATNoBomScriptBase64 -Path $DetectionScriptPath
+        $requirementScriptContent = ConvertTo-DATNoBomScriptBase64 -Path $RequirementScriptPath
 
         # Step 3: Create the Win32 app with full configuration
         Write-DATLogEntry -Value "[Intune Upload] Creating Win32 app: $DisplayName" -Severity 1
@@ -10818,6 +11074,146 @@ function Send-DATFeedback {
     } catch {
         Write-DATLogEntry -Value "[Feedback] Submit failed: $($_.Exception.Message)" -Severity 2
         throw
+    }
+}
+
+function Get-DATHPSoftPaqManifestPath {
+    <#
+    .SYNOPSIS
+        Returns the full path to the HP SoftPaq manifest file under Settings.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param()
+    $settingsDir = Join-Path $global:ScriptDirectory 'Settings'
+    if (-not (Test-Path -LiteralPath $settingsDir)) {
+        try { New-Item -Path $settingsDir -ItemType Directory -Force | Out-Null } catch {}
+    }
+    return (Join-Path $settingsDir 'HPSoftPaqManifest.json')
+}
+
+function Get-DATHPSoftPaqManifestKey {
+    <#
+    .SYNOPSIS
+        Builds a stable manifest key for an HP model/OS/build/architecture combination.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param (
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Model,
+        [Parameter(Mandatory)][AllowEmptyString()][string]$OSVersion,
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Build,
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Architecture
+    )
+    return ("HP|{0}|{1}|{2}|{3}" -f $Model.Trim(), $OSVersion.Trim(), $Build.Trim(), $Architecture.Trim())
+}
+
+function Get-DATSoftPaqFingerprint {
+    <#
+    .SYNOPSIS
+        Computes an order-independent SHA256 fingerprint of a SoftPaq ID list.
+    .DESCRIPTION
+        IDs are validated (4-8 digits), de-duplicated, sorted numerically and joined
+        before hashing so the fingerprint is stable regardless of discovery order.
+        Returns a lowercase hex string, or $null when no valid IDs are supplied.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param (
+        [Parameter(Mandatory)][AllowEmptyCollection()][AllowNull()][AllowEmptyString()][string[]]$SoftPaqIds
+    )
+    if ($null -eq $SoftPaqIds) { return $null }
+    $valid = @($SoftPaqIds |
+        ForEach-Object { if ($null -ne $_) { $_.Trim() } } |
+        Where-Object { $_ -match '^\d{4,8}$' } |
+        Select-Object -Unique |
+        Sort-Object { [long]$_ })
+    if ($valid.Count -eq 0) { return $null }
+    $joined = ($valid -join ',')
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $bytes = [System.Text.Encoding]::UTF8.GetBytes($joined)
+        $hashBytes = $sha.ComputeHash($bytes)
+        return [BitConverter]::ToString($hashBytes).Replace('-', '').ToLowerInvariant()
+    } finally {
+        $sha.Dispose()
+    }
+}
+
+function Get-DATHPSoftPaqManifest {
+    <#
+    .SYNOPSIS
+        Loads the HP SoftPaq manifest as a hashtable. Missing or corrupt files yield an empty manifest.
+    #>
+    [CmdletBinding()]
+    [OutputType([hashtable])]
+    param()
+    $path = Get-DATHPSoftPaqManifestPath
+    $manifest = @{}
+    if (Test-Path -LiteralPath $path) {
+        try {
+            $raw = Get-Content -LiteralPath $path -Raw -ErrorAction Stop
+            if (-not [string]::IsNullOrWhiteSpace($raw)) {
+                $obj = $raw | ConvertFrom-Json -ErrorAction Stop
+                foreach ($prop in $obj.PSObject.Properties) {
+                    $manifest[$prop.Name] = $prop.Value
+                }
+            }
+        } catch {
+            Write-DATLogEntry -Value "[HP] SoftPaq manifest unreadable, treating as empty: $($_.Exception.Message)" -Severity 2
+            $manifest = @{}
+        }
+    }
+    return $manifest
+}
+
+function Save-DATHPSoftPaqManifest {
+    <#
+    .SYNOPSIS
+        Atomically persists the HP SoftPaq manifest hashtable to disk. Never throws.
+    #>
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param (
+        [Parameter(Mandatory)][hashtable]$Manifest
+    )
+    $path = Get-DATHPSoftPaqManifestPath
+    try {
+        $json = $Manifest | ConvertTo-Json -Depth 6
+        $tmp = "$path.tmp"
+        Set-Content -LiteralPath $tmp -Value $json -Encoding UTF8 -ErrorAction Stop
+        Move-Item -LiteralPath $tmp -Destination $path -Force -ErrorAction Stop
+        return $true
+    } catch {
+        Write-DATLogEntry -Value "[HP] Failed to save SoftPaq manifest: $($_.Exception.Message)" -Severity 2
+        return $false
+    }
+}
+
+function Update-DATHPSoftPaqManifestReference {
+    <#
+    .SYNOPSIS
+        Records the remote package reference (Intune app id or ConfigMgr package name)
+        on an existing HP SoftPaq manifest entry so a later run can verify the package
+        still exists before deciding to skip a rebuild. No-ops when the entry is absent.
+    #>
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param (
+        [Parameter(Mandatory)][string]$Key,
+        [Parameter(Mandatory)][ValidateSet('intuneAppId', 'configMgrPackageId')][string]$Field,
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Value
+    )
+    $manifest = Get-DATHPSoftPaqManifest
+    if (-not $manifest.ContainsKey($Key)) { return $false }
+    try {
+        $entry = $manifest[$Key]
+        $entry | Add-Member -NotePropertyName $Field -NotePropertyValue $Value -Force
+        $manifest[$Key] = $entry
+        return (Save-DATHPSoftPaqManifest -Manifest $manifest)
+    } catch {
+        Write-DATLogEntry -Value "[HP] Failed to record SoftPaq manifest reference ($Field): $($_.Exception.Message)" -Severity 2
+        return $false
     }
 }
 

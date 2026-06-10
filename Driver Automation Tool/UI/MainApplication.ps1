@@ -57,7 +57,18 @@ public class ModelItem : INotifyPropertyChanged {
     public bool   HasGFX     { get; set; }
     public string GFXBrand   { get; set; }
     public string CustomDriverPath { get; set; }
-    public string Version    { get; set; }
+    private string _version;
+    public string Version    {
+        get { return _version; }
+        set {
+            if (_version != value) {
+                _version = value;
+                var h = PropertyChanged;
+                if (h != null) h(this, new PropertyChangedEventArgs("Version"));
+            }
+        }
+    }
+    public string DriverPackVersion { get; set; }
     public string BIOSVersion { get; set; }
     public bool   BIOSOnly   { get; set; }
     public string DownloadURL { get; set; }
@@ -6087,7 +6098,7 @@ $btn_RefreshModels.Add_Click({
     $refreshTempDir = if ($regConfig -and -not [string]::IsNullOrEmpty($regConfig.TempStoragePath)) { $regConfig.TempStoragePath } else { Join-Path $global:ScriptDirectory 'Temp' }
 
     [void]$script:RefreshPS.AddScript({
-        param($CoreModulePath, $RequiredOEMs, $OS, $Architecture, $PackageType, $TempDir, $UseDATAPICatalog, $WebRequestTimeoutSec)
+        param($CoreModulePath, $RequiredOEMs, $OS, $Architecture, $PackageType, $TempDir, $UseDATAPICatalog, $WebRequestTimeoutSec, $HPDriverPackSource)
 
         function Write-Log {
             param([string]$Message, [string]$Level = 'Info')
@@ -6193,7 +6204,13 @@ $btn_RefreshModels.Add_Click({
                                 $WindowsVersion = "$($osParts[0]) $($osParts[1])"
                                 $WindowsBuild = if ($osParts.Count -ge 3) { $osParts[2] } else { '' }
                                 $displayVersion = ''
-                                if ($entry.Manufacturer -in @('HP', 'Acer')) {
+                                $hpPackVersion = ''
+                                if ($entry.Manufacturer -eq 'HP') {
+                                    # HP DriverPack mode shows the catalog version (e.g. "4.00 A 1");
+                                    # SoftPaq mode uses a date stamp (real version is fingerprint-based).
+                                    if (-not [string]::IsNullOrEmpty($entry.Version) -and $entry.Version -notmatch '^\d+H\d+$') { $hpPackVersion = $entry.Version }
+                                    $displayVersion = if ($HPDriverPackSource -eq 'DriverPack' -and -not [string]::IsNullOrEmpty($hpPackVersion)) { $hpPackVersion } else { (Get-Date -Format 'ddMMyyyy') }
+                                } elseif ($entry.Manufacturer -eq 'Acer') {
                                     $displayVersion = (Get-Date -Format 'ddMMyyyy')
                                 } elseif (-not [string]::IsNullOrEmpty($entry.Version) -and $entry.Version -notmatch '^\d+H\d+$') {
                                     $displayVersion = $entry.Version
@@ -6207,6 +6224,7 @@ $btn_RefreshModels.Add_Click({
                                     OS         = $WindowsVersion
                                     'OS Build' = $WindowsBuild
                                     Version    = $displayVersion
+                                    DriverPackVersion = $hpPackVersion
                                     DownloadURL = if ($entry.DownloadURL) { $entry.DownloadURL } else { '' }
                                 }
                             }
@@ -6243,8 +6261,14 @@ $btn_RefreshModels.Add_Click({
                                 if ($entry.Manufacturer -eq 'Dell') { break }
                                 # Determine display version per OEM convention
                                 $displayVersion = ''
-                                if ($entry.Manufacturer -in @('HP', 'Acer')) {
-                                    # HP and Acer use current date as version (matches OEM XML method)
+                                $hpPackVersion = ''
+                                if ($entry.Manufacturer -eq 'HP') {
+                                    # HP DriverPack mode shows the catalog version (e.g. "4.00 A 1");
+                                    # SoftPaq mode uses a date stamp (real version is fingerprint-based).
+                                    if (-not [string]::IsNullOrEmpty($entry.Version) -and $entry.Version -notmatch '^\d+H\d+$') { $hpPackVersion = $entry.Version }
+                                    $displayVersion = if ($HPDriverPackSource -eq 'DriverPack' -and -not [string]::IsNullOrEmpty($hpPackVersion)) { $hpPackVersion } else { (Get-Date -Format 'ddMMyyyy') }
+                                } elseif ($entry.Manufacturer -eq 'Acer') {
+                                    # Acer uses current date as version (matches OEM XML method)
                                     $displayVersion = (Get-Date -Format 'ddMMyyyy')
                                 } elseif (-not [string]::IsNullOrEmpty($entry.Version) -and $entry.Version -notmatch '^\d+H\d+$') {
                                     $displayVersion = $entry.Version
@@ -6258,6 +6282,7 @@ $btn_RefreshModels.Add_Click({
                                     OS         = $WindowsVersion
                                     'OS Build' = $WindowsBuild
                                     Version    = $displayVersion
+                                    DriverPackVersion = $hpPackVersion
                                     DownloadURL = if ($entry.DownloadURL) { $entry.DownloadURL } else { '' }
                                 }
                             }
@@ -6469,13 +6494,23 @@ $btn_RefreshModels.Add_Click({
                             Write-Log "HP: Found $count matching driver packs for $SingleOS." -Level Success
                             foreach ($Model in $HPMatches) {
                                 $modelName = ($Model.SystemName -replace '^HP\s+', '').Trim()
+                                # HP catalog provides a real DriverPack version (e.g. "7.00 A 1").
+                                # SCCM DriverPack mode shows it; SoftPaq mode uses a date stamp
+                                # (its definitive version is computed from the SoftPaq fingerprint).
+                                $hpDriverPackVersion = if (-not [string]::IsNullOrEmpty($Model.Version)) { $Model.Version } else { '' }
+                                $hpDisplayVersion = if ($HPDriverPackSource -eq 'DriverPack' -and -not [string]::IsNullOrEmpty($hpDriverPackVersion)) {
+                                    $hpDriverPackVersion
+                                } else {
+                                    (Get-Date -Format 'ddMMyyyy')
+                                }
                                 $OEMSupportedModels += [PSCustomObject]@{
-                                    OEM        = "HP"
-                                    Model      = $modelName
-                                    Baseboards = $Model.SystemId
-                                    OS         = $WindowsVersion
-                                    'OS Build' = $WindowsBuild
-                                    Version    = (Get-Date -Format 'ddMMyyyy')
+                                    OEM               = "HP"
+                                    Model             = $modelName
+                                    Baseboards        = $Model.SystemId
+                                    OS                = $WindowsVersion
+                                    'OS Build'        = $WindowsBuild
+                                    Version           = $hpDisplayVersion
+                                    DriverPackVersion = $hpDriverPackVersion
                                 }
                             }
                         }
@@ -7017,6 +7052,9 @@ $btn_RefreshModels.Add_Click({
     [void]$script:RefreshPS.AddArgument($refreshTempDir)
     [void]$script:RefreshPS.AddArgument(($chk_UseDATAPICatalog.IsChecked -eq $true))
     [void]$script:RefreshPS.AddArgument($script:WebRequestTimeoutSec)
+    $hpSourceMode = (Get-ItemProperty -Path $global:RegPath -Name 'HPDriverPackSource' -ErrorAction SilentlyContinue).HPDriverPackSource
+    if ([string]::IsNullOrEmpty($hpSourceMode)) { $hpSourceMode = 'DriverPack' }
+    [void]$script:RefreshPS.AddArgument($hpSourceMode)
 
     $script:RefreshAsyncResult = $script:RefreshPS.BeginInvoke()
 
@@ -7065,6 +7103,7 @@ $btn_RefreshModels.Add_Click({
                             try { $modelItem.BIOSVersion = if ($model.BIOSVersion) { $model.BIOSVersion } else { '' } } catch { }
                             try { $modelItem.BIOSOnly = if ($model.BIOSOnly) { $true } else { $false } } catch { }
                             try { $modelItem.DownloadURL = if ($model.DownloadURL) { $model.DownloadURL } else { '' } } catch { }
+                            try { $modelItem.DriverPackVersion = if ($model.DriverPackVersion) { $model.DriverPackVersion } else { '' } } catch { }
                             $script:ModelData.Add($modelItem)
                         }
                     }
@@ -7183,6 +7222,15 @@ function ConvertTo-DATNormalizedModel {
         $m = $m -replace '\sUSDT\b', ' Desktop'
         $m = $m -replace '\sTWR\b', ' Tower'
         $m = $m -replace '\s*35W$', ''
+    }
+    # Dell: strip a leading manufacturer prefix and trailing desktop form-factor descriptors
+    # that Intune/WMI include but the OEM catalog omits (e.g. Intune "Dell Latitude 5550" or
+    # "Precision 3660 Tower" vs catalog "Latitude 5550" / "Precision 3660"). Both the catalog
+    # grid model and the device model pass through this normalization, so stripping the same
+    # tokens from each lets them match. Name fallback only -- baseboard/SKU stays primary.
+    if ($Make -match '^Dell') {
+        $m = $m -replace '^(Dell\s+Inc\.?|Dell)\s+', ''
+        $m = $m -replace '\s+(Tower|SFF|MFF|Small\s+Form\s+Factor|Micro\s+Form\s+Factor)$', ''
     }
     return $m.Trim()
 }
@@ -9213,63 +9261,28 @@ function Update-DATKnownModelSelection {
     <#
     .SYNOPSIS
         Checks models in grid_Models that match known Intune devices.
-        Normalizes OEM make/model names before comparison to account for
-        differences between Intune Graph data and OEM catalog naming.
+        Uses Test-DATKnownDeviceMatch so matching is baseboard/SKU-primary
+        (which uniquely distinguishes Pro vs non-Pro variants) with name-based
+        matching as a fallback.
     #>
     if (-not $script:IntuneKnownDevices -or $script:ModelData.Count -eq 0) { return }
 
-    # Build normalized lookup sets from Intune known devices
-    $knownModels = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
-    $knownMakeModel = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
-    # HP-specific: store HP-prefix-stripped Intune names (preserving suffixes like "Notebook PC")
-    $knownHPStripped = [System.Collections.Generic.List[string]]::new()
-    foreach ($device in $script:IntuneKnownDevices) {
-        $normMake = ConvertTo-DATNormalizedMake -Make $device.Make
-        $normModel = ConvertTo-DATNormalizedModel -Make $device.Make -Model $device.Model
-        [void]$knownModels.Add($normModel)
-        [void]$knownMakeModel.Add("$normMake|$normModel")
-        if ($normMake -eq 'HP') {
-            $hpStripped = ($device.Model -replace '^(HP|Hewlett-Packard|COMPAQ|Compaq)\s+', '').Trim()
-            $knownHPStripped.Add($hpStripped)
-        }
-    }
-
     $matchCount = 0
+    # Track which known devices matched at least one catalog grid row so we can report
+    # the queried-vs-selected gap (devices with no catalog model for the selected OS builds).
+    $matchedDeviceKeys = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
     foreach ($item in $script:ModelData) {
-        $gridMake = ConvertTo-DATNormalizedMake -Make $item.OEM
+        $gridMake  = ConvertTo-DATNormalizedMake  -Make $item.OEM
         $gridModel = ConvertTo-DATNormalizedModel -Make $item.OEM -Model $item.Model
-        # Try model name match first
-        if ($knownModels.Contains($gridModel)) {
-            $item.Selected = $true
-            $matchCount++
-        }
-        # Fall back to make+model match
-        elseif ($knownMakeModel.Contains("$gridMake|$gridModel")) {
-            $item.Selected = $true
-            $matchCount++
-        }
-        # HP prefix match: Intune returns full names with suffixes (e.g. "Notebook PC",
-        # "Desktop PC", "2-in-1 Notebook PC") that aren't in the catalog. Check if the
-        # catalog model name appears at the start of any known HP Intune model name.
-        elseif ($gridMake -eq 'HP') {
-            foreach ($hpName in $knownHPStripped) {
-                if ($hpName -eq $item.Model -or $hpName -like "$($item.Model) *") {
+        $itemMatched = $false
+        foreach ($device in $script:IntuneKnownDevices) {
+            if (Test-DATKnownDeviceMatch -GridMake $gridMake -GridModel $gridModel -GridBaseboards $item.Baseboards `
+                    -DeviceMake $device.Make -DeviceModel $device.Model -DeviceBaseboard $device.Baseboard) {
+                [void]$matchedDeviceKeys.Add("$($device.Make)|$($device.Model)")
+                if (-not $itemMatched) {
                     $item.Selected = $true
                     $matchCount++
-                    break
-                }
-            }
-        }
-        # Microsoft Surface CPU-qualifier prefix match:
-        # WMI/Intune returns the base name (e.g. "Surface Laptop 4") while the catalog
-        # appends a CPU qualifier (e.g. "Surface Laptop 4 AMD"). Check if any known device
-        # model is a prefix of the grid model name so all CPU variants are selected.
-        elseif ($gridMake -eq 'Microsoft') {
-            foreach ($knownEntry in $knownModels) {
-                if ($gridModel -like "$knownEntry *") {
-                    $item.Selected = $true
-                    $matchCount++
-                    break
+                    $itemMatched = $true
                 }
             }
         }
@@ -9294,6 +9307,26 @@ function Update-DATKnownModelSelection {
                 $col.SortDirection = $null
             }
         }
+    }
+
+    # Report the queried-vs-selected gap: list any known Intune devices that did not match
+    # a catalog model for the currently loaded OS/architecture. This explains why the number
+    # of discovered devices can exceed the number of auto-selected grid models (e.g. consumer
+    # hardware absent from the enterprise catalog, or a model whose OS build is not selected).
+    $uniqueDevices = $script:IntuneKnownDevices |
+        Group-Object -Property { "$($_.Make)|$($_.Model)" } |
+        ForEach-Object { $_.Group | Select-Object -First 1 }
+    $unmatchedDevices = @($uniqueDevices | Where-Object { -not $matchedDeviceKeys.Contains("$($_.Make)|$($_.Model)") })
+    $uniqueCount = @($uniqueDevices).Count
+    $matchedUnique = $uniqueCount - $unmatchedDevices.Count
+    if ($unmatchedDevices.Count -gt 0) {
+        Write-DATActivityLog "Known model match summary: $matchedUnique of $uniqueCount queried device models matched a catalog entry; $($unmatchedDevices.Count) unmatched (no driver package for the selected OS/architecture):" -Level Warn
+        foreach ($dev in ($unmatchedDevices | Sort-Object Make, Model)) {
+            $bbInfo = if (-not [string]::IsNullOrWhiteSpace($dev.Baseboard)) { " (SKU: $($dev.Baseboard))" } else { '' }
+            Write-DATActivityLog "    - $($dev.Make) $($dev.Model)$bbInfo" -Level Info
+        }
+    } elseif ($uniqueCount -gt 0) {
+        Write-DATActivityLog "Known model match summary: all $uniqueCount queried device models matched a catalog entry." -Level Success
     }
 }
 
@@ -12312,10 +12345,18 @@ $btn_ScheduleSave.Add_Click({
 
 $btn_ScheduleRemove.Add_Click({
     try {
-        Unregister-DATScheduledBuild
-        Write-DATActivityLog "Scheduled build removed" -Level Info
-        $overlay_Schedule.Visibility = 'Collapsed'
-        $txt_Status.Text = "Scheduled build removed."
+        $removed = Unregister-DATScheduledBuild
+        if ($removed) {
+            Write-DATActivityLog "Scheduled build removed" -Level Info
+            $btn_ScheduleRemove.Visibility = 'Collapsed'
+            $overlay_Schedule.Visibility = 'Collapsed'
+            $txt_Status.Text = "Scheduled build removed."
+        } else {
+            Write-DATActivityLog "Scheduled build removal -- no existing task found" -Level Warn
+            $btn_ScheduleRemove.Visibility = 'Collapsed'
+            $overlay_Schedule.Visibility = 'Collapsed'
+            $txt_Status.Text = "No scheduled build task was found."
+        }
     } catch {
         Show-DATInfoDialog -Title 'Schedule Error' `
             -Message "Failed to remove scheduled task:`n`n$($_.Exception.Message)" `
@@ -14961,6 +15002,28 @@ $cmb_HPDriverPackSource.Add_SelectionChanged({
         $lbl_HPConcurrentTitle.Opacity = $opacity
         $lbl_HPConcurrentDesc.Opacity = $opacity
         $lbl_HPConcurrentHint.Opacity = $opacity
+
+        # Update the displayed driver version for HP rows already in the grid:
+        # DriverPack mode shows the HP catalog version; SoftPaq mode shows a date stamp.
+        if ($null -ne $script:ModelData -and $script:ModelData.Count -gt 0) {
+            $dateStamp = Get-Date -Format 'ddMMyyyy'
+            $updated = 0
+            foreach ($item in $script:ModelData) {
+                if ($item.OEM -ne 'HP' -or $item.BIOSOnly) { continue }
+                $newVersion = if (-not $isSoftPaqs -and -not [string]::IsNullOrEmpty($item.DriverPackVersion)) {
+                    $item.DriverPackVersion
+                } else {
+                    $dateStamp
+                }
+                if ($item.Version -ne $newVersion) {
+                    $item.Version = $newVersion
+                    $updated++
+                }
+            }
+            if ($updated -gt 0) {
+                Write-DATActivityLog "Updated driver version for $updated HP model(s) to reflect $val source." -Level Info
+            }
+        }
     }
 })
 
@@ -20180,7 +20243,7 @@ if (Test-Path $logoPath) {
 
 # Read version from module manifest
 $manifestPath = Join-Path $AppRoot "Modules\DriverAutomationToolCore\DriverAutomationToolCore.psd1"
-$script:versionString = "v10.0.42"
+$script:versionString = "v10.0.43"
 if (Test-Path $manifestPath) {
     $manifestData = Import-PowerShellDataFile $manifestPath
     $ver = [version]$manifestData.ModuleVersion

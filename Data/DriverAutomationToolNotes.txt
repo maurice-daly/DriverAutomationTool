@@ -3,6 +3,17 @@ Release Notes
 IMPORTANT
 - DAT Downloads have been moved to GitHub - https://github.com/maurice-daly/DriverAutomationTool
 
+Version 10.0.43
+What's New & Fixed
+- Driver Packaging (HP SoftPaqs) — HP driver packages built from individual SoftPaqs are no longer rebuilt on every run. The tool now records the exact SoftPaq list for each model and skips the rebuild when nothing has changed, retaining the existing package and reusing its original version stamp. The log clearly shows the matched SoftPaqs, the comparison fingerprint, and which existing package was retained.
+- Driver Packaging (Intune / ConfigMgr) — When deciding whether an unchanged package can be skipped, the tool now verifies the previously created package still exists in the target environment — by Intune application ID or ConfigMgr Package ID — and automatically rebuilds if it was deleted, removing the need to use Force Update to recover.
+- OEM Support (HP) — HP SCCM Driver Pack builds now display and use the real driver pack version from the OEM/API source (e.g. 7.00 A 1) instead of today's date. This applies across the model grid, the build/skip logic, and package metadata, so version-based "skip if current" checks work correctly. The model grid updates live when switching between SCCM Driver Pack and Individual SoftPaq sources. (SoftPaq mode continues to use a date-based stamp, governed by the SoftPaq fingerprint.)
+- Model Matching — Known-model auto-selection from Intune now matches Dell devices whose reported name includes a "Dell" prefix (e.g. Dell Latitude 5550 now matches the catalog Latitude 5550). A new match summary in the activity log reports how many queried device models matched a catalog entry and lists any unmatched models, making the gap between discovered and selected devices transparent.
+- Model Matching (Intune lookup) — Fixed an error ("[System.Int32] does not contain a method named 'Trim'") that could abort the Intune device lookup when a device reported a numeric SKU value via Microsoft Graph.
+- Intune Integration — Requirement and detection rule scripts are now uploaded as plain UTF-8 without a byte-order mark, fixing the stray characters that appeared at the top of the script content in the Intune portal.
+- Toast Notifications — Fixed rendering of multi-line toast notification text.
+- Security / Documentation — Added an API.md reference documenting the telemetry API endpoints, the exact data contained in each payload, what is not collected, and how to opt out — for security/privacy review.
+
 Version 10.0.42
 What's New & Fixed
 - Model Matching — Improved model-matching logic for more accurate driver and BIOS lookups across all OEMs.
