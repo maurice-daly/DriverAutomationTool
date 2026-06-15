@@ -11744,6 +11744,7 @@ $btn_CmDeleteSelected.Add_Click({
                 if ($null -ne $pkg) {
                     $sourcePath = $pkg.PkgSourcePath
                     if ($pkg -is [System.Management.ManagementObject]) { [void]$pkg.Delete() } else { $pkg | Remove-CimInstance -ErrorAction Stop }
+                    $State.Deleted++
 
                     # Delete source folder if enabled
                     if ($DeleteSourceFolders -and -not [string]::IsNullOrEmpty($sourcePath)) {
@@ -11756,6 +11757,9 @@ $btn_CmDeleteSelected.Add_Click({
                             }
                         }
                     }
+                } else {
+                    # Package not found in the site database (already removed or query failed)
+                    $State.Errors++
                 }
             } catch {
                 $State.Errors++
