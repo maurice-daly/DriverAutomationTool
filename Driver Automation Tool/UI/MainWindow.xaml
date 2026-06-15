@@ -716,6 +716,14 @@
                     <Setter Property="Background" Value="Transparent"/>
                     <Setter Property="Foreground" Value="{DynamicResource GridSelectionForeground}"/>
                 </Trigger>
+                <!-- Known models (matched to Intune/ConfigMgr devices) render in an accent
+                     colour. Declared after IsSelected so it wins even when the row is selected.
+                     KnownModelForeground is green in light mode, softer blue in dark mode.
+                     The Build column keeps its own colour for the "All" value (its template
+                     DataTrigger overrides this inherited foreground). -->
+                <DataTrigger Binding="{Binding IsKnownModel}" Value="True">
+                    <Setter Property="Foreground" Value="{DynamicResource KnownModelForeground}"/>
+                </DataTrigger>
             </Style.Triggers>
         </Style>
 
@@ -807,7 +815,7 @@
         <!-- Vertical ScrollBar -->
         <ControlTemplate x:Key="VerticalScrollBar" TargetType="ScrollBar">
             <Border Background="{DynamicResource ScrollTrack}"
-                    CornerRadius="5" Width="10">
+                    CornerRadius="6" Width="14">
                 <Track x:Name="PART_Track" IsDirectionReversed="True">
                     <Track.DecreaseRepeatButton>
                         <RepeatButton Style="{StaticResource ScrollBarTrackButton}" Command="ScrollBar.PageUpCommand"/>
@@ -843,7 +851,7 @@
         <!-- Horizontal ScrollBar -->
         <ControlTemplate x:Key="HorizontalScrollBar" TargetType="ScrollBar">
             <Border Background="{DynamicResource ScrollTrack}"
-                    CornerRadius="5" Height="10">
+                    CornerRadius="6" Height="14">
                 <Track x:Name="PART_Track" IsDirectionReversed="False">
                     <Track.DecreaseRepeatButton>
                         <RepeatButton Style="{StaticResource ScrollBarTrackButton}" Command="ScrollBar.PageLeftCommand"/>
@@ -864,13 +872,13 @@
             <Setter Property="OverridesDefaultStyle" Value="True"/>
             <Style.Triggers>
                 <Trigger Property="Orientation" Value="Vertical">
-                    <Setter Property="Width" Value="6"/>
+                    <Setter Property="Width" Value="14"/>
                     <Setter Property="Height" Value="Auto"/>
                     <Setter Property="Template" Value="{StaticResource VerticalScrollBar}"/>
                 </Trigger>
                 <Trigger Property="Orientation" Value="Horizontal">
                     <Setter Property="Width" Value="Auto"/>
-                    <Setter Property="Height" Value="6"/>
+                    <Setter Property="Height" Value="14"/>
                     <Setter Property="Template" Value="{StaticResource HorizontalScrollBar}"/>
                 </Trigger>
             </Style.Triggers>
@@ -905,7 +913,7 @@
                                    Foreground="{DynamicResource AccentColor}" VerticalAlignment="Center" Margin="0,0,8,0"/>
                         <TextBlock Text="Driver Automation Tool" FontSize="13" FontWeight="SemiBold"
                                    Foreground="{DynamicResource WindowForeground}" VerticalAlignment="Center"/>
-                        <TextBlock x:Name="txt_Version" Text=" Version 10.0.43" FontSize="11"
+                        <TextBlock x:Name="txt_Version" Text=" Version 10.1.0" FontSize="11"
                                    Foreground="{DynamicResource InputPlaceholder}" VerticalAlignment="Center" Margin="4,0"/>
                     </StackPanel>
 
@@ -1025,6 +1033,10 @@
                                         Style="{StaticResource SubNavButton}">
                                     <TextBlock><Run Text="&#xE72E;" FontFamily="Segoe MDL2 Assets"/><Run Text="  BIOS Security"/></TextBlock>
                                 </Button>
+                                <Button x:Name="nav_MaintenanceWindow"
+                                        Style="{StaticResource SubNavButton}">
+                                    <TextBlock><Run Text="&#xE823;" FontFamily="Segoe MDL2 Assets"/><Run Text="  Maintenance Window"/></TextBlock>
+                                </Button>
                             </StackPanel>
                             <Button x:Name="nav_CommonSettings"
                                     Style="{StaticResource NavButton}">
@@ -1081,6 +1093,7 @@
                                         <ColumnDefinition Width="Auto"/>
                                     </Grid.ColumnDefinitions>
                                     <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto"/>
                                         <RowDefinition Height="Auto"/>
                                         <RowDefinition Height="Auto"/>
                                     </Grid.RowDefinitions>
@@ -1315,6 +1328,52 @@
                                             VerticalAlignment="Top" Margin="12,0,0,0" Height="34">
                                         <TextBlock><Run Text="&#xE72C;" FontFamily="Segoe MDL2 Assets"/><Run Text="  Refresh"/></TextBlock>
                                     </Button>
+
+                                    <!-- Row 3: Profiles bar -->
+                                    <Border Grid.Row="2" Grid.ColumnSpan="6" BorderThickness="0,1,0,0"
+                                            BorderBrush="{DynamicResource CardBorder}" Margin="0,12,0,0" Padding="0,12,0,0">
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="Auto"/>
+                                                <ColumnDefinition Width="*" MaxWidth="320"/>
+                                                <ColumnDefinition Width="Auto"/>
+                                                <ColumnDefinition Width="Auto"/>
+                                                <ColumnDefinition Width="Auto"/>
+                                                <ColumnDefinition Width="Auto"/>
+                                                <ColumnDefinition Width="*"/>
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Grid.Column="0" Text="Profile" FontSize="12" FontWeight="SemiBold"
+                                                       Foreground="{DynamicResource InputPlaceholder}"
+                                                       VerticalAlignment="Center" Margin="0,0,12,0"/>
+                                            <ComboBox x:Name="cmb_Profiles" Grid.Column="1" Height="32"
+                                                      VerticalAlignment="Center"
+                                                      ToolTip="Load a saved selection profile"/>
+                                            <Button x:Name="btn_SaveProfile" Grid.Column="2"
+                                                    Style="{StaticResource SecondaryButton}" Height="32"
+                                                    Margin="8,0,0,0" Cursor="Hand" IsEnabled="False"
+                                                    ToolTip="Overwrite the selected profile with the current selections">
+                                                <TextBlock FontSize="12"><Run Text="&#xE74E;" FontFamily="Segoe MDL2 Assets"/><Run Text="  Save"/></TextBlock>
+                                            </Button>
+                                            <Button x:Name="btn_SaveAsProfile" Grid.Column="3"
+                                                    Style="{StaticResource SecondaryButton}" Height="32"
+                                                    Margin="8,0,0,0" Cursor="Hand"
+                                                    ToolTip="Save the current selections as a new profile">
+                                                <TextBlock FontSize="12"><Run Text="&#xE792;" FontFamily="Segoe MDL2 Assets"/><Run Text="  Save As"/></TextBlock>
+                                            </Button>
+                                            <Button x:Name="btn_RenameProfile" Grid.Column="4"
+                                                    Style="{StaticResource SecondaryButton}" Height="32"
+                                                    Margin="8,0,0,0" Cursor="Hand" IsEnabled="False"
+                                                    ToolTip="Rename the selected profile">
+                                                <TextBlock FontSize="12"><Run Text="&#xE8AC;" FontFamily="Segoe MDL2 Assets"/><Run Text="  Rename"/></TextBlock>
+                                            </Button>
+                                            <Button x:Name="btn_DeleteProfile" Grid.Column="5"
+                                                    Style="{StaticResource SecondaryButton}" Height="32"
+                                                    Margin="8,0,0,0" Cursor="Hand" IsEnabled="False"
+                                                    ToolTip="Delete the selected profile">
+                                                <TextBlock FontSize="12"><Run Text="&#xE74D;" FontFamily="Segoe MDL2 Assets"/><Run Text="  Delete"/></TextBlock>
+                                            </Button>
+                                        </Grid>
+                                    </Border>
                                 </Grid>
                             </Border>
 
@@ -4508,6 +4567,135 @@
                             </ScrollViewer>
                         </Grid>
 
+                        <!-- View: Maintenance Window -->
+                        <Grid x:Name="view_MaintenanceWindow" Visibility="Collapsed">
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="*"/>
+                            </Grid.RowDefinitions>
+
+                            <TextBlock Grid.Row="0" Style="{StaticResource SectionHeader}">
+                                <Run Text="&#xE823;" FontFamily="Segoe MDL2 Assets" FontSize="20"/><Run Text="  Maintenance Window"/>
+                            </TextBlock>
+
+                            <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
+                            <StackPanel>
+
+                                <!-- Overview / enable card -->
+                                <Border Style="{StaticResource CardPanel}" Margin="0,0,0,12">
+                                    <StackPanel>
+                                        <TextBlock FontSize="14" FontWeight="SemiBold"
+                                                   Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,4">
+                                            <Run Text="&#xE823;" FontFamily="Segoe MDL2 Assets" FontSize="14"/><Run Text="  Maintenance Window"/>
+                                        </TextBlock>
+                                        <TextBlock TextWrapping="Wrap" FontSize="12"
+                                                   Foreground="{DynamicResource InputPlaceholder}" Margin="0,0,0,12" LineHeight="18">
+                                            Restrict when driver and BIOS packages may install on managed devices. When enabled, each
+                                            package's Intune requirement rule only reports as applicable while the device local time falls
+                                            inside one of the configured windows. Outside the window the install is deferred and retried on
+                                            the next Intune evaluation cycle. Windows that cross midnight (e.g. 22:00 to 05:00) are supported.
+                                        </TextBlock>
+
+                                        <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
+                                            <CheckBox x:Name="chk_MaintenanceWindowEnabled"
+                                                      Style="{StaticResource ToggleSwitch}"
+                                                      VerticalAlignment="Center"/>
+                                            <TextBlock Text="Enable maintenance window" FontSize="13"
+                                                       Foreground="{DynamicResource WindowForeground}"
+                                                       VerticalAlignment="Center" Margin="12,0,0,0"/>
+                                            <TextBlock x:Name="txt_MaintenanceWindowState" Text="Off" FontSize="12"
+                                                       Foreground="{DynamicResource InputPlaceholder}"
+                                                       VerticalAlignment="Center" Margin="12,0,0,0"/>
+                                        </StackPanel>
+                                    </StackPanel>
+                                </Border>
+
+                                <!-- Schedule configuration card -->
+                                <Border x:Name="panel_MaintenanceWindowConfig" Style="{StaticResource CardPanel}" Margin="0,0,0,12">
+                                    <StackPanel>
+                                        <TextBlock FontSize="14" FontWeight="SemiBold"
+                                                   Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,12">
+                                            <Run Text="&#xE787;" FontFamily="Segoe MDL2 Assets" FontSize="14"/><Run Text="  Schedule"/>
+                                        </TextBlock>
+
+                                        <!-- Mode selector -->
+                                        <StackPanel Orientation="Horizontal" Margin="0,0,0,16">
+                                            <TextBlock Text="Mode" FontSize="12"
+                                                       Foreground="{DynamicResource WindowForeground}"
+                                                       VerticalAlignment="Center" Width="80"/>
+                                            <ComboBox x:Name="cmb_MaintenanceWindowMode" Height="30" Width="180">
+                                                <ComboBoxItem Content="Daily" IsSelected="True"/>
+                                                <ComboBoxItem Content="Weekly"/>
+                                            </ComboBox>
+                                            <TextBlock x:Name="txt_MaintenanceWindowModeHint" FontSize="11"
+                                                       Foreground="{DynamicResource InputPlaceholder}"
+                                                       VerticalAlignment="Center" Margin="12,0,0,0"
+                                                       Text="Windows apply every day."/>
+                                        </StackPanel>
+
+                                        <!-- Column headers -->
+                                        <Grid Margin="0,0,0,6">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition x:Name="col_MWDayHeader" Width="140"/>
+                                                <ColumnDefinition Width="120"/>
+                                                <ColumnDefinition Width="120"/>
+                                                <ColumnDefinition Width="Auto"/>
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock x:Name="hdr_MWDay" Grid.Column="0" Text="Day" FontSize="11" FontWeight="SemiBold"
+                                                       Foreground="{DynamicResource InputPlaceholder}"/>
+                                            <TextBlock Grid.Column="1" Text="Start (HH:mm)" FontSize="11" FontWeight="SemiBold"
+                                                       Foreground="{DynamicResource InputPlaceholder}"/>
+                                            <TextBlock Grid.Column="2" Text="End (HH:mm)" FontSize="11" FontWeight="SemiBold"
+                                                       Foreground="{DynamicResource InputPlaceholder}"/>
+                                        </Grid>
+
+                                        <!-- Dynamic window rows are added here at runtime -->
+                                        <StackPanel x:Name="panel_MWWindowList"/>
+
+                                        <!-- Empty-state message -->
+                                        <TextBlock x:Name="txt_MWEmptyState" Text="No windows configured. Add at least one window."
+                                                   FontSize="12" Foreground="{DynamicResource InputPlaceholder}"
+                                                   Margin="0,4,0,4" Visibility="Collapsed"/>
+
+                                        <!-- Add window button -->
+                                        <Button x:Name="btn_AddMaintenanceWindow"
+                                                Height="32" Width="150" HorizontalAlignment="Left" Margin="0,8,0,0"
+                                                Style="{StaticResource RoundedButton}">
+                                            <TextBlock FontSize="12">
+                                                <Run Text="&#xE710;" FontFamily="Segoe MDL2 Assets"/><Run Text="  Add Window"/>
+                                            </TextBlock>
+                                        </Button>
+
+                                        <!-- Separator + Save / Reset actions -->
+                                        <Border Height="1" Background="{DynamicResource CardBorder}" Margin="0,20,0,0"/>
+                                        <StackPanel Orientation="Horizontal" Margin="0,16,0,0">
+                                            <Button x:Name="btn_SaveMaintenanceWindow"
+                                                    Height="34" MinWidth="150" HorizontalAlignment="Left"
+                                                    Style="{StaticResource RoundedButton}">
+                                                <TextBlock FontSize="12">
+                                                    <Run Text="&#xE74E;" FontFamily="Segoe MDL2 Assets"/><Run Text="  Save Configuration"/>
+                                                </TextBlock>
+                                            </Button>
+                                            <Button x:Name="btn_ResetMaintenanceWindow"
+                                                    Height="34" MinWidth="110" HorizontalAlignment="Left" Margin="10,0,0,0"
+                                                    Style="{StaticResource SecondaryButton}">
+                                                <TextBlock FontSize="12">
+                                                    <Run Text="&#xE777;" FontFamily="Segoe MDL2 Assets"/><Run Text="  Reset"/>
+                                                </TextBlock>
+                                            </Button>
+                                        </StackPanel>
+
+                                        <!-- Validation message -->
+                                        <TextBlock x:Name="txt_MaintenanceWindowValidation" Text="" FontSize="11"
+                                                   Foreground="{DynamicResource StatusError}" Margin="0,10,0,0"
+                                                   TextWrapping="Wrap" Visibility="Collapsed"/>
+                                    </StackPanel>
+                                </Border>
+
+                            </StackPanel>
+                            </ScrollViewer>
+                        </Grid>
+
                         <!-- View: Common Settings -->
                         <Grid x:Name="view_CommonSettings" Visibility="Collapsed">
                             <Grid.RowDefinitions>
@@ -5774,7 +5962,7 @@
                                     <StackPanel>
                                         <TextBlock Text="Driver Automation Tool" FontSize="22" FontWeight="Bold"
                                                    Foreground="{DynamicResource AccentColor}" Margin="0,0,0,4"/>
-                                        <TextBlock x:Name="txt_AboutVersion" Text="Version 10.0.43" FontSize="14"
+                                        <TextBlock x:Name="txt_AboutVersion" Text="Version 10.1.0" FontSize="14"
                                                    Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,16"/>
 
                                         <TextBlock TextWrapping="Wrap" FontSize="13"

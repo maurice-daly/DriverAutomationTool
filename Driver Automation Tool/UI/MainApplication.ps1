@@ -72,6 +72,17 @@ public class ModelItem : INotifyPropertyChanged {
     public string BIOSVersion { get; set; }
     public bool   BIOSOnly   { get; set; }
     public string DownloadURL { get; set; }
+    private bool _isKnownModel;
+    public bool IsKnownModel {
+        get { return _isKnownModel; }
+        set {
+            if (_isKnownModel != value) {
+                _isKnownModel = value;
+                var h = PropertyChanged;
+                if (h != null) h(this, new PropertyChangedEventArgs("IsKnownModel"));
+            }
+        }
+    }
 }
 '@
     } catch {
@@ -206,6 +217,19 @@ function Set-DATApplicationTheme {
     $Window.Resources.MergedDictionaries.Add($newDict)
     $script:ThemeDictionary = $newDict
     $script:CurrentTheme = $ThemeName
+
+    # Re-resolve the status label's imperatively-set foreground for the new theme. The status
+    # text colour is set in code (frozen brushes) for warning/error/success states, so it does
+    # not auto-track DynamicResource on a theme switch. The semantic theme key is stashed on the
+    # control's Tag; recompute the brush from the new theme so the colour stays correct.
+    $statusLabel = $Window.FindName('txt_Status')
+    if ($null -ne $statusLabel -and -not [string]::IsNullOrEmpty([string]$statusLabel.Tag)) {
+        $statusClr = (Get-DATTheme -ThemeName $ThemeName)[[string]$statusLabel.Tag]
+        if (-not [string]::IsNullOrEmpty($statusClr)) {
+            $statusLabel.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+                [System.Windows.Media.ColorConverter]::ConvertFromString($statusClr))
+        }
+    }
 }
 
 # Load saved theme preference from registry (falls back to parameter default)
@@ -367,7 +391,7 @@ $btn_FeedbackDown.Add_Click({
 
     # Subtitle
     $subtitleText = [System.Windows.Controls.TextBlock]::new()
-    $subtitleText.Text = "Please tell us what we can improve:"
+    $subtitleText.Text = "Please tell us what we can improve (required):"
     $subtitleText.FontSize = 13
     $subtitleText.Foreground = [System.Windows.Media.SolidColorBrush]::new(
         [System.Windows.Media.ColorConverter]::ConvertFromString($theme['InputPlaceholder']))
@@ -417,6 +441,13 @@ $btn_FeedbackDown.Add_Click({
     $feedbackBox.Template = $roundedTextBoxTemplate
     $panel.Children.Add($feedbackBox) | Out-Null
     $feedbackState.TextBox = $feedbackBox
+
+    # Comment is mandatory -- revalidate submit state on every keystroke
+    $feedbackBox.Tag = $feedbackState
+    $feedbackBox.Add_TextChanged({
+        $state = $this.Tag
+        if ($null -ne $state.Validate) { & $state.Validate $state }
+    })
 
     # "Follow up with me" toggle row -- matches ToggleSwitch style
     $followUpCheck = [System.Windows.Controls.CheckBox]::new()
@@ -526,6 +557,20 @@ $btn_FeedbackDown.Add_Click({
 
     # Email format validator (RFC 5322 simplified)
     $emailRegex = '^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$'
+    $feedbackState.EmailRegex = $emailRegex
+
+    # Shared submit-state validator -- a non-empty comment is always required;
+    # a valid email is additionally required when "Follow up with me" is on.
+    $feedbackState.Validate = {
+        param($s)
+        $hasComment = -not [string]::IsNullOrWhiteSpace($s.TextBox.Text)
+        $emailOk = $true
+        if ([bool]$s.FollowUpCheck.IsChecked) {
+            $email = $s.EmailBox.Text.Trim()
+            $emailOk = (-not [string]::IsNullOrWhiteSpace($email)) -and ($email -match $s.EmailRegex)
+        }
+        $s.SubmitButton.IsEnabled = ($hasComment -and $emailOk)
+    }
 
     $followUpCheck.Tag = $feedbackState
     $followUpCheck.Add_Checked({
@@ -533,8 +578,7 @@ $btn_FeedbackDown.Add_Click({
         $state.EmailLabel.Visibility = 'Visible'
         $state.EmailBox.Visibility = 'Visible'
         $state.EmailBox.IsEnabled = $true
-        # Disable submit until a valid email is provided
-        $state.SubmitButton.IsEnabled = $false
+        & $state.Validate $state
         $state.EmailBox.Focus() | Out-Null
     })
     $followUpCheck.Add_Unchecked({
@@ -544,8 +588,7 @@ $btn_FeedbackDown.Add_Click({
         $state.EmailBox.Text = ''
         $state.EmailLabel.Visibility = 'Collapsed'
         $state.EmailHint.Visibility = 'Collapsed'
-        # Re-enable submit -- email no longer required
-        $state.SubmitButton.IsEnabled = $true
+        & $state.Validate $state
     })
 
     $emailBox.Tag = @{ State = $feedbackState; Regex = $emailRegex }
@@ -555,15 +598,13 @@ $btn_FeedbackDown.Add_Click({
         $text = $this.Text
         if ([string]::IsNullOrWhiteSpace($text)) {
             $state.EmailHint.Visibility = 'Collapsed'
-            $state.SubmitButton.IsEnabled = $false
         } elseif ($text -notmatch $ctx.Regex) {
             $state.EmailHint.Text = "Email address format validation issue."
             $state.EmailHint.Visibility = 'Visible'
-            $state.SubmitButton.IsEnabled = $false
         } else {
             $state.EmailHint.Visibility = 'Collapsed'
-            $state.SubmitButton.IsEnabled = $true
         }
+        & $state.Validate $state
     })
 
     # Button row
@@ -600,6 +641,8 @@ $btn_FeedbackDown.Add_Click({
     $btnSubmit.FontSize = 13
     $btnSubmit.FontWeight = [System.Windows.FontWeights]::SemiBold
     $btnSubmit.Content = "Submit Feedback"
+    $btnSubmit.IsEnabled = $false
+    $btnSubmit.ToolTip = "Please enter feedback details before submitting"
     [System.Windows.Controls.Grid]::SetColumn($btnSubmit, 0)
     $btnSubmit.Tag = $feedbackState
     $feedbackState.SubmitButton = $btnSubmit
@@ -608,6 +651,12 @@ $btn_FeedbackDown.Add_Click({
         $comment = $state.TextBox.Text
         $followUp = [bool]$state.FollowUpCheck.IsChecked
         $email = if ($followUp) { $state.EmailBox.Text.Trim() } else { '' }
+
+        # Comment details are mandatory for negative feedback
+        if ([string]::IsNullOrWhiteSpace($comment)) {
+            $state.TextBox.Focus() | Out-Null
+            return
+        }
 
         if ($followUp) {
             $emailRegex = '^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$'
@@ -1109,6 +1158,167 @@ function Show-DATInfoDialog {
     $border.Child = $panel
     $dlg.Content = $border
     $dlg.ShowDialog() | Out-Null
+}
+
+function Show-DATInputDialog {
+    <#
+    .SYNOPSIS
+        Shows a themed modal dialog with a single text input and OK/Cancel buttons.
+        Returns the entered string, or $null if cancelled or left empty.
+    #>
+    param (
+        [string]$Title = "Enter Value",
+        [string]$Message = "",
+        [string]$DefaultValue = "",
+        [string]$OkLabel = "OK"
+    )
+
+    $theme = Get-DATTheme -ThemeName $script:CurrentTheme
+    $bgColor = [System.Windows.Media.ColorConverter]::ConvertFromString($theme['CardBackground'])
+
+    $dlg = [System.Windows.Window]::new()
+    $dlg.WindowStyle = 'None'
+    $dlg.AllowsTransparency = $true
+    $dlg.Background = [System.Windows.Media.Brushes]::Transparent
+    if ($Window -and $Window.IsVisible) {
+        $dlg.WindowStartupLocation = 'CenterOwner'
+        $dlg.Owner = $Window
+    } else {
+        $dlg.WindowStartupLocation = 'CenterScreen'
+    }
+    $dlg.Width = 440
+    $dlg.SizeToContent = 'Height'
+    $dlg.Topmost = $true
+    $dlg.ResizeMode = 'NoResize'
+    $dlg.ShowInTaskbar = $false
+
+    $border = [System.Windows.Controls.Border]::new()
+    $border.Background = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.Color]::FromArgb(245, $bgColor.R, $bgColor.G, $bgColor.B))
+    $border.CornerRadius = [System.Windows.CornerRadius]::new(16)
+    $border.Padding = [System.Windows.Thickness]::new(28, 24, 28, 24)
+    $border.BorderBrush = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.ColorConverter]::ConvertFromString($theme['CardBorder']))
+    $border.BorderThickness = [System.Windows.Thickness]::new(1)
+    $shadow = [System.Windows.Media.Effects.DropShadowEffect]::new()
+    $shadow.BlurRadius = 30; $shadow.ShadowDepth = 0; $shadow.Opacity = 0.5
+    $shadow.Color = [System.Windows.Media.Colors]::Black
+    $border.Effect = $shadow
+
+    $panel = [System.Windows.Controls.StackPanel]::new()
+
+    # Title
+    $titleText = [System.Windows.Controls.TextBlock]::new()
+    $titleText.Text = $Title
+    $titleText.FontSize = 16
+    $titleText.FontWeight = [System.Windows.FontWeights]::Bold
+    $titleText.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.ColorConverter]::ConvertFromString($theme['WindowForeground']))
+    $titleText.Margin = [System.Windows.Thickness]::new(0, 0, 0, 8)
+    $panel.Children.Add($titleText) | Out-Null
+
+    # Message (optional)
+    if (-not [string]::IsNullOrEmpty($Message)) {
+        $msgText = [System.Windows.Controls.TextBlock]::new()
+        $msgText.Text = $Message
+        $msgText.FontSize = 13
+        $msgText.TextWrapping = [System.Windows.TextWrapping]::Wrap
+        $msgText.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+            [System.Windows.Media.ColorConverter]::ConvertFromString($theme['InputPlaceholder']))
+        $msgText.Margin = [System.Windows.Thickness]::new(0, 0, 0, 12)
+        $panel.Children.Add($msgText) | Out-Null
+    }
+
+    # Text input
+    $inputBox = [System.Windows.Controls.TextBox]::new()
+    $inputBox.Text = $DefaultValue
+    $inputBox.FontSize = 13
+    $inputBox.Height = 34
+    $inputBox.VerticalContentAlignment = 'Center'
+    $inputBox.Padding = [System.Windows.Thickness]::new(10, 0, 10, 0)
+    $inputBox.Background = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.ColorConverter]::ConvertFromString($theme['InputBackground']))
+    $inputBox.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.ColorConverter]::ConvertFromString($theme['InputForeground']))
+    $inputBox.BorderBrush = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.ColorConverter]::ConvertFromString($theme['InputBorder']))
+    $inputBox.BorderThickness = [System.Windows.Thickness]::new(1)
+    $inputBox.Margin = [System.Windows.Thickness]::new(0, 0, 0, 20)
+    $panel.Children.Add($inputBox) | Out-Null
+
+    $script:DATInputResult = $null
+
+    # Button row
+    $btnRow = [System.Windows.Controls.StackPanel]::new()
+    $btnRow.Orientation = 'Horizontal'
+    $btnRow.HorizontalAlignment = 'Right'
+
+    $btnCancel = [System.Windows.Controls.Button]::new()
+    $btnCancel.Height = 36
+    $btnCancel.MinWidth = 90
+    $btnCancel.Cursor = [System.Windows.Input.Cursors]::Hand
+    $btnCancel.Margin = [System.Windows.Thickness]::new(0, 0, 10, 0)
+    $cancelTemplate = [System.Windows.Markup.XamlReader]::Parse(@"
+<ControlTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" TargetType="Button">
+    <Border x:Name="bd" Background="$($theme['InputBackground'])" BorderBrush="$($theme['CardBorder'])" BorderThickness="1" CornerRadius="8" Padding="16,8">
+        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+    </Border>
+    <ControlTemplate.Triggers>
+        <Trigger Property="IsMouseOver" Value="True">
+            <Setter TargetName="bd" Property="BorderBrush" Value="$($theme['AccentColor'])"/>
+        </Trigger>
+    </ControlTemplate.Triggers>
+</ControlTemplate>
+"@)
+    $btnCancel.Template = $cancelTemplate
+    $btnCancel.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.ColorConverter]::ConvertFromString($theme['WindowForeground']))
+    $btnCancel.FontSize = 13
+    $btnCancel.Content = 'Cancel'
+    $btnCancel.Add_Click({ $script:DATInputResult = $null; $dlg.Close() })
+    $btnRow.Children.Add($btnCancel) | Out-Null
+
+    $btnOk = [System.Windows.Controls.Button]::new()
+    $btnOk.Height = 36
+    $btnOk.MinWidth = 90
+    $btnOk.Cursor = [System.Windows.Input.Cursors]::Hand
+    $okTemplate = [System.Windows.Markup.XamlReader]::Parse(@"
+<ControlTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" TargetType="Button">
+    <Border x:Name="bd" Background="$($theme['ButtonPrimary'])" CornerRadius="8" Padding="16,8">
+        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+    </Border>
+    <ControlTemplate.Triggers>
+        <Trigger Property="IsMouseOver" Value="True">
+            <Setter TargetName="bd" Property="Background" Value="$($theme['ButtonPrimaryHover'])"/>
+        </Trigger>
+    </ControlTemplate.Triggers>
+</ControlTemplate>
+"@)
+    $btnOk.Template = $okTemplate
+    $btnOk.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.ColorConverter]::ConvertFromString($theme['ButtonPrimaryForeground']))
+    $btnOk.FontSize = 13
+    $btnOk.FontWeight = [System.Windows.FontWeights]::SemiBold
+    $btnOk.Content = $OkLabel
+    $btnOk.Add_Click({ $script:DATInputResult = $inputBox.Text; $dlg.Close() })
+    $btnRow.Children.Add($btnOk) | Out-Null
+
+    $panel.Children.Add($btnRow) | Out-Null
+
+    # Enter confirms, Esc cancels
+    $inputBox.Add_KeyDown({
+        param($eventSender, $e)
+        if ($e.Key -eq [System.Windows.Input.Key]::Enter) { $script:DATInputResult = $inputBox.Text; $dlg.Close() }
+        elseif ($e.Key -eq [System.Windows.Input.Key]::Escape) { $script:DATInputResult = $null; $dlg.Close() }
+    })
+
+    $border.Child = $panel
+    $dlg.Content = $border
+    $dlg.Add_Loaded({ $inputBox.Focus(); $inputBox.SelectAll() })
+    $dlg.ShowDialog() | Out-Null
+
+    if ([string]::IsNullOrWhiteSpace($script:DATInputResult)) { return $null }
+    return $script:DATInputResult.Trim()
 }
 
 function Show-DATProgressDialog {
@@ -5398,7 +5608,7 @@ function Close-DATBuildProgressModal {
 
 #region Navigation
 
-$allViews = @('view_ModelSelection', 'view_Packages', 'view_ConfigMgr', 'view_Distribution', 'view_IntuneSettings', 'view_IntuneOptions', 'view_ToastNotifications', 'view_IntunePackageMgmt', 'view_BIOSSecurity', 'view_CommonSettings', 'view_CustomDriverPack', 'view_Log', 'view_ModernMgmt', 'view_About')
+$allViews = @('view_ModelSelection', 'view_Packages', 'view_ConfigMgr', 'view_Distribution', 'view_IntuneSettings', 'view_IntuneOptions', 'view_ToastNotifications', 'view_IntunePackageMgmt', 'view_BIOSSecurity', 'view_MaintenanceWindow', 'view_CommonSettings', 'view_CustomDriverPack', 'view_Log', 'view_ModernMgmt', 'view_About')
 $navMap = @{
     'nav_ModelSelection'       = 'view_ModelSelection'
     'nav_Packages'             = 'view_Packages'
@@ -5411,6 +5621,7 @@ $navMap = @{
     'nav_ToastNotifications'   = 'view_ToastNotifications'
     'nav_IntunePackageMgmt'    = 'view_IntunePackageMgmt'
     'nav_BIOSSecurity'         = 'view_BIOSSecurity'
+    'nav_MaintenanceWindow'    = 'view_MaintenanceWindow'
     'nav_CommonSettings'       = 'view_CommonSettings'
     'nav_CustomDriverPack'     = 'view_CustomDriverPack'
     'nav_Log'                  = 'view_Log'
@@ -5419,7 +5630,7 @@ $navMap = @{
 }
 
 $allNavButtons = @('nav_ModelSelection', 'nav_ConfigMgr', 'nav_IntuneSettings', 'nav_CommonSettings', 'nav_CustomDriverPack', 'nav_Log', 'nav_ModernMgmt', 'nav_About')
-$subNavButtons = @('nav_Packages', 'nav_Distribution', 'nav_ConfigMgrEnvironment', 'nav_IntuneAuth', 'nav_IntuneOptions', 'nav_ToastNotifications', 'nav_IntunePackageMgmt', 'nav_BIOSSecurity')
+$subNavButtons = @('nav_Packages', 'nav_Distribution', 'nav_ConfigMgrEnvironment', 'nav_IntuneAuth', 'nav_IntuneOptions', 'nav_ToastNotifications', 'nav_IntunePackageMgmt', 'nav_BIOSSecurity', 'nav_MaintenanceWindow')
 $configMgrSubPanel = $Window.FindName('panel_ConfigMgrSub')
 $intuneSubPanel = $Window.FindName('panel_IntuneSub')
 
@@ -5485,7 +5696,7 @@ function Set-DATActiveView {
 
     # Keep Intune parent highlighted when a sub-item is active
     $intuneBtn = $Window.FindName('nav_IntuneSettings')
-    if ($NavButtonName -in @('nav_IntuneAuth', 'nav_IntuneOptions', 'nav_ToastNotifications', 'nav_IntunePackageMgmt', 'nav_BIOSSecurity') -or $NavButtonName -eq 'nav_IntuneSettings') {
+    if ($NavButtonName -in @('nav_IntuneAuth', 'nav_IntuneOptions', 'nav_ToastNotifications', 'nav_IntunePackageMgmt', 'nav_BIOSSecurity', 'nav_MaintenanceWindow') -or $NavButtonName -eq 'nav_IntuneSettings') {
         $intuneBtn.Style = $activeStyle
     }
 }
@@ -5976,6 +6187,7 @@ $ctx_ForcePackageUpdate.Add_Click({
     $txt_Status.Foreground = [System.Windows.Media.SolidColorBrush]::new(
         [System.Windows.Media.ColorConverter]::ConvertFromString(
             (Get-DATTheme -ThemeName $script:CurrentTheme)['StatusWarning']))
+    $txt_Status.Tag = 'StatusWarning'
     Update-DATBuildButtonState
 })
 
@@ -6480,6 +6692,12 @@ $btn_RefreshModels.Add_Click({
                         }
                         [xml]$HPModelXML = Get-Content -Path $HPXMLPath -Raw
                         $HPPacks = $HPModelXML.NewDataSet.HPClientDriverPackCatalog.ProductOSDriverPackList.ProductOSDriverPack
+                        # ProductOSDriverPack nodes carry no Version -- the driver pack version lives
+                        # in the separate <SoftPaqList> section keyed by SoftPaqId. Build a lookup map.
+                        $hpVersionMap = @{}
+                        foreach ($sp in $HPModelXML.NewDataSet.HPClientDriverPackCatalog.SoftPaqList.SoftPaq) {
+                            if ($sp.Id) { $hpVersionMap[$sp.Id] = $sp.Version }
+                        }
                         $totalPacks = @($HPPacks).Count
                         foreach ($SingleOS in $OSList) {
                             $WindowsBuild = $($SingleOS).Split(" ")[2]
@@ -6494,10 +6712,11 @@ $btn_RefreshModels.Add_Click({
                             Write-Log "HP: Found $count matching driver packs for $SingleOS." -Level Success
                             foreach ($Model in $HPMatches) {
                                 $modelName = ($Model.SystemName -replace '^HP\s+', '').Trim()
-                                # HP catalog provides a real DriverPack version (e.g. "7.00 A 1").
+                                # HP catalog provides a real DriverPack version (e.g. "7.00 A 1")
+                                # via the SoftPaqList section, looked up by the pack's SoftPaqId.
                                 # SCCM DriverPack mode shows it; SoftPaq mode uses a date stamp
                                 # (its definitive version is computed from the SoftPaq fingerprint).
-                                $hpDriverPackVersion = if (-not [string]::IsNullOrEmpty($Model.Version)) { $Model.Version } else { '' }
+                                $hpDriverPackVersion = if ($Model.SoftPaqId -and $hpVersionMap.ContainsKey($Model.SoftPaqId)) { $hpVersionMap[$Model.SoftPaqId] } else { '' }
                                 $hpDisplayVersion = if ($HPDriverPackSource -eq 'DriverPack' -and -not [string]::IsNullOrEmpty($hpDriverPackVersion)) {
                                     $hpDriverPackVersion
                                 } else {
@@ -7114,6 +7333,7 @@ $btn_RefreshModels.Add_Click({
                         $txt_Status.Foreground = [System.Windows.Media.SolidColorBrush]::new(
                             [System.Windows.Media.ColorConverter]::ConvertFromString(
                                 (Get-DATTheme -ThemeName $script:CurrentTheme)['WindowForeground']))
+                        $txt_Status.Tag = 'WindowForeground'
                         Write-DATActivityLog "Populated grid with $($script:ModelData.Count) models." -Level Success
 
                         # Log a per-OEM summary (counts only -- individual models go to the log file)
@@ -7402,7 +7622,7 @@ function Save-DATModelSelections {
     $jsonPath = Join-Path $settingsDir 'SelectedModels.json'
 
     $selections = @($script:ModelData | Where-Object { $_.Selected } | ForEach-Object {
-        @{ OEM = $_.OEM; Model = $_.Model; Baseboards = $_.Baseboards }
+        @{ OEM = $_.OEM; Model = $_.Model; Baseboards = $_.Baseboards; OS = $_.OS; Build = $_.Build }
     })
     $json = if ($selections.Count -eq 0) { '[]' } else { $selections | ConvertTo-Json -Depth 2 -Compress }
     Set-Content -Path $jsonPath -Value $json -Encoding UTF8 -Force
@@ -7422,44 +7642,66 @@ function Restore-DATModelSelections {
         $saved = Get-Content -Path $jsonPath -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
         if (-not $saved -or $saved.Count -eq 0) { return }
 
-        # Build a HashSet for fast OEM|Model lookup
-        $savedSet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+        # Build lookup sets. New-format entries include OS + Build so a model selected for a
+        # specific Windows build (e.g. HP "Windows 11 25H2") only re-selects that build row
+        # rather than every available build for the model. Legacy entries (no Build) fall back
+        # to OEM|Model matching for backward compatibility. (#785)
+        $savedExactSet  = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)  # OEM|Model|OS|Build
+        $savedLegacySet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)  # OEM|Model
+        $savedBoardsByKey = @{}   # build-aware key: "OEM|OS|Build"; legacy key: "OEM"
         foreach ($entry in $saved) {
-            [void]$savedSet.Add("$($entry.OEM)|$($entry.Model)")
-        }
-
-        # Build per-OEM baseboard lookup: OEM -> set of individual baseboard values
-        $savedBoardsByOEM = @{}
-        foreach ($entry in $saved) {
-            if ([string]::IsNullOrEmpty($entry.Baseboards)) { continue }
-            $oem = $entry.OEM
-            if (-not $savedBoardsByOEM.ContainsKey($oem)) {
-                $savedBoardsByOEM[$oem] = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+            $hasBuild = -not [string]::IsNullOrEmpty($entry.Build)
+            if ($hasBuild) {
+                [void]$savedExactSet.Add("$($entry.OEM)|$($entry.Model)|$($entry.OS)|$($entry.Build)")
+                $bbKey = "$($entry.OEM)|$($entry.OS)|$($entry.Build)"
+            } else {
+                [void]$savedLegacySet.Add("$($entry.OEM)|$($entry.Model)")
+                $bbKey = $entry.OEM
             }
-            foreach ($bb in ($entry.Baseboards -split '[,;]+')) {
-                $bb = $bb.Trim()
-                if ($bb -ne '') { [void]$savedBoardsByOEM[$oem].Add($bb) }
+            if (-not [string]::IsNullOrEmpty($entry.Baseboards)) {
+                if (-not $savedBoardsByKey.ContainsKey($bbKey)) {
+                    $savedBoardsByKey[$bbKey] = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+                }
+                foreach ($bb in ($entry.Baseboards -split '[,;]+')) {
+                    $bb = $bb.Trim()
+                    if ($bb -ne '') { [void]$savedBoardsByKey[$bbKey].Add($bb) }
+                }
             }
         }
 
         $matchCount = 0
         foreach ($item in $script:ModelData) {
-            # Primary: exact OEM + Model match
-            if ($savedSet.Contains("$($item.OEM)|$($item.Model)")) {
+            # Primary (new format): exact OEM + Model + OS + Build match
+            if ($savedExactSet.Contains("$($item.OEM)|$($item.Model)|$($item.OS)|$($item.Build)")) {
                 $item.Selected = $true
                 $matchCount++
                 continue
             }
 
-            # Fallback: OEM matches and any baseboard value overlaps
-            if (-not [string]::IsNullOrEmpty($item.Baseboards) -and $savedBoardsByOEM.ContainsKey($item.OEM)) {
+            # Legacy format: OEM + Model match (re-selects all build rows for the model)
+            if ($savedLegacySet.Contains("$($item.OEM)|$($item.Model)")) {
+                $item.Selected = $true
+                $matchCount++
+                continue
+            }
+
+            # Fallback: baseboard overlap. Build-aware entries match only the same OS/Build;
+            # legacy entries match on OEM alone so selections survive model-name drift.
+            if (-not [string]::IsNullOrEmpty($item.Baseboards)) {
+                $bbKeys = @("$($item.OEM)|$($item.OS)|$($item.Build)", $item.OEM)
                 $itemBoards = $item.Baseboards -split '[,;]+' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' }
-                foreach ($bb in $itemBoards) {
-                    if ($savedBoardsByOEM[$item.OEM].Contains($bb)) {
-                        $item.Selected = $true
-                        $matchCount++
-                        break
+                $matched = $false
+                foreach ($bbKey in $bbKeys) {
+                    if (-not $savedBoardsByKey.ContainsKey($bbKey)) { continue }
+                    foreach ($bb in $itemBoards) {
+                        if ($savedBoardsByKey[$bbKey].Contains($bb)) {
+                            $item.Selected = $true
+                            $matchCount++
+                            $matched = $true
+                            break
+                        }
                     }
+                    if ($matched) { break }
                 }
             }
         }
@@ -7474,6 +7716,403 @@ function Restore-DATModelSelections {
 }
 
 #endregion Model Selection Logic
+
+#region Selection Profiles
+
+# Saved selection profiles let the user capture the OEM/OS/Architecture/Platform/PackageType
+# filters plus the selected models under a named profile, then reload them later.
+$script:SuppressProfileSelect = $false
+
+$cmb_Profiles      = $Window.FindName('cmb_Profiles')
+$btn_SaveProfile   = $Window.FindName('btn_SaveProfile')
+$btn_SaveAsProfile = $Window.FindName('btn_SaveAsProfile')
+$btn_RenameProfile = $Window.FindName('btn_RenameProfile')
+$btn_DeleteProfile = $Window.FindName('btn_DeleteProfile')
+
+function Get-DATProfilesPath {
+    # Resolve at call time -- $global:ScriptDirectory may not be set when this region loads.
+    return (Join-Path $global:ScriptDirectory 'Settings\Profiles.json')
+}
+
+function Get-DATProfiles {
+    # Returns a flat array of profile objects (empty array when none/invalid).
+    $profilesPath = Get-DATProfilesPath
+    if (-not (Test-Path $profilesPath)) { return @() }
+    try {
+        $raw = Get-Content -Path $profilesPath -Raw -ErrorAction Stop
+        if ([string]::IsNullOrWhiteSpace($raw)) { return @() }
+        # IMPORTANT: Windows PowerShell 5.1's ConvertFrom-Json returns a JSON array as a single
+        # non-enumerated object, so @(...) would wrap it into a nested 1-element array. The
+        # [object[]] cast flattens correctly in BOTH PS 5.1 and 7.
+        $parsed = [object[]]($raw | ConvertFrom-Json -ErrorAction Stop)
+        $flat = [System.Collections.Generic.List[object]]::new()
+        foreach ($p in $parsed) {
+            if ($null -eq $p) { continue }
+            # Recover the legacy { value:[...]; Count:N } corruption an earlier nesting bug
+            # could write: an entry with no Name but a 'value' payload wraps real profiles.
+            # NOTE: use $p.value / $p.Name directly -- the .PSObject.Properties['value'] indexer
+            # and $p.Count are unreliable on JSON objects under PS 5.1.
+            if ([string]::IsNullOrEmpty([string]$p.Name) -and $null -ne $p.value) {
+                foreach ($inner in @($p.value)) {
+                    if ($null -ne $inner -and -not [string]::IsNullOrEmpty([string]$inner.Name)) { $flat.Add($inner) }
+                }
+            } else {
+                $flat.Add($p)
+            }
+        }
+        return @($flat.ToArray())
+    } catch {
+        Write-DATActivityLog "Could not read profiles: $($_.Exception.Message)" -Level Warn
+        return @()
+    }
+}
+
+function Save-DATProfilesFile {
+    param ([Parameter(Mandatory)][AllowEmptyCollection()][array]$Profiles)
+    $settingsDir = Join-Path $global:ScriptDirectory 'Settings'
+    if (-not (Test-Path $settingsDir)) { New-Item -Path $settingsDir -ItemType Directory -Force | Out-Null }
+
+    # Flatten any nested/corrupted entries before serialising so ConvertTo-Json always sees a
+    # clean flat list of profile objects (avoids re-writing the {value:[...];Count:N} shape).
+    $flat = [System.Collections.Generic.List[object]]::new()
+    foreach ($p in $Profiles) {
+        if ($null -eq $p) { continue }
+        if ([string]::IsNullOrEmpty([string]$p.Name) -and $null -ne $p.value) {
+            foreach ($inner in @($p.value)) {
+                if ($null -ne $inner -and -not [string]::IsNullOrEmpty([string]$inner.Name)) { $flat.Add($inner) }
+            }
+        } elseif (($p -is [System.Collections.IEnumerable]) -and ($p -isnot [string])) {
+            foreach ($inner in $p) { if ($null -ne $inner) { $flat.Add($inner) } }
+        } else {
+            $flat.Add($p)
+        }
+    }
+
+    if ($flat.Count -eq 0) {
+        Set-Content -Path (Get-DATProfilesPath) -Value '[]' -Encoding UTF8 -Force
+        return
+    }
+
+    # -InputObject + explicit [object[]] forces a JSON array even for a single profile.
+    $json = ConvertTo-Json -InputObject ([object[]]$flat.ToArray()) -Depth 6
+    if ($json.TrimStart() -notmatch '^\[') { $json = "[`r`n$json`r`n]" }
+    Set-Content -Path (Get-DATProfilesPath) -Value $json -Encoding UTF8 -Force
+}
+
+function Update-DATProfileDropdown {
+    param ([string]$SelectName)
+    $script:SuppressProfileSelect = $true
+    try {
+        $cmb_Profiles.Items.Clear()
+        $placeholder = [System.Windows.Controls.ComboBoxItem]::new()
+        $placeholder.Content = 'Select a profile...'
+        $placeholder.Tag = '__placeholder__'
+        [void]$cmb_Profiles.Items.Add($placeholder)
+        foreach ($p in (Get-DATProfiles | Sort-Object Name)) {
+            $item = [System.Windows.Controls.ComboBoxItem]::new()
+            $item.Content = $p.Name
+            [void]$cmb_Profiles.Items.Add($item)
+        }
+        $selected = $false
+        if (-not [string]::IsNullOrEmpty($SelectName)) {
+            foreach ($item in $cmb_Profiles.Items) {
+                if ($item.Tag -ne '__placeholder__' -and $item.Content -eq $SelectName) {
+                    $cmb_Profiles.SelectedItem = $item; $selected = $true; break
+                }
+            }
+        }
+        if (-not $selected) { $cmb_Profiles.SelectedIndex = 0 }
+    } finally {
+        $script:SuppressProfileSelect = $false
+    }
+    $hasSelection = ($cmb_Profiles.SelectedItem -and $cmb_Profiles.SelectedItem.Tag -ne '__placeholder__')
+    $btn_DeleteProfile.IsEnabled = $hasSelection
+    $btn_RenameProfile.IsEnabled = $hasSelection
+    $btn_SaveProfile.IsEnabled = $hasSelection
+    Update-DATProfilePlaceholderText
+}
+
+function Update-DATProfilePlaceholderText {
+    # When a profile is active, the placeholder option lets the user return to a clean,
+    # unsaved state -- label it "Create new profile". Otherwise it prompts to pick one.
+    $hasSelection = ($cmb_Profiles.SelectedItem -and $cmb_Profiles.SelectedItem.Tag -ne '__placeholder__')
+    foreach ($item in $cmb_Profiles.Items) {
+        if ($item.Tag -eq '__placeholder__') {
+            $item.Content = if ($hasSelection) { 'Create new profile' } else { 'Select a profile...' }
+            break
+        }
+    }
+}
+
+function Get-DATCurrentSelectionProfile {
+    # Captures the current filter + model selection state for a profile.
+    $selectedModels = @($script:ModelData | Where-Object { $_.Selected } | ForEach-Object {
+        [ordered]@{ OEM = $_.OEM; Model = $_.Model; Baseboards = $_.Baseboards; OS = $_.OS; Build = $_.Build }
+    })
+    # Enumerate the OS backing store directly into a flat string array. Do NOT use
+    # @(Get-DATSelectedOSes) -- that helper returns the list via Write-Output -NoEnumerate
+    # (a single array object), so wrapping it in @() yields a JAGGED array (e.g.
+    # [["Windows 11 25H2"]]) which then breaks List[string].Add on load. (profiles)
+    $osValues = [string[]]@($script:SelectedOSValues)
+    [ordered]@{
+        OEMs         = @(Get-DATSelectedOEMs)
+        OS           = $osValues
+        Architecture = if ($cmb_Architecture.SelectedItem) { [string]$cmb_Architecture.SelectedItem.Content } else { 'x64' }
+        Platform     = if ($cmb_Platform.SelectedItem) { [string]$cmb_Platform.SelectedItem.Content } else { 'Download Only' }
+        PackageType  = if ($cmb_PackageType.SelectedItem) { [string]$cmb_PackageType.SelectedItem.Content } else { 'Drivers' }
+        Models       = $selectedModels
+    }
+}
+
+function Save-DATCurrentProfile {
+    # Save button: overwrite the currently-selected profile after a modal confirmation.
+    $sel = $cmb_Profiles.SelectedItem
+    if (-not $sel -or $sel.Tag -eq '__placeholder__') {
+        # Nothing selected to overwrite -- fall back to the Save As (prompt) flow.
+        Save-DATCurrentProfileAs
+        return
+    }
+    if ((Get-DATSelectedOEMs).Count -eq 0 -or (Get-DATSelectedOSes).Count -eq 0) {
+        Show-DATInfoDialog -Title 'Nothing to Save' -Type Warning `
+            -Message 'Select at least one OEM and operating system before saving a profile.'
+        return
+    }
+    $name = [string]$sel.Content
+    if (-not (Show-DATConfirmDialog -Title 'Overwrite Profile?' `
+            -Message "Overwrite the profile '$name' with the current selections?" -ConfirmLabel 'Overwrite')) {
+        return
+    }
+    $profiles = @(Get-DATProfiles | Where-Object { $_.Name -ne $name })
+    Write-DATProfileEntry -Name $name -Profiles $profiles
+}
+
+function Save-DATCurrentProfileAs {
+    # Save As button: prompt for a name and save a new (or overwriting) profile.
+    if ((Get-DATSelectedOEMs).Count -eq 0 -or (Get-DATSelectedOSes).Count -eq 0) {
+        Show-DATInfoDialog -Title 'Nothing to Save' -Type Warning `
+            -Message 'Select at least one OEM and operating system before saving a profile.'
+        return
+    }
+    $name = Show-DATInputDialog -Title 'Save Profile As' `
+        -Message 'Enter a name for this profile. Saving with an existing name overwrites it.' `
+        -OkLabel 'Save'
+    if ([string]::IsNullOrEmpty($name)) { return }
+
+    $profiles = @(Get-DATProfiles)
+    $existing = $profiles | Where-Object { $_.Name -eq $name }
+    if ($existing) {
+        if (-not (Show-DATConfirmDialog -Title 'Overwrite Profile?' `
+                -Message "A profile named '$name' already exists. Overwrite it?" -ConfirmLabel 'Overwrite')) {
+            return
+        }
+        $profiles = @($profiles | Where-Object { $_.Name -ne $name })
+    }
+    Write-DATProfileEntry -Name $name -Profiles $profiles
+}
+
+function Write-DATProfileEntry {
+    # Shared writer: capture current selections under $Name, append to $Profiles, persist
+    # and refresh the dropdown selecting the saved profile.
+    param (
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Name,
+        [Parameter(Mandatory)][AllowNull()]$Profiles
+    )
+    $profileList = @($Profiles)
+    $profile = Get-DATCurrentSelectionProfile
+    $profile['Name'] = $Name
+    $profileList += [PSCustomObject]$profile
+    Save-DATProfilesFile -Profiles $profileList
+    Update-DATProfileDropdown -SelectName $Name
+    Write-DATActivityLog "Saved profile '$Name' ($($profile.Models.Count) model(s))" -Level Success
+    $txt_Status.Text = "Profile '$Name' saved."
+}
+
+function Invoke-DATApplyProfile {
+    param ([Parameter(Mandatory)]$Profile)
+
+    Write-DATActivityLog "Loading profile '$($Profile.Name)'..." -Level Info
+    $script:SuppressModelRefresh = $true
+    try {
+        # OEMs -- capture the target set locally; the OEM change handler only sets a dirty
+        # flag (refresh is suppressed), so no mid-loop mutation concern here.
+        $targetOEMs = @($Profile.OEMs)
+        foreach ($entry in $script:OEMCheckboxes.GetEnumerator()) {
+            if ($entry.Value.IsEnabled) {
+                $entry.Value.IsChecked = ($targetOEMs -contains $entry.Key)
+            }
+        }
+        Update-DATOEMDisplayText
+        Update-DATOEMSelectionHighlight
+
+        # OS values -- suppress the checkbox change handler while we set states. Otherwise
+        # each IsChecked change rebuilds $script:SelectedOSValues from the live (still-stale)
+        # checkbox states, contaminating the loop condition and leaving previously-selected
+        # OS builds checked (e.g. reloading a 25H2 profile kept 24H2 selected).
+        # Flatten defensively: older profiles may have stored a jagged OS array
+        # (e.g. [["Windows 11 25H2"]]); recurse one level and coerce each entry to a string.
+        $targetOS = New-Object System.Collections.Generic.List[string]
+        foreach ($o in @($Profile.OS)) {
+            if ($null -ne $o -and $o -isnot [string] -and $o -is [System.Collections.IEnumerable]) {
+                foreach ($inner in $o) {
+                    $s = [string]$inner
+                    if (-not [string]::IsNullOrEmpty($s)) { $targetOS.Add($s) }
+                }
+            } else {
+                $s = [string]$o
+                if (-not [string]::IsNullOrEmpty($s)) { $targetOS.Add($s) }
+            }
+        }
+        $script:SuppressOSSync = $true
+        try {
+            foreach ($entry in $script:OSCheckboxes.GetEnumerator()) {
+                if ($null -ne $entry.Value) { $entry.Value.IsChecked = ($targetOS -contains $entry.Key) }
+            }
+        } finally {
+            $script:SuppressOSSync = $false
+        }
+        # Set the backing store explicitly from the profile (authoritative)
+        $script:SelectedOSValues.Clear()
+        foreach ($os in $targetOS) { $script:SelectedOSValues.Add($os) }
+        Update-DATOSDisplayText
+        Update-DATOSSelectionHighlight
+
+        # Architecture / Platform / Package Type -- coalesce nulls to safe defaults so a
+        # partially-populated profile never errors when written to the registry below.
+        $profArch     = if (-not [string]::IsNullOrEmpty($Profile.Architecture)) { [string]$Profile.Architecture } else { 'x64' }
+        $profPlatform = if (-not [string]::IsNullOrEmpty($Profile.Platform))     { [string]$Profile.Platform }     else { 'Download Only' }
+        $profPkgType  = if (-not [string]::IsNullOrEmpty($Profile.PackageType))  { [string]$Profile.PackageType }  else { 'Drivers' }
+        foreach ($pair in @(
+            @{ Combo = $cmb_Architecture; Value = $profArch },
+            @{ Combo = $cmb_Platform;     Value = $profPlatform },
+            @{ Combo = $cmb_PackageType;  Value = $profPkgType }
+        )) {
+            foreach ($item in $pair.Combo.Items) {
+                if ($item.Content -eq $pair.Value) { $pair.Combo.SelectedItem = $item; break }
+            }
+        }
+
+        # Persist filter selections to registry (mirrors the Refresh button). All values are
+        # guaranteed non-null here, so Set-DATRegistryValue's [String] param never rejects them.
+        Set-DATRegistryValue -Name 'SelectedOEMs' -Value ((Get-DATSelectedOEMs) -join ',') -Type String
+        Set-DATRegistryValue -Name 'OS' -Value ((Get-DATSelectedOSes) -join ';') -Type String
+        Set-DATRegistryValue -Name 'Architecture' -Value $profArch -Type String
+        Set-DATRegistryValue -Name 'Platform' -Value $profPlatform -Type String
+        Set-DATRegistryValue -Name 'PackageType' -Value $profPkgType -Type String
+
+        # Seed the profile's model list into SelectedModels.json so the post-refresh
+        # restore selects exactly these models once the grid repopulates.
+        $models = @($Profile.Models | ForEach-Object {
+            @{ OEM = $_.OEM; Model = $_.Model; Baseboards = $_.Baseboards; OS = $_.OS; Build = $_.Build }
+        })
+        $settingsDir = Join-Path $global:ScriptDirectory 'Settings'
+        if (-not (Test-Path $settingsDir)) { New-Item -Path $settingsDir -ItemType Directory -Force | Out-Null }
+        $modelsJson = if ($models.Count -eq 0) { '[]' } else { ConvertTo-Json @($models) -Depth 3 -Compress }
+        Set-Content -Path (Join-Path $settingsDir 'SelectedModels.json') -Value $modelsJson -Encoding UTF8 -Force
+    } finally {
+        $script:SuppressModelRefresh = $false
+    }
+
+    if ((Get-DATSelectedOEMs).Count -gt 0 -and (Get-DATSelectedOSes).Count -gt 0) {
+        # Refresh runs in the background; its completion handler restores the seeded selections.
+        Invoke-DATRefreshModelsClick
+    }
+}
+
+function Reset-DATSelectionsForNewProfile {
+    # Clears OEM/OS selections and the model grid so the user starts a fresh, unsaved profile.
+    # Architecture/Platform/Package Type are left as-is (sensible carry-over defaults).
+    $script:SuppressModelRefresh = $true
+    try {
+        foreach ($entry in $script:OEMCheckboxes.GetEnumerator()) {
+            if ($entry.Value.IsEnabled) { $entry.Value.IsChecked = $false }
+        }
+        Update-DATOEMDisplayText
+        Update-DATOEMSelectionHighlight
+
+        $script:SuppressOSSync = $true
+        try {
+            foreach ($entry in $script:OSCheckboxes.GetEnumerator()) {
+                if ($null -ne $entry.Value) { $entry.Value.IsChecked = $false }
+            }
+        } finally {
+            $script:SuppressOSSync = $false
+        }
+        $script:SelectedOSValues.Clear()
+        Update-DATOSDisplayText
+        Update-DATOSSelectionHighlight
+
+        Set-DATRegistryValue -Name 'SelectedOEMs' -Value '' -Type String
+        Set-DATRegistryValue -Name 'OS' -Value '' -Type String
+
+        if ($script:ModelData.Count -gt 0) { $script:ModelData.Clear() }
+        $txt_ModelCount.Text = '0 models'
+        $txt_Status.Text = 'Ready for a new profile -- select OEMs and an operating system.'
+    } finally {
+        $script:SuppressModelRefresh = $false
+    }
+    Update-DATBuildButtonState
+}
+
+if ($null -ne $cmb_Profiles) {
+    $cmb_Profiles.Add_SelectionChanged({
+        if ($script:SuppressProfileSelect) { return }
+        $sel = $cmb_Profiles.SelectedItem
+        $hasSelection = ($sel -and $sel.Tag -ne '__placeholder__')
+        $btn_DeleteProfile.IsEnabled = $hasSelection
+        $btn_RenameProfile.IsEnabled = $hasSelection
+        $btn_SaveProfile.IsEnabled = $hasSelection
+        # Relabel the placeholder with re-entrancy suppressed (mutating a ComboBoxItem's
+        # Content can otherwise re-raise SelectionChanged).
+        $script:SuppressProfileSelect = $true
+        try { Update-DATProfilePlaceholderText } finally { $script:SuppressProfileSelect = $false }
+        if (-not $hasSelection) {
+            # User chose "Create new profile" -- clear the active selection for a blank slate.
+            Reset-DATSelectionsForNewProfile
+            return
+        }
+        $profile = Get-DATProfiles | Where-Object { $_.Name -eq $sel.Content } | Select-Object -First 1
+        if ($profile) { Invoke-DATApplyProfile -Profile $profile }
+    })
+
+    $btn_SaveProfile.Add_Click({ Save-DATCurrentProfile })
+
+    $btn_SaveAsProfile.Add_Click({ Save-DATCurrentProfileAs })
+
+    $btn_RenameProfile.Add_Click({
+        $sel = $cmb_Profiles.SelectedItem
+        if (-not $sel -or $sel.Tag -eq '__placeholder__') { return }
+        $oldName = [string]$sel.Content
+        $newName = Show-DATInputDialog -Title 'Rename Profile' -Message "Enter a new name for '$oldName'." `
+            -DefaultValue $oldName -OkLabel 'Rename'
+        if ([string]::IsNullOrEmpty($newName) -or $newName -eq $oldName) { return }
+        $profiles = @(Get-DATProfiles)
+        if ($profiles | Where-Object { $_.Name -eq $newName }) {
+            Show-DATInfoDialog -Title 'Name In Use' -Type Warning -Message "A profile named '$newName' already exists."
+            return
+        }
+        foreach ($p in $profiles) { if ($p.Name -eq $oldName) { $p.Name = $newName } }
+        Save-DATProfilesFile -Profiles $profiles
+        Update-DATProfileDropdown -SelectName $newName
+        Write-DATActivityLog "Renamed profile '$oldName' to '$newName'" -Level Success
+    })
+
+    $btn_DeleteProfile.Add_Click({
+        $sel = $cmb_Profiles.SelectedItem
+        if (-not $sel -or $sel.Tag -eq '__placeholder__') { return }
+        $name = [string]$sel.Content
+        if (-not (Show-DATConfirmDialog -Title 'Delete Profile?' `
+                -Message "Delete the profile '$name'? This cannot be undone." -ConfirmLabel 'Delete')) {
+            return
+        }
+        $profiles = @(Get-DATProfiles | Where-Object { $_.Name -ne $name })
+        Save-DATProfilesFile -Profiles $profiles
+        Update-DATProfileDropdown
+        Write-DATActivityLog "Deleted profile '$name'" -Level Success
+        $txt_Status.Text = "Profile '$name' deleted."
+    })
+}
+
+#endregion Selection Profiles
 
 #region Build Process
 
@@ -7701,6 +8340,7 @@ $btn_Build.Add_Click({
     $txt_Status.Foreground = [System.Windows.Media.SolidColorBrush]::new(
         [System.Windows.Media.ColorConverter]::ConvertFromString(
             (Get-DATTheme -ThemeName $script:CurrentTheme)['WindowForeground']))
+    $txt_Status.Tag = 'WindowForeground'
     Write-DATActivityLog "Starting build for $($global:SelectedModelCount) models" -Level Info
 
     # Track elapsed time and show running status
@@ -7742,7 +8382,7 @@ $btn_Build.Add_Click({
     $script:BuildPS = [powershell]::Create()
     $script:BuildPS.Runspace = $script:BuildRunspace
     [void]$script:BuildPS.AddScript({
-        param($ModulePath, $ScriptDir, $RegPath, $RunningMode, $SelectedModels, $StoragePath, $PackagePath, $IntuneToken, $IntuneRefreshTok, $IntuneAuthClientIdParam, $IntuneTokenExpSec, $DisableToast, $DisableRestart, $SiteServer, $SiteCode, $PackageType, $DPGroups, $DPs, $DistPriority, $EnableBDR, $DebugBuildPath, $CustomBrandingPath, $HPPasswordBinPath, $ToastTimeoutAction, $MaxDeferrals, $BIOSRestartDelayMinutes, $TeamsWebhookUrl, $TeamsNotificationsEnabled, $CustomToastTextsJson, $ConsoleFolderID)
+        param($ModulePath, $ScriptDir, $RegPath, $RunningMode, $SelectedModels, $StoragePath, $PackagePath, $IntuneToken, $IntuneRefreshTok, $IntuneAuthClientIdParam, $IntuneTokenExpSec, $DisableToast, $DisableRestart, $SiteServer, $SiteCode, $PackageType, $DPGroups, $DPs, $DistPriority, $EnableBDR, $DebugBuildPath, $CustomBrandingPath, $HPPasswordBinPath, $ToastTimeoutAction, $MaxDeferrals, $BIOSRestartDelayMinutes, $TeamsWebhookUrl, $TeamsNotificationsEnabled, $CustomToastTextsJson, $ConsoleFolderID, $MaintenanceWindowsJson)
         try {
         Import-Module $ModulePath -Force
         $procParams = @{
@@ -7766,6 +8406,7 @@ $btn_Build.Add_Click({
         if (-not [string]::IsNullOrEmpty($CustomBrandingPath)) { $procParams['CustomBrandingPath'] = $CustomBrandingPath }
         if (-not [string]::IsNullOrEmpty($HPPasswordBinPath)) { $procParams['HPPasswordBinPath'] = $HPPasswordBinPath }
         if (-not [string]::IsNullOrEmpty($CustomToastTextsJson)) { $procParams['CustomToastTextsJson'] = $CustomToastTextsJson }
+        if (-not [string]::IsNullOrEmpty($MaintenanceWindowsJson)) { $procParams['MaintenanceWindowsJson'] = $MaintenanceWindowsJson }
         if (-not [string]::IsNullOrEmpty($SiteServer)) { $procParams['SiteServer'] = $SiteServer }
         if (-not [string]::IsNullOrEmpty($SiteCode)) { $procParams['SiteCode'] = $SiteCode }
         if (-not [string]::IsNullOrEmpty($PackageType)) { $procParams['PackageType'] = $PackageType }
@@ -7810,6 +8451,7 @@ $btn_Build.Add_Click({
             $txt_Status.Foreground = [System.Windows.Media.SolidColorBrush]::new(
                 [System.Windows.Media.ColorConverter]::ConvertFromString(
                     (Get-DATTheme -ThemeName $script:CurrentTheme)['StatusWarning']))
+            $txt_Status.Tag = 'StatusWarning'
             $btn_Build.IsEnabled = $true
             $btn_Abort.IsEnabled = $false
             $progress_Job.Visibility = 'Collapsed'
@@ -7906,6 +8548,17 @@ $btn_Build.Add_Click({
         if ($null -ne $folderIdVal) { $cmConsoleFolderID = [int]$folderIdVal }
     }
     [void]$script:BuildPS.AddArgument($cmConsoleFolderID)
+
+    # Maintenance window schedule (Intune only) -- pass the stored JSON when the feature is enabled
+    $maintenanceWindowsJson = $null
+    if ($selectedPlatform -eq 'Intune') {
+        $mwEnabledVal = (Get-ItemProperty -Path $global:RegPath -Name 'MaintenanceWindowEnabled' -ErrorAction SilentlyContinue).MaintenanceWindowEnabled
+        if ($mwEnabledVal -eq 1) {
+            $mwJsonReg = (Get-ItemProperty -Path $global:RegPath -Name 'MaintenanceWindows' -ErrorAction SilentlyContinue).MaintenanceWindows
+            if (-not [string]::IsNullOrWhiteSpace($mwJsonReg)) { $maintenanceWindowsJson = $mwJsonReg }
+        }
+    }
+    [void]$script:BuildPS.AddArgument($maintenanceWindowsJson)
 
     $script:BuildAsyncResult = $script:BuildPS.BeginInvoke()
 
@@ -8131,6 +8784,7 @@ $btn_Build.Add_Click({
                 $txt_BuildStatusText.Foreground = [System.Windows.Media.Brushes]::Black
                 $txt_Status.Foreground = [System.Windows.Media.SolidColorBrush]::new(
                     [System.Windows.Media.ColorConverter]::ConvertFromString($theme['StatusWarning']))
+                $txt_Status.Tag = 'StatusWarning'
             } elseif ($hadErrors) {
                 $pill_BuildStatus.Background = [System.Windows.Media.SolidColorBrush]::new(
                     [System.Windows.Media.ColorConverter]::ConvertFromString(
@@ -8142,6 +8796,7 @@ $btn_Build.Add_Click({
                 $txt_Status.Foreground = [System.Windows.Media.SolidColorBrush]::new(
                     [System.Windows.Media.ColorConverter]::ConvertFromString(
                         (Get-DATTheme -ThemeName $script:CurrentTheme)['StatusError']))
+                $txt_Status.Tag = 'StatusError'
             } else {
                 $pill_BuildStatus.Background = [System.Windows.Media.SolidColorBrush]::new(
                     [System.Windows.Media.ColorConverter]::ConvertFromString(
@@ -8153,6 +8808,7 @@ $btn_Build.Add_Click({
                 $txt_Status.Foreground = [System.Windows.Media.SolidColorBrush]::new(
                     [System.Windows.Media.ColorConverter]::ConvertFromString(
                         (Get-DATTheme -ThemeName $script:CurrentTheme)['StatusSuccess']))
+                $txt_Status.Tag = 'StatusSuccess'
             }
 
             $panel_BuildProgress.Visibility = 'Collapsed'
@@ -8895,6 +9551,7 @@ function Update-DATConfigMgrKnownModelSelection {
             if (Test-DATKnownDeviceMatch -GridMake $gridMake -GridModel $gridModel -GridBaseboards $item.Baseboards `
                     -DeviceMake $device.Make -DeviceModel $device.Model -DeviceBaseboard $device.Baseboard) {
                 $item.Selected = $true
+                $item.IsKnownModel = $true
                 $matchCount++
                 break
             }
@@ -9279,6 +9936,7 @@ function Update-DATKnownModelSelection {
             if (Test-DATKnownDeviceMatch -GridMake $gridMake -GridModel $gridModel -GridBaseboards $item.Baseboards `
                     -DeviceMake $device.Make -DeviceModel $device.Model -DeviceBaseboard $device.Baseboard) {
                 [void]$matchedDeviceKeys.Add("$($device.Make)|$($device.Model)")
+                $item.IsKnownModel = $true
                 if (-not $itemMatched) {
                     $item.Selected = $true
                     $matchCount++
@@ -12301,6 +12959,11 @@ $btn_ScheduleSave.Add_Click({
         AppSecret = if ($schedPlatform -eq 'Intune') { $schedSecret } else { '' }
     }
 
+    # Maintenance window settings (Intune only) -- read from the live UI state
+    $schedMWEnabled = ($schedPlatform -eq 'Intune') -and ($chk_MaintenanceWindowEnabled.IsChecked -eq $true)
+    $schedMWMode = if ($cmb_MaintenanceWindowMode.SelectedItem) { [string]$cmb_MaintenanceWindowMode.SelectedItem.Content } else { 'Daily' }
+    $schedMWindows = if ($schedMWEnabled) { @(Get-DATMaintenanceWindowSchedule) } else { @() }
+
     try {
         Export-DATBuildConfig -ConfigPath $configPath -Platform $schedPlatform -OS $schedOS -Architecture $schedArch `
             -PackageType $schedPkgType -Models @($schedModels) -TempPath $schedTempPath -PackagePath $schedPkgPath `
@@ -12308,7 +12971,8 @@ $btn_ScheduleSave.Add_Click({
             -ToastTimeoutAction $schedTimeoutAction -MaxDeferrals $schedMaxDeferrals `
             -BIOSRestartDelayMinutes $schedBIOSRestartDelay `
             -TeamsWebhookUrl $schedTeamsUrl -TeamsNotificationsEnabled $schedTeamsEnabled -ConfigMgr $schedCM `
-            -Intune $schedIntune
+            -Intune $schedIntune `
+            -MaintenanceWindowEnabled $schedMWEnabled -MaintenanceWindowMode $schedMWMode -MaintenanceWindows $schedMWindows
     } catch {
         Show-DATInfoDialog -Title 'Schedule Error' `
             -Message "Failed to export build config:`n`n$($_.Exception.Message)" `
@@ -18419,6 +19083,450 @@ $btn_ClearHPPasswordBin.Add_Click({
 
 #endregion BIOS Security
 
+#region Maintenance Window
+
+# Holds the dynamic window row controls so save/validate can enumerate them.
+# Each entry: @{ Row = <Grid>; DayCombo = <ComboBox>; StartBox = <TextBox>; EndBox = <TextBox> }
+$script:MaintenanceWindowRows = [System.Collections.Generic.List[object]]::new()
+$script:MaintenanceWindowRestoring = $false
+
+$chk_MaintenanceWindowEnabled  = $Window.FindName('chk_MaintenanceWindowEnabled')
+$txt_MaintenanceWindowState    = $Window.FindName('txt_MaintenanceWindowState')
+$panel_MaintenanceWindowConfig = $Window.FindName('panel_MaintenanceWindowConfig')
+$cmb_MaintenanceWindowMode     = $Window.FindName('cmb_MaintenanceWindowMode')
+$txt_MaintenanceWindowModeHint = $Window.FindName('txt_MaintenanceWindowModeHint')
+$col_MWDayHeader               = $Window.FindName('col_MWDayHeader')
+$hdr_MWDay                     = $Window.FindName('hdr_MWDay')
+$panel_MWWindowList            = $Window.FindName('panel_MWWindowList')
+$txt_MWEmptyState              = $Window.FindName('txt_MWEmptyState')
+$btn_AddMaintenanceWindow      = $Window.FindName('btn_AddMaintenanceWindow')
+$btn_SaveMaintenanceWindow     = $Window.FindName('btn_SaveMaintenanceWindow')
+$btn_ResetMaintenanceWindow    = $Window.FindName('btn_ResetMaintenanceWindow')
+$txt_MaintenanceWindowValidation = $Window.FindName('txt_MaintenanceWindowValidation')
+
+$script:MaintenanceWindowDayNames = @('Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday')
+
+function Test-DATMaintenanceTime {
+    # Returns $true for a valid 24-hour HH:mm string (00:00 - 23:59)
+    param ([string]$Value)
+    return ($Value -match '^([01]\d|2[0-3]):[0-5]\d$')
+}
+
+function Format-DATMaintenanceTime {
+    # Auto-formats time entry: if the user types 4 digits with no colon (e.g. "0430"),
+    # insert a colon to produce "04:30". Also pads a bare 3-digit entry (e.g. "430" -> "04:30").
+    # Returns the original value unchanged when it doesn't match the digits-only shape.
+    param ([string]$Value)
+    if ([string]::IsNullOrWhiteSpace($Value)) { return $Value }
+    $trimmed = $Value.Trim()
+    if ($trimmed -match '^\d{4}$') {
+        return $trimmed.Substring(0, 2) + ':' + $trimmed.Substring(2, 2)
+    }
+    if ($trimmed -match '^\d{3}$') {
+        return '0' + $trimmed.Substring(0, 1) + ':' + $trimmed.Substring(1, 2)
+    }
+    return $trimmed
+}
+
+function Format-DATMaintenanceTimeLive {
+    # Live time mask applied as the user types. Keeps only digits (max 4) and inserts a
+    # colon after the second digit, so "1" -> "1", "12" -> "12", "123" -> "12:3",
+    # "1234" -> "12:34". Returns the masked string for assignment back to the TextBox.
+    param ([string]$Value)
+    if ([string]::IsNullOrEmpty($Value)) { return '' }
+    $digits = (($Value -replace '[^\d]', ''))
+    if ($digits.Length -gt 4) { $digits = $digits.Substring(0, 4) }
+    if ($digits.Length -le 2) { return $digits }
+    return $digits.Substring(0, 2) + ':' + $digits.Substring(2)
+}
+
+$script:MWSuppressTimeFormat = $false
+
+function Invoke-DATMaintenanceTimeLiveFormat {
+    # TextChanged handler body: rewrites the box to the masked value and keeps the caret
+    # at the end. Guarded against the re-entrant TextChanged its own assignment raises.
+    param ([System.Windows.Controls.TextBox]$Box)
+    if ($script:MWSuppressTimeFormat) { return }
+    $formatted = Format-DATMaintenanceTimeLive $Box.Text
+    if ($formatted -ne $Box.Text) {
+        $script:MWSuppressTimeFormat = $true
+        try {
+            $Box.Text = $formatted
+            $Box.CaretIndex = $formatted.Length
+        } finally {
+            $script:MWSuppressTimeFormat = $false
+        }
+    }
+}
+
+function Update-DATMaintenanceWindowMode {
+    # Show/hide the per-row Day column depending on Daily vs Weekly mode
+    $isWeekly = ($cmb_MaintenanceWindowMode.SelectedItem -and $cmb_MaintenanceWindowMode.SelectedItem.Content -eq 'Weekly')
+    if ($isWeekly) {
+        $col_MWDayHeader.Width = [System.Windows.GridLength]::new(140)
+        $hdr_MWDay.Visibility = 'Visible'
+        $txt_MaintenanceWindowModeHint.Text = 'Each window applies only on its selected day. Add multiple rows for the same day if needed.'
+    } else {
+        $col_MWDayHeader.Width = [System.Windows.GridLength]::new(0)
+        $hdr_MWDay.Visibility = 'Collapsed'
+        $txt_MaintenanceWindowModeHint.Text = 'Windows apply every day. Add multiple rows for multiple windows per day.'
+    }
+    foreach ($entry in $script:MaintenanceWindowRows) {
+        $entry.DayCombo.Visibility = if ($isWeekly) { 'Visible' } else { 'Collapsed' }
+        # Keep each row's Day column width in step with the header's Day column so the
+        # Start/End inputs line up under their headers in both Daily and Weekly modes.
+        $entry.Row.ColumnDefinitions[0].Width = if ($isWeekly) { [System.Windows.GridLength]::new(140) } else { [System.Windows.GridLength]::new(0) }
+    }
+}
+
+function Add-DATMaintenanceWindowRow {
+    param (
+        [string]$Day = 'Monday',
+        [string]$Start = '',
+        [string]$End = ''
+    )
+
+    $row = [System.Windows.Controls.Grid]::new()
+    $row.Margin = [System.Windows.Thickness]::new(0, 0, 0, 6)
+    # Columns: Day(140), Start(120), End(120), Remove(Auto), trailing spacer(*)
+    $colSpecs = @(
+        [System.Windows.GridLength]::new(140),
+        [System.Windows.GridLength]::new(120),
+        [System.Windows.GridLength]::new(120),
+        [System.Windows.GridLength]::Auto,
+        [System.Windows.GridLength]::new(1, [System.Windows.GridUnitType]::Star)
+    )
+    foreach ($gl in $colSpecs) {
+        $cd = [System.Windows.Controls.ColumnDefinition]::new()
+        $cd.Width = $gl
+        $row.ColumnDefinitions.Add($cd)
+    }
+    # Day selector (Weekly only)
+    $dayCombo = [System.Windows.Controls.ComboBox]::new()
+    $dayCombo.Height = 34
+    $dayCombo.Width = 130
+    $dayCombo.FontSize = 13
+    $dayCombo.HorizontalAlignment = 'Left'
+    $dayCombo.VerticalContentAlignment = 'Center'
+    $dayCombo.Margin = [System.Windows.Thickness]::new(0, 0, 8, 0)
+    foreach ($d in $script:MaintenanceWindowDayNames) { [void]$dayCombo.Items.Add($d) }
+    $dayCombo.SelectedItem = if ($Day -in $script:MaintenanceWindowDayNames) { $Day } else { 'Monday' }
+    [System.Windows.Controls.Grid]::SetColumn($dayCombo, 0)
+    [void]$row.Children.Add($dayCombo)
+
+    # Start time
+    $startBox = [System.Windows.Controls.TextBox]::new()
+    $startBox.Height = 34
+    $startBox.Width = 100
+    $startBox.FontSize = 13
+    $startBox.HorizontalAlignment = 'Left'
+    $startBox.VerticalContentAlignment = 'Center'
+    $startBox.MaxLength = 5
+    $startBox.Tag = 'hh:mm'
+    $startBox.Text = $Start
+    try { $startBox.Style = $Window.FindResource('RoundedTextBox') } catch {}
+    [System.Windows.Controls.Grid]::SetColumn($startBox, 1)
+    [void]$row.Children.Add($startBox)
+
+    # End time
+    $endBox = [System.Windows.Controls.TextBox]::new()
+    $endBox.Height = 34
+    $endBox.Width = 100
+    $endBox.FontSize = 13
+    $endBox.HorizontalAlignment = 'Left'
+    $endBox.VerticalContentAlignment = 'Center'
+    $endBox.MaxLength = 5
+    $endBox.Tag = 'hh:mm'
+    $endBox.Text = $End
+    try { $endBox.Style = $Window.FindResource('RoundedTextBox') } catch {}
+    [System.Windows.Controls.Grid]::SetColumn($endBox, 2)
+    [void]$row.Children.Add($endBox)
+
+    # Remove button -- bin icon to the right of the End time input
+    $removeBtn = [System.Windows.Controls.Button]::new()
+    $removeBtn.Height = 34
+    $removeBtn.Width = 34
+    $removeBtn.Cursor = 'Hand'
+    $removeBtn.ToolTip = 'Remove this window'
+    $removeBtn.Content = [string][char]0xE74D
+    $removeBtn.FontFamily = [System.Windows.Media.FontFamily]::new('Segoe MDL2 Assets')
+    $removeBtn.FontSize = 14
+    $removeBtn.Margin = [System.Windows.Thickness]::new(8, 0, 0, 0)
+    $theme = Get-DATTheme -ThemeName $script:CurrentTheme
+    $removeBtn.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.ColorConverter]::ConvertFromString($theme['StatusError']))
+    $removeTemplate = [System.Windows.Markup.XamlReader]::Parse(@"
+<ControlTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" TargetType="Button">
+    <Border x:Name="bd" Background="Transparent" BorderBrush="$($theme['InputBorder'])" BorderThickness="1" CornerRadius="8">
+        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+    </Border>
+    <ControlTemplate.Triggers>
+        <Trigger Property="IsMouseOver" Value="True">
+            <Setter TargetName="bd" Property="Background" Value="$($theme['SidebarHover'])"/>
+            <Setter TargetName="bd" Property="BorderBrush" Value="$($theme['StatusError'])"/>
+        </Trigger>
+    </ControlTemplate.Triggers>
+</ControlTemplate>
+"@)
+    $removeBtn.Template = $removeTemplate
+    $removeBtn.Tag = $row
+    [System.Windows.Controls.Grid]::SetColumn($removeBtn, 3)
+    [void]$row.Children.Add($removeBtn)
+
+    $entry = @{ Row = $row; DayCombo = $dayCombo; StartBox = $startBox; EndBox = $endBox }
+    $script:MaintenanceWindowRows.Add($entry)
+    [void]$panel_MWWindowList.Children.Add($row)
+
+    # Wire change/remove events. Handlers must NOT use .GetNewClosure() -- doing so rebinds
+    # them to an isolated module scope where script-level functions (Format-DATMaintenanceTime,
+    # Save-DATMaintenanceWindowSettings) are not resolvable. Instead use the event sender for
+    # per-row identity, which lets the handler run in the normal script scope.
+    $removeBtn.Add_Click({
+        param($eventSender, $e)
+        $targetRow = $eventSender.Tag
+        $idx = -1
+        for ($i = 0; $i -lt $script:MaintenanceWindowRows.Count; $i++) {
+            if ($script:MaintenanceWindowRows[$i].Row -eq $targetRow) { $idx = $i; break }
+        }
+        if ($idx -ge 0) {
+            $panel_MWWindowList.Children.Remove($script:MaintenanceWindowRows[$idx].Row)
+            $script:MaintenanceWindowRows.RemoveAt($idx)
+            Save-DATMaintenanceWindowSettings
+        }
+    })
+
+    # Live colon insertion as the user types (TextChanged), plus a LostFocus backstop for
+    # pasted values. The restore path sets $script:MaintenanceWindowRestoring to avoid
+    # spurious saves while rows are being rebuilt.
+    $startBox.Add_TextChanged({
+        param($eventSender, $e)
+        Invoke-DATMaintenanceTimeLiveFormat -Box $eventSender
+    })
+    $endBox.Add_TextChanged({
+        param($eventSender, $e)
+        Invoke-DATMaintenanceTimeLiveFormat -Box $eventSender
+    })
+    $startBox.Add_LostFocus({
+        param($eventSender, $e)
+        $eventSender.Text = Format-DATMaintenanceTime $eventSender.Text
+        Save-DATMaintenanceWindowSettings
+    })
+    $endBox.Add_LostFocus({
+        param($eventSender, $e)
+        $eventSender.Text = Format-DATMaintenanceTime $eventSender.Text
+        Save-DATMaintenanceWindowSettings
+    })
+    $dayCombo.Add_SelectionChanged({ if (-not $script:MaintenanceWindowRestoring) { Save-DATMaintenanceWindowSettings } })
+
+    Update-DATMaintenanceWindowMode
+    return $entry
+}
+
+function Get-DATMaintenanceWindowSchedule {
+    # Builds the schedule array from the current UI rows.
+    # Daily mode omits the Day property; Weekly mode includes it.
+    $isWeekly = ($cmb_MaintenanceWindowMode.SelectedItem -and $cmb_MaintenanceWindowMode.SelectedItem.Content -eq 'Weekly')
+    $schedule = @()
+    foreach ($entry in $script:MaintenanceWindowRows) {
+        $start = $entry.StartBox.Text.Trim()
+        $end   = $entry.EndBox.Text.Trim()
+        if ($isWeekly) {
+            $schedule += [ordered]@{ Day = [string]$entry.DayCombo.SelectedItem; Start = $start; End = $end }
+        } else {
+            $schedule += [ordered]@{ Start = $start; End = $end }
+        }
+    }
+    return $schedule
+}
+
+function Test-DATMaintenanceWindowValid {
+    # Validates all rows; returns $true/$false and updates the validation label.
+    $isWeekly = ($cmb_MaintenanceWindowMode.SelectedItem -and $cmb_MaintenanceWindowMode.SelectedItem.Content -eq 'Weekly')
+    $errors = @()
+    if ($chk_MaintenanceWindowEnabled.IsChecked -eq $true -and $script:MaintenanceWindowRows.Count -eq 0) {
+        $errors += 'Add at least one window, or disable the maintenance window.'
+    }
+    $rowNum = 0
+    foreach ($entry in $script:MaintenanceWindowRows) {
+        $rowNum++
+        $start = $entry.StartBox.Text.Trim()
+        $end   = $entry.EndBox.Text.Trim()
+        if (-not (Test-DATMaintenanceTime $start)) { $errors += "Window $($rowNum): start time '$start' is not valid (use HH:mm, 00:00-23:59)." }
+        if (-not (Test-DATMaintenanceTime $end))   { $errors += "Window $($rowNum): end time '$end' is not valid (use HH:mm, 00:00-23:59)." }
+        if ((Test-DATMaintenanceTime $start) -and (Test-DATMaintenanceTime $end) -and $start -eq $end) {
+            $errors += "Window $($rowNum): start and end time cannot be identical."
+        }
+        if ($isWeekly -and [string]::IsNullOrEmpty([string]$entry.DayCombo.SelectedItem)) {
+            $errors += "Window $($rowNum): select a day."
+        }
+    }
+
+    # Overlap check -- only when every row has a valid, non-identical start/end so the
+    # comparison operates on real minute ranges. Windows that cross midnight are split
+    # into two ranges. In Weekly mode only windows on the same day can conflict; in Daily
+    # mode every window applies every day, so all are compared against each other.
+    if ($errors.Count -eq 0 -and $script:MaintenanceWindowRows.Count -gt 1) {
+        $items = @()
+        $i = 0
+        foreach ($entry in $script:MaintenanceWindowRows) {
+            $i++
+            $s = $entry.StartBox.Text.Trim().Split(':')
+            $e = $entry.EndBox.Text.Trim().Split(':')
+            $startMin = ([int]$s[0] * 60) + [int]$s[1]
+            $endMin   = ([int]$e[0] * 60) + [int]$e[1]
+            # Build inclusive minute ranges; a window that wraps past midnight becomes two ranges.
+            $ranges = if ($startMin -le $endMin) {
+                @(, @($startMin, $endMin))
+            } else {
+                @(@($startMin, 1439), @(0, $endMin))
+            }
+            $day = if ($isWeekly) { [string]$entry.DayCombo.SelectedItem } else { '*' }
+            $items += [pscustomobject]@{ Num = $i; Day = $day; Ranges = $ranges }
+        }
+        $reported = @{}
+        for ($a = 0; $a -lt $items.Count; $a++) {
+            for ($b = $a + 1; $b -lt $items.Count; $b++) {
+                if ($items[$a].Day -ne $items[$b].Day) { continue }
+                $overlap = $false
+                foreach ($ra in $items[$a].Ranges) {
+                    foreach ($rb in $items[$b].Ranges) {
+                        # Inclusive ranges overlap when each starts at/before the other ends.
+                        if ($ra[0] -le $rb[1] -and $rb[0] -le $ra[1]) { $overlap = $true; break }
+                    }
+                    if ($overlap) { break }
+                }
+                if ($overlap) {
+                    $key = "$($items[$a].Num)-$($items[$b].Num)"
+                    if (-not $reported.ContainsKey($key)) {
+                        $reported[$key] = $true
+                        $dayLabel = if ($isWeekly) { " on $($items[$a].Day)" } else { '' }
+                        $errors += "Windows $($items[$a].Num) and $($items[$b].Num) overlap$dayLabel. Adjust the times so windows do not overlap."
+                    }
+                }
+            }
+        }
+    }
+
+    if ($errors.Count -gt 0) {
+        $txt_MaintenanceWindowValidation.Text = ($errors -join "`n")
+        $txt_MaintenanceWindowValidation.Visibility = 'Visible'
+        return $false
+    }
+    $txt_MaintenanceWindowValidation.Text = ''
+    $txt_MaintenanceWindowValidation.Visibility = 'Collapsed'
+    return $true
+}
+
+function Save-DATMaintenanceWindowSettings {
+    if ($script:MaintenanceWindowRestoring) { return }
+
+    $enabled = if ($chk_MaintenanceWindowEnabled.IsChecked -eq $true) { 1 } else { 0 }
+    $mode = if ($cmb_MaintenanceWindowMode.SelectedItem) { [string]$cmb_MaintenanceWindowMode.SelectedItem.Content } else { 'Daily' }
+    Set-DATRegistryValue -Name 'MaintenanceWindowEnabled' -Value $enabled -Type DWord
+    Set-DATRegistryValue -Name 'MaintenanceWindowMode' -Value $mode -Type String
+
+    # Update empty-state visibility
+    $txt_MWEmptyState.Visibility = if ($script:MaintenanceWindowRows.Count -eq 0) { 'Visible' } else { 'Collapsed' }
+
+    # Validate before persisting the schedule; invalid input is not saved (keeps last good value)
+    if (-not (Test-DATMaintenanceWindowValid)) { return }
+
+    $schedule = Get-DATMaintenanceWindowSchedule
+    # @() wrapper forces a JSON array even for a single window
+    $json = ConvertTo-Json @($schedule) -Compress
+    Set-DATRegistryValue -Name 'MaintenanceWindows' -Value $json -Type String
+}
+
+function Update-DATMaintenanceWindowEnabledState {
+    $enabled = ($chk_MaintenanceWindowEnabled.IsChecked -eq $true)
+    $panel_MaintenanceWindowConfig.IsEnabled = $enabled
+    $panel_MaintenanceWindowConfig.Opacity = if ($enabled) { 1.0 } else { 0.4 }
+    $txt_MaintenanceWindowState.Text = if ($enabled) { 'On' } else { 'Off' }
+}
+
+$chk_MaintenanceWindowEnabled.Add_Checked({
+    Update-DATMaintenanceWindowEnabledState
+    Save-DATMaintenanceWindowSettings
+})
+$chk_MaintenanceWindowEnabled.Add_Unchecked({
+    Update-DATMaintenanceWindowEnabledState
+    Save-DATMaintenanceWindowSettings
+})
+
+$cmb_MaintenanceWindowMode.Add_SelectionChanged({
+    Update-DATMaintenanceWindowMode
+    Save-DATMaintenanceWindowSettings
+})
+
+$btn_AddMaintenanceWindow.Add_Click({
+    # New rows default to a 17:00 -> 09:00 overnight window; the user can adjust as needed.
+    Add-DATMaintenanceWindowRow -Day 'Monday' -Start '17:00' -End '09:00' | Out-Null
+    $txt_MWEmptyState.Visibility = 'Collapsed'
+    Save-DATMaintenanceWindowSettings
+})
+
+$btn_SaveMaintenanceWindow.Add_Click({
+    # Commit any in-progress edit (e.g. a value typed but not yet blurred) before saving.
+    Save-DATMaintenanceWindowSettings
+    if (Test-DATMaintenanceWindowValid) {
+        Show-DATInfoDialog -Title "Maintenance Window Saved" `
+            -Message "The maintenance window configuration has been saved." `
+            -Type Success -ButtonLabel "OK"
+    } else {
+        Show-DATInfoDialog -Title "Configuration Not Saved" `
+            -Message "Please correct the highlighted issues before saving the maintenance window configuration." `
+            -Type Warning -ButtonLabel "OK"
+    }
+})
+
+$btn_ResetMaintenanceWindow.Add_Click({
+    # Clear all configured windows and re-add a single default 17:00 -> 09:00 row.
+    $panel_MWWindowList.Children.Clear()
+    $script:MaintenanceWindowRows.Clear()
+    Add-DATMaintenanceWindowRow -Day 'Monday' -Start '17:00' -End '09:00' | Out-Null
+    $txt_MWEmptyState.Visibility = 'Collapsed'
+    Save-DATMaintenanceWindowSettings
+    Show-DATInfoDialog -Title "Maintenance Window Reset" `
+        -Message "The maintenance window configuration has been reset to a single default window (17:00 to 09:00)." `
+        -Type Info -ButtonLabel "OK"
+})
+
+function Restore-DATMaintenanceWindowSettings {
+    param ($SavedConfig)
+    $script:MaintenanceWindowRestoring = $true
+    try {
+        # Mode
+        $mode = if ($SavedConfig -and -not [string]::IsNullOrEmpty($SavedConfig.MaintenanceWindowMode)) { $SavedConfig.MaintenanceWindowMode } else { 'Daily' }
+        $cmb_MaintenanceWindowMode.SelectedIndex = if ($mode -eq 'Weekly') { 1 } else { 0 }
+
+        # Rebuild rows from saved JSON
+        $panel_MWWindowList.Children.Clear()
+        $script:MaintenanceWindowRows.Clear()
+        $windows = @()
+        if ($SavedConfig -and -not [string]::IsNullOrEmpty($SavedConfig.MaintenanceWindows)) {
+            try { $windows = @($SavedConfig.MaintenanceWindows | ConvertFrom-Json) } catch { $windows = @() }
+        }
+        foreach ($w in $windows) {
+            $day   = if ($w.PSObject.Properties['Day'] -and $w.Day) { [string]$w.Day } else { 'Monday' }
+            $start = if ($w.Start) { [string]$w.Start } else { '00:00' }
+            $end   = if ($w.End)   { [string]$w.End }   else { '23:59' }
+            Add-DATMaintenanceWindowRow -Day $day -Start $start -End $end | Out-Null
+        }
+        $txt_MWEmptyState.Visibility = if ($script:MaintenanceWindowRows.Count -eq 0) { 'Visible' } else { 'Collapsed' }
+
+        # Enabled toggle (set last so handlers see populated rows)
+        $isEnabled = ($SavedConfig -and $null -ne $SavedConfig.MaintenanceWindowEnabled -and $SavedConfig.MaintenanceWindowEnabled -eq 1)
+        $chk_MaintenanceWindowEnabled.IsChecked = $isEnabled
+
+        Update-DATMaintenanceWindowMode
+        Update-DATMaintenanceWindowEnabledState
+    } finally {
+        $script:MaintenanceWindowRestoring = $false
+    }
+}
+
+#endregion Maintenance Window
+
 #endregion Intune Settings
 
 #region Log Viewer
@@ -20021,13 +21129,19 @@ try {
             Write-Host $authModeLabel -ForegroundColor White
         }
 
-        # Restore interactive app source selection (built-in vs custom)
+        # Restore interactive app source selection (built-in vs custom).
+        # The "Auth App" line only applies to the interactive flows (Browser / Device Code);
+        # App Registration (Client Credentials, mode 2) authenticates with the custom App ID +
+        # secret shown below, so the interactive app source is irrelevant and not logged there.
         if ($null -ne $savedConfig.IntuneInteractiveAppSource) {
             $cmb_InteractiveAppSource.SelectedIndex = [int]$savedConfig.IntuneInteractiveAppSource
+            $isInteractiveAuthMode = ($null -eq $savedConfig.IntuneAuthMode) -or ([int]$savedConfig.IntuneAuthMode -ne 2)
             if ([int]$savedConfig.IntuneInteractiveAppSource -eq 1) {
                 $panel_CustomInteractiveAppId.Visibility = 'Visible'
-                Write-Host "  Auth App      : Custom App Registration" -ForegroundColor White
-            } else {
+                if ($isInteractiveAuthMode) {
+                    Write-Host "  Auth App      : Custom App Registration" -ForegroundColor White
+                }
+            } elseif ($isInteractiveAuthMode) {
                 Write-Host "  Auth App      : Microsoft Graph PowerShell SDK (Built-in)" -ForegroundColor White
             }
         }
@@ -20202,6 +21316,15 @@ try {
             } catch { }
         }
 
+        # Restore Maintenance Window settings
+        Write-Host "  Maint. Window : " -NoNewline -ForegroundColor DarkGray
+        Restore-DATMaintenanceWindowSettings -SavedConfig $savedConfig
+        if ($null -ne $savedConfig.MaintenanceWindowEnabled -and $savedConfig.MaintenanceWindowEnabled -eq 1) {
+            Write-Host "Enabled ($($savedConfig.MaintenanceWindowMode))" -ForegroundColor Green
+        } else {
+            Write-Host "Disabled" -ForegroundColor DarkYellow
+        }
+
         Write-Host ""
         Write-Host "========================================" -ForegroundColor Cyan
         Write-Host ""
@@ -20216,6 +21339,9 @@ try {
 }
 
 #endregion Load Saved Settings
+
+# Populate the selection profiles dropdown from Settings\Profiles.json
+try { Update-DATProfileDropdown } catch { Write-DATActivityLog "Profile dropdown init failed: $($_.Exception.Message)" -Level Warn }
 
 # Enable OS/Architecture change auto-refresh now that saved settings are restored
 $script:SuppressModelRefresh = $false
@@ -20243,7 +21369,7 @@ if (Test-Path $logoPath) {
 
 # Read version from module manifest
 $manifestPath = Join-Path $AppRoot "Modules\DriverAutomationToolCore\DriverAutomationToolCore.psd1"
-$script:versionString = "v10.0.43"
+$script:versionString = "v10.1.0"
 if (Test-Path $manifestPath) {
     $manifestData = Import-PowerShellDataFile $manifestPath
     $ver = [version]$manifestData.ModuleVersion
@@ -20666,7 +21792,7 @@ $Window.Add_Closing({
 
             # Subtitle
             $nfSubtitle = [System.Windows.Controls.TextBlock]::new()
-            $nfSubtitle.Text = "Please tell us what we can improve:"
+            $nfSubtitle.Text = "Please tell us what we can improve (required):"
             $nfSubtitle.FontSize = 13
             $nfSubtitle.Foreground = [System.Windows.Media.SolidColorBrush]::new(
                 [System.Windows.Media.ColorConverter]::ConvertFromString($theme['InputPlaceholder']))
@@ -20822,6 +21948,24 @@ $Window.Add_Closing({
             $nfPanel.Children.Add($nfSpacer) | Out-Null
 
             $nfEmailRegex = '^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$'
+            $nfState.EmailRegex = $nfEmailRegex
+
+            # Shared submit-state validator -- a non-empty comment is always required;
+            # a valid email is additionally required when "Follow up with me" is on.
+            $nfState.Validate = {
+                param($s)
+                $hasComment = -not [string]::IsNullOrWhiteSpace($s.TextBox.Text)
+                $emailOk = $true
+                if ([bool]$s.FollowUpCheck.IsChecked) {
+                    $email = $s.EmailBox.Text.Trim()
+                    $emailOk = (-not [string]::IsNullOrWhiteSpace($email)) -and ($email -match $s.EmailRegex)
+                }
+                $s.SubmitButton.IsEnabled = ($hasComment -and $emailOk)
+            }
+
+            # Comment text drives submit-button state
+            $nfTextBox.Tag = $nfState
+            $nfTextBox.Add_TextChanged({ & $this.Tag.Validate $this.Tag })
 
             # Follow-up toggle handlers
             $nfFollowUp.Tag = $nfState
@@ -20830,7 +21974,7 @@ $Window.Add_Closing({
                 $st.EmailLabel.Visibility = 'Visible'
                 $st.EmailBox.Visibility = 'Visible'
                 $st.EmailBox.IsEnabled = $true
-                $st.SubmitButton.IsEnabled = $false
+                & $st.Validate $st
                 $st.EmailBox.Focus() | Out-Null
             })
             $nfFollowUp.Add_Unchecked({
@@ -20840,7 +21984,7 @@ $Window.Add_Closing({
                 $st.EmailBox.Text = ''
                 $st.EmailLabel.Visibility = 'Collapsed'
                 $st.EmailHint.Visibility = 'Collapsed'
-                $st.SubmitButton.IsEnabled = $true
+                & $st.Validate $st
             })
 
             # Email validation
@@ -20851,15 +21995,13 @@ $Window.Add_Closing({
                 $txt = $this.Text
                 if ([string]::IsNullOrWhiteSpace($txt)) {
                     $st.EmailHint.Visibility = 'Collapsed'
-                    $st.SubmitButton.IsEnabled = $false
                 } elseif ($txt -notmatch $c.Regex) {
                     $st.EmailHint.Text = "Email address format validation issue."
                     $st.EmailHint.Visibility = 'Visible'
-                    $st.SubmitButton.IsEnabled = $false
                 } else {
                     $st.EmailHint.Visibility = 'Collapsed'
-                    $st.SubmitButton.IsEnabled = $true
                 }
+                & $st.Validate $st
             })
 
             # Button row
@@ -20896,6 +22038,8 @@ $Window.Add_Closing({
             $nfBtnSubmit.FontSize = 13
             $nfBtnSubmit.FontWeight = [System.Windows.FontWeights]::SemiBold
             $nfBtnSubmit.Content = "Submit Feedback"
+            $nfBtnSubmit.IsEnabled = $false
+            $nfBtnSubmit.ToolTip = "Please enter feedback details before submitting"
             [System.Windows.Controls.Grid]::SetColumn($nfBtnSubmit, 0)
             $nfBtnSubmit.Tag = $nfState
             $nfState.SubmitButton = $nfBtnSubmit
@@ -20904,6 +22048,12 @@ $Window.Add_Closing({
                 $comment = $st.TextBox.Text
                 $followUp = [bool]$st.FollowUpCheck.IsChecked
                 $email = if ($followUp) { $st.EmailBox.Text.Trim() } else { '' }
+
+                # Safety net: never submit without a comment.
+                if ([string]::IsNullOrWhiteSpace($comment)) {
+                    $st.TextBox.Focus() | Out-Null
+                    return
+                }
 
                 if ($followUp) {
                     $emailRegex = '^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$'
@@ -21287,20 +22437,92 @@ $Window.Add_ContentRendered({
         $connBorder.Child = $connPanel
         $connDlg.Content = $connBorder
 
-        # Show as non-modal so we can run the check loop on the same thread
+        # Show as non-modal so the message pump can keep the overlay/UI responsive
         $connDlg.Show()
 
-        # Progress callback updates the overlay via Dispatcher
-        $progressCallback = {
-            param($current, $total, $url, $reachable)
-            $Window.Dispatcher.Invoke([Action]{
-                $connUrlLabel.Text = $url
-                $connProgress.Value = [math]::Round(($current / $total) * 100)
-                $connCounter.Text = "$current of $total"
-            }, [System.Windows.Threading.DispatcherPriority]::Render)
-        }.GetNewClosure()
+        # Run the connectivity probes in a BACKGROUND runspace so the blocking HTTP HEAD
+        # calls (up to 8s each x 10 endpoints) never freeze the UI thread. Progress is written
+        # to a synchronized hashtable; a DispatcherTimer mirrors it onto the overlay, and a
+        # DispatcherFrame keeps the UI message pump alive while we wait -- so the calling code
+        # below (update check, etc.) still runs sequentially after completion.
+        $connState = [hashtable]::Synchronized(@{
+            Current = 0; Total = 0; Url = 'Preparing...'; Done = $false; Results = $null
+        })
 
-        $connectivityResults = Test-DATConnectivity -OnProgress $progressCallback
+        $connRunspace = [runspacefactory]::CreateRunspace()
+        $connRunspace.ApartmentState = 'STA'
+        $connRunspace.Open()
+        $connRunspace.SessionStateProxy.SetVariable('ConnState', $connState)
+        $connPS = [powershell]::Create()
+        $connPS.Runspace = $connRunspace
+        [void]$connPS.AddScript({
+            [System.Net.ServicePointManager]::SecurityProtocol =
+                [System.Net.ServicePointManager]::SecurityProtocol -bor [System.Net.SecurityProtocolType]::Tls12
+
+            $endpoints = @(
+                @{ URL = 'https://raw.githubusercontent.com'; Description = 'GitHub Raw Content (OEM catalogs, updates, release notes)' }
+                @{ URL = 'https://github.com';                Description = 'GitHub (self-update, Intune packaging tools)' }
+                @{ URL = 'https://api.driverautomationtool.com'; Description = 'DAT API (BIOS catalog, health checks)' }
+                @{ URL = 'https://downloads.dell.com';         Description = 'Dell driver downloads' }
+                @{ URL = 'https://dl.dell.com';                Description = 'Dell BIOS utilities' }
+                @{ URL = 'https://ftp.hp.com';                 Description = 'HP driver catalog and SoftPaqs' }
+                @{ URL = 'https://download.lenovo.com';        Description = 'Lenovo driver catalog' }
+                @{ URL = 'https://global-download.acer.com';   Description = 'Acer driver and BIOS catalog' }
+                @{ URL = 'https://login.microsoftonline.com';  Description = 'Microsoft Entra ID (Intune authentication)' }
+                @{ URL = 'https://graph.microsoft.com';        Description = 'Microsoft Graph API (Intune management)' }
+            )
+            $ConnState.Total = $endpoints.Count
+            $results = foreach ($ep in $endpoints) {
+                $ConnState.Url = $ep.URL
+                $reachable = $false
+                try {
+                    $request = [System.Net.HttpWebRequest]::Create($ep.URL)
+                    $request.Method = 'HEAD'
+                    $request.Timeout = 8000
+                    $request.AllowAutoRedirect = $true
+                    try {
+                        $response = $request.GetResponse()
+                        $response.Close()
+                        $reachable = $true
+                    } catch [System.Net.WebException] {
+                        # Any HTTP response (4xx/5xx) means the host IS reachable
+                        if ($null -ne $_.Exception.Response) {
+                            $reachable = $true
+                            $_.Exception.Response.Close()
+                        }
+                    }
+                } catch { $reachable = $false }
+                $ConnState.Current++
+                [PSCustomObject]@{ URL = $ep.URL; Description = $ep.Description; Reachable = $reachable }
+            }
+            $ConnState.Results = @($results)
+            $ConnState.Done = $true
+        })
+        $connAsync = $connPS.BeginInvoke()
+
+        # DispatcherFrame keeps the UI pumping; the timer ends the frame when the probe finishes.
+        $connFrame = [System.Windows.Threading.DispatcherFrame]::new()
+        $connTimer = [System.Windows.Threading.DispatcherTimer]::new()
+        $connTimer.Interval = [TimeSpan]::FromMilliseconds(120)
+        $connTimer.Add_Tick({
+            $connUrlLabel.Text = [string]$connState.Url
+            if ($connState.Total -gt 0) {
+                $connProgress.Value = [math]::Round(($connState.Current / $connState.Total) * 100)
+                $connCounter.Text = "$($connState.Current) of $($connState.Total)"
+            }
+            if ($connState.Done) {
+                $connTimer.Stop()
+                $connFrame.Continue = $false
+            }
+        }.GetNewClosure())
+        $connTimer.Start()
+        [System.Windows.Threading.Dispatcher]::PushFrame($connFrame)
+
+        # Probe complete -- collect results and tear down the runspace
+        try { $connPS.EndInvoke($connAsync) } catch { }
+        $connPS.Dispose()
+        $connRunspace.Dispose()
+        $connectivityResults = @($connState.Results)
 
         # Close the progress overlay
         $connDlg.Close()

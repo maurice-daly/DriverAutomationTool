@@ -3,6 +3,20 @@ Release Notes
 IMPORTANT
 - DAT Downloads have been moved to GitHub - https://github.com/maurice-daly/DriverAutomationTool
 
+Version 10.1.0
+What's New & Fixed
+- Profiles — Added saveable configuration profiles so you can store and quickly reload your preferred OEM/OS/package selections.
+- Maintenance Windows — Added support for defining maintenance windows to control when deployments and updates are applied.
+- OEM Support (HP) — Fixed HP SoftPaq downloads, corrected HP known-model matching for Intune, and resolved several HP CMSL (driver pack sourcing) issues.
+- Model Matching — Improved model detection accuracy so the right driver/BIOS packages are matched to each device.
+- Toast Notifications — Added end-user button customisation and a reset option, fixed multi-line notification rendering, and resolved a toast display bug.
+- Scheduled Tasks — Fixed scheduled task creation and corrected the operating-system value exported into the task.
+- Authentication — Fixed the authentication button behaviour during sign-in.
+- MIF Generation — Corrected MIF status file output.
+- WMI / Baseboard Detection — Updated baseboard detection guidance for more reliable hardware identification.
+- UI / Theme Fixes — Resolved a colour rendering issue in the interface.
+- General — Additional stability and bug fixes.
+
 Version 10.0.43
 What's New & Fixed
 - Driver Packaging (HP SoftPaqs) — HP driver packages built from individual SoftPaqs are no longer rebuilt on every run. The tool now records the exact SoftPaq list for each model and skips the rebuild when nothing has changed, retaining the existing package and reusing its original version stamp. The log clearly shows the matched SoftPaqs, the comparison fingerprint, and which existing package was retained.

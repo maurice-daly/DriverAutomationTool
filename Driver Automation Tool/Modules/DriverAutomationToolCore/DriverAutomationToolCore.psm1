@@ -4,7 +4,7 @@
      Organization:  MSEndpointMgr / Patch My PC
      Filename:      DriverAutomationToolCore.psm1
      Purpose:       Core functions for Driver Automation Tool v2.0
-     Version:       10.0.43.0
+     Version:       10.1.0.0
     ===========================================================================
 #>
 
@@ -27,8 +27,8 @@ if ($PSVersionTable.PSVersion.Major -le 5) {
 
 #region Variables
 
-[version]$global:ScriptRelease = "10.0.43.0"
-$global:ScriptBuildDate = "10-06-2026"
+[version]$global:ScriptRelease = "10.1.0.0"
+$global:ScriptBuildDate = "11-06-2026"
 $global:ReleaseNotesURL = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/DriverAutomationToolNotes.txt"
 $OEMLinksURL = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/OEMLinks.xml"
 
@@ -644,6 +644,12 @@ function Get-DATOEMModelInfo {
                     Expand "$HPCabPath" -F:* "$global:TempDirectory" -R | Out-Null
                     [xml]$HPModelXML = Get-Content -Path $HPXMLPath -Raw
                     $HPModelSoftPaqs = $HPModelXML.NewDataSet.HPClientDriverPackCatalog.ProductOSDriverPackList.ProductOSDriverPack
+                    # ProductOSDriverPack has no Version node -- the driver pack version lives in
+                    # the separate <SoftPaqList> section keyed by SoftPaqId. Build a lookup map.
+                    $hpVersionMap = @{}
+                    foreach ($sp in $HPModelXML.NewDataSet.HPClientDriverPackCatalog.SoftPaqList.SoftPaq) {
+                        if ($sp.Id) { $hpVersionMap[$sp.Id] = $sp.Version }
+                    }
                     $totalPacks = @($HPModelSoftPaqs).Count
                     Write-DATLogEntry -Value "[HP] Total packs in catalog: $totalPacks (filtering: OSName -match '$WindowsVersion' -and -match '$WindowsBuild')" -Severity 1
                     $HPOSSupportedPacks = $HPModelSoftPaqs | Where-Object { $_.OSName -match $WindowsVersion -and $_.OSName -match $WindowsBuild }
@@ -657,8 +663,9 @@ function Get-DATOEMModelInfo {
                         $sysIds = $Model.SystemId | Where-Object { $_ } | Select-Object -Unique
                         # SCCM DriverPack mode uses the HP catalog version; SoftPaq mode uses a
                         # date stamp (its definitive version is computed from the SoftPaq fingerprint).
-                        $hpModelVersion = if ($HPDriverPackSource -eq 'DriverPack' -and -not [string]::IsNullOrEmpty($Model.Version)) {
-                            $Model.Version
+                        $hpCatalogVersion = if ($Model.SoftPaqId) { $hpVersionMap[$Model.SoftPaqId] } else { '' }
+                        $hpModelVersion = if ($HPDriverPackSource -eq 'DriverPack' -and -not [string]::IsNullOrEmpty($hpCatalogVersion)) {
+                            $hpCatalogVersion
                         } else {
                             (Get-Date -Format 'ddMMyyyy')
                         }
@@ -1111,8 +1118,10 @@ function Invoke-DATContentDownload {
         # Build CURL arguments -- dump response headers to a temp file so we can read Content-Length during download
         $CurlHeaderDumpFile = Join-Path -Path ([System.IO.Path]::GetTempPath()) -ChildPath "curl_headers_$([System.IO.Path]::GetRandomFileName()).txt"
         # --proto =https prevents redirect downgrade to HTTP; --max-redirs 5 caps redirect chains (security fix #12)
+        # Note: =https must NOT be wrapped in quotes -- this is a single-string ArgumentList, so any
+        # quotes are passed literally to curl, which then rejects '=https' as an invalid protocol token.
         # Proxy server (no credentials) comes from Get-DATCurlProxyArgs; credentials come via --config (security fix #5)
-        $CurlArgs = "--location --proto '=https' --max-redirs 5 --output `"$DownloadDestination`" --url `"$DownloadURL`" --dump-header `"$CurlHeaderDumpFile`" --connect-timeout 30 --retry 10 --retry-delay 60 --retry-max-time 600 --retry-connrefused $(Get-DATCurlProxyArgs)"
+        $CurlArgs = "--location --proto =https --max-redirs 5 --output `"$DownloadDestination`" --url `"$DownloadURL`" --dump-header `"$CurlHeaderDumpFile`" --connect-timeout 30 --retry 10 --retry-delay 60 --retry-max-time 600 --retry-connrefused $(Get-DATCurlProxyArgs)"
         if ($curlProxyCfgFile) { $CurlArgs = "--config `"$curlProxyCfgFile`" $CurlArgs" }
 
         try {
@@ -2647,6 +2656,16 @@ function New-DATConfigMgrPkg {
 
     try {
         $smsNamespace = "root\SMS\Site_$SiteCode"
+
+        # Map the friendly distribution/replication priority to the SMS_Package.Priority
+        # WMI enum (1 = High, 2 = Normal/Medium, 3 = Low). The ConfigMgr console labels
+        # the Normal value as "Medium".
+        $priorityValue = switch ($Priority) {
+            'High'  { 1 }
+            'Low'   { 3 }
+            default { 2 }
+        }
+
         $packagePrefix = if (-not [string]::IsNullOrEmpty($NamePrefix)) { $NamePrefix }
                          elseif ($PackageType -eq 'BIOS') { 'BIOS Update' }
                          else { 'Drivers' }
@@ -2731,8 +2750,9 @@ function New-DATConfigMgrPkg {
             $pkgWmi = [wmi]"\\$SiteServer\$($smsNamespace):SMS_Package.PackageID='$pkgId'"
             $pkgWmi.Version = $Version
             $pkgWmi.Description = $pkgDescription
+            $pkgWmi.Priority = $priorityValue
             $pkgWmi.Put() | Out-Null
-            Write-DATLogEntry -Value "- [ConfigMgr] Package $pkgId metadata updated" -Severity 1
+            Write-DATLogEntry -Value "- [ConfigMgr] Package $pkgId metadata updated (replication priority: $Priority)" -Severity 1
 
             # Enable or disable Binary Differential Replication via PkgFlags
             if ($EnableBinaryDeltaReplication) {
@@ -2836,10 +2856,11 @@ function New-DATConfigMgrPkg {
         $newPkg.MIFName = $Model
         $newPkg.MIFVersion = if ($PackageType -eq 'BIOS') { '' } else { "$OS $Architecture" }
         $newPkg.PkgSourceFlag = 2  # Direct source path
+        $newPkg.Priority = $priorityValue
         $putResult = $newPkg.Put()
         $packageId = $putResult.RelativePath -replace '.*PackageID="([^"]+)".*', '$1'
 
-        Write-DATLogEntry -Value "- [ConfigMgr] Created package $packageId" -Severity 1
+        Write-DATLogEntry -Value "- [ConfigMgr] Created package $packageId (replication priority: $Priority)" -Severity 1
 
         # Enable Binary Differential Replication via PkgFlags
         if ($EnableBinaryDeltaReplication) {
@@ -3071,7 +3092,8 @@ function Start-DATModelProcessing {
         [string]$HPPasswordBinPath,
         [string]$TeamsWebhookUrl,
         [switch]$TeamsNotificationsEnabled,
-        [string]$CustomToastTextsJson
+        [string]$CustomToastTextsJson,
+        [string]$MaintenanceWindowsJson
     )
     $global:ScriptDirectory = $ScriptDirectory
     $global:LogDirectory = Join-Path $ScriptDirectory "Logs"
@@ -3422,6 +3444,7 @@ function Start-DATModelProcessing {
                         if ($DisableRestart) { $intuneParams['DisableRestart'] = $true }
                         if ($ToastTimeoutAction -ne 'RemindMeLater') { $intuneParams['ToastTimeoutAction'] = $ToastTimeoutAction }
                         if ($MaxDeferrals -gt 0) { $intuneParams['MaxDeferrals'] = $MaxDeferrals }
+                        if (-not [string]::IsNullOrEmpty($MaintenanceWindowsJson)) { $intuneParams['MaintenanceWindowsJson'] = $MaintenanceWindowsJson }
                         if ($RestartDelaySeconds -ne 600) { $intuneParams['RestartDelaySeconds'] = $RestartDelaySeconds }
                         if (-not [string]::IsNullOrEmpty($DebugBuildPath)) { $intuneParams['DebugBuildPath'] = $DebugBuildPath }
                         if (-not [string]::IsNullOrEmpty($CustomBrandingPath)) { $intuneParams['CustomBrandingPath'] = $CustomBrandingPath }
@@ -3842,6 +3865,7 @@ function Start-DATModelProcessing {
                                 if ($DisableRestart) { $intuneParams['DisableRestart'] = $true }
                                 if ($ToastTimeoutAction -ne 'RemindMeLater') { $intuneParams['ToastTimeoutAction'] = $ToastTimeoutAction }
                                 if ($MaxDeferrals -gt 0) { $intuneParams['MaxDeferrals'] = $MaxDeferrals }
+                                if (-not [string]::IsNullOrEmpty($MaintenanceWindowsJson)) { $intuneParams['MaintenanceWindowsJson'] = $MaintenanceWindowsJson }
                                 if ($RestartDelaySeconds -ne 600) { $intuneParams['RestartDelaySeconds'] = $RestartDelaySeconds }
                                 if (-not [string]::IsNullOrEmpty($DebugBuildPath)) { $intuneParams['DebugBuildPath'] = $DebugBuildPath }
                                 if (-not [string]::IsNullOrEmpty($CustomBrandingPath)) { $intuneParams['CustomBrandingPath'] = $CustomBrandingPath }
@@ -4228,7 +4252,10 @@ function Export-DATBuildConfig {
         [string]$TeamsWebhookUrl,
         [bool]$TeamsNotificationsEnabled = $false,
         [hashtable]$Intune,
-        [hashtable]$ConfigMgr
+        [hashtable]$ConfigMgr,
+        [bool]$MaintenanceWindowEnabled = $false,
+        [string]$MaintenanceWindowMode = 'Daily',
+        [array]$MaintenanceWindows
     )
 
     $modelArray = foreach ($m in $Models) {
@@ -4238,6 +4265,11 @@ function Export-DATBuildConfig {
         }
         if (-not [string]::IsNullOrEmpty($m.Baseboards)) { $entry['Baseboards'] = $m.Baseboards }
         if (-not [string]::IsNullOrEmpty($m.OS)) { $entry['OS'] = $m.OS }
+        # Persist the per-model Windows build (e.g. "25H2") so HP/Lenovo/Microsoft/Acer
+        # scheduled runs download the correct build. Dell is build-agnostic (Build = 'All')
+        # and intentionally omits OSBuild. (#785)
+        $modelBuild = if (-not [string]::IsNullOrEmpty($m.Build)) { $m.Build } elseif (-not [string]::IsNullOrEmpty($m.OSBuild)) { $m.OSBuild } else { '' }
+        if (-not [string]::IsNullOrEmpty($modelBuild) -and $modelBuild -ne 'All') { $entry['OSBuild'] = $modelBuild }
         $entry
     }
 
@@ -4258,12 +4290,15 @@ function Export-DATBuildConfig {
         TeamsNotificationsEnabled  = $TeamsNotificationsEnabled
         Intune                     = if ($Intune) { $Intune } else { [ordered]@{ TenantId = ''; AppId = ''; AppSecret = '' } }
         ConfigMgr                  = if ($ConfigMgr) { $ConfigMgr } else { [ordered]@{ SiteServer = ''; SiteCode = ''; DistributionPointGroups = @(); DistributionPriority = 'Normal' } }
+        MaintenanceWindowEnabled   = $MaintenanceWindowEnabled
+        MaintenanceWindowMode      = $MaintenanceWindowMode
+        MaintenanceWindows         = @($MaintenanceWindows)
         Models                     = @($modelArray)
     }
 
     $dir = Split-Path $ConfigPath -Parent
     if (-not (Test-Path $dir)) { New-Item -Path $dir -ItemType Directory -Force | Out-Null }
-    $config | ConvertTo-Json -Depth 4 | Set-Content -Path $ConfigPath -Encoding UTF8 -Force
+    $config | ConvertTo-Json -Depth 5 | Set-Content -Path $ConfigPath -Encoding UTF8 -Force
     Write-DATLogEntry -Value "[Schedule] Exported build config to $ConfigPath ($($Models.Count) model(s), Platform=$Platform)" -Severity 1
 }
 
@@ -4301,7 +4336,14 @@ function Import-DATBuildConfig {
     # When a model has a per-model OS property, use only that OS instead of the global list
     $models = foreach ($m in $config.Models) {
         $modelOSList = if (-not [string]::IsNullOrEmpty($m.OS)) {
-            @($m.OS)
+            # When a per-model OSBuild is stored (HP/Lenovo/Microsoft/Acer), combine it with the
+            # base OS so the pipeline downloads the correct build, e.g. "Windows 11 25H2". Dell
+            # omits OSBuild (build-agnostic) so the base OS is used as-is. (#785)
+            if (-not [string]::IsNullOrEmpty($m.OSBuild) -and $m.OS -notmatch '\d{2}H\d') {
+                @("$($m.OS) $($m.OSBuild)".Trim())
+            } else {
+                @($m.OS)
+            }
         } else {
             $osList
         }
@@ -4337,6 +4379,9 @@ function Import-DATBuildConfig {
         Models                    = @($models)
         Intune                    = $config.Intune
         ConfigMgr                 = $config.ConfigMgr
+        MaintenanceWindowEnabled  = [bool]$config.MaintenanceWindowEnabled
+        MaintenanceWindowMode     = if ($config.MaintenanceWindowMode) { $config.MaintenanceWindowMode } else { 'Daily' }
+        MaintenanceWindows        = @($config.MaintenanceWindows)
     }
 }
 
@@ -4951,12 +4996,20 @@ function Invoke-DATOEMDownloadModule {
 
                 if ($null -ne $matchingPack) {
                     $spId = $matchingPack.SoftPaqId
-                    $downloadURL = $matchingPack.Url
+                    # Resolve the SoftPaq metadata (version + download URL) from the SoftPaqList
+                    # section -- the ProductOSDriverPack node itself carries neither.
+                    $hpSoftPaq = $HPModelXML.NewDataSet.HPClientDriverPackCatalog.SoftPaqList.SoftPaq |
+                        Where-Object { $_.Id -eq $spId } | Select-Object -First 1
+                    $downloadURL = if ($hpSoftPaq -and -not [string]::IsNullOrEmpty($hpSoftPaq.Url)) { $hpSoftPaq.Url } else { '' }
+                    # Normalise the SoftPaq number (catalog may or may not include the 'sp' prefix).
+                    $spNumber = "$spId" -replace '^sp', ''
                     if ([string]::IsNullOrEmpty($downloadURL)) {
-                        $downloadURL = "https://ftp.hp.com/pub/softpaq/sp$($spId.Substring(0,$spId.Length-3))001-$($spId.Substring(0,$spId.Length-3))500/sp$spId.exe"
+                        # Fall back to constructing the ftp.hp.com URL from the SoftPaq number.
+                        $spRange = $spNumber.Substring(0, $spNumber.Length - 3)
+                        $downloadURL = "https://ftp.hp.com/pub/softpaq/sp${spRange}001-${spRange}500/sp$spNumber.exe"
                     }
-                    $downloadFileName = "sp$spId.exe"
-                    $catalogVersion = $matchingPack.Version
+                    $downloadFileName = "sp$spNumber.exe"
+                    $catalogVersion = if ($hpSoftPaq) { $hpSoftPaq.Version } else { '' }
                     # Fallback: if the catalog entry has no version, use the version passed from the
                     # caller (HP catalog version resolved during model enumeration), then a date stamp.
                     if ([string]::IsNullOrEmpty($catalogVersion) -and -not [string]::IsNullOrEmpty($callerCatalogVersion)) {
@@ -6943,19 +6996,31 @@ function Invoke-DATPackageRetention {
         try {
             $smsNamespace = "root\SMS\Site_$SiteCode"
             $packagePrefix = if ($PackageType -eq 'BIOS') { 'BIOS Update' } else { 'Drivers' }
-            $pkgName = if ($PackageType -eq 'BIOS') {
-                "$packagePrefix - $OEM $Model"
-            } else {
-                "$packagePrefix - $OEM $Model - $OS $Architecture"
-            }
 
-            Write-DATLogEntry -Value "[Retention][CM] Querying superseded packages for: $pkgName" -Severity 1
-            $wmiQuery = "SELECT PackageID, Name, Version FROM SMS_Package WHERE Name = '$($pkgName -replace "'","''")'"
+            # Build the WQL filter. Driver package names embed the OS label, which for
+            # non-Dell OEMs includes the Windows build (e.g. "Windows 11 24H2"), while the
+            # caller only supplies the base OS ("Windows 11"). Match with an anchored LIKE
+            # pattern so the build segment between the OS and architecture is tolerated --
+            # an exact name match would otherwise find nothing and delete nothing.
             $cimSess = New-DATCimSession -ComputerName $SiteServer
+            if ($PackageType -eq 'BIOS') {
+                $pkgName  = "$packagePrefix - $OEM $Model"
+                $whereClause = "Name = '$($pkgName -replace "'","''")'"
+                Write-DATLogEntry -Value "[Retention][CM] Querying superseded packages for: $pkgName" -Severity 1
+            } else {
+                $namePattern = "$packagePrefix - $OEM $Model - $OS%$Architecture"
+                $whereClause = "Name LIKE '$($namePattern -replace "'","''")'"
+                Write-DATLogEntry -Value "[Retention][CM] Querying superseded packages matching: $namePattern" -Severity 1
+            }
+            $wmiQuery = "SELECT PackageID, Name, Version FROM SMS_Package WHERE $whereClause"
             $allPkgs  = @(Invoke-DATRemoteQuery -CimSession $cimSess -ComputerName $SiteServer -Namespace $smsNamespace -Query $wmiQuery)
-            $sorted   = $allPkgs | Sort-Object -Property Version -Descending
-            # Keep newest + $RetainCount previous; delete the rest
-            $toDelete = if ($sorted.Count -gt ($RetainCount + 1)) { $sorted | Select-Object -Skip ($RetainCount + 1) } else { @() }
+            # Group by package name so each distinct package line keeps its own newest
+            # version(s); retention is applied per-name, not across different packages.
+            $toDelete = foreach ($grp in ($allPkgs | Group-Object -Property Name)) {
+                $sorted = $grp.Group | Sort-Object -Property Version -Descending
+                if ($sorted.Count -gt ($RetainCount + 1)) { $sorted | Select-Object -Skip ($RetainCount + 1) }
+            }
+            $toDelete = @($toDelete)
 
             foreach ($pkg in $toDelete) {
                 Write-DATLogEntry -Value "[Retention][CM] Removing $($pkg.Name) v$($pkg.Version) ($($pkg.PackageID))" -Severity 1
@@ -6983,16 +7048,21 @@ function Invoke-DATPackageRetention {
         try {
             $displayPrefix = if ($PackageType -eq 'BIOS') { 'BIOS' } else { 'Drivers' }
             # Intune display names: "<Prefix> - <OEM> <Model> - <OS> <Arch>" or just "<Prefix> - <OEM> <Model>" for BIOS
-            $baseSearch = if ($PackageType -eq 'BIOS') {
-                "$displayPrefix - $OEM $Model"
+            $allApps = Get-DATIntuneWin32Apps
+            if ($PackageType -eq 'BIOS') {
+                $baseSearch = "$displayPrefix - $OEM $Model"
+                Write-DATLogEntry -Value "[Retention][Intune] Querying Win32 apps matching: $baseSearch*" -Severity 1
+                $matching = @($allApps | Where-Object { $_.displayName -like "$baseSearch*" })
             } else {
-                "$displayPrefix - $OEM $Model - $OS $Architecture"
+                # Driver app names embed the OS label, which for non-Dell OEMs includes the
+                # Windows build (e.g. "Windows 11 24H2") while the caller only supplies the
+                # base OS ("Windows 11"). Anchor on the OS prefix and require the architecture
+                # so the build segment is tolerated -- "$baseSearch*" alone would miss these.
+                $namePrefix = "$displayPrefix - $OEM $Model - $OS"
+                Write-DATLogEntry -Value "[Retention][Intune] Querying Win32 apps matching: $namePrefix* $Architecture" -Severity 1
+                $matching = @($allApps | Where-Object { $_.displayName -like "$namePrefix*$Architecture*" })
             }
-
-            Write-DATLogEntry -Value "[Retention][Intune] Querying Win32 apps matching: $baseSearch" -Severity 1
-            $allApps  = Get-DATIntuneWin32Apps
-            $matching = @($allApps | Where-Object { $_.displayName -like "$baseSearch*" })
-            Write-DATLogEntry -Value "[Retention][Intune] Found $($matching.Count) app(s) matching '$baseSearch'" -Severity 1
+            Write-DATLogEntry -Value "[Retention][Intune] Found $($matching.Count) app(s)" -Severity 1
             $sorted   = $matching | Sort-Object -Property { $_.displayVersion } -Descending
             $toDelete = if ($sorted.Count -gt ($RetainCount + 1)) { $sorted | Select-Object -Skip ($RetainCount + 1) } else { @() }
 
@@ -8146,8 +8216,11 @@ function New-DATIntuneInstallScript {
             try {
                 $snoozeTime = [datetime]::Parse($snoozeUntil)
                 if ((Get-Date) -lt $snoozeTime) {
-                    Write-CMTraceLog "Snooze active until $snoozeUntil -- exiting without action"
-                    exit 0
+                    Write-CMTraceLog "Snooze active until $snoozeUntil -- exiting with 1618 (another installation is pending)"
+                    # 1618 = ERROR_INSTALL_ALREADY_RUNNING -- a built-in Intune Win32 return
+                    # code mapped to 'retry', so the deferred install is re-attempted later
+                    # instead of being recorded as a successful (completed) install.
+                    exit 1618
                 } else {
                     Write-CMTraceLog "Snooze expired ($snoozeUntil) -- continuing with installation"
                     Remove-ItemProperty -Path $snoozeRegPath -Name 'SnoozeUntil' -Force -ErrorAction SilentlyContinue
@@ -8320,7 +8393,9 @@ function New-DATIntuneInstallScript {
                                 } else {
                                     Write-CMTraceLog "User chose Remind Me Later -- rescheduled until $snoozeExpiry"
                                 }
-                                exit 0
+                                # 1618 = ERROR_INSTALL_ALREADY_RUNNING -- signals Intune to retry
+                                # the deferred install later rather than record it as completed.
+                                exit 1618
                             }
                         } elseif ($toastResult -eq 'Update') {
                             Write-CMTraceLog "User chose Update Now -- proceeding with installation"
@@ -8340,7 +8415,9 @@ function New-DATIntuneInstallScript {
                             $snoozeExpiry = (Get-Date).AddHours(4).ToString('o')
                             Set-ItemProperty -Path $snoozeRegPath -Name 'SnoozeUntil' -Value $snoozeExpiry -Force
                             Write-CMTraceLog "Toast process exited without result -- snoozed until $snoozeExpiry (Remind Me Later on no result)"
-                            exit 0
+                            # 1618 = ERROR_INSTALL_ALREADY_RUNNING -- signals Intune to retry
+                            # the deferred install later rather than record it as completed.
+                            exit 1618
                         } else {
                             Write-CMTraceLog "Toast process exited without result -- proceeding with installation (Auto Install on no result)" -Severity 2
                         }
@@ -8553,7 +8630,8 @@ function New-DATIntuneRequirementScript {
         [Parameter(Mandatory)][string]$OS,
         [Parameter(Mandatory)][string]$Version,
         [string]$ReleaseDate,
-        [ValidateSet('Drivers','BIOS')][string]$UpdateType = 'Drivers'
+        [ValidateSet('Drivers','BIOS')][string]$UpdateType = 'Drivers',
+        [string]$MaintenanceWindowsJson = ''
     )
 
     # Parse OS version (Windows 10/11)
@@ -8651,6 +8729,49 @@ function New-DATIntuneRequirementScript {
 "@
     }
 
+    # Build the maintenance-window gate (Check 0). Empty when no schedule is supplied, so
+    # packages built without a maintenance window behave exactly as before.
+    $maintenanceWindowBlock = ''
+    if (-not [string]::IsNullOrWhiteSpace($MaintenanceWindowsJson)) {
+        # Embed the schedule JSON verbatim in a single-quoted here-string. Day names and HH:mm
+        # values never contain single quotes, so no escaping is required; guard defensively anyway.
+        $safeJson = $MaintenanceWindowsJson.Replace("'", "''")
+        $maintenanceWindowBlock = @"
+    # Check 0: Maintenance window -- only applicable while inside a configured window
+    `$mwJson = '$safeJson'
+    if (-not [string]::IsNullOrWhiteSpace(`$mwJson)) {
+        try { `$mwWindows = @(`$mwJson | ConvertFrom-Json) } catch { `$mwWindows = @() }
+        if (`$mwWindows.Count -gt 0) {
+            `$mwNowDay = (Get-Date).DayOfWeek.ToString()
+            `$mwNow = (Get-Date).TimeOfDay
+            `$mwApplicable = `$mwWindows | Where-Object {
+                (-not `$_.PSObject.Properties['Day']) -or [string]::IsNullOrEmpty(`$_.Day) -or `$_.Day -eq `$mwNowDay
+            }
+            `$mwInWindow = `$false
+            foreach (`$mwW in `$mwApplicable) {
+                `$mwS = "`$(`$mwW.Start)".Split(':')
+                `$mwE = "`$(`$mwW.End)".Split(':')
+                if (`$mwS.Count -ne 2 -or `$mwE.Count -ne 2) { continue }
+                try {
+                    `$mwStart = [timespan]::new([int]`$mwS[0], [int]`$mwS[1], 0)
+                    `$mwEnd   = [timespan]::new([int]`$mwE[0], [int]`$mwE[1], 0)
+                } catch { continue }
+                if (`$mwStart -le `$mwEnd) {
+                    if (`$mwNow -ge `$mwStart -and `$mwNow -le `$mwEnd) { `$mwInWindow = `$true; break }
+                } else {
+                    # Window spans midnight (e.g. 22:00 to 05:00)
+                    if (`$mwNow -ge `$mwStart -or `$mwNow -le `$mwEnd) { `$mwInWindow = `$true; break }
+                }
+            }
+            if (-not `$mwInWindow) {
+                Write-Output "Outside maintenance window (day=`$mwNowDay, time=`$(`$mwNow.ToString('hh\:mm')))"
+                exit 0
+            }
+        }
+    }
+"@
+    }
+
     $scriptContent = @'
 <#
     Driver Automation Tool - Requirement Script
@@ -8668,6 +8789,7 @@ function New-DATIntuneRequirementScript {
 $RequirementMet = $false
 
 try {{
+%%MAINTENANCE_WINDOW%%
     # Check 1: Manufacturer must match OEM
     $manufacturer = (Get-CimInstance -ClassName Win32_ComputerSystem -ErrorAction Stop).Manufacturer
     $expectedOEM = "{0}"
@@ -8725,6 +8847,7 @@ if ($RequirementMet) {{
 '@ -f $OEM, $Model, $OS, $Version, $bbValues, (Get-Date -Format "yyyy-MM-dd HH:mm:ss"), $osNumber, $UpdateType, $osCheckBlock, $regSubKey
 
     $scriptContent = $scriptContent.Replace('%%VERSION_CHECK%%', $versionCheckBlock)
+    $scriptContent = $scriptContent.Replace('%%MAINTENANCE_WINDOW%%', $maintenanceWindowBlock)
 
     # UTF-8 WITHOUT BOM -- Intune requirement rule scripts must not carry a BOM, otherwise
     # the portal/IME treats it as literal content (surfaces as mojibake at the top of the script).
@@ -9584,7 +9707,8 @@ function Invoke-DATIntunePackageCreation {
         [string]$CustomIssuesActionButton,
         [string]$CustomBIOSSuccessActionButton,
         [string]$CustomBIOSSuccessDismissButton,
-        [string]$CustomBIOSIssuesActionButton
+        [string]$CustomBIOSIssuesActionButton,
+        [string]$MaintenanceWindowsJson = ''
     )
     if (-not [string]::IsNullOrEmpty($IntuneAuthToken)) {
         $script:IntuneAuthToken = $IntuneAuthToken
@@ -9774,7 +9898,7 @@ function Invoke-DATIntunePackageCreation {
         $requirementScriptPath = Join-Path $scriptsDir "Require-$OEM-$($Model -replace '\s+','-').ps1"
         New-DATIntuneRequirementScript -OutputPath $requirementScriptPath -OEM $OEM -Model $Model `
             -Baseboards $Baseboards -OS $OS -Version $version -UpdateType $UpdateType `
-            -ReleaseDate $ReleaseDate
+            -ReleaseDate $ReleaseDate -MaintenanceWindowsJson $MaintenanceWindowsJson
         Write-DATLogEntry -Value "[Intune Pipeline] Requirement script created: $requirementScriptPath" -Severity 1 -UpdateUI
 
         # Step 4: Generate detection script (stored separately, not in the .intunewin)
@@ -10106,12 +10230,120 @@ function Get-DATBiosCatalog {
     }
 }
 
-function Get-DATDriverCatalog {
+function Repair-DATCatalogSurfaceSku {
     <#
     .SYNOPSIS
-        Downloads and caches the DAT driver catalog from the API. Returns the parsed catalog array.
-        On subsequent calls within the same session, returns the cached copy.
+        Corrects known-incorrect Microsoft Surface SystemSKU values in the DAT API
+        driver catalog and warns about suspicious (likely-miscopied) SKUs that have no
+        confident correction mapping.
+    .DESCRIPTION
+        Some upstream catalog entries carry the wrong SystemSKU in their SupportedDevices
+        field. The recurring failure mode (#741) is a SKU belonging to an older device
+        being copied onto a newer model's entry -- e.g. the Intel "Surface Pro for Business
+        (11th Edition)" was tagged with the 5th-gen SKUs Surface_Pro_1796 / Surface_Pro_1807,
+        which actually belong to "Surface Pro (5th Gen)" / "Surface Pro with LTE Advanced
+        (5th Gen)". The correct value is Surface_Pro_11th_Edition_With_Intel_For_Business_2103.
+
+        Two complementary mechanisms run here, both driven by the Microsoft Surface System
+        SKU reference (https://learn.microsoft.com/en-us/surface/surface-system-sku-reference):
+
+        (B) CORRECTION -- a canonical table of high-confidence model -> correct-SKU rules.
+            A rule fires only when every NameMatches token is present in DisplayName, no
+            NameExcludes token is present, and at least one WrongSkus token is found in
+            SupportedDevices. Matched entries are rewritten and logged at severity 1.
+
+        (C) DETECTION -- a guard table mapping legacy SKU tokens to the model generation
+            they belong to (OwnerMarker). If a Surface entry still carries a legacy SKU
+            after corrections AND its DisplayName does not contain that SKU's OwnerMarker,
+            the mismatch is logged at severity 2 (warning) WITHOUT rewriting -- surfacing
+            new/unknown catalog errors for follow-up without risking a bad auto-change.
+
+        The real fix belongs upstream in the backend catalog; this is a client-side safety
+        net and is a no-op once the source data is correct. Both tables are intentionally
+        small and extensible -- add rules as new miscopies are confirmed.
     #>
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory)][AllowNull()]$Catalog
+    )
+
+    if (-not $Catalog) { return $Catalog }
+
+    # (B) Canonical model -> correct-SKU corrections (high confidence).
+    $corrections = @(
+        [PSCustomObject]@{
+            # Matches the x64/Intel "Surface Pro (11th Edition)" / "Surface Pro for Business
+            # (11th Edition)" catalog entry. The Snapdragon/5G 11th-Ed variants are ARM64 with
+            # their own SKUs and are excluded. The rule only rewrites entries that actually
+            # carry the wrong 5th-gen SKUs, so genuine entries are never touched. (#741)
+            NameMatches  = @('Pro', '11th Edition')
+            NameExcludes = @('5G', 'Snapdragon')
+            WrongSkus    = @('Surface_Pro_1796', 'Surface_Pro_1807')
+            CorrectSku   = 'Surface_Pro_11th_Edition_With_Intel_For_Business_2103'
+        }
+    )
+
+    # (C) Legacy SKU guards for mismatch detection. OwnerMarker is a distinguishing token
+    # from the SKU's true owner model -- if a Surface entry carries the SKU but its
+    # DisplayName lacks the marker, the SKU almost certainly does not belong to it.
+    $legacySkuGuards = @(
+        [PSCustomObject]@{ Sku = 'Surface_Pro_1796'; OwnerMarker = '5th Gen'; Owner = 'Surface Pro (5th Gen)' }
+        [PSCustomObject]@{ Sku = 'Surface_Pro_1807'; OwnerMarker = '5th Gen'; Owner = 'Surface Pro with LTE Advanced (5th Gen)' }
+    )
+
+    $fixCount  = 0
+    $warnCount = 0
+    foreach ($entry in $Catalog) {
+        if ($entry.Manufacturer -ne 'Microsoft') { continue }
+        if ([string]::IsNullOrWhiteSpace($entry.SupportedDevices)) { continue }
+        $displayName = [string]$entry.DisplayName
+
+        # (B) Apply correction rules.
+        $corrected = $false
+        foreach ($rule in $corrections) {
+            $nameOk = $true
+            foreach ($needle in $rule.NameMatches) {
+                if ($displayName -notmatch [regex]::Escape($needle)) { $nameOk = $false; break }
+            }
+            if ($nameOk -and $rule.NameExcludes) {
+                foreach ($block in $rule.NameExcludes) {
+                    if ($displayName -match [regex]::Escape($block)) { $nameOk = $false; break }
+                }
+            }
+            if (-not $nameOk) { continue }
+            $hasWrongSku = $false
+            foreach ($wrong in $rule.WrongSkus) {
+                if ($entry.SupportedDevices -match [regex]::Escape($wrong)) { $hasWrongSku = $true; break }
+            }
+            if ($hasWrongSku -and $entry.SupportedDevices -ne $rule.CorrectSku) {
+                Write-DATLogEntry -Value "[DRIVERS] Surface SKU correction (#741): '$displayName' SupportedDevices '$($entry.SupportedDevices)' -> '$($rule.CorrectSku)'" -Severity 1
+                $entry.SupportedDevices = $rule.CorrectSku
+                $fixCount++
+                $corrected = $true
+            }
+        }
+        if ($corrected) { continue }
+
+        # (C) Detect leftover mismatched legacy SKUs (warn only -- no rewrite).
+        foreach ($guard in $legacySkuGuards) {
+            if ($entry.SupportedDevices -match [regex]::Escape($guard.Sku) -and
+                $displayName -notmatch [regex]::Escape($guard.OwnerMarker)) {
+                Write-DATLogEntry -Value "[Warning] - [DRIVERS] Possible Surface SKU mismatch: '$displayName' carries '$($guard.Sku)' which belongs to '$($guard.Owner)'. Verify against the Microsoft Surface System SKU reference (no automatic correction applied)." -Severity 2
+                $warnCount++
+            }
+        }
+    }
+    if ($fixCount -gt 0) {
+        Write-DATLogEntry -Value "[DRIVERS] Applied $fixCount Surface SystemSKU correction(s) to catalog (#741)" -Severity 1
+    }
+    if ($warnCount -gt 0) {
+        Write-DATLogEntry -Value "[Warning] - [DRIVERS] Detected $warnCount Surface SKU mismatch(es) with no confident correction -- review catalog source data" -Severity 2
+    }
+    return $Catalog
+}
+
+function Get-DATDriverCatalog {
+
     [CmdletBinding()]
     param (
         [switch]$Force
@@ -10184,6 +10416,8 @@ function Get-DATDriverCatalog {
 
     try {
         $global:DriverCatalog = @(Get-Content -Path $cachePath -Raw | ConvertFrom-Json)
+        # Apply known SystemSKU corrections (e.g. Surface Pro 11th Edition Intel -- #741)
+        $global:DriverCatalog = @(Repair-DATCatalogSurfaceSku -Catalog $global:DriverCatalog)
         Write-DATLogEntry -Value "[DRIVERS] Catalog loaded: $($global:DriverCatalog.Count) entries" -Severity 1
         return $global:DriverCatalog
     } catch {
