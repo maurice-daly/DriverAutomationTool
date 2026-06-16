@@ -5,8 +5,12 @@ IMPORTANT
 
 Version 10.1.0
 What's New & Fixed
+- Toast Notifications — Added a Critical Notification (alarm) mode for Intune deployments. The update prompt now displays even when Focus Assist / Do Not Disturb is active and plays an audible alarm sound at display time, intended for forced-reboot and security-critical updates. The behaviour is opt-in via a new toggle that persists across sessions; standard notifications continue to respect Do Not Disturb as before.
+- Scheduled Tasks — The toast test harness now supports an -AlarmMode switch so Critical Notifications can be validated directly from the command line.
+into a single row with garbled, space-joined values (e.g. "17:00 17:00 1"). Schedules now restore correctly on both PowerShell 5.1 and 7, and the same fix applies to the client-side maintenance-window check used during deployment
 - Profiles — Added saveable configuration profiles so you can store and quickly reload your preferred OEM/OS/package selections.
 - Maintenance Windows — Added support for defining maintenance windows to control when deployments and updates are applied.
+- Maintenance Windows — Fixed a bug where restoring a saved multi-day maintenance window schedule on Windows PowerShell 5.1 collapsed every day's times 
 - OEM Support (HP) — Fixed HP SoftPaq downloads, corrected HP known-model matching for Intune, and resolved several HP CMSL (driver pack sourcing) issues.
 - Model Matching — Improved model detection accuracy so the right driver/BIOS packages are matched to each device.
 - Toast Notifications — Added end-user button customisation and a reset option, fixed multi-line notification rendering, and resolved a toast display bug.
