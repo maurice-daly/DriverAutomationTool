@@ -3,6 +3,17 @@ Release Notes
 IMPORTANT
 - DAT Downloads have been moved to GitHub - https://github.com/maurice-daly/DriverAutomationTool
 
+Version 10.1.1
+What's New & Fixed
+- Driver Packaging — ConfigMgr packages now stamp a date when created or updated, and the Package Management view shows a Last Updated column (previously blank), so you can sort and clean up packages by age. (#806)
+- Driver Packaging — Scheduled/headless builds now resolve catalog versions up front, so packages already at the current version are skipped before any download, extraction or WIM build instead of after — saving significant time and bandwidth on unchanged Dell/Lenovo drivers and all BIOS packages. (#807)
+- HP Support — Duplicate SoftPaqs returned by HPCMSL (e.g. HP Hotkey Support, Intel Video Driver) are now de-duplicated at source, preventing redundant downloads/extraction and fixing a concurrency counter collision. (#810)
+- Download Utility — A custom curl.exe can now actually be used: administrators can configure a trusted SHA-256 hash pin (with a one-click Compute button) for the bundled binary, since official curl.se builds are not Authenticode signed. Signature-failure logs now report the specific status/reason instead of a generic UnknownError. (#809)
+- Headless Builds — Added an honoured CleanTempOnExit setting so scheduled/headless runs clean up their temp/storage folder after a successful build, matching the UI's shutdown behaviour. (#811)
+- Model Matching — A plain model refresh (app start, OEM/OS change, or profile apply) now only restores your saved/profile selections and no longer auto-ticks every known Intune/ConfigMgr device, fixing inflated and drifting selections. Known-model auto-select is now explicit. (#805)
+- Logging — Cleaned up several redundant and malformed log lines, including duplicated BIOS family names and noisy size/engine entries. (#808)
+- Toast Notifications & Maintenance Windows — Additional hotfixes to multi-line toast rendering and maintenance-window evaluation.
+
 Version 10.1.0
 What's New & Fixed
 - Toast Notifications — Added a Critical Notification (alarm) mode for Intune deployments. The update prompt now displays even when Focus Assist / Do Not Disturb is active and plays an audible alarm sound at display time, intended for forced-reboot and security-critical updates. The behaviour is opt-in via a new toggle that persists across sessions; standard notifications continue to respect Do Not Disturb as before.

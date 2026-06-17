@@ -7349,15 +7349,20 @@ $btn_RefreshModels.Add_Click({
                             Write-DATActivityLog "  $($grp.Name): $($grp.Count) model(s)" -Level Info
                         }
 
-                        # Auto-select models matching known Intune devices
-                        Update-DATKnownModelSelection
-                        # Auto-select models matching known ConfigMgr devices
-                        Update-DATConfigMgrKnownModelSelection
+                        # NOTE: Known-model auto-selection is intentionally NOT run here. A plain
+                        # model refresh (app start, OEM/OS change, or profile apply) must only
+                        # restore the user's saved/profile selections -- never auto-tick known
+                        # Intune/ConfigMgr devices. Auto-selecting on every refresh previously
+                        # inflated selections (the grid became the UNION of the profile models
+                        # plus all known devices) and let profile selections drift on reload or
+                        # when adding an OEM/OS. (#805) Known-model auto-select now happens only
+                        # via the explicit Known Models lookup or the 'Select Known Models' button.
+
                         # Refresh the 'Select Known Models' button visibility now that the grid is populated
                         Update-DATSelectKnownModelsVisibility
                         # Restore previously saved model selections
                         Restore-DATModelSelections
-                        # Persist the merged selection state (saved JSON + known models) immediately
+                        # Persist the restored selection state immediately
                         Save-DATModelSelections
 
                         # Warn if BIOS catalog was unavailable (no models have BIOS versions)
@@ -11412,7 +11417,17 @@ function Invoke-DATPackageRefresh {
                     Name            = $pkg.Name
                     Version         = $pkg.Version
                     PackageID       = $pkg.PackageID
-                    SourceDate      = if ($pkg.SourceDate) { try { [Management.ManagementDateTimeConverter]::ToDateTime($pkg.SourceDate).ToString('yyyy-MM-dd HH:mm') } catch { '' } } else { '' }
+                    LastUpdated     = $(
+                        # Prefer ConfigMgr's LastRefreshTime (true last-updated stamp); fall back to
+                        # SourceDate, which the tool stamps on every create/update (#806).
+                        $rawDate = if ($pkg.LastRefreshTime) { $pkg.LastRefreshTime } elseif ($pkg.SourceDate) { $pkg.SourceDate } else { $null }
+                        if ($rawDate) {
+                            try {
+                                $dt = if ($rawDate -is [datetime]) { $rawDate } else { [Management.ManagementDateTimeConverter]::ToDateTime($rawDate) }
+                                $dt.ToString('yyyy-MM-dd HH:mm')
+                            } catch { '' }
+                        } else { '' }
+                    )
                     Manufacturer    = if ($pkg.Manufacturer) { $pkg.Manufacturer } else { '' }
                     Model           = $pkgModel
                     OperatingSystem = if ($pkg.MIFVersion) { ($pkg.MIFVersion -replace '\s+(x64|Arm64)$','').Trim() } else { '' }
@@ -13018,6 +13033,7 @@ $btn_ScheduleSave.Add_Click({
     $regConfig = Get-ItemProperty -Path $global:RegPath -ErrorAction SilentlyContinue
     $schedTempPath = if ($regConfig -and -not [string]::IsNullOrEmpty($regConfig.TempStoragePath)) { $regConfig.TempStoragePath } else { '' }
     $schedPkgPath = if ($regConfig -and -not [string]::IsNullOrEmpty($regConfig.PackageStoragePath)) { $regConfig.PackageStoragePath } else { '' }
+    $schedCleanTemp = -not ($regConfig -and $null -ne $regConfig.CleanTempOnExit -and $regConfig.CleanTempOnExit -eq 0)
 
     # ConfigMgr settings
     $schedCM = @{
@@ -13048,7 +13064,8 @@ $btn_ScheduleSave.Add_Click({
             -BIOSRestartDelayMinutes $schedBIOSRestartDelay `
             -TeamsWebhookUrl $schedTeamsUrl -TeamsNotificationsEnabled $schedTeamsEnabled -ConfigMgr $schedCM `
             -Intune $schedIntune `
-            -MaintenanceWindowEnabled $schedMWEnabled -MaintenanceWindowMode $schedMWMode -MaintenanceWindows $schedMWindows
+            -MaintenanceWindowEnabled $schedMWEnabled -MaintenanceWindowMode $schedMWMode -MaintenanceWindows $schedMWindows `
+            -CleanTempOnExit $schedCleanTemp
     } catch {
         Show-DATInfoDialog -Title 'Schedule Error' `
             -Message "Failed to export build config:`n`n$($_.Exception.Message)" `
@@ -13408,6 +13425,8 @@ $link_CurlDownload = $Window.FindName('link_CurlDownload')
 $cmb_CurlRunMode = $Window.FindName('cmb_CurlRunMode')
 $cmb_CurlSource = $Window.FindName('cmb_CurlSource')
 $panel_CurlThirdParty = $Window.FindName('panel_CurlThirdParty')
+$txt_CurlSHA256Pin = $Window.FindName('txt_CurlSHA256Pin')
+$btn_CurlComputeHash = $Window.FindName('btn_CurlComputeHash')
 
 $link_CurlDownload.Add_RequestNavigate({
     param($s, $e)
@@ -13742,6 +13761,39 @@ $cmb_CurlSource.Add_SelectionChanged({
         $panel_CurlThirdParty.Visibility = if ($cmb_CurlSource.SelectedItem.Content -eq 'Third Party (Bundled)') { 'Visible' } else { 'Collapsed' }
     }
 })
+
+# CURL trusted SHA-256 pin persistence (#809) -- normalise (strip spaces/colons) and store
+if ($null -ne $txt_CurlSHA256Pin) {
+    $txt_CurlSHA256Pin.Add_LostFocus({
+        $pin = ($txt_CurlSHA256Pin.Text -replace '[\s:]', '').Trim()
+        if ($pin -ne $txt_CurlSHA256Pin.Text) { $txt_CurlSHA256Pin.Text = $pin }
+        Set-DATRegistryValue -Name 'CurlSHA256Pin' -Value $pin -Type String
+    })
+}
+
+# CURL compute-hash helper -- reads the bundled curl.exe and fills in its SHA-256 hash (#809)
+if ($null -ne $btn_CurlComputeHash) {
+    $btn_CurlComputeHash.Add_Click({
+        try {
+            $bundledCurl = $null
+            if (-not [string]::IsNullOrEmpty($global:ToolsDirectory)) {
+                $bundledCurl = Get-ChildItem -Path $global:ToolsDirectory -Recurse -Filter 'Curl.exe' -ErrorAction SilentlyContinue |
+                    Select-Object -First 1 -ExpandProperty FullName
+            }
+            if ([string]::IsNullOrEmpty($bundledCurl) -or -not (Test-Path -LiteralPath $bundledCurl)) {
+                $txt_CurlSHA256Pin.Text = ''
+                Set-DATRegistryValue -Name 'CurlSHA256Pin' -Value '' -Type String
+                [System.Windows.MessageBox]::Show('No curl.exe was found in the Tools folder. Download curl from curl.se and place curl.exe in the Tools folder, then try again.', 'curl.exe not found', 'OK', 'Warning') | Out-Null
+                return
+            }
+            $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $bundledCurl -ErrorAction Stop).Hash
+            $txt_CurlSHA256Pin.Text = $hash
+            Set-DATRegistryValue -Name 'CurlSHA256Pin' -Value $hash -Type String
+        } catch {
+            [System.Windows.MessageBox]::Show("Failed to compute the curl.exe SHA-256 hash: $($_.Exception.Message)", 'Compute hash failed', 'OK', 'Error') | Out-Null
+        }
+    })
+}
 
 #endregion External Utilities & Modules
 
@@ -21379,6 +21431,11 @@ try {
             Write-Host "Built-in (System) (default)" -ForegroundColor DarkYellow
         }
 
+        # Restore CURL trusted SHA-256 pin (#809)
+        if ($null -ne $txt_CurlSHA256Pin -and -not [string]::IsNullOrEmpty($savedConfig.CurlSHA256Pin)) {
+            $txt_CurlSHA256Pin.Text = $savedConfig.CurlSHA256Pin
+        }
+
         # Restore Proxy Configuration
         if (-not [string]::IsNullOrEmpty($savedConfig.ProxyMode)) {
             $proxyDisplay = switch ($savedConfig.ProxyMode) {
@@ -21476,7 +21533,7 @@ if (Test-Path $logoPath) {
 
 # Read version from module manifest
 $manifestPath = Join-Path $AppRoot "Modules\DriverAutomationToolCore\DriverAutomationToolCore.psd1"
-$script:versionString = "v10.1.0"
+$script:versionString = "v10.1.1"
 if (Test-Path $manifestPath) {
     $manifestData = Import-PowerShellDataFile $manifestPath
     $ver = [version]$manifestData.ModuleVersion

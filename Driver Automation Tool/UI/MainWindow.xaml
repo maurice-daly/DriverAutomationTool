@@ -913,7 +913,7 @@
                                    Foreground="{DynamicResource AccentColor}" VerticalAlignment="Center" Margin="0,0,8,0"/>
                         <TextBlock Text="Driver Automation Tool" FontSize="13" FontWeight="SemiBold"
                                    Foreground="{DynamicResource WindowForeground}" VerticalAlignment="Center"/>
-                        <TextBlock x:Name="txt_Version" Text=" Version 10.1.0" FontSize="11"
+                        <TextBlock x:Name="txt_Version" Text=" Version 10.1.1" FontSize="11"
                                    Foreground="{DynamicResource InputPlaceholder}" VerticalAlignment="Center" Margin="4,0"/>
                     </StackPanel>
 
@@ -1992,7 +1992,7 @@
                                         <DataGridTextColumn Header="Name" Width="*" Binding="{Binding Name}" IsReadOnly="True"/>
                                         <DataGridTextColumn Header="Version" Width="90" Binding="{Binding Version}" IsReadOnly="True"/>
                                         <DataGridTextColumn Header="Package ID" Width="95" Binding="{Binding PackageID}" IsReadOnly="True"/>
-                                        <DataGridTextColumn Header="Source Date" Width="155" Binding="{Binding SourceDate}" IsReadOnly="True"/>
+                                        <DataGridTextColumn Header="Last Updated" Width="155" Binding="{Binding LastUpdated}" IsReadOnly="True"/>
                                     </DataGrid.Columns>
                                 </DataGrid>
                             </Border>
@@ -5071,6 +5071,26 @@
                                                                Text="Checking curl status..."/>
                                                 </Grid>
                                             </Border>
+
+                                            <!-- Trusted SHA-256 hash pin for unsigned curl builds (#809) -->
+                                            <TextBlock Text="Trusted SHA-256 Hash (optional)" FontSize="12" FontWeight="SemiBold"
+                                                       Foreground="{DynamicResource InputPlaceholder}" Margin="0,0,0,6"/>
+                                            <TextBlock TextWrapping="Wrap" FontSize="12" LineHeight="20"
+                                                       Foreground="{DynamicResource InputPlaceholder}" Margin="0,0,0,8">
+                                                Official curl.se builds are not Authenticode signed, so by default an unsigned bundled curl.exe is rejected and the system curl is used instead. To trust a known-good binary, paste its SHA-256 hash here (or click Compute to read it from the file in the Tools folder). The bundled binary is used only when its hash matches this value.
+                                            </TextBlock>
+                                            <Grid Margin="0,0,0,14">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*"/>
+                                                    <ColumnDefinition Width="Auto"/>
+                                                </Grid.ColumnDefinitions>
+                                                <TextBox x:Name="txt_CurlSHA256Pin" Grid.Column="0"
+                                                         Style="{StaticResource RoundedTextBox}" Height="36"
+                                                         FontFamily="Cascadia Code,Consolas,monospace" FontSize="12"/>
+                                                <Button x:Name="btn_CurlComputeHash" Grid.Column="1" Content="Compute"
+                                                        Style="{StaticResource SecondaryButton}" Height="36" MinWidth="90"
+                                                        Margin="8,0,0,0"/>
+                                            </Grid>
                                             </StackPanel>
 
                                             <!-- CURL Source -->
@@ -5969,7 +5989,7 @@
                                     <StackPanel>
                                         <TextBlock Text="Driver Automation Tool" FontSize="22" FontWeight="Bold"
                                                    Foreground="{DynamicResource AccentColor}" Margin="0,0,0,4"/>
-                                        <TextBlock x:Name="txt_AboutVersion" Text="Version 10.1.0" FontSize="14"
+                                        <TextBlock x:Name="txt_AboutVersion" Text="Version 10.1.1" FontSize="14"
                                                    Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,16"/>
 
                                         <TextBlock TextWrapping="Wrap" FontSize="13"
