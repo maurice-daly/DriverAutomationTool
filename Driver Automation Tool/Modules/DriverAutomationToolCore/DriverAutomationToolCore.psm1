@@ -3314,6 +3314,20 @@ function Start-DATModelProcessing {
 
                 # ── Pre-flight: skip download+packaging if package version is current ──
                 $skipDriverDownload = $false
+                # Resolve the authoritative catalog driver version up front via a lightweight
+                # catalog lookup (no download). In scheduled/headless mode the model carries no
+                # Version (the UI grid populates it from the catalog, BuildConfig does not), so
+                # $catalogDriverVersion is empty and the skip-if-current check below is disabled,
+                # forcing a full download + packaging of drivers already current in
+                # ConfigMgr/Intune (#817). This mirrors the UI's catalog match so the same version
+                # is available before the download.
+                if ([string]::IsNullOrEmpty($catalogDriverVersion) -and -not [string]::IsNullOrEmpty($baseboards)) {
+                    $resolvedDriverVer = Find-DATDriverCatalogVersion -OEM $oem -Baseboards $baseboards -Architecture $arch -OS $os
+                    if (-not [string]::IsNullOrEmpty($resolvedDriverVer)) {
+                        $catalogDriverVersion = $resolvedDriverVer
+                        Write-DATLogEntry -Value "[$currentIndex/$totalModels] Resolved catalog driver version v$catalogDriverVersion for $oem $modelName from driver catalog" -Severity 1
+                    }
+                }
                 # Extract core model identifier (last token) for fallback matching when OEM catalogs
                 # change naming conventions (e.g. "PA14250" vs "Pro Laptops PA14250")
                 $coreModelId = ($modelName -split '\s+')[-1]
@@ -10337,7 +10351,11 @@ function Get-DATBiosCatalog {
     }
 
     try {
-        $global:BiosCatalog = @(Get-Content -Path $cachePath -Raw | ConvertFrom-Json)
+        # Assign before wrapping. Windows PowerShell 5.1 emits a JSON array as a single
+        # pipeline object, so @(... | ConvertFrom-Json) nests the whole array into one element
+        # and collapses every downstream lookup. Capture first, then normalise to an array.
+        $biosParsed = Get-Content -Path $cachePath -Raw | ConvertFrom-Json
+        $global:BiosCatalog = @($biosParsed)
         Write-DATLogEntry -Value "[BIOS] Catalog loaded: $($global:BiosCatalog.Count) entries" -Severity 1
         return $global:BiosCatalog
     } catch {
@@ -10530,7 +10548,10 @@ function Get-DATDriverCatalog {
     }
 
     try {
-        $global:DriverCatalog = @(Get-Content -Path $cachePath -Raw | ConvertFrom-Json)
+        # Assign before wrapping -- see BIOS catalog note. Windows PowerShell 5.1 nests a piped
+        # JSON array into a single element, which breaks every downstream catalog lookup.
+        $driverParsed = Get-Content -Path $cachePath -Raw | ConvertFrom-Json
+        $global:DriverCatalog = @($driverParsed)
         # Apply known SystemSKU corrections (e.g. Surface Pro 11th Edition Intel -- #741)
         $global:DriverCatalog = @(Repair-DATCatalogSurfaceSku -Catalog $global:DriverCatalog)
         Write-DATLogEntry -Value "[DRIVERS] Catalog loaded: $($global:DriverCatalog.Count) entries" -Severity 1
@@ -10722,6 +10743,99 @@ function Find-DATBiosPackage {
         MinimumVersion   = $best.MinimumVersion
         SupportedDevices = $best.SupportedDevices
     }
+}
+
+function Find-DATDriverCatalogVersion {
+    <#
+    .SYNOPSIS
+        Resolves the driver package version for a model from the DAT API driver catalog,
+        matching by OEM and baseboard (SystemSKU) overlap. Returns the version string
+        (or an empty string when no match is found).
+    .DESCRIPTION
+        The UI populates each grid row's driver Version from the DAT API catalog when models
+        are listed. In scheduled/headless mode the BuildConfig models carry no Version, so the
+        skip-if-current check has nothing to compare against and re-downloads packages that are
+        already current (#817). This mirrors the UI's catalog match so the same version is
+        available before the download, making skip-if-current reliable in headless mode.
+        Mirrors the Find-DATBiosPackage baseboard-matching approach.
+    .PARAMETER OEM
+        Manufacturer name (Dell, HP, Lenovo, Acer, Microsoft).
+    .PARAMETER Baseboards
+        Comma/space/semicolon separated baseboard/SystemSKU values from the model definition.
+    .PARAMETER Architecture
+        Target architecture (e.g. x64). Used to narrow matches when multiple entries share boards.
+    .PARAMETER OS
+        Target OS label (e.g. "Windows 11 25H2"). Used to narrow matches when available.
+    .PARAMETER Catalog
+        The driver catalog array (from Get-DATDriverCatalog). If omitted, calls Get-DATDriverCatalog.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param (
+        [Parameter(Mandatory)][string]$OEM,
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Baseboards,
+        [string]$Architecture,
+        [string]$OS,
+        [array]$Catalog
+    )
+
+    $modelBoards = @($Baseboards -split '[,;\s]+' | ForEach-Object { $_.Trim().ToUpper() } | Where-Object { $_ })
+    if ($modelBoards.Count -eq 0) { return '' }
+
+    if (-not $Catalog -or $Catalog.Count -eq 0) {
+        $Catalog = Get-DATDriverCatalog
+    }
+    if (-not $Catalog -or $Catalog.Count -eq 0) { return '' }
+
+    # Filter catalog by OEM
+    $oemEntries = @($Catalog | Where-Object { $_.Manufacturer -eq $OEM })
+    if ($oemEntries.Count -eq 0) { return '' }
+
+    # Find entries whose SupportedDevices overlap the model baseboards (semicolon-delimited).
+    # Note: do NOT name this $matches -- that collides with the automatic $Matches variable,
+    # which the -match operators in the narrowing filters below would clobber.
+    $boardMatches = @()
+    foreach ($entry in $oemEntries) {
+        if ([string]::IsNullOrEmpty($entry.SupportedDevices)) { continue }
+        $entryDevices = @($entry.SupportedDevices -split '[;,\s]+' | ForEach-Object { $_.Trim().ToUpper() } | Where-Object { $_ })
+        foreach ($board in $modelBoards) {
+            if ($board -in $entryDevices) { $boardMatches += $entry; break }
+        }
+    }
+    if ($boardMatches.Count -eq 0) { return '' }
+
+    # Narrow by architecture when it does not eliminate every candidate (normalize amd64 -> x64)
+    if (-not [string]::IsNullOrEmpty($Architecture)) {
+        $archMatches = @($boardMatches | Where-Object {
+            $entryArch = $_.SupportedArchitecture
+            if ([string]::IsNullOrEmpty($entryArch)) { return $true }
+            ($entryArch -replace 'amd64', 'x64') -match [regex]::Escape($Architecture)
+        })
+        if ($archMatches.Count -gt 0) { $boardMatches = $archMatches }
+    }
+
+    # Narrow by OS build when present (e.g. "25H2") and it does not eliminate every candidate
+    if (-not [string]::IsNullOrEmpty($OS)) {
+        $osBuild = ($OS -split '\s+') | Where-Object { $_ -match '^\d+H\d+$' } | Select-Object -First 1
+        if (-not [string]::IsNullOrEmpty($osBuild)) {
+            $osMatches = @($boardMatches | Where-Object {
+                $entryOS = $_.SupportedOS
+                if ([string]::IsNullOrEmpty($entryOS)) { return $true }
+                $entryOS -match [regex]::Escape($osBuild)
+            })
+            if ($osMatches.Count -gt 0) { $boardMatches = $osMatches }
+        }
+    }
+
+    # Prefer the latest entry by ReleaseDate, then resolve the version the same way the UI grid
+    # does: use Version unless it is just an OS build token, falling back to ReleaseDate.
+    $best = $boardMatches | Sort-Object { try { [datetime]$_.ReleaseDate } catch { [datetime]::MinValue } } -Descending | Select-Object -First 1
+    if (-not [string]::IsNullOrEmpty($best.Version) -and $best.Version -notmatch '^\d+H\d+$') {
+        return [string]$best.Version
+    } elseif (-not [string]::IsNullOrEmpty($best.ReleaseDate)) {
+        return [string]$best.ReleaseDate
+    }
+    return ''
 }
 
 function Start-DATBiosDownload {

@@ -95,6 +95,7 @@
         'Get-DATDriverCatalog',
         'Repair-DATCatalogSurfaceSku',
         'Find-DATBiosPackage',
+        'Find-DATDriverCatalogVersion',
         'Get-DATFlash64W',
         'Invoke-DATBiosPackaging',
         'Start-DATBiosDownload',
