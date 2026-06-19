@@ -3,6 +3,16 @@ Release Notes
 IMPORTANT
 - DAT Downloads have been moved to GitHub - https://github.com/maurice-daly/DriverAutomationTool
 
+Version 10.1.2
+What's New & Fixed
+- Driver Packaging (ConfigMgr) — Added the new XML Logic Package generator. It enumerates your existing DAT driver packages and writes a consolidated DriverPackages.xml, then optionally creates, replaces, and re-distributes the MSEndpointMgr XML Logic Package on the site server automatically. Available from the ConfigMgr Package Options screen and in headless/scheduled builds via BuildConfig.json.
+- ConfigMgr OS Deployment — Shipped a new Invoke-CMApplyDriverPackage task-sequence script that matches and applies driver packages during BareMetal, DriverUpdate, OSUpgrade, PreCache, and the new XML-package deployment modes via the AdminService endpoint.
+- Scheduled Tasks / Headless Builds — Fixed redundant re-downloads of drivers and BIOS that were already current (#817). The tool now resolves the authoritative catalog driver and BIOS version up front with a lightweight catalog lookup, so the skip-if-current check works reliably even when the model definition carries no version (as is normal in headless mode).
+- Reporting / Telemetry — Driver package reports now include the package version across all output modes (Download Only, WIM Package Only, and Intune), not just ConfigMgr — so the version column on the Reports page fills in correctly.
+- Feedback Submission — Fixed an Unauthorized (401) error when submitting feedback with non-English or special characters (accents, emoji, smart quotes) on Windows PowerShell 5.1. Signed request payloads are now transmitted as UTF-8, matching the signature exactly.
+- Security — Added a SHA-256 pin and one-click Compute Hash control for validating the bundled curl.exe from the settings screen.
+- Compatibility — Resolved a Windows PowerShell 5.1 issue where piped catalog JSON collapsed into a single element, which could break downstream driver/BIOS catalog lookups.
+
 Version 10.1.1
 What's New & Fixed
 - Driver Packaging — ConfigMgr packages now stamp a date when created or updated, and the Package Management view shows a Last Updated column (previously blank), so you can sort and clean up packages by age. (#806)

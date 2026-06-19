@@ -283,6 +283,37 @@ $buildExitCode = 0
 try {
     Start-DATModelProcessing @processingParams
 
+    # Optionally generate the ConfigMgr XML Logic Package after a successful build (ConfigMgr only)
+    if ($config.Platform -in @('ConfigMgr', 'Configuration Manager') -and $config.ConfigMgr -and
+        ($config.ConfigMgr.GenerateXmlLogicPackage -eq $true)) {
+        try {
+            Write-Host "[Headless] Generating ConfigMgr XML Logic Package..."
+            Write-DATLogEntry -Value "[Headless] Generating ConfigMgr XML Logic Package" -Severity 1
+            $xmlLogicParams = @{
+                SiteServer  = $config.ConfigMgr.SiteServer
+                SiteCode    = $config.ConfigMgr.SiteCode
+                PackagePath = $packagePath
+            }
+            if ($config.ConfigMgr.DistributionPriority) { $xmlLogicParams['Priority'] = $config.ConfigMgr.DistributionPriority }
+            if ($config.ConfigMgr.CreateXmlLogicPackage -eq $true) {
+                $xmlLogicParams['CreatePackage'] = $true
+                if ($config.ConfigMgr.DistributionPointGroups -and $config.ConfigMgr.DistributionPointGroups.Count -gt 0) {
+                    $xmlLogicParams['DistributionPointGroups'] = $config.ConfigMgr.DistributionPointGroups
+                }
+                if ($config.ConfigMgr.DistributionPoints -and $config.ConfigMgr.DistributionPoints.Count -gt 0) {
+                    $xmlLogicParams['DistributionPoints'] = $config.ConfigMgr.DistributionPoints
+                }
+                if ($config.ConfigMgr.EnableBinaryDeltaReplication -eq $true) { $xmlLogicParams['EnableBinaryDeltaReplication'] = $true }
+            }
+            $xmlLogicResult = New-DATXmlLogicPackage @xmlLogicParams
+            Write-Host "[Headless] XML Logic Package: $($xmlLogicResult.PackageCount) package(s), status '$($xmlLogicResult.Status)'$(if ($xmlLogicResult.PackageID) { " (package $($xmlLogicResult.PackageID))" })"
+            Write-DATLogEntry -Value "[Headless] XML Logic Package generated: $($xmlLogicResult.PackageCount) package(s), status '$($xmlLogicResult.Status)', XmlPath '$($xmlLogicResult.XmlPath)'" -Severity 1
+        } catch {
+            Write-DATLogEntry -Value "[Headless] XML Logic Package generation failed: $($_.Exception.Message)" -Severity 3
+            Write-Host "[Headless] XML Logic Package generation failed: $($_.Exception.Message)"
+        }
+    }
+
     # Submit telemetry summary (per-model reports are sent inside Start-DATModelProcessing)
     try {
         $finalReg = Get-ItemProperty -Path $global:RegPath -ErrorAction SilentlyContinue

@@ -4,7 +4,7 @@
      Organization:  MSEndpointMgr / Patch My PC
      Filename:      DriverAutomationToolCore.psm1
      Purpose:       Core functions for Driver Automation Tool v2.0
-     Version:       10.1.1.0
+     Version:       10.1.2.0
     ===========================================================================
 #>
 
@@ -37,8 +37,8 @@ if ($PSVersionTable.PSVersion.Major -le 5) {
 
 #region Variables
 
-[version]$global:ScriptRelease = "10.1.1.0"
-$global:ScriptBuildDate = "17-06-2026"
+[version]$global:ScriptRelease = "10.1.2.0"
+$global:ScriptBuildDate = "19-06-2026"
 $global:ReleaseNotesURL = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/DriverAutomationToolNotes.txt"
 $OEMLinksURL = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/OEMLinks.xml"
 
@@ -3033,6 +3033,292 @@ function Publish-DATConfigMgrPkg {
     # Content distribution handled by New-DATConfigMgrPkg
 }
 
+function New-DATXmlLogicPackage {
+    <#
+    .SYNOPSIS
+        Generates an XML Logic Package (DriverPackages.xml) for ConfigMgr task sequence
+        driver deployment, as consumed by Invoke-CMApplyDriverPackage.ps1 in -XMLPackage mode.
+    .DESCRIPTION
+        Enumerates the driver packages that the Driver Automation Tool has created in
+        Configuration Manager and writes their matching metadata (Name, PackageID,
+        Description, Manufacturer, Version, SourceDate) into an ArrayOfCMPackage XML
+        document. This file can be downloaded by a task sequence and used to match and
+        download driver packages without querying the AdminService.
+
+        When -CreatePackage is specified, the generated XML is wrapped in a standard
+        ConfigMgr package named "MSEndpointMgr XML Logic Package". If that package
+        already exists, its content (the XML file) is replaced in place and the package
+        is redistributed to its distribution points; otherwise a new package is created,
+        placed in the "Driver Packages" console folder and distributed.
+
+        This capability targets Configuration Manager only.
+    .PARAMETER SiteServer
+        The ConfigMgr site server hosting the SMS Provider.
+    .PARAMETER SiteCode
+        The ConfigMgr site code.
+    .PARAMETER PackagePath
+        The root path where the XML Logic Package folder is written. The XML is placed in
+        "<PackagePath>\MSEndpointMgr\XML Logic Package\DriverPackages.xml".
+    .PARAMETER Filter
+        Name filter used to select the source driver packages. Defaults to 'Drivers'.
+    .PARAMETER CreatePackage
+        Wrap the generated XML in a ConfigMgr package and distribute it. When the package
+        already exists, its content is replaced and redistributed.
+    .PARAMETER DistributionPointGroups
+        Distribution point groups to distribute the logic package to (when -CreatePackage).
+    .PARAMETER DistributionPoints
+        Individual distribution points to distribute the logic package to (when -CreatePackage).
+    .PARAMETER Priority
+        Replication priority for the logic package (High, Normal, Low).
+    .PARAMETER EnableBinaryDeltaReplication
+        Enable Binary Differential Replication on the logic package.
+    .PARAMETER ProgressQueue
+        Optional concurrent queue for streaming progress messages to a UI runspace.
+    .OUTPUTS
+        PSCustomObject with XmlPath, PackageCount, PackageID (if created) and Status.
+    #>
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory = $true)][string]$SiteServer,
+        [Parameter(Mandatory = $true)][string]$SiteCode,
+        [Parameter(Mandatory = $true)][string]$PackagePath,
+        [string]$Filter = 'Drivers',
+        [switch]$CreatePackage,
+        [string[]]$DistributionPointGroups,
+        [string[]]$DistributionPoints,
+        [ValidateSet('High','Normal','Low')][string]$Priority = 'Normal',
+        [switch]$EnableBinaryDeltaReplication,
+        [object]$ProgressQueue
+    )
+
+    # Local helper to push progress to an optional UI queue and the log file
+    $emit = {
+        param ([string]$Message, [int]$Severity = 1)
+        Write-DATLogEntry -Value $Message -Severity $Severity
+        if ($null -ne $ProgressQueue) {
+            try { $ProgressQueue.Enqueue([PSCustomObject]@{ Status = 'Info'; Message = $Message }) } catch { }
+        }
+    }
+
+    try {
+        $smsNamespace = "root\SMS\Site_$SiteCode"
+        & $emit "======== MSEndpointMgr XML Logic Package ========" 1
+
+        $priorityValue = switch ($Priority) {
+            'High'  { 1 }
+            'Low'   { 3 }
+            default { 2 }
+        }
+
+        # Create CIM session for all WMI operations
+        $cimSess = New-DATCimSession -ComputerName $SiteServer
+
+        # --- Stage 1: Enumerate DAT-created driver packages ---
+        & $emit "XML Logic Package: Querying ConfigMgr for driver packages matching '$Filter'" 1
+        $escapedFilter = $Filter -replace "'", "''"
+        $pkgQuery = "SELECT Name, PackageID, Description, Manufacturer, Version, SourceDate FROM SMS_Package WHERE Name LIKE '%$escapedFilter %-%' OR Name LIKE 'Driver Fallback%'"
+        $sourcePackages = @(Invoke-DATRemoteQuery -CimSession $cimSess -ComputerName $SiteServer -Namespace $smsNamespace -Query $pkgQuery |
+            Where-Object { $_.Name -notmatch 'Retired' -and $_.Name -notmatch 'Legacy' })
+
+        & $emit "XML Logic Package: Retrieved $($sourcePackages.Count) driver package(s) for XML export" 1
+        if ($sourcePackages.Count -eq 0) {
+            & $emit "XML Logic Package: No matching driver packages found -- nothing to export" 2
+            return [PSCustomObject]@{ XmlPath = $null; PackageCount = 0; PackageID = $null; Status = 'NoPackages' }
+        }
+
+        # --- Stage 2: Write the XML logic file ---
+        $logicPackagePath = Join-Path -Path $PackagePath -ChildPath 'MSEndpointMgr\XML Logic Package'
+        if (-not (Test-Path -Path $logicPackagePath)) {
+            & $emit "XML Logic Package: Creating package folder $logicPackagePath" 1
+            New-Item -Path $logicPackagePath -ItemType Directory -Force | Out-Null
+        }
+        $logicFilePath = Join-Path -Path $logicPackagePath -ChildPath 'DriverPackages.xml'
+
+        $xmlWriter = New-Object System.Xml.XmlTextWriter($logicFilePath, [System.Text.Encoding]::UTF8)
+        try {
+            $xmlWriter.Formatting = 'Indented'
+            $xmlWriter.Indentation = 1
+            $xmlWriter.IndentChar = "`t"
+            $xmlWriter.WriteStartDocument()
+            $xmlWriter.WriteComment('Created with the MSEndpointMgr Driver Automation Tool - DO NOT DELETE')
+            $xmlWriter.WriteStartElement('ArrayOfCMPackage')
+            $xmlWriter.WriteAttributeString('xmlns:xsd', 'http://www.w3.org/2001/XMLSchema')
+            $xmlWriter.WriteAttributeString('xmlns:xsi', 'http://www.w3.org/2001/XMLSchema-Instance')
+            $xmlWriter.WriteAttributeString('xmlns', 'http://www.msendpointmgr.com')
+
+            foreach ($pkg in ($sourcePackages | Sort-Object -Property Name)) {
+                # SourceDate may arrive as a DMTF string (Get-WmiObject) or DateTime (CIM); normalise to string
+                $sourceDate = $pkg.SourceDate
+                if ($sourceDate -is [string] -and $sourceDate -match '^\d{14}') {
+                    try { $sourceDate = [System.Management.ManagementDateTimeConverter]::ToDateTime($sourceDate) } catch { }
+                }
+                $xmlWriter.WriteStartElement('CMPackage')
+                $xmlWriter.WriteElementString('Name', [string]$pkg.Name)
+                $xmlWriter.WriteElementString('PackageID', [string]$pkg.PackageID)
+                $xmlWriter.WriteElementString('Description', [string]$pkg.Description)
+                $xmlWriter.WriteElementString('Manufacturer', [string]$pkg.Manufacturer)
+                $xmlWriter.WriteElementString('Version', [string]$pkg.Version)
+                $xmlWriter.WriteElementString('SourceDate', [string]$sourceDate)
+                $xmlWriter.WriteEndElement()
+                & $emit "XML Logic Package: Added package $($pkg.PackageID) ($($pkg.Name))" 1
+            }
+
+            $xmlWriter.WriteEndElement()
+            $xmlWriter.WriteEndDocument()
+            $xmlWriter.Flush()
+        } finally {
+            $xmlWriter.Close()
+        }
+        & $emit "XML Logic Package: Wrote $($sourcePackages.Count) package entries to $logicFilePath" 1
+
+        $result = [PSCustomObject]@{ XmlPath = $logicFilePath; PackageCount = $sourcePackages.Count; PackageID = $null; Status = 'XmlCreated' }
+
+        # --- Stage 3: Optionally wrap and distribute as a ConfigMgr package ---
+        if ($CreatePackage) {
+            $xmlPackageName = 'MSEndpointMgr XML Logic Package'
+            $xmlPackageVersion = Get-Date -Format 'yyyyMMdd'
+
+            # Convert the local folder path to a UNC admin-share path for the package source
+            $pkgSourcePath = $logicPackagePath
+            if ($logicPackagePath -notmatch '^\\\\' -and -not [string]::IsNullOrEmpty($SiteServer)) {
+                $driveLetter = $logicPackagePath[0]
+                $pkgSourcePath = "\\$SiteServer\${driveLetter}`$\$($logicPackagePath.Substring(3))"
+            }
+
+            $existing = Invoke-DATRemoteQuery -CimSession $cimSess -ComputerName $SiteServer -Namespace $smsNamespace `
+                -Query "SELECT PackageID, Name, PkgSourcePath FROM SMS_Package WHERE Name = '$($xmlPackageName -replace "'","''")'" |
+                Select-Object -First 1
+
+            if ($existing) {
+                # Existing logic package -- replace content in place and redistribute
+                $pkgId = $existing.PackageID
+                & $emit "XML Logic Package: Updating existing package $pkgId -- replacing content and redistributing" 1
+
+                $pkgWmi = [wmi]"\\$SiteServer\$($smsNamespace):SMS_Package.PackageID='$pkgId'"
+                if ($pkgWmi.PkgSourcePath -ne $pkgSourcePath) {
+                    $pkgWmi.PkgSourcePath = $pkgSourcePath
+                }
+                $pkgWmi.Version = $xmlPackageVersion
+                $pkgWmi.SourceDate = [System.Management.ManagementDateTimeConverter]::ToDmtfDateTime((Get-Date))
+                $pkgWmi.Priority = $priorityValue
+                $pkgWmi.Put() | Out-Null
+
+                if ($EnableBinaryDeltaReplication) {
+                    $pkgWmi.Get()
+                    $bdrFlag = 0x04000000
+                    if (($pkgWmi.PkgFlags -band $bdrFlag) -eq 0) {
+                        $pkgWmi.PkgFlags = $pkgWmi.PkgFlags -bor $bdrFlag
+                        $pkgWmi.Put() | Out-Null
+                    }
+                }
+
+                # Trigger content redistribution (refresh source + push to selected DPs/groups)
+                try {
+                    $pkgWmi.RefreshPkgSource() | Out-Null
+                    & $emit "XML Logic Package: Content redistribution triggered for $pkgId" 1
+                } catch {
+                    & $emit "[Warning] - Failed to trigger redistribution: $($_.Exception.Message)" 2
+                }
+            } else {
+                # New logic package -- create, file into Driver Packages folder and distribute
+                & $emit "XML Logic Package: Creating new package '$xmlPackageName'" 1
+                $newPkg = ([WmiClass]"\\$SiteServer\$($smsNamespace):SMS_Package").CreateInstance()
+                $newPkg.Name = $xmlPackageName
+                $newPkg.PkgSourcePath = $pkgSourcePath
+                $newPkg.Manufacturer = 'MSEndpointMgr'
+                $newPkg.Description = 'Package containing XML formatted package information for modern driver management'
+                $newPkg.Version = $xmlPackageVersion
+                $newPkg.PkgSourceFlag = 2  # Direct source path
+                $newPkg.Priority = $priorityValue
+                $newPkg.SourceDate = [System.Management.ManagementDateTimeConverter]::ToDmtfDateTime((Get-Date))
+                $putResult = $newPkg.Put()
+                $pkgId = $putResult.RelativePath -replace '.*PackageID="([^"]+)".*', '$1'
+                & $emit "XML Logic Package: Created package $pkgId" 1
+
+                if ($EnableBinaryDeltaReplication) {
+                    $newPkg.Get()
+                    $bdrFlag = 0x04000000
+                    $newPkg.PkgFlags = $newPkg.PkgFlags -bor $bdrFlag
+                    $newPkg.Put() | Out-Null
+                }
+
+                # Move package into the "Driver Packages" console folder if it exists
+                try {
+                    $topFolder = Invoke-DATRemoteQuery -CimSession $cimSess -ComputerName $SiteServer -Namespace $smsNamespace `
+                        -Query "SELECT ContainerNodeID FROM SMS_ObjectContainerNode WHERE Name = 'Driver Packages' AND ObjectType = 2 AND ParentContainerNodeID = 0" |
+                        Select-Object -First 1
+                    if ($topFolder) {
+                        $moveItem = ([WmiClass]"\\$SiteServer\$($smsNamespace):SMS_ObjectContainerItem").CreateInstance()
+                        $moveItem.InstanceKey = $pkgId
+                        $moveItem.ObjectType = 2
+                        $moveItem.ContainerNodeID = $topFolder.ContainerNodeID
+                        $moveItem.Put() | Out-Null
+                        & $emit "XML Logic Package: Moved package to Driver Packages console folder" 1
+                    }
+                } catch {
+                    & $emit "[Warning] - Failed to move logic package to folder: $($_.Exception.Message)" 2
+                }
+            }
+
+            # Distribute / redistribute to selected DP groups
+            if ($DistributionPointGroups -and $DistributionPointGroups.Count -gt 0) {
+                foreach ($dpGroup in $DistributionPointGroups) {
+                    try {
+                        $dpgWmi = Invoke-DATRemoteQuery -CimSession $cimSess -ComputerName $SiteServer -Namespace $smsNamespace `
+                            -Query "SELECT GroupID FROM SMS_DistributionPointGroup WHERE Name = '$($dpGroup -replace "'","''")'" |
+                            Select-Object -First 1
+                        if ($dpgWmi) {
+                            $dpgObj = [wmi]"\\$SiteServer\$($smsNamespace):SMS_DistributionPointGroup.GroupID='$($dpgWmi.GroupID)'"
+                            $dpgObj.AddPackages(@($pkgId)) | Out-Null
+                            & $emit "XML Logic Package: Content distributed to DP group $dpGroup" 1
+                        } else {
+                            & $emit "[Warning] - DP group '$dpGroup' not found" 2
+                        }
+                    } catch {
+                        & $emit "[Warning] - Failed to distribute to '$dpGroup': $($_.Exception.Message)" 2
+                    }
+                }
+            }
+
+            # Distribute / redistribute to selected individual DPs
+            if ($DistributionPoints -and $DistributionPoints.Count -gt 0) {
+                foreach ($dpServer in $DistributionPoints) {
+                    try {
+                        $dpNalPath = Invoke-DATRemoteQuery -CimSession $cimSess -ComputerName $SiteServer -Namespace $smsNamespace `
+                            -Query "SELECT NALPath FROM SMS_DistributionPointInfo WHERE ServerName = '$($dpServer -replace "'","''")'" |
+                            Select-Object -First 1 -ExpandProperty NALPath
+                        if ($dpNalPath) {
+                            $newDP = ([WmiClass]"\\$SiteServer\$($smsNamespace):SMS_DistributionPoint").CreateInstance()
+                            $newDP.PackageID = $pkgId
+                            $newDP.ServerNALPath = $dpNalPath
+                            $newDP.SiteCode = $SiteCode
+                            $newDP.Put() | Out-Null
+                            & $emit "XML Logic Package: Content distributed to DP $dpServer" 1
+                        } else {
+                            & $emit "[Warning] - DP '$dpServer' not found" 2
+                        }
+                    } catch {
+                        & $emit "[Warning] - Failed to distribute to DP '$dpServer': $($_.Exception.Message)" 2
+                    }
+                }
+            }
+
+            $result.PackageID = $pkgId
+            $result.Status = if ($existing) { 'PackageUpdated' } else { 'PackageCreated' }
+        }
+
+        & $emit "XML Logic Package: Process complete" 1
+        return $result
+    } catch {
+        Write-DATLogEntry -Value "[Error] - XML Logic Package generation failed: $($_.Exception.Message)" -Severity 3
+        Write-DATLogEntry -Value "[Error] - Stack: $($_.ScriptStackTrace)" -Severity 3
+        if ($null -ne $ProgressQueue) {
+            try { $ProgressQueue.Enqueue([PSCustomObject]@{ Status = 'Failed'; Message = $_.Exception.Message }) } catch { }
+        }
+        return [PSCustomObject]@{ XmlPath = $null; PackageCount = 0; PackageID = $null; Status = 'Failed'; Error = $_.Exception.Message }
+    }
+}
+
 #endregion ConfigMgr
 
 #region Utility
@@ -3468,6 +3754,11 @@ function Start-DATModelProcessing {
                     $script:driverPipelineSuccess = $true
                 }
 
+                # Resolve the authoritative package version once for telemetry reporting across
+                # all running modes. Prefer the version returned by the download module (e.g. the
+                # resolved Dell driver-pack revision), then the catalog version, then a date stamp.
+                $resolvedPkgVersion = if (-not [string]::IsNullOrEmpty($catalogVersion)) { "$catalogVersion" } elseif (-not [string]::IsNullOrEmpty($catalogDriverVersion)) { "$catalogDriverVersion" } else { Get-Date -Format "ddMMyyyy" }
+
                 # Intune: Create and upload Win32 app after packaging
                 if ($RunningMode -eq 'Intune') {
                     $wimPath = Join-Path $global:TempDirectory "Packaged\$oem\$modelName\$osPkgLabel\DriverPackage.wim"
@@ -3589,7 +3880,7 @@ function Start-DATModelProcessing {
                             $drvSize = if ($intuneWinFile) { $intuneWinFile.Length } else { 0 }
                             Send-DATDriverReport -Manufacturer $oem -Model $modelName `
                                 -OSVersion $osPkgLabel -OSArchitecture $arch -Platform 'Intune' `
-                                -Status 'Success' -PackageSize $drvSize -PackageHash $drvHash
+                                -Status 'Success' -PackageVersion $resolvedPkgVersion -PackageSize $drvSize -PackageHash $drvHash
                         } catch {
                             Write-DATLogEntry -Value "[Telemetry] Driver report failed: $($_.Exception.Message)" -Severity 2
                         }
@@ -3717,7 +4008,7 @@ function Start-DATModelProcessing {
                                 Send-DATDriverReport -Manufacturer $oem -Model $modelName `
                                     -OSVersion $osPkgLabel -OSArchitecture $arch `
                                     -Platform $RunningMode -Status 'Success' `
-                                    -PackageSize $drvSize -PackageHash $drvHash
+                                    -PackageVersion $resolvedPkgVersion -PackageSize $drvSize -PackageHash $drvHash
                             }
                         } else {
                         # WIM Package Only: use the WIM file for telemetry
@@ -3731,7 +4022,7 @@ function Start-DATModelProcessing {
                             Send-DATDriverReport -Manufacturer $oem -Model $modelName `
                                 -OSVersion $osPkgLabel -OSArchitecture $arch `
                                 -Platform $RunningMode -Status 'Success' `
-                                -PackageSize $drvSize -PackageHash $drvHash
+                                -PackageVersion $resolvedPkgVersion -PackageSize $drvSize -PackageHash $drvHash
                         }
                         }
                     } catch {
@@ -11428,6 +11719,11 @@ function Send-DATTelemetry {
 
     $url = "$($config.apiBaseUrl)/$Endpoint"
     $json = $Body | ConvertTo-Json -Depth 5 -Compress
+    # Encode the body to UTF-8 bytes ONCE so the signed content and the bytes
+    # sent on the wire are byte-identical. Windows PowerShell 5.1 otherwise
+    # transmits a string body as Latin1, corrupting non-ASCII characters and
+    # breaking server-side HMAC verification.
+    $bodyBytes = [System.Text.Encoding]::UTF8.GetBytes($json)
 
     # HMAC-SHA256 request signing (softfail-safe -- skipped if secret is absent or computation fails)
     $headers = @{}
@@ -11440,7 +11736,7 @@ function Send-DATTelemetry {
             $timestamp = (Get-Date).ToUniversalTime().ToString('o')
             $keyBytes  = [System.Text.Encoding]::UTF8.GetBytes($hmacSecret)
             $hmac      = [System.Security.Cryptography.HMACSHA256]::new($keyBytes)
-            $sigBytes  = $hmac.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($json))
+            $sigBytes  = $hmac.ComputeHash($bodyBytes)
             $signature = -join ($sigBytes | ForEach-Object { $_.ToString('x2') })
             $hmac.Dispose()
             $headers['x-dat-signature'] = $signature
@@ -11453,7 +11749,7 @@ function Send-DATTelemetry {
     try {
         $proxyParams = Get-DATWebRequestProxy
         if ($proxyParams -isnot [hashtable]) { $proxyParams = @{} }
-        $null = Invoke-RestMethod -Uri $url -Method POST -Body $json -ContentType 'application/json' `
+        $null = Invoke-RestMethod -Uri $url -Method POST -Body $bodyBytes -ContentType 'application/json; charset=utf-8' `
             -Headers $headers -UseBasicParsing -TimeoutSec 30 -ErrorAction Stop @proxyParams
         Write-DATLogEntry -Value "[Telemetry] POST $Endpoint -- success" -Severity 1
         Write-DATLogEntry -Value "[Telemetry] Payload: $json" -Severity 1
@@ -11517,6 +11813,11 @@ function Send-DATFeedback {
 
     $url = "$($config.apiBaseUrl)/feedback"
     $json = $body | ConvertTo-Json -Depth 5 -Compress
+    # Encode the body to UTF-8 bytes ONCE so the signed content and the bytes
+    # sent on the wire are byte-identical. Windows PowerShell 5.1 otherwise
+    # transmits a string body as Latin1, corrupting non-ASCII characters and
+    # breaking server-side HMAC verification.
+    $bodyBytes = [System.Text.Encoding]::UTF8.GetBytes($json)
 
     # HMAC-SHA256 request signing (softfail-safe -- skipped if secret is absent or computation fails)
     $headers = @{}
@@ -11529,7 +11830,7 @@ function Send-DATFeedback {
             $timestamp = (Get-Date).ToUniversalTime().ToString('o')
             $keyBytes  = [System.Text.Encoding]::UTF8.GetBytes($hmacSecret)
             $hmac      = [System.Security.Cryptography.HMACSHA256]::new($keyBytes)
-            $sigBytes  = $hmac.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($json))
+            $sigBytes  = $hmac.ComputeHash($bodyBytes)
             $signature = -join ($sigBytes | ForEach-Object { $_.ToString('x2') })
             $hmac.Dispose()
             $headers['x-dat-signature'] = $signature
@@ -11542,7 +11843,7 @@ function Send-DATFeedback {
     try {
         $proxyParams = Get-DATWebRequestProxy
         if ($proxyParams -isnot [hashtable]) { $proxyParams = @{} }
-        $null = Invoke-RestMethod -Uri $url -Method POST -Body $json -ContentType 'application/json' `
+        $null = Invoke-RestMethod -Uri $url -Method POST -Body $bodyBytes -ContentType 'application/json; charset=utf-8' `
             -Headers $headers -UseBasicParsing -TimeoutSec 30 -ErrorAction Stop @proxyParams
         Write-DATLogEntry -Value "[Feedback] Submitted $Rating feedback successfully" -Severity 1
     } catch {

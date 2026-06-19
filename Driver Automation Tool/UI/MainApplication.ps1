@@ -10518,6 +10518,140 @@ $cmb_DistPriority.Add_SelectionChanged({
     }
 })
 
+# --- XML Logic Package controls ---
+$chk_XmlLogicCreatePackage = $Window.FindName('chk_XmlLogicCreatePackage')
+$txt_XmlLogicCreatePackageState = $Window.FindName('txt_XmlLogicCreatePackageState')
+$btn_GenerateXmlLogicPackage = $Window.FindName('btn_GenerateXmlLogicPackage')
+$txt_XmlLogicStatus = $Window.FindName('txt_XmlLogicStatus')
+
+if ($null -ne $chk_XmlLogicCreatePackage) {
+    $chk_XmlLogicCreatePackage.Add_Checked({
+        Set-DATRegistryValue -Name 'XmlLogicCreatePackage' -Value 1 -Type DWord
+        if ($null -ne $txt_XmlLogicCreatePackageState) {
+            $txt_XmlLogicCreatePackageState.Text = 'Create & distribute as package'
+            $txt_XmlLogicCreatePackageState.Foreground = $Window.FindResource('AccentColor')
+        }
+    })
+    $chk_XmlLogicCreatePackage.Add_Unchecked({
+        Set-DATRegistryValue -Name 'XmlLogicCreatePackage' -Value 0 -Type DWord
+        if ($null -ne $txt_XmlLogicCreatePackageState) {
+            $txt_XmlLogicCreatePackageState.Text = 'Write XML file only'
+            $txt_XmlLogicCreatePackageState.Foreground = $Window.FindResource('InputPlaceholder')
+        }
+    })
+}
+
+if ($null -ne $btn_GenerateXmlLogicPackage) {
+    $btn_GenerateXmlLogicPackage.Add_Click({
+        # Validate ConfigMgr connection
+        if ([string]::IsNullOrEmpty($global:SiteServer) -or [string]::IsNullOrEmpty($global:SiteCode)) {
+            $txt_XmlLogicStatus.Text = 'Connect to a ConfigMgr site server first (ConfigMgr > Environment).'
+            $txt_XmlLogicStatus.Foreground = $Window.FindResource('StatusWarning')
+            return
+        }
+
+        # Resolve the package storage path used for the XML output folder
+        $regConfig = Get-ItemProperty -Path $global:RegPath -ErrorAction SilentlyContinue
+        $pkgStoragePath = if ($regConfig -and -not [string]::IsNullOrEmpty($regConfig.PackageStoragePath)) { $regConfig.PackageStoragePath } else { $null }
+        if ([string]::IsNullOrEmpty($pkgStoragePath)) {
+            $txt_XmlLogicStatus.Text = 'Set a package storage path in Common Settings first.'
+            $txt_XmlLogicStatus.Foreground = $Window.FindResource('StatusWarning')
+            return
+        }
+
+        # Gather distribution selections (only used when wrapping as a package)
+        $createPkg = ($chk_XmlLogicCreatePackage.IsChecked -eq $true)
+        $dpGroups = @($script:DPGroupData | Where-Object { $_.Selected } | Select-Object -ExpandProperty Name)
+        $dps = @($script:DPData | Where-Object { $_.Selected } | Select-Object -ExpandProperty Name)
+        $distPriority = if ($null -ne $cmb_DistPriority.SelectedItem) { $cmb_DistPriority.SelectedItem.Content } else { 'Normal' }
+        $enableBDR = ($chk_BinaryDiffReplication.IsChecked -eq $true)
+
+        $btn_GenerateXmlLogicPackage.IsEnabled = $false
+        $txt_XmlLogicStatus.Text = 'Generating XML Logic Package...'
+        $txt_XmlLogicStatus.Foreground = $Window.FindResource('InputPlaceholder')
+
+        # Run generation in a background runspace to keep the UI responsive. State and timer
+        # MUST be script-scoped: a DispatcherTimer Tick handler runs in its own scope and cannot
+        # see variables declared locally inside this Click handler (they would be $null at tick
+        # time, throwing "cannot call a method on a null-valued expression").
+        $script:XmlLogicState = [hashtable]::Synchronized(@{
+            Status = 'Running'; Result = $null; Error = $null; PS = $null; AsyncResult = $null
+        })
+
+        $xmlPS = [powershell]::Create()
+        [void]$xmlPS.AddScript({
+            param ($CoreModulePath, $SiteServer, $SiteCode, $PackagePath, $CreatePkg, $DPGroups, $DPs, $Priority, $EnableBDR, $State)
+            try {
+                Import-Module $CoreModulePath -Force
+                $params = @{
+                    SiteServer  = $SiteServer
+                    SiteCode    = $SiteCode
+                    PackagePath = $PackagePath
+                    Priority    = $Priority
+                }
+                if ($CreatePkg) {
+                    $params['CreatePackage'] = $true
+                    if ($DPGroups -and $DPGroups.Count -gt 0) { $params['DistributionPointGroups'] = $DPGroups }
+                    if ($DPs -and $DPs.Count -gt 0) { $params['DistributionPoints'] = $DPs }
+                    if ($EnableBDR) { $params['EnableBinaryDeltaReplication'] = $true }
+                }
+                $State.Result = New-DATXmlLogicPackage @params
+                $State.Status = 'Complete'
+            } catch {
+                $State.Error = $_.Exception.Message
+                $State.Status = 'Failed'
+            }
+        })
+        [void]$xmlPS.AddArgument((Resolve-Path $CoreModulePath).Path)
+        [void]$xmlPS.AddArgument($global:SiteServer)
+        [void]$xmlPS.AddArgument($global:SiteCode)
+        [void]$xmlPS.AddArgument($pkgStoragePath)
+        [void]$xmlPS.AddArgument($createPkg)
+        [void]$xmlPS.AddArgument($dpGroups)
+        [void]$xmlPS.AddArgument($dps)
+        [void]$xmlPS.AddArgument($distPriority)
+        [void]$xmlPS.AddArgument($enableBDR)
+        [void]$xmlPS.AddArgument($script:XmlLogicState)
+        $script:XmlLogicState.PS = $xmlPS
+        $script:XmlLogicState.AsyncResult = $xmlPS.BeginInvoke()
+
+        # Poll for completion. Timer is script-scoped so the Tick closure can stop it.
+        $script:XmlLogicTimer = [System.Windows.Threading.DispatcherTimer]::new()
+        $script:XmlLogicTimer.Interval = [TimeSpan]::FromMilliseconds(400)
+        $script:XmlLogicTimer.Add_Tick({
+            if ($script:XmlLogicState.Status -ne 'Running') {
+                $script:XmlLogicTimer.Stop()
+                try { $script:XmlLogicState.PS.EndInvoke($script:XmlLogicState.AsyncResult) } catch { }
+                try { $script:XmlLogicState.PS.Dispose() } catch { }
+                $btn_GenerateXmlLogicPackage.IsEnabled = $true
+
+                if ($script:XmlLogicState.Status -eq 'Complete' -and $null -ne $script:XmlLogicState.Result) {
+                    $r = $script:XmlLogicState.Result
+                    switch ($r.Status) {
+                        'NoPackages' {
+                            $txt_XmlLogicStatus.Text = 'No matching driver packages found in ConfigMgr.'
+                            $txt_XmlLogicStatus.Foreground = $Window.FindResource('StatusWarning')
+                        }
+                        'Failed' {
+                            $txt_XmlLogicStatus.Text = "Failed: $($r.Error)"
+                            $txt_XmlLogicStatus.Foreground = $Window.FindResource('StatusError')
+                        }
+                        default {
+                            $pkgNote = if ($r.PackageID) { " | Package $($r.PackageID) ($($r.Status))" } else { '' }
+                            $txt_XmlLogicStatus.Text = "Done. $($r.PackageCount) package(s) written to DriverPackages.xml$pkgNote"
+                            $txt_XmlLogicStatus.Foreground = $Window.FindResource('StatusSuccess')
+                        }
+                    }
+                } else {
+                    $txt_XmlLogicStatus.Text = "Failed: $($script:XmlLogicState.Error)"
+                    $txt_XmlLogicStatus.Foreground = $Window.FindResource('StatusError')
+                }
+            }
+        })
+        $script:XmlLogicTimer.Start()
+    })
+}
+
 # --- Source Folder Cleanup toggle ---
 $chk_DeleteSourceFolder = $Window.FindName('chk_DeleteSourceFolder')
 $txt_DeleteSourceFolderState = $Window.FindName('txt_DeleteSourceFolderState')
@@ -21543,7 +21677,7 @@ if (Test-Path $logoPath) {
 
 # Read version from module manifest
 $manifestPath = Join-Path $AppRoot "Modules\DriverAutomationToolCore\DriverAutomationToolCore.psd1"
-$script:versionString = "v10.1.1"
+$script:versionString = "v10.1.2"
 if (Test-Path $manifestPath) {
     $manifestData = Import-PowerShellDataFile $manifestPath
     $ver = [version]$manifestData.ModuleVersion

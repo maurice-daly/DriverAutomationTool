@@ -913,7 +913,7 @@
                                    Foreground="{DynamicResource AccentColor}" VerticalAlignment="Center" Margin="0,0,8,0"/>
                         <TextBlock Text="Driver Automation Tool" FontSize="13" FontWeight="SemiBold"
                                    Foreground="{DynamicResource WindowForeground}" VerticalAlignment="Center"/>
-                        <TextBlock x:Name="txt_Version" Text=" Version 10.1.1" FontSize="11"
+                        <TextBlock x:Name="txt_Version" Text=" Version 10.1.2" FontSize="11"
                                    Foreground="{DynamicResource InputPlaceholder}" VerticalAlignment="Center" Margin="4,0"/>
                     </StackPanel>
 
@@ -2587,6 +2587,51 @@
                                             </TextBlock>
                                         </DockPanel>
                                     </Border>
+                                </StackPanel>
+                            </Border>
+
+                            <!-- XML Logic Package -->
+                            <Border Style="{StaticResource CardPanel}" Margin="0,0,0,12">
+                                <StackPanel>
+                                    <TextBlock FontSize="13" FontWeight="SemiBold"
+                                               Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,8">
+                                        <Run Text="&#xE8A5;" FontFamily="Segoe MDL2 Assets" FontSize="13"/><Run Text="  XML Logic Package"/>
+                                    </TextBlock>
+                                    <TextBlock TextWrapping="Wrap" FontSize="12"
+                                               Foreground="{DynamicResource InputPlaceholder}" Margin="0,0,0,16" LineHeight="20">
+                                        Generates a DriverPackages.xml logic file describing all driver packages in Configuration Manager. Task sequences can use this file with Invoke-CMApplyDriverPackage.ps1 in -XMLPackage mode to match and download drivers without querying the AdminService. Optionally wrap the file in a "MSEndpointMgr XML Logic Package" content package and distribute it; if that package already exists, its content is replaced and redistributed.
+                                    </TextBlock>
+
+                                    <Grid Margin="0,0,0,12">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                            <ColumnDefinition Width="*"/>
+                                        </Grid.ColumnDefinitions>
+                                        <CheckBox x:Name="chk_XmlLogicCreatePackage"
+                                                  Style="{StaticResource ToggleSwitch}"
+                                                  VerticalAlignment="Center"
+                                                  Margin="0,0,12,0"/>
+                                        <TextBlock x:Name="txt_XmlLogicCreatePackageState" Grid.Column="1"
+                                                   Text="Create &amp; distribute as package" FontSize="12" FontWeight="SemiBold"
+                                                   Foreground="{DynamicResource InputPlaceholder}"
+                                                   VerticalAlignment="Center" Margin="0,0,16,0"/>
+                                    </Grid>
+
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto"/>
+                                            <ColumnDefinition Width="*"/>
+                                        </Grid.ColumnDefinitions>
+                                        <Button x:Name="btn_GenerateXmlLogicPackage" Grid.Column="0"
+                                                Content="Generate XML Logic Package" Height="34" MinWidth="220"
+                                                Style="{StaticResource RoundedButton}"/>
+                                        <TextBlock x:Name="txt_XmlLogicStatus" Grid.Column="1"
+                                                   Text="" FontSize="12"
+                                                   Foreground="{DynamicResource InputPlaceholder}"
+                                                   VerticalAlignment="Center" TextWrapping="Wrap"
+                                                   Margin="16,0,0,0"/>
+                                    </Grid>
                                 </StackPanel>
                             </Border>
                             </StackPanel>
@@ -5989,7 +6034,7 @@
                                     <StackPanel>
                                         <TextBlock Text="Driver Automation Tool" FontSize="22" FontWeight="Bold"
                                                    Foreground="{DynamicResource AccentColor}" Margin="0,0,0,4"/>
-                                        <TextBlock x:Name="txt_AboutVersion" Text="Version 10.1.1" FontSize="14"
+                                        <TextBlock x:Name="txt_AboutVersion" Text="Version 10.1.2" FontSize="14"
                                                    Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,16"/>
 
                                         <TextBlock TextWrapping="Wrap" FontSize="13"
