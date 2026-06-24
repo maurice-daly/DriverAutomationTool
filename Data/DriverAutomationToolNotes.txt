@@ -3,6 +3,18 @@ Release Notes
 IMPORTANT
 - DAT Downloads have been moved to GitHub - https://github.com/maurice-daly/DriverAutomationTool
 
+Version 10.1.4
+What's New & Fixed
+- Intune Packaging — Added a new "Create IntuneWin file only (skip upload)" option. When enabled, each driver and BIOS package is built and the .intunewin file is saved locally for inspection or manual publishing, without uploading to Intune (automatic deployment and assignment filters are skipped). Available in the UI, scheduled tasks, and headless builds.
+- Driver Packaging — Administrators can now disable WIM compression for Configuration Manager, staging the full expanded driver content instead of a compressed WIM. WIM compression remains recommended for faster task-sequence deployments.
+- Build Failures Report — After a build, a new "View Failures" button opens a scrollable summary listing each model and package type that did not complete, along with the reason (e.g. no BIOS match in catalog, package not created), so issues can be reviewed without opening the log file.
+- BIOS Management — BIOS installs now report descriptive failure reasons instead of a generic error code, making troubleshooting easier across Dell, HP, Lenovo, and Surface. Devices also show a toast notification when a BIOS update is blocked because the AC power adapter is not connected, and the update automatically retries on the next Intune cycle.
+- Self-Update Reliability — The in-place updater now retries briefly and skips locked files (such as the application icon) instead of aborting and rolling back the entire update. The window icon is also loaded into memory so it no longer holds a file lock during updates (issue #819).
+- Package Detection — Improved timestamp and version sorting so the most recent driver/BIOS package is reliably identified across the different date and version formats used by OEM catalogs.
+
+Version 10.1.3
+Internal Test Build
+
 Version 10.1.2
 What's New & Fixed
 - Driver Packaging (ConfigMgr) — Added the new XML Logic Package generator. It enumerates your existing DAT driver packages and writes a consolidated DriverPackages.xml, then optionally creates, replaces, and re-distributes the MSEndpointMgr XML Logic Package on the site server automatically. Available from the ConfigMgr Package Options screen and in headless/scheduled builds via BuildConfig.json.

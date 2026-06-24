@@ -188,6 +188,7 @@ $processingParams = @{
 if ($config.DisableToast) { $processingParams['DisableToast'] = $true }
 if ($config.DisableRestart) { $processingParams['DisableRestart'] = $true }
 if ($config.AlarmMode) { $processingParams['AlarmMode'] = $true }
+if ($config.CreateIntuneWinOnly) { $processingParams['CreateIntuneWinOnly'] = $true }
 if ($config.ToastTimeoutAction -ne 'RemindMeLater') { $processingParams['ToastTimeoutAction'] = $config.ToastTimeoutAction }
 if ($config.MaxDeferrals -gt 0) { $processingParams['MaxDeferrals'] = $config.MaxDeferrals }
 if ($config.BIOSRestartDelayMinutes -gt 0) { $processingParams['RestartDelaySeconds'] = $config.BIOSRestartDelayMinutes * 60 }

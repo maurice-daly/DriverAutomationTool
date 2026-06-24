@@ -371,7 +371,7 @@ try {
 
     if (-not (Test-Path $WimFile)) {
         Write-CMTraceLog "ERROR: WIM file not found at $WimFile" -Severity 3
-        exit 1
+        throw "WIM file not found at $WimFile"
     }
 
     $wimSize = [math]::Round((Get-Item $WimFile).Length / 1MB, 2)
@@ -423,7 +423,7 @@ try {
         Write-CMTraceLog "WIM extraction completed successfully"
     } catch [System.Exception] {
         Write-CMTraceLog "ERROR: Failed to extract BIOS package WIM file. Error: $($_.Exception.Message)" -Severity 3
-        exit 1
+        throw "Failed to extract BIOS package WIM file: $($_.Exception.Message)"
     }
 
     $extractedFiles = (Get-ChildItem -Path $ExtractPath -Recurse -File -ErrorAction SilentlyContinue).Count
@@ -470,7 +470,7 @@ try {
 
             if (-not $biosExe) {
                 Write-CMTraceLog "ERROR: No Dell BIOS executable found in extracted content" -Severity 3
-                exit 1
+                throw "No Dell BIOS executable found in extracted content"
             }
 
             Write-CMTraceLog "Dell BIOS executable found: $($biosExe.FullName)"
@@ -483,6 +483,7 @@ try {
                         # BatteryStatus 2 = AC power connected
                         if ($battery.BatteryStatus -ne 2) {
                             Write-CMTraceLog "AC power adapter not detected (BatteryStatus=$($battery.BatteryStatus)). Dell BIOS updates require AC power -- will retry on next Intune cycle." -Severity 2
+{{STATUS_TOAST_ACPOWER_BLOCK}}
                             exit 1618  # ERROR_INSTALL_ALREADY_RUNNING -- tells Intune to retry
                         }
                         Write-CMTraceLog "AC power confirmed (BatteryStatus=$($battery.BatteryStatus))"
@@ -519,10 +520,11 @@ try {
                 Write-CMTraceLog "Dell BIOS update completed successfully (exit code: $flashExitCode)"
             } elseif ($flashExitCode -eq 10) {
                 Write-CMTraceLog "Dell BIOS update returned exit code 10 -- AC power adapter not connected. Will retry on next Intune cycle." -Severity 2
+{{STATUS_TOAST_ACPOWER_BLOCK}}
                 exit 1618  # ERROR_INSTALL_ALREADY_RUNNING -- tells Intune to retry
             } else {
                 Write-CMTraceLog "ERROR: Dell BIOS update failed with exit code: $flashExitCode" -Severity 3
-                exit 1
+                throw "Dell BIOS update failed with exit code: $flashExitCode"
             }
         }
 
@@ -543,7 +545,7 @@ try {
 
             if (-not $flashUtil) {
                 Write-CMTraceLog "ERROR: No HP BIOS flash utility found in extracted content" -Severity 3
-                exit 1
+                throw "No HP BIOS flash utility found in extracted content"
             }
 
             Write-CMTraceLog "HP flash utility found: $($flashUtil.FullName)"
@@ -556,6 +558,7 @@ try {
                         # BatteryStatus 2 = AC power connected
                         if ($battery.BatteryStatus -ne 2) {
                             Write-CMTraceLog "AC power adapter not detected (BatteryStatus=$($battery.BatteryStatus)). HP BIOS updates require AC power -- will retry on next Intune cycle." -Severity 2
+{{STATUS_TOAST_ACPOWER_BLOCK}}
                             exit 1618  # ERROR_INSTALL_ALREADY_RUNNING -- tells Intune to retry
                         }
                         Write-CMTraceLog "AC power confirmed (BatteryStatus=$($battery.BatteryStatus))"
@@ -604,7 +607,7 @@ try {
                     Write-CMTraceLog "ERROR: Failed to generate HP firmware password BIN file -- $($_.Exception.Message)" -Severity 3
                     # Clean up partial file if it exists
                     if (Test-Path $hpPasswordBinFile) { Remove-Item $hpPasswordBinFile -Force -ErrorAction SilentlyContinue }
-                    exit 1
+                    throw "Failed to generate HP firmware password BIN file: $($_.Exception.Message)"
                 }
             }
 
@@ -626,7 +629,7 @@ try {
                 Write-CMTraceLog "HP BIOS flash completed successfully (exit code: $flashExitCode)"
             } else {
                 Write-CMTraceLog "ERROR: HP BIOS flash failed with exit code: $flashExitCode" -Severity 3
-                exit 1
+                throw "HP BIOS flash failed with exit code: $flashExitCode"
             }
         }
 
@@ -642,6 +645,7 @@ try {
                         # BatteryStatus 2 = AC power connected
                         if ($battery.BatteryStatus -ne 2) {
                             Write-CMTraceLog "AC power adapter not detected (BatteryStatus=$($battery.BatteryStatus)). Lenovo BIOS updates require AC power -- will retry on next Intune cycle." -Severity 2
+{{STATUS_TOAST_ACPOWER_BLOCK}}
                             exit 1618  # ERROR_INSTALL_ALREADY_RUNNING -- tells Intune to retry
                         }
                         Write-CMTraceLog "AC power confirmed (BatteryStatus=$($battery.BatteryStatus))"
@@ -701,7 +705,7 @@ try {
                         Write-CMTraceLog "Lenovo BIOS flash (Flash.cmd) completed successfully (exit code: $flashExitCode)"
                     } else {
                         Write-CMTraceLog "ERROR: Lenovo BIOS flash (Flash.cmd) failed with exit code: $flashExitCode" -Severity 3
-                        exit 1
+                        throw "Lenovo BIOS flash (Flash.cmd) failed with exit code: $flashExitCode"
                     }
                     break
                 }
@@ -714,7 +718,7 @@ try {
 
             if (-not $flashUtil) {
                 Write-CMTraceLog "ERROR: No Lenovo BIOS flash utility found in extracted content" -Severity 3
-                exit 1
+                throw "No Lenovo BIOS flash utility found in extracted content"
             }
 
             Write-CMTraceLog "Lenovo flash utility found: $($flashUtil.FullName) (type: $flashType)"
@@ -738,7 +742,7 @@ try {
                 Write-CMTraceLog "Lenovo BIOS flash completed successfully (exit code: $flashExitCode)"
             } else {
                 Write-CMTraceLog "ERROR: Lenovo BIOS flash failed with exit code: $flashExitCode" -Severity 3
-                exit 1
+                throw "Lenovo BIOS flash failed with exit code: $flashExitCode"
             }
         }
 
@@ -752,7 +756,7 @@ try {
 
             if (-not $msiFile) {
                 Write-CMTraceLog "ERROR: No MSI firmware package found in extracted content" -Severity 3
-                exit 1
+                throw "No MSI firmware package found in extracted content"
             }
 
             Write-CMTraceLog "Surface firmware MSI found: $($msiFile.FullName)"
@@ -773,13 +777,13 @@ try {
             } else {
                 Write-CMTraceLog "ERROR: Surface firmware install failed with exit code: $flashExitCode" -Severity 3
                 Write-CMTraceLog "MSI log available at: $msiLog" -Severity 2
-                exit 1
+                throw "Surface firmware install failed with exit code: $flashExitCode"
             }
         }
 
         default {
             Write-CMTraceLog "ERROR: Unsupported manufacturer '$Manufacturer' for BIOS update" -Severity 3
-            exit 1
+            throw "Unsupported manufacturer '$Manufacturer' for BIOS update"
         }
     }
 

@@ -913,7 +913,7 @@
                                    Foreground="{DynamicResource AccentColor}" VerticalAlignment="Center" Margin="0,0,8,0"/>
                         <TextBlock Text="Driver Automation Tool" FontSize="13" FontWeight="SemiBold"
                                    Foreground="{DynamicResource WindowForeground}" VerticalAlignment="Center"/>
-                        <TextBlock x:Name="txt_Version" Text=" Version 10.1.2" FontSize="11"
+                        <TextBlock x:Name="txt_Version" Text=" Version 10.1.4" FontSize="11"
                                    Foreground="{DynamicResource InputPlaceholder}" VerticalAlignment="Center" Margin="4,0"/>
                     </StackPanel>
 
@@ -3252,6 +3252,41 @@
                             <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
                             <StackPanel>
 
+                            <!-- Package Output -->
+                            <Border Style="{StaticResource CardPanel}" Margin="0,0,0,12">
+                                <StackPanel>
+                                    <TextBlock FontSize="14" FontWeight="SemiBold"
+                                               Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,4">
+                                        <Run Text="&#xE7B8;" FontFamily="Segoe MDL2 Assets" FontSize="14"/><Run Text="  Package Output"/>
+                                    </TextBlock>
+                                    <TextBlock Text="Control whether packages are uploaded to Intune or only built locally."
+                                               FontSize="12" Foreground="{DynamicResource InputPlaceholder}" Margin="0,0,0,12" TextWrapping="Wrap"/>
+
+                                    <TextBlock Text="Create IntuneWin file only (skip upload)" FontSize="13" FontWeight="SemiBold"
+                                               Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,6"/>
+                                    <TextBlock Text="When enabled, each driver and BIOS package is built and the resulting .intunewin file is saved to the IntuneWin sub-folder of your Package path, but it is NOT uploaded to Intune. Use this to inspect or manually publish packages. Automatic deployment and assignment filters are skipped in this mode."
+                                               FontSize="13" Foreground="{DynamicResource InputPlaceholder}"
+                                               TextWrapping="Wrap" Margin="0,0,0,12" LineHeight="20"/>
+
+                                    <!-- Toggle row -->
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <CheckBox x:Name="chk_CreateIntuneWinOnly"
+                                                  Style="{StaticResource ToggleSwitch}"
+                                                  VerticalAlignment="Center"
+                                                  Margin="0,0,12,0"/>
+                                        <TextBlock x:Name="txt_CreateIntuneWinOnlyState" Grid.Column="1"
+                                                   Text="Off" FontSize="12" FontWeight="SemiBold"
+                                                   Foreground="{DynamicResource InputPlaceholder}"
+                                                   VerticalAlignment="Center"/>
+                                    </Grid>
+
+                                </StackPanel>
+                            </Border>
+
                             <!-- Package Deployment -->
                             <Border Style="{StaticResource CardPanel}" Margin="0,0,0,12">
                                 <StackPanel>
@@ -5246,6 +5281,33 @@
                                                 <ComboBoxItem Content="Maximum"/>
                                                 <ComboBoxItem Content="None"/>
                                             </ComboBox>
+
+                                            <!-- Disable WIM Compression for Configuration Manager -->
+                                            <Border BorderBrush="{DynamicResource InputBorder}" BorderThickness="0,1,0,0"
+                                                    Margin="0,20,0,0" Padding="0,16,0,0">
+                                                <StackPanel>
+                                                    <TextBlock Text="Disable WIM compression for Configuration Manager" FontSize="13" FontWeight="SemiBold"
+                                                               Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,6"/>
+                                                    <TextBlock TextWrapping="Wrap" FontSize="12" LineHeight="18"
+                                                               Foreground="{DynamicResource InputPlaceholder}" Margin="0,0,0,12">
+                                                        When enabled, the administrator can disable WIM compression for Configuration Manager, resulting in the package containing the full expanded driver package instead of a compressed WIM. It is recommended that WIM compression is used for faster task sequence deployments.
+                                                    </TextBlock>
+                                                    <Grid>
+                                                        <Grid.ColumnDefinitions>
+                                                            <ColumnDefinition Width="Auto"/>
+                                                            <ColumnDefinition Width="Auto"/>
+                                                        </Grid.ColumnDefinitions>
+                                                        <CheckBox x:Name="chk_DisableConfigMgrWim"
+                                                                  Style="{StaticResource ToggleSwitch}"
+                                                                  VerticalAlignment="Center"
+                                                                  Margin="0,0,12,0"/>
+                                                        <TextBlock x:Name="txt_DisableConfigMgrWimState" Grid.Column="1"
+                                                                   Text="Off" FontSize="12" FontWeight="SemiBold"
+                                                                   Foreground="{DynamicResource InputPlaceholder}"
+                                                                   VerticalAlignment="Center"/>
+                                                    </Grid>
+                                                </StackPanel>
+                                            </Border>
                                         </StackPanel>
                                     </Border>
 
@@ -6034,7 +6096,7 @@
                                     <StackPanel>
                                         <TextBlock Text="Driver Automation Tool" FontSize="22" FontWeight="Bold"
                                                    Foreground="{DynamicResource AccentColor}" Margin="0,0,0,4"/>
-                                        <TextBlock x:Name="txt_AboutVersion" Text="Version 10.1.2" FontSize="14"
+                                        <TextBlock x:Name="txt_AboutVersion" Text="Version 10.1.4" FontSize="14"
                                                    Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,16"/>
 
                                         <TextBlock TextWrapping="Wrap" FontSize="13"

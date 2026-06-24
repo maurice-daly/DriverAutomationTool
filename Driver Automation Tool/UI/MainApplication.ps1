@@ -113,11 +113,20 @@ $Reader = New-Object System.Xml.XmlNodeReader $Xaml
 $Window = [System.Windows.Markup.XamlReader]::Load($Reader)
 
 # Set window icon from DATLogo.ico (#11 -- corrupted icon crash)
+# Load via an in-memory stream with OnLoad caching so the file handle is released
+# immediately. A delay-loaded BitmapFrame (Create([Uri])) keeps DATLogo.ico open for
+# the process lifetime, which blocks in-place self-updates from overwriting it (#819).
 $icoPath = Join-Path $AppRoot "Branding\DATLogo.ico"
 if (Test-Path $icoPath) {
     try {
-        $Window.Icon = [System.Windows.Media.Imaging.BitmapFrame]::Create(
-            [Uri]::new($icoPath, [UriKind]::Absolute))
+        $icoBytes  = [System.IO.File]::ReadAllBytes($icoPath)
+        $icoStream = New-Object System.IO.MemoryStream(,$icoBytes)
+        $iconFrame = [System.Windows.Media.Imaging.BitmapFrame]::Create(
+            $icoStream,
+            [System.Windows.Media.Imaging.BitmapCreateOptions]::None,
+            [System.Windows.Media.Imaging.BitmapCacheOption]::OnLoad)
+        $iconFrame.Freeze()
+        $Window.Icon = $iconFrame
     } catch {
         Write-Warning "Failed to load application icon: $($_.Exception.Message)"
     }
@@ -2315,6 +2324,203 @@ function Show-DATLenovoFlashKilledModal {
     $script:LenovoFlashAutoCloseTimer.Start()
 }
 
+function Show-DATBuildFailuresDialog {
+    <#
+    .SYNOPSIS
+        Shows a scrollable modal listing per-model / per-package-type build failures and the
+        reason for each, so an administrator can review failures without opening the log file.
+    #>
+    param (
+        [Parameter(Mandatory)]$Failures,
+        $Owner
+    )
+
+    $failureList = @($Failures)
+    if ($failureList.Count -eq 0) { return }
+
+    $theme = Get-DATTheme -ThemeName $script:CurrentTheme
+    $bgColor = [System.Windows.Media.ColorConverter]::ConvertFromString($theme['CardBackground'])
+
+    $fgBrush = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.ColorConverter]::ConvertFromString($theme['WindowForeground']))
+    $dimBrush = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.ColorConverter]::ConvertFromString($theme['InputPlaceholder']))
+    $errorBrush = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.ColorConverter]::ConvertFromString($theme['StatusError']))
+    $rowBgColor = [System.Windows.Media.ColorConverter]::ConvertFromString($theme['CardBorder'])
+
+    $dlg = [System.Windows.Window]::new()
+    $dlg.WindowStyle = 'None'
+    $dlg.AllowsTransparency = $true
+    $dlg.Background = [System.Windows.Media.Brushes]::Transparent
+    $dlg.Width = 580
+    $dlg.SizeToContent = 'Height'
+    $dlg.Topmost = $true
+    $dlg.ResizeMode = 'NoResize'
+    $dlg.ShowInTaskbar = $false
+    try {
+        if ($Owner) { $dlg.Owner = $Owner } else { $dlg.Owner = $Window }
+        $dlg.WindowStartupLocation = 'CenterOwner'
+    } catch {
+        $dlg.WindowStartupLocation = 'CenterScreen'
+    }
+
+    $border = [System.Windows.Controls.Border]::new()
+    $border.Background = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.Color]::FromArgb(245, $bgColor.R, $bgColor.G, $bgColor.B))
+    $border.CornerRadius = [System.Windows.CornerRadius]::new(16)
+    $border.Padding = [System.Windows.Thickness]::new(28, 24, 28, 24)
+    $border.BorderBrush = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.ColorConverter]::ConvertFromString($theme['CardBorder']))
+    $border.BorderThickness = [System.Windows.Thickness]::new(1)
+    $shadow = [System.Windows.Media.Effects.DropShadowEffect]::new()
+    $shadow.BlurRadius = 30; $shadow.ShadowDepth = 0; $shadow.Opacity = 0.5
+    $shadow.Color = [System.Windows.Media.Colors]::Black
+    $border.Effect = $shadow
+
+    $panel = [System.Windows.Controls.StackPanel]::new()
+
+    # Icon
+    $iconText = [System.Windows.Controls.TextBlock]::new()
+    $iconText.Text = [string][char]0xEA39
+    $iconText.FontFamily = [System.Windows.Media.FontFamily]::new('Segoe MDL2 Assets')
+    $iconText.FontSize = 30
+    $iconText.Foreground = $errorBrush
+    $iconText.HorizontalAlignment = 'Center'
+    $iconText.Margin = [System.Windows.Thickness]::new(0, 0, 0, 10)
+    $panel.Children.Add($iconText) | Out-Null
+
+    # Title
+    $titleText = [System.Windows.Controls.TextBlock]::new()
+    $titleText.Text = "Build Failures"
+    $titleText.FontSize = 16
+    $titleText.FontWeight = [System.Windows.FontWeights]::Bold
+    $titleText.Foreground = $fgBrush
+    $titleText.HorizontalAlignment = 'Center'
+    $titleText.Margin = [System.Windows.Thickness]::new(0, 0, 0, 4)
+    $panel.Children.Add($titleText) | Out-Null
+
+    # Subtitle / count
+    $subText = [System.Windows.Controls.TextBlock]::new()
+    $subText.Text = "$($failureList.Count) package$(if ($failureList.Count -ne 1) { 's' }) did not complete successfully"
+    $subText.FontSize = 12
+    $subText.Foreground = $dimBrush
+    $subText.HorizontalAlignment = 'Center'
+    $subText.Margin = [System.Windows.Thickness]::new(0, 0, 0, 16)
+    $panel.Children.Add($subText) | Out-Null
+
+    # Scrollable failures list
+    $scroll = [System.Windows.Controls.ScrollViewer]::new()
+    $scroll.VerticalScrollBarVisibility = 'Auto'
+    $scroll.HorizontalScrollBarVisibility = 'Disabled'
+    $scroll.MaxHeight = 360
+    $scroll.Margin = [System.Windows.Thickness]::new(0, 0, 0, 18)
+
+    $listPanel = [System.Windows.Controls.StackPanel]::new()
+
+    foreach ($f in $failureList) {
+        $card = [System.Windows.Controls.Border]::new()
+        $card.Background = [System.Windows.Media.SolidColorBrush]::new(
+            [System.Windows.Media.Color]::FromArgb(60, $rowBgColor.R, $rowBgColor.G, $rowBgColor.B))
+        $card.CornerRadius = [System.Windows.CornerRadius]::new(8)
+        $card.Padding = [System.Windows.Thickness]::new(14, 10, 14, 10)
+        $card.Margin = [System.Windows.Thickness]::new(0, 0, 0, 8)
+        $card.BorderBrush = [System.Windows.Media.SolidColorBrush]::new(
+            [System.Windows.Media.Color]::FromArgb(90, $errorBrush.Color.R, $errorBrush.Color.G, $errorBrush.Color.B))
+        $card.BorderThickness = [System.Windows.Thickness]::new(1)
+
+        $cardPanel = [System.Windows.Controls.StackPanel]::new()
+
+        # Header row: OEM + Model (left) and package-type badge (right)
+        $headerGrid = [System.Windows.Controls.Grid]::new()
+        $hc1 = [System.Windows.Controls.ColumnDefinition]::new(); $hc1.Width = [System.Windows.GridLength]::new(1, [System.Windows.GridUnitType]::Star)
+        $hc2 = [System.Windows.Controls.ColumnDefinition]::new(); $hc2.Width = [System.Windows.GridLength]::new(1, [System.Windows.GridUnitType]::Auto)
+        $headerGrid.ColumnDefinitions.Add($hc1) | Out-Null
+        $headerGrid.ColumnDefinitions.Add($hc2) | Out-Null
+
+        $nameText = [System.Windows.Controls.TextBlock]::new()
+        $nameText.Text = "$($f.OEM) $($f.Model)"
+        $nameText.FontSize = 13
+        $nameText.FontWeight = [System.Windows.FontWeights]::SemiBold
+        $nameText.Foreground = $fgBrush
+        $nameText.TextTrimming = 'CharacterEllipsis'
+        $nameText.VerticalAlignment = 'Center'
+        [System.Windows.Controls.Grid]::SetColumn($nameText, 0)
+        $headerGrid.Children.Add($nameText) | Out-Null
+
+        $badge = [System.Windows.Controls.Border]::new()
+        $badge.CornerRadius = [System.Windows.CornerRadius]::new(4)
+        $badge.Padding = [System.Windows.Thickness]::new(8, 2, 8, 2)
+        $badge.VerticalAlignment = 'Center'
+        $badge.Background = [System.Windows.Media.SolidColorBrush]::new(
+            [System.Windows.Media.Color]::FromArgb(40, $errorBrush.Color.R, $errorBrush.Color.G, $errorBrush.Color.B))
+        $badgeText = [System.Windows.Controls.TextBlock]::new()
+        $badgeText.Text = "$($f.PackageType)"
+        $badgeText.FontSize = 11
+        $badgeText.FontWeight = [System.Windows.FontWeights]::SemiBold
+        $badgeText.Foreground = $errorBrush
+        $badge.Child = $badgeText
+        [System.Windows.Controls.Grid]::SetColumn($badge, 1)
+        $headerGrid.Children.Add($badge) | Out-Null
+        $cardPanel.Children.Add($headerGrid) | Out-Null
+
+        # Optional OS line
+        if (-not [string]::IsNullOrEmpty($f.OS)) {
+            $osText = [System.Windows.Controls.TextBlock]::new()
+            $osText.Text = "$($f.OS)"
+            $osText.FontSize = 11
+            $osText.Foreground = $dimBrush
+            $osText.Margin = [System.Windows.Thickness]::new(0, 2, 0, 0)
+            $cardPanel.Children.Add($osText) | Out-Null
+        }
+
+        # Reason
+        $reasonText = [System.Windows.Controls.TextBlock]::new()
+        $reasonText.Text = "$($f.Reason)"
+        $reasonText.FontSize = 12
+        $reasonText.Foreground = $dimBrush
+        $reasonText.TextWrapping = 'Wrap'
+        $reasonText.Margin = [System.Windows.Thickness]::new(0, 6, 0, 0)
+        $cardPanel.Children.Add($reasonText) | Out-Null
+
+        $card.Child = $cardPanel
+        $listPanel.Children.Add($card) | Out-Null
+    }
+
+    $scroll.Content = $listPanel
+    $panel.Children.Add($scroll) | Out-Null
+
+    # Close button
+    $btnClose = [System.Windows.Controls.Button]::new()
+    $btnClose.Height = 36
+    $btnClose.HorizontalAlignment = 'Stretch'
+    $btnClose.Cursor = [System.Windows.Input.Cursors]::Hand
+    $closeTemplate = [System.Windows.Markup.XamlReader]::Parse(@"
+<ControlTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" TargetType="Button">
+    <Border x:Name="bd" Background="$($theme['ButtonPrimary'])" CornerRadius="8" Padding="16,8">
+        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+    </Border>
+    <ControlTemplate.Triggers>
+        <Trigger Property="IsMouseOver" Value="True">
+            <Setter TargetName="bd" Property="Background" Value="$($theme['ButtonPrimaryHover'])"/>
+        </Trigger>
+    </ControlTemplate.Triggers>
+</ControlTemplate>
+"@)
+    $btnClose.Template = $closeTemplate
+    $btnClose.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.ColorConverter]::ConvertFromString($theme['ButtonPrimaryForeground']))
+    $btnClose.FontSize = 13
+    $btnClose.FontWeight = [System.Windows.FontWeights]::SemiBold
+    $btnClose.Content = 'Close'
+    $btnClose.Add_Click({ $dlg.Close() }.GetNewClosure())
+    $panel.Children.Add($btnClose) | Out-Null
+
+    $border.Child = $panel
+    $dlg.Content = $border
+    $dlg.ShowDialog() | Out-Null
+}
+
 function Show-DATBuildSummaryDialog {
     <#
     .SYNOPSIS
@@ -2531,6 +2737,42 @@ function Show-DATBuildSummaryDialog {
         $elapsedText.HorizontalAlignment = 'Center'
         $elapsedText.Margin = [System.Windows.Thickness]::new(0, 0, 0, 16)
         $panel.Children.Add($elapsedText) | Out-Null
+    }
+
+    # View Failures button (only when the core module recorded package failures)
+    $failuresJson = $null
+    try {
+        $failuresJson = (Get-ItemProperty -Path $global:RegPath -Name 'BuildFailures' -ErrorAction SilentlyContinue).BuildFailures
+    } catch { $failuresJson = $null }
+    $buildFailures = @()
+    if (-not [string]::IsNullOrEmpty($failuresJson)) {
+        try { $buildFailures = @($failuresJson | ConvertFrom-Json) } catch { $buildFailures = @() }
+    }
+    if ($buildFailures.Count -gt 0) {
+        $btnFailures = [System.Windows.Controls.Button]::new()
+        $btnFailures.Height = 36
+        $btnFailures.HorizontalAlignment = 'Stretch'
+        $btnFailures.Margin = [System.Windows.Thickness]::new(0, 0, 0, 10)
+        $btnFailures.Cursor = [System.Windows.Input.Cursors]::Hand
+        $failTemplate = [System.Windows.Markup.XamlReader]::Parse(@"
+<ControlTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" TargetType="Button">
+    <Border x:Name="bd" Background="Transparent" BorderBrush="$($theme['StatusError'])" BorderThickness="1" CornerRadius="8" Padding="16,8">
+        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+    </Border>
+    <ControlTemplate.Triggers>
+        <Trigger Property="IsMouseOver" Value="True">
+            <Setter TargetName="bd" Property="Background" Value="#22E74856"/>
+        </Trigger>
+    </ControlTemplate.Triggers>
+</ControlTemplate>
+"@)
+        $btnFailures.Template = $failTemplate
+        $btnFailures.Foreground = $errorBrush
+        $btnFailures.FontSize = 13
+        $btnFailures.FontWeight = [System.Windows.FontWeights]::SemiBold
+        $btnFailures.Content = "View Failures ($($buildFailures.Count))"
+        $btnFailures.Add_Click({ Show-DATBuildFailuresDialog -Failures $buildFailures -Owner $dlg }.GetNewClosure())
+        $panel.Children.Add($btnFailures) | Out-Null
     }
 
     # OK button
@@ -8455,7 +8697,7 @@ $btn_Build.Add_Click({
     $script:BuildPS = [powershell]::Create()
     $script:BuildPS.Runspace = $script:BuildRunspace
     [void]$script:BuildPS.AddScript({
-        param($ModulePath, $ScriptDir, $RegPath, $RunningMode, $SelectedModels, $StoragePath, $PackagePath, $IntuneToken, $IntuneRefreshTok, $IntuneAuthClientIdParam, $IntuneTokenExpSec, $DisableToast, $DisableRestart, $SiteServer, $SiteCode, $PackageType, $DPGroups, $DPs, $DistPriority, $EnableBDR, $DebugBuildPath, $CustomBrandingPath, $HPPasswordBinPath, $ToastTimeoutAction, $MaxDeferrals, $BIOSRestartDelayMinutes, $TeamsWebhookUrl, $TeamsNotificationsEnabled, $CustomToastTextsJson, $ConsoleFolderID, $MaintenanceWindowsJson, $AlarmMode)
+        param($ModulePath, $ScriptDir, $RegPath, $RunningMode, $SelectedModels, $StoragePath, $PackagePath, $IntuneToken, $IntuneRefreshTok, $IntuneAuthClientIdParam, $IntuneTokenExpSec, $DisableToast, $DisableRestart, $SiteServer, $SiteCode, $PackageType, $DPGroups, $DPs, $DistPriority, $EnableBDR, $DebugBuildPath, $CustomBrandingPath, $HPPasswordBinPath, $ToastTimeoutAction, $MaxDeferrals, $BIOSRestartDelayMinutes, $TeamsWebhookUrl, $TeamsNotificationsEnabled, $CustomToastTextsJson, $ConsoleFolderID, $MaintenanceWindowsJson, $AlarmMode, $CreateIntuneWinOnly)
         try {
         Import-Module $ModulePath -Force
         $procParams = @{
@@ -8473,6 +8715,7 @@ $btn_Build.Add_Click({
         if ($DisableToast) { $procParams['DisableToast'] = $true }
         if ($DisableRestart) { $procParams['DisableRestart'] = $true }
         if ($AlarmMode) { $procParams['AlarmMode'] = $true }
+        if ($CreateIntuneWinOnly) { $procParams['CreateIntuneWinOnly'] = $true }
         if ($ToastTimeoutAction -ne 'RemindMeLater') { $procParams['ToastTimeoutAction'] = $ToastTimeoutAction }
         if ($MaxDeferrals -gt 0) { $procParams['MaxDeferrals'] = $MaxDeferrals }
         if ($BIOSRestartDelayMinutes -gt 0 -and $BIOSRestartDelayMinutes -ne 10) { $procParams['RestartDelaySeconds'] = $BIOSRestartDelayMinutes * 60 }
@@ -8541,6 +8784,9 @@ $btn_Build.Add_Click({
 
     # Read the Critical Notification (alarm mode) state (Intune only) -- bypasses Focus Assist / DND
     $alarmMode = ($selectedPlatform -eq 'Intune') -and ($chk_CriticalNotification.IsChecked -eq $true)
+
+    # Read the Create IntuneWin Only state (Intune only) -- builds .intunewin without uploading
+    $createIntuneWinOnly = ($selectedPlatform -eq 'Intune') -and ($chk_CreateIntuneWinOnly.IsChecked -eq $true)
 
     # Read toast behaviour settings (Intune only)
     $biosTimeoutAction = if ($cmb_BIOSTimeoutAction.SelectedIndex -eq 1) { 'InstallNow' } else { 'RemindMeLater' }
@@ -8639,6 +8885,9 @@ $btn_Build.Add_Click({
 
     # Critical Notification / alarm mode (Intune only) -- last positional argument
     [void]$script:BuildPS.AddArgument($alarmMode)
+
+    # Create IntuneWin Only (Intune only) -- build .intunewin without uploading to Intune
+    [void]$script:BuildPS.AddArgument($createIntuneWinOnly)
 
     $script:BuildAsyncResult = $script:BuildPS.BeginInvoke()
 
@@ -13169,6 +13418,7 @@ $btn_ScheduleSave.Add_Click({
 
     $schedDisableToast = ($schedPlatform -eq 'Intune') -and ($chk_DisableToastPrompt.IsChecked -eq $true)
     $schedDisableRestart = ($schedPlatform -eq 'Intune') -and ($chk_DisableBIOSRestart.IsChecked -eq $true)
+    $schedCreateWinOnly = ($schedPlatform -eq 'Intune') -and ($chk_CreateIntuneWinOnly.IsChecked -eq $true)
     $schedTimeoutAction = if ($cmb_BIOSTimeoutAction.SelectedIndex -eq 1) { 'InstallNow' } else { 'RemindMeLater' }
     $schedMaxDeferrals = if (($chk_EnableMaxDeferrals.IsChecked -eq $true) -and ($txt_MaxDeferrals.Text -match '^\d+$')) { [int]$txt_MaxDeferrals.Text } else { 0 }
     $schedBIOSRestartDelay = if (($txt_BIOSRestartDelay.Text -match '^\d+$')) { [int]$txt_BIOSRestartDelay.Text } else { 10 }
@@ -13209,7 +13459,8 @@ $btn_ScheduleSave.Add_Click({
             -TeamsWebhookUrl $schedTeamsUrl -TeamsNotificationsEnabled $schedTeamsEnabled -ConfigMgr $schedCM `
             -Intune $schedIntune `
             -MaintenanceWindowEnabled $schedMWEnabled -MaintenanceWindowMode $schedMWMode -MaintenanceWindows $schedMWindows `
-            -CleanTempOnExit $schedCleanTemp
+            -CleanTempOnExit $schedCleanTemp `
+            -CreateIntuneWinOnly $schedCreateWinOnly
     } catch {
         Show-DATInfoDialog -Title 'Schedule Error' `
             -Message "Failed to export build config:`n`n$($_.Exception.Message)" `
@@ -13554,6 +13805,22 @@ $cmb_DismCompression.Add_SelectionChanged({
         }
         Set-DATRegistryValue -Name 'DismCompression' -Value $val -Type String
     }
+})
+
+# Disable WIM Compression for Configuration Manager
+$chk_DisableConfigMgrWim      = $Window.FindName('chk_DisableConfigMgrWim')
+$txt_DisableConfigMgrWimState = $Window.FindName('txt_DisableConfigMgrWimState')
+$chk_DisableConfigMgrWim.Add_Checked({
+    Set-DATRegistryValue -Name 'DisableConfigMgrWim' -Value 1 -Type DWord
+    $txt_DisableConfigMgrWimState.Text       = 'On'
+    $txt_DisableConfigMgrWimState.Foreground = $Window.FindResource('AccentColor')
+    Write-DATActivityLog 'WIM Packaging: ConfigMgr WIM compression disabled (expanded driver content)' -Level Info
+})
+$chk_DisableConfigMgrWim.Add_Unchecked({
+    Set-DATRegistryValue -Name 'DisableConfigMgrWim' -Value 0 -Type DWord
+    $txt_DisableConfigMgrWimState.Text       = 'Off'
+    $txt_DisableConfigMgrWimState.Foreground = $Window.FindResource('InputPlaceholder')
+    Write-DATActivityLog 'WIM Packaging: ConfigMgr WIM compression enabled' -Level Info
 })
 
 #endregion WIM Packaging Options
@@ -14142,6 +14409,9 @@ $btn_CustomBuild.Add_Click({
     # Read the Critical Notification (alarm mode) state (Intune only) -- bypasses Focus Assist / DND
     $alarmMode = ($platform -eq 'Intune') -and ($chk_CriticalNotification.IsChecked -eq $true)
 
+    # Read the Create IntuneWin Only state (Intune only) -- builds .intunewin without uploading
+    $createIntuneWinOnly = ($platform -eq 'Intune') -and ($chk_CreateIntuneWinOnly.IsChecked -eq $true)
+
     # Read the Debug Package Build state (Intune only)
     $debugBuildPath = if (($platform -eq 'Intune') -and ($chk_DebugPackageBuild.IsChecked -eq $true) -and
         (-not [string]::IsNullOrEmpty($txt_DebugBuildPath.Text))) { $txt_DebugBuildPath.Text } else { $null }
@@ -14167,7 +14437,7 @@ $btn_CustomBuild.Add_Click({
     [void]$script:CustomBuildPS.AddScript({
         param($ModulePath, $Make, $Model, $BaseBoard, $Platform, $TempStorage, $PackageStorage, $RegPath,
               $OSLabel, $Architecture, $Version, $ScriptDir, $IntuneToken, $SiteServer, $SiteCode, $DisableToast, $TotalSteps,
-              $Method, $DriverFolderPath, $DPGroups, $DPs, $DistPriority, $DebugBuildPath, $CustomBrandingPath, $AlarmMode)
+              $Method, $DriverFolderPath, $DPGroups, $DPs, $DistPriority, $DebugBuildPath, $CustomBrandingPath, $AlarmMode, $CreateIntuneWinOnly)
 
         Import-Module $ModulePath -Force
         $global:ScriptDirectory = $ScriptDir
@@ -14658,16 +14928,21 @@ $btn_CustomBuild.Add_Click({
                 if (-not [string]::IsNullOrEmpty($DebugBuildPath)) { $intuneCreateParams['DebugBuildPath'] = $DebugBuildPath }
                 if (-not [string]::IsNullOrEmpty($CustomBrandingPath)) { $intuneCreateParams['CustomBrandingPath'] = $CustomBrandingPath }
                 if ($AlarmMode) { $intuneCreateParams['AlarmMode'] = $true }
+                if ($CreateIntuneWinOnly) { $intuneCreateParams['CreateIntuneWinOnly'] = $true }
                 $packageResult = Invoke-DATIntunePackageCreation @intuneCreateParams
-                Write-DATLogEntry -Value "- [Intune] - Package uploaded successfully" -Severity 1
+                if ($CreateIntuneWinOnly) {
+                    Write-DATLogEntry -Value "- [Intune] - IntuneWin file created (upload skipped)" -Severity 1
+                } else {
+                    Write-DATLogEntry -Value "- [Intune] - Package uploaded successfully" -Severity 1
+                }
                 # Remove the staging WIM folder now that the Intune package has been created
                 if (Test-Path $pkgFolder) {
                     Remove-Item $pkgFolder -Recurse -Force -ErrorAction SilentlyContinue
                     Write-DATLogEntry -Value "- [Intune] - Removed staging WIM folder: $pkgFolder" -Severity 1
                 }
                 Set-Phase -Phase "Complete" -Percent 100 `
-                          -Message "Intune package uploaded successfully" `
-                          -Step "Step 3 of 3 -- Package uploaded to Intune"
+                          -Message $(if ($CreateIntuneWinOnly) { "IntuneWin file created (upload skipped)" } else { "Intune package uploaded successfully" }) `
+                          -Step $(if ($CreateIntuneWinOnly) { "Step 3 of 3 -- IntuneWin file created (upload skipped)" } else { "Step 3 of 3 -- Package uploaded to Intune" })
             } else {
                 # Configuration Manager
                 if (-not [string]::IsNullOrEmpty($SiteServer) -and -not [string]::IsNullOrEmpty($SiteCode)) {
@@ -14767,6 +15042,7 @@ $btn_CustomBuild.Add_Click({
     [void]$script:CustomBuildPS.AddArgument($debugBuildPath)
     [void]$script:CustomBuildPS.AddArgument($script:CustomBrandingImagePath)
     [void]$script:CustomBuildPS.AddArgument($alarmMode)
+    [void]$script:CustomBuildPS.AddArgument($createIntuneWinOnly)
     $script:CustomBuildAsyncResult = $script:CustomBuildPS.BeginInvoke()
 
     # Poll registry for progress updates
@@ -15436,6 +15712,21 @@ $chk_DeployAllDevices.Add_Unchecked({
     $txt_DeployAllState.Text = 'Off'
     $txt_DeployAllState.Foreground = $Window.FindResource('InputPlaceholder')
     Write-DATActivityLog "Package Deployment: Deploy to All Devices disabled" -Level Info
+})
+
+$chk_CreateIntuneWinOnly = $Window.FindName('chk_CreateIntuneWinOnly')
+$txt_CreateIntuneWinOnlyState = $Window.FindName('txt_CreateIntuneWinOnlyState')
+$chk_CreateIntuneWinOnly.Add_Checked({
+    Set-DATRegistryValue -Name "IntuneCreateWinOnly" -Value 1 -Type DWord
+    $txt_CreateIntuneWinOnlyState.Text = 'On'
+    $txt_CreateIntuneWinOnlyState.Foreground = $Window.FindResource('AccentColor')
+    Write-DATActivityLog "Package Output: Create IntuneWin file only (skip upload) enabled" -Level Info
+})
+$chk_CreateIntuneWinOnly.Add_Unchecked({
+    Set-DATRegistryValue -Name "IntuneCreateWinOnly" -Value 0 -Type DWord
+    $txt_CreateIntuneWinOnlyState.Text = 'Off'
+    $txt_CreateIntuneWinOnlyState.Foreground = $Window.FindResource('InputPlaceholder')
+    Write-DATActivityLog "Package Output: Create IntuneWin file only (skip upload) disabled" -Level Info
 })
 
 # Assignment Filter settings
@@ -20101,6 +20392,26 @@ $script:btn_ApplyUpdate.Add_Click({
             try { Write-DATLogEntry -Value "[Update] $Message" -Severity $severity } catch { }
         }
 
+        # Resilient copy -- the running app may hold a read lock on files such as
+        # Branding\DATLogo.ico (the WPF window icon). Retry briefly, then skip the
+        # locked file with a warning rather than aborting the whole update (#819).
+        function Copy-UpdateFileSafe {
+            param([string]$Source, [string]$Destination)
+            for ($attempt = 1; $attempt -le 3; $attempt++) {
+                try {
+                    Copy-Item -Path $Source -Destination $Destination -Force -ErrorAction Stop
+                    return $true
+                } catch {
+                    if ($attempt -lt 3) {
+                        Start-Sleep -Milliseconds 400
+                    } else {
+                        Write-UpdateLog "Could not replace locked file '$Destination' -- $($_.Exception.Message). Skipping (refreshes on next launch)." -Level Warn
+                        return $false
+                    }
+                }
+            }
+        }
+
         try {
             Write-UpdateLog "Loading core module..."
             Import-Module $CoreModulePath -Force -ErrorAction Stop
@@ -20217,14 +20528,14 @@ $script:btn_ApplyUpdate.Add_Click({
                         if (-not (Test-Path $destFileDir)) {
                             New-Item -Path $destFileDir -ItemType Directory -Force | Out-Null
                         }
-                        Copy-Item -Path $srcFile.FullName -Destination $destFile -Force
+                        Copy-UpdateFileSafe -Source $srcFile.FullName -Destination $destFile | Out-Null
                         $filesCopied++
                         Write-UpdateLog "  $($item.Name)$relativePath"
                     }
                     $copiedCount++
                     Write-UpdateLog "Replaced folder: $($item.Name) ($($sourceFiles.Count) files)"
                 } else {
-                    Copy-Item -Path $item.FullName -Destination $destPath -Force
+                    Copy-UpdateFileSafe -Source $item.FullName -Destination $destPath | Out-Null
                     $copiedCount++
                     $filesCopied++
                     Write-UpdateLog "Replaced file: $($item.Name)"
@@ -20912,6 +21223,18 @@ try {
             Write-Host "Disabled" -ForegroundColor DarkYellow
         }
 
+        # Restore Create IntuneWin Only
+        Write-Host "  IntuneWin Only: " -NoNewline -ForegroundColor DarkGray
+        if ($null -ne $savedConfig.IntuneCreateWinOnly -and $savedConfig.IntuneCreateWinOnly -eq 1) {
+            $chk_CreateIntuneWinOnly.IsChecked = $true
+            $txt_CreateIntuneWinOnlyState.Text = 'On'
+            $txt_CreateIntuneWinOnlyState.Foreground = $Window.FindResource('AccentColor')
+            Write-Host "Enabled" -ForegroundColor Green
+        } else {
+            $txt_CreateIntuneWinOnlyState.Text = 'Off'
+            Write-Host "Disabled" -ForegroundColor DarkYellow
+        }
+
         # Restore Assignment Filter settings
         Write-Host "  Auto Filters  : " -NoNewline -ForegroundColor DarkGray
         if ($null -ne $savedConfig.AutoAssignmentFilter -and $savedConfig.AutoAssignmentFilter -eq 1) {
@@ -20959,6 +21282,18 @@ try {
         } else {
             $txt_PackageRetentionState.Text = 'Off'
             Write-Host "Disabled" -ForegroundColor DarkYellow
+        }
+
+        # Restore Disable WIM Compression for Configuration Manager
+        Write-Host "  CM WIM Comp   : " -NoNewline -ForegroundColor DarkGray
+        if ($null -ne $savedConfig.DisableConfigMgrWim -and $savedConfig.DisableConfigMgrWim -eq 1) {
+            $chk_DisableConfigMgrWim.IsChecked       = $true
+            $txt_DisableConfigMgrWimState.Text       = 'On'
+            $txt_DisableConfigMgrWimState.Foreground = $Window.FindResource('AccentColor')
+            Write-Host "Disabled (expanded driver content)" -ForegroundColor DarkYellow
+        } else {
+            $txt_DisableConfigMgrWimState.Text = 'Off'
+            Write-Host "Enabled (compressed WIM)" -ForegroundColor Green
         }
 
         # Restore Code Signing
@@ -21677,7 +22012,7 @@ if (Test-Path $logoPath) {
 
 # Read version from module manifest
 $manifestPath = Join-Path $AppRoot "Modules\DriverAutomationToolCore\DriverAutomationToolCore.psd1"
-$script:versionString = "v10.1.2"
+$script:versionString = "v10.1.4"
 if (Test-Path $manifestPath) {
     $manifestData = Import-PowerShellDataFile $manifestPath
     $ver = [version]$manifestData.ModuleVersion

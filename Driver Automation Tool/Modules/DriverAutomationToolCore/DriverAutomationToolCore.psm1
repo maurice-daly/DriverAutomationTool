@@ -4,7 +4,7 @@
      Organization:  MSEndpointMgr / Patch My PC
      Filename:      DriverAutomationToolCore.psm1
      Purpose:       Core functions for Driver Automation Tool v2.0
-     Version:       10.1.2.0
+     Version:       10.1.4.0
     ===========================================================================
 #>
 
@@ -37,8 +37,8 @@ if ($PSVersionTable.PSVersion.Major -le 5) {
 
 #region Variables
 
-[version]$global:ScriptRelease = "10.1.2.0"
-$global:ScriptBuildDate = "19-06-2026"
+[version]$global:ScriptRelease = "10.1.4.0"
+$global:ScriptBuildDate = "22-06-2026"
 $global:ReleaseNotesURL = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/DriverAutomationToolNotes.txt"
 $OEMLinksURL = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/OEMLinks.xml"
 
@@ -1714,6 +1714,51 @@ function Invoke-DATDriverFilePackaging {
             throw $errorMsg
         }
 
+        # Determine whether to skip WIM compression for Configuration Manager. When the
+        # admin has disabled ConfigMgr WIM compression, the package is staged as the full
+        # expanded driver content instead of a compressed WIM (faster task sequence
+        # deployments still benefit from WIM, so this is an opt-in setting).
+        $skipConfigMgrWim = $false
+        if ($Platform -eq 'Configuration Manager') {
+            $disableCmWim = (Get-ItemProperty -Path $global:RegPath -Name 'DisableConfigMgrWim' -ErrorAction SilentlyContinue).DisableConfigMgrWim
+            if ($disableCmWim -eq 1) { $skipConfigMgrWim = $true }
+        }
+
+        if ($skipConfigMgrWim) {
+            # Stage the expanded driver content (no WIM) into the temp Packaged directory.
+            # New-DATConfigMgrPkg copies the directory contents into the versioned package source.
+            $destDriverMountFolder = Join-Path -Path $global:TempDirectory -ChildPath "Packaged\$OEM\$Model\$OS"
+            if (Test-Path -Path $destDriverMountFolder) {
+                Remove-Item -Path $destDriverMountFolder -Recurse -Force -ErrorAction SilentlyContinue
+            }
+            New-Item -Path $destDriverMountFolder -ItemType Directory -Force | Out-Null
+
+            Write-DATLogEntry -Value "[$OEM] WIM compression disabled for Configuration Manager -- staging expanded driver content" -Severity 1 -UpdateUI
+            Set-DATRegistryValue -Name "RunningMessage" -Value "Staging expanded driver package - $OEM $Model..." -Type String
+            Set-DATRegistryValue -Name "RunningMode" -Value "Packaging" -Type String
+
+            try {
+                Copy-Item -Path (Join-Path $DriverFolder '*') -Destination $destDriverMountFolder -Recurse -Force -ErrorAction Stop
+            } catch {
+                $errorMsg = "Failed to stage expanded driver content: $($_.Exception.Message)"
+                Write-DATLogEntry -Value "[Error] - $errorMsg" -Severity 3 -UpdateUI
+                Set-DATRegistryValue -Name "RunningState" -Value "Error" -Type String
+                Set-DATRegistryValue -Name "RunningMessage" -Value "$errorMsg - $OEM $Model" -Type String
+                throw $errorMsg
+            }
+
+            # Clean up local temp working directory (extracted files)
+            Remove-Item -Path $localWorkDir -Recurse -Force -ErrorAction SilentlyContinue
+            Write-DATLogEntry -Value "[$OEM] Temp working directory cleaned up: $localWorkDir" -Severity 1
+
+            $stagedFileCount = @(Get-ChildItem -Path $destDriverMountFolder -Recurse -File -ErrorAction SilentlyContinue).Count
+            Set-DATRegistryValue -Name "PackagedDriverPath" -Value "$destDriverMountFolder" -Type String
+            Set-DATRegistryValue -Name "RunningMode" -Value "Extract Ready" -Type String
+            Set-DATRegistryValue -Name "RunningMessage" -Value "Driver package staged (expanded, $stagedFileCount files) - $OEM $Model" -Type String
+            Write-DATLogEntry -Value "[$OEM] Expanded driver package staged: $destDriverMountFolder ($stagedFileCount files)" -Severity 1 -UpdateUI
+            return
+        }
+
         Set-DATRegistryValue -Name "RunningMessage" -Value "Creating WIM package for $OEM $Model..." -Type String
         Set-DATRegistryValue -Name "RunningMode" -Value "Packaging" -Type String
         Write-DATLogEntry -Value "[$OEM] Creating WIM package for $Model..." -Severity 1 -UpdateUI
@@ -2764,8 +2809,9 @@ function New-DATConfigMgrPkg {
             } else {
                 New-Item -Path $existingSourcePath -ItemType Directory -Force | Out-Null
             }
-            if ($PackageType -eq 'BIOS' -and (Test-Path $DriverPackage -PathType Container)) {
-                Write-DATLogEntry -Value "- [ConfigMgr] Replacing BIOS files at $existingSourcePath" -Severity 1
+            if (Test-Path $DriverPackage -PathType Container) {
+                # Directory source: BIOS files or expanded (uncompressed) driver content
+                Write-DATLogEntry -Value "- [ConfigMgr] Replacing expanded $PackageType content at $existingSourcePath" -Severity 1
                 Copy-Item -Path "$DriverPackage\*" -Destination $existingSourcePath -Recurse -Force
             } else {
                 Write-DATLogEntry -Value "- [ConfigMgr] Replacing WIM at $existingSourcePath" -Severity 1
@@ -2855,9 +2901,10 @@ function New-DATConfigMgrPkg {
         }
         if (-not (Test-Path $DestPath)) { New-Item -Path $DestPath -ItemType Directory -Force | Out-Null }
 
-        # BIOS ConfigMgr packages use a directory source; drivers use a single WIM file
-        if ($PackageType -eq 'BIOS' -and (Test-Path $DriverPackage -PathType Container)) {
-            Write-DATLogEntry -Value "- [ConfigMgr] Copying BIOS files to $DestPath" -Severity 1
+        # Directory sources (BIOS files or expanded uncompressed driver content) are copied
+        # by contents; a single WIM file is copied directly.
+        if (Test-Path $DriverPackage -PathType Container) {
+            Write-DATLogEntry -Value "- [ConfigMgr] Copying expanded $PackageType content to $DestPath" -Severity 1
             Copy-Item -Path "$DriverPackage\*" -Destination $DestPath -Recurse -Force
         } else {
             Write-DATLogEntry -Value "- [ConfigMgr] Copying WIM to $DestPath" -Severity 1
@@ -3413,7 +3460,8 @@ function Start-DATModelProcessing {
         [switch]$TeamsNotificationsEnabled,
         [string]$CustomToastTextsJson,
         [string]$MaintenanceWindowsJson,
-        [switch]$AlarmMode
+        [switch]$AlarmMode,
+        [switch]$CreateIntuneWinOnly
     )
     $global:ScriptDirectory = $ScriptDirectory
     $global:LogDirectory = Join-Path $ScriptDirectory "Logs"
@@ -3544,10 +3592,21 @@ function Start-DATModelProcessing {
     # would otherwise create duplicate packages)
     $processedBiosModels = @{}
 
+    # Collect per-model / per-package-type failures for the post-build "View Failures" report.
+    # Cleared at the start of every run so stale failures from a previous build are not shown.
+    $buildFailures = [System.Collections.Generic.List[object]]::new()
+    Remove-ItemProperty -Path $global:RegPath -Name 'BuildFailures' -ErrorAction SilentlyContinue
+
     foreach ($model in $modelList) {
         $currentIndex++
         $oem = $model.OEM
         $modelName = $model.Model
+
+        # Per-model failure tracking for the post-build failures report
+        $drvSuccessBefore = $driverPackageSuccessCount
+        $biosSuccessBefore = $biosPackageSuccessCount
+        $modelFailReason = ''
+        $thisBiosNoMatch = $false
 
         # Proactively refresh Intune token before each model to prevent expiry during long builds
         if ($RunningMode -eq 'Intune' -and -not [string]::IsNullOrEmpty($script:IntuneAuthToken)) {
@@ -3801,6 +3860,7 @@ function Start-DATModelProcessing {
                         if (-not [string]::IsNullOrEmpty($CustomIssuesBody)) { $intuneParams['CustomIssuesBody'] = $CustomIssuesBody }
                         if (-not [string]::IsNullOrEmpty($CustomIssuesActionButton)) { $intuneParams['CustomIssuesActionButton'] = $CustomIssuesActionButton }
                         if ($modelForceUpdate) { $intuneParams['ForceUpdate'] = $true }
+                        if ($CreateIntuneWinOnly) { $intuneParams['CreateIntuneWinOnly'] = $true }
                         $intuneResult = Invoke-DATIntunePackageCreation @intuneParams
 
                         Write-DATLogEntry -Value "- $oem $modelName Intune driver upload completed" -Severity 1
@@ -3893,8 +3953,18 @@ function Start-DATModelProcessing {
 
                 # ConfigMgr: Create driver package on site server after packaging
                 if ($RunningMode -eq 'Configuration Manager') {
-                    $wimPath = Join-Path $global:TempDirectory "Packaged\$oem\$modelName\$osPkgLabel\DriverPackage.wim"
-                    if (Test-Path $wimPath) {
+                    $stagedDriverDir = Join-Path $global:TempDirectory "Packaged\$oem\$modelName\$osPkgLabel"
+                    $wimPath = Join-Path $stagedDriverDir "DriverPackage.wim"
+                    # When WIM compression is disabled for ConfigMgr the staged content is the
+                    # expanded driver folder rather than a single DriverPackage.wim file.
+                    $driverSource = if (Test-Path $wimPath) {
+                        $wimPath
+                    } elseif ((Test-Path $stagedDriverDir) -and @(Get-ChildItem -Path $stagedDriverDir -Force -ErrorAction SilentlyContinue).Count -gt 0) {
+                        $stagedDriverDir
+                    } else {
+                        $null
+                    }
+                    if ($driverSource) {
                         if (-not [string]::IsNullOrEmpty($SiteServer) -and -not [string]::IsNullOrEmpty($SiteCode)) {
                             Write-DATLogEntry -Value "[$currentIndex/$totalModels] Starting ConfigMgr driver pipeline for $oem $modelName" -Severity 1
                             Write-DATLogEntry -Value "-- Site server: $SiteServer" -Severity 1
@@ -3903,7 +3973,7 @@ function Start-DATModelProcessing {
 
                             $version = if (-not [string]::IsNullOrEmpty($catalogVersion)) { "$catalogVersion" } elseif (-not [string]::IsNullOrEmpty($catalogDriverVersion)) { "$catalogDriverVersion" } else { Get-Date -Format "ddMMyyyy" }
                             $cmParams = @{
-                                DriverPackage = $wimPath
+                                DriverPackage = $driverSource
                                 OEM           = $oem
                                 Model         = $modelName
                                 OS            = $osPkgLabel
@@ -3940,8 +4010,16 @@ function Start-DATModelProcessing {
 
                                 # Telemetry: driver report with WIM hash (before cleanup)
                                 try {
-                                    $drvHash = Get-DATPackageHash -FilePath $wimPath
-                                    $drvSize = if (Test-Path $wimPath) { (Get-Item $wimPath).Length } else { 0 }
+                                    if (Test-Path $driverSource -PathType Leaf) {
+                                        # Compressed WIM -- hash the single file
+                                        $drvHash = Get-DATPackageHash -FilePath $driverSource
+                                        $drvSize = (Get-Item $driverSource).Length
+                                    } else {
+                                        # Expanded driver content -- sum the directory size, no single-file hash
+                                        $drvHash = $null
+                                        $drvSize = [int64](Get-ChildItem -Path $driverSource -Recurse -File -ErrorAction SilentlyContinue |
+                                            Measure-Object -Property Length -Sum).Sum
+                                    }
                                     Send-DATDriverReport -Manufacturer $oem -Model $modelName `
                                         -OSVersion $osPkgLabel -OSArchitecture $arch `
                                         -Platform 'ConfigMgr' -Status 'Success' `
@@ -3950,14 +4028,19 @@ function Start-DATModelProcessing {
                                     Write-DATLogEntry -Value "[Telemetry] Driver report failed: $($_.Exception.Message)" -Severity 2
                                 }
 
-                                # Clean up staging WIM now that it has been copied to the CM package source
-                                if (Test-Path $wimPath) {
-                                    Remove-Item -Path $wimPath -Force -ErrorAction SilentlyContinue
-                                    $wimParent = Split-Path $wimPath -Parent
+                                # Clean up staging content now that it has been copied to the CM package source
+                                if (Test-Path $driverSource -PathType Leaf) {
+                                    # Compressed WIM -- remove the file then its parent if empty
+                                    Remove-Item -Path $driverSource -Force -ErrorAction SilentlyContinue
+                                    $wimParent = Split-Path $driverSource -Parent
                                     if ((Test-Path $wimParent) -and @(Get-ChildItem -Path $wimParent -Force -ErrorAction SilentlyContinue).Count -eq 0) {
                                         Remove-Item -Path $wimParent -Recurse -Force -ErrorAction SilentlyContinue
                                     }
                                     Write-DATLogEntry -Value "[$oem] Staging WIM cleaned up after ConfigMgr package creation" -Severity 1
+                                } elseif (Test-Path $driverSource) {
+                                    # Expanded driver content -- remove the entire staging directory
+                                    Remove-Item -Path $driverSource -Recurse -Force -ErrorAction SilentlyContinue
+                                    Write-DATLogEntry -Value "[$oem] Staging directory cleaned up after ConfigMgr package creation" -Severity 1
                                 }
                                 $script:driverPipelineSuccess = $true
                             } else {
@@ -3968,7 +4051,7 @@ function Start-DATModelProcessing {
                         }
                     } else {
                         if (-not $global:DATSoftPaqBuildSkipped) {
-                            Write-DATLogEntry -Value "[Warning] - Driver WIM not found for ConfigMgr: $wimPath" -Severity 2
+                            Write-DATLogEntry -Value "[Warning] - Driver package content not found for ConfigMgr: $stagedDriverDir" -Severity 2
                         }
                     }
                 }
@@ -4171,6 +4254,7 @@ function Start-DATModelProcessing {
                 if ($null -eq $biosEntry) {
                     Write-DATLogEntry -Value "[Warning] - No BIOS update available for $oem $modelName -- skipping BIOS" -Severity 2
                     $biosNoMatchCount++
+                    $thisBiosNoMatch = $true
                     if ($effectivePackageType -eq 'BIOS') {
                         # Signal the UI via RunningMode -- tied to CurrentJob so no race conditions
                         Set-DATRegistryValue -Name "RunningMode" -Value "BiosNoMatch" -Type String
@@ -4236,6 +4320,7 @@ function Start-DATModelProcessing {
                                 if (-not [string]::IsNullOrEmpty($CustomBIOSIssuesBody)) { $intuneParams['CustomBIOSIssuesBody'] = $CustomBIOSIssuesBody }
                                 if (-not [string]::IsNullOrEmpty($CustomBIOSIssuesActionButton)) { $intuneParams['CustomBIOSIssuesActionButton'] = $CustomBIOSIssuesActionButton }
                                 if ($modelForceUpdate) { $intuneParams['ForceUpdate'] = $true }
+                                if ($CreateIntuneWinOnly) { $intuneParams['CreateIntuneWinOnly'] = $true }
                                 $biosIntuneResult = Invoke-DATIntunePackageCreation @intuneParams
 
                                 Write-DATLogEntry -Value "- $oem $modelName Intune BIOS upload completed" -Severity 1
@@ -4410,7 +4495,28 @@ function Start-DATModelProcessing {
             $completedCount++
             Write-DATLogEntry -Value "- $oem $modelName completed successfully" -Severity 1
         } catch {
+            $modelFailReason = $_.Exception.Message
             Write-DATLogEntry -Value "[Error] - $oem $modelName failed: $($_.Exception.Message)" -Severity 3
+        }
+
+        # Record per-package-type failures for the post-build "View Failures" report.
+        # A package type counts as failed when it was in scope for this build but its
+        # success counter did not advance for this model.
+        $modelIsBIOSOnly = [bool]$model.BIOSOnly
+        if ($effectivePackageType -in @('Drivers', 'All') -and $driverPackageSuccessCount -le $drvSuccessBefore) {
+            $drvReason = if (-not [string]::IsNullOrEmpty($modelFailReason)) { $modelFailReason }
+                         elseif ($modelIsBIOSOnly) { 'No driver package available (BIOS-only model)' }
+                         else { 'Driver package was not created -- see log for details' }
+            $buildFailures.Add([pscustomobject]@{ OEM = $oem; Model = $modelName; PackageType = 'Drivers'; OS = "$os"; Reason = $drvReason })
+        }
+        if ($effectivePackageType -in @('BIOS', 'All') -and $biosPackageSuccessCount -le $biosSuccessBefore) {
+            # Microsoft Surface BIOS ships via driver injection -- not a failure
+            if ($oem -ne 'Microsoft') {
+                $biosReason = if ($thisBiosNoMatch) { 'No BIOS update found in catalog' }
+                              elseif (-not [string]::IsNullOrEmpty($modelFailReason)) { $modelFailReason }
+                              else { 'BIOS package was not created -- see log for details' }
+                $buildFailures.Add([pscustomobject]@{ OEM = $oem; Model = $modelName; PackageType = 'BIOS'; OS = "$os"; Reason = $biosReason })
+            }
         }
 
         Set-DATRegistryValue -Name "CompletedJobs" -Value "$completedCount" -Type String
@@ -4430,6 +4536,22 @@ function Start-DATModelProcessing {
     if ($finalCheckReg.RunningState -eq 'Aborted') {
         Write-DATLogEntry -Value "--- Model processing aborted by user ---" -Severity 2
         return
+    }
+
+    # Persist the structured failure list to the registry BEFORE the final state is written,
+    # so the UI sees it the moment it detects completion and can offer the "View Failures" view.
+    try {
+        if ($buildFailures.Count -gt 0) {
+            # Cap each reason to keep the serialized payload within registry string limits
+            foreach ($bf in $buildFailures) {
+                if ($bf.Reason -and $bf.Reason.Length -gt 300) { $bf.Reason = $bf.Reason.Substring(0, 297) + '...' }
+            }
+            $failJson = ConvertTo-Json -InputObject @($buildFailures) -Depth 4 -Compress
+            Set-DATRegistryValue -Name 'BuildFailures' -Value $failJson -Type String
+            Write-DATLogEntry -Value "--- Recorded $($buildFailures.Count) package failure(s) for the post-build report ---" -Severity 2
+        }
+    } catch {
+        Write-DATLogEntry -Value "[Warning] Failed to record build failures list: $($_.Exception.Message)" -Severity 2
     }
 
     if ($completedCount -eq $totalModels) {
@@ -4608,7 +4730,8 @@ function Export-DATBuildConfig {
         [bool]$MaintenanceWindowEnabled = $false,
         [string]$MaintenanceWindowMode = 'Daily',
         [array]$MaintenanceWindows,
-        [bool]$CleanTempOnExit = $true
+        [bool]$CleanTempOnExit = $true,
+        [bool]$CreateIntuneWinOnly = $false
     )
 
     $modelArray = foreach ($m in $Models) {
@@ -4640,6 +4763,7 @@ function Export-DATBuildConfig {
         ToastTimeoutAction         = $ToastTimeoutAction
         MaxDeferrals               = $MaxDeferrals
         BIOSRestartDelayMinutes    = $BIOSRestartDelayMinutes
+        CreateIntuneWinOnly        = $CreateIntuneWinOnly
         TeamsWebhookUrl            = if ($TeamsWebhookUrl) { $TeamsWebhookUrl } else { '' }
         TeamsNotificationsEnabled  = $TeamsNotificationsEnabled
         Intune                     = if ($Intune) { $Intune } else { [ordered]@{ TenantId = ''; AppId = ''; AppSecret = '' } }
@@ -4727,6 +4851,7 @@ function Import-DATBuildConfig {
         ToastTimeoutAction        = if ($config.ToastTimeoutAction) { $config.ToastTimeoutAction } else { 'RemindMeLater' }
         MaxDeferrals              = if ($config.MaxDeferrals) { [int]$config.MaxDeferrals } else { 0 }
         BIOSRestartDelayMinutes   = if ($config.BIOSRestartDelayMinutes) { [int]$config.BIOSRestartDelayMinutes } else { 3 }
+        CreateIntuneWinOnly       = [bool]$config.CreateIntuneWinOnly
         TeamsWebhookUrl           = $config.TeamsWebhookUrl
         TeamsNotificationsEnabled = [bool]$config.TeamsNotificationsEnabled
         WimEngine                 = if ($config.WimEngine) { $config.WimEngine } else { $null }
@@ -4855,6 +4980,27 @@ function Update-DATApplication {
     $tempDir = Join-Path $env:TEMP "DATUpdate_$(Get-Date -Format 'yyyyMMdd_HHmmss')"
     $zipPath = Join-Path $tempDir "DriverAutomationTool.zip"
 
+    # Resilient copy -- the running application may hold a read lock on files such as
+    # Branding\DATLogo.ico (the WPF window icon). Retry briefly, then skip the locked
+    # file with a warning rather than aborting (and rolling back) the entire update.
+    # Skipped files are non-critical and refresh on the next launch (issue #819).
+    function Copy-DATUpdateFile {
+        param([string]$Source, [string]$Destination)
+        for ($attempt = 1; $attempt -le 3; $attempt++) {
+            try {
+                Copy-Item -Path $Source -Destination $Destination -Force -ErrorAction Stop
+                return $true
+            } catch {
+                if ($attempt -lt 3) {
+                    Start-Sleep -Milliseconds 400
+                } else {
+                    Write-DATLogEntry -Value "[Update] WARNING: Could not replace locked file '$Destination' -- $($_.Exception.Message). Skipping (will refresh on next launch)." -Severity 2
+                    return $false
+                }
+            }
+        }
+    }
+
     Write-DATLogEntry -Value "[Update] Starting self-update from GitHub..." -Severity 1
     Write-DATLogEntry -Value "[Update] Install directory: $InstallDirectory" -Severity 1
 
@@ -4952,11 +5098,11 @@ function Update-DATApplication {
                     if (-not (Test-Path $destFileDir)) {
                         New-Item -Path $destFileDir -ItemType Directory -Force | Out-Null
                     }
-                    Copy-Item -Path $srcFile.FullName -Destination $destFile -Force
+                    Copy-DATUpdateFile -Source $srcFile.FullName -Destination $destFile | Out-Null
                 }
                 Write-DATLogEntry -Value "[Update] Replaced folder: $($item.Name) ($($sourceFiles.Count) files)" -Severity 1
             } else {
-                Copy-Item -Path $item.FullName -Destination $destPath -Force
+                Copy-DATUpdateFile -Source $item.FullName -Destination $destPath | Out-Null
                 Write-DATLogEntry -Value "[Update] Replaced file: $($item.Name)" -Severity 1
             }
         }
@@ -7346,6 +7492,45 @@ function Remove-DATIntuneApp {
     return Invoke-DATGraphRequest -Uri "/deviceAppManagement/mobileApps/$AppId" -Method DELETE
 }
 
+function ConvertTo-DATPackageDate {
+    <#
+    .SYNOPSIS
+        Normalises a package timestamp (WMI DMTF datetime, CIM DateTime, or ISO8601 string)
+        to a sortable [datetime]. Returns [datetime]::MinValue when no usable value exists so
+        that packages without a timestamp sort last (oldest).
+    #>
+    param ($Value)
+
+    if ($null -eq $Value) { return [datetime]::MinValue }
+    if ($Value -is [datetime]) { return $Value }
+    $text = [string]$Value
+    if ([string]::IsNullOrWhiteSpace($text)) { return [datetime]::MinValue }
+    # WMI DMTF datetime e.g. 20260622103000.000000+000
+    try { return [System.Management.ManagementDateTimeConverter]::ToDateTime($text) } catch { }
+    $parsed = [datetime]::MinValue
+    if ([datetime]::TryParse($text, [ref]$parsed)) { return $parsed }
+    return [datetime]::MinValue
+}
+
+function Get-DATVersionSortKey {
+    <#
+    .SYNOPSIS
+        Produces a type-safe (always [string]) sort key for a package version so that the
+        common version formats order correctly. Date-style ddMMyyyy versions are converted to
+        yyyyMMdd, dotted numeric versions are zero-padded per segment, and any other value is
+        lower-cased. Used only as a tiebreaker when authoritative timestamps are equal.
+    #>
+    param ([string]$Version)
+
+    if ([string]::IsNullOrWhiteSpace($Version)) { return '' }
+    $v = $Version.Trim()
+    if ($v -match '^(\d{2})(\d{2})(\d{4})$') { return "$($Matches[3])$($Matches[2])$($Matches[1])" }
+    if ($v -match '^\d+(\.\d+)+$') {
+        return (($v -split '\.') | ForEach-Object { '{0:D6}' -f [int]$_ }) -join '.'
+    }
+    return $v.ToLowerInvariant()
+}
+
 function Invoke-DATPackageRetention {
     <#
     .SYNOPSIS
@@ -7393,12 +7578,20 @@ function Invoke-DATPackageRetention {
                 $whereClause = "Name LIKE '$($namePattern -replace "'","''")'"
                 Write-DATLogEntry -Value "[Retention][CM] Querying superseded packages matching: $namePattern" -Severity 1
             }
-            $wmiQuery = "SELECT PackageID, Name, Version FROM SMS_Package WHERE $whereClause"
+            $wmiQuery = "SELECT PackageID, Name, Version, SourceDate FROM SMS_Package WHERE $whereClause"
             $allPkgs  = @(Invoke-DATRemoteQuery -CimSession $cimSess -ComputerName $SiteServer -Namespace $smsNamespace -Query $wmiQuery)
             # Group by package name so each distinct package line keeps its own newest
             # version(s); retention is applied per-name, not across different packages.
+            # Order newest-first using the authoritative SourceDate timestamp (DAT stamps this
+            # on create and force-update, #806). Version strings are unreliable for ordering
+            # because DAT uses date-style (ddMMyyyy) and OEM catalog versions that do not sort
+            # chronologically as plain strings -- a lexically-larger but older version would
+            # otherwise be retained while a newer package is deleted, leaving stale packages
+            # behind (#821). Version sort key is only a tiebreaker when timestamps are equal.
             $toDelete = foreach ($grp in ($allPkgs | Group-Object -Property Name)) {
-                $sorted = $grp.Group | Sort-Object -Property Version -Descending
+                $sorted = $grp.Group | Sort-Object -Property `
+                    @{ Expression = { ConvertTo-DATPackageDate $_.SourceDate }; Descending = $true }, `
+                    @{ Expression = { Get-DATVersionSortKey $_.Version };       Descending = $true }
                 if ($sorted.Count -gt ($RetainCount + 1)) { $sorted | Select-Object -Skip ($RetainCount + 1) }
             }
             $toDelete = @($toDelete)
@@ -7444,7 +7637,13 @@ function Invoke-DATPackageRetention {
                 $matching = @($allApps | Where-Object { $_.displayName -like "$namePrefix*$Architecture*" })
             }
             Write-DATLogEntry -Value "[Retention][Intune] Found $($matching.Count) app(s)" -Severity 1
-            $sorted   = $matching | Sort-Object -Property { $_.displayVersion } -Descending
+            # Order newest-first by the authoritative creation timestamp (falling back to last
+            # modified) rather than the displayVersion string, which -- like ConfigMgr -- uses
+            # date-style and OEM catalog versions that do not sort chronologically and would
+            # otherwise leave stale apps behind (#821). displayVersion is only a tiebreaker.
+            $sorted   = $matching | Sort-Object -Property `
+                @{ Expression = { ConvertTo-DATPackageDate $(if ($_.createdDateTime) { $_.createdDateTime } else { $_.lastModifiedDateTime }) }; Descending = $true }, `
+                @{ Expression = { Get-DATVersionSortKey $_.displayVersion }; Descending = $true }
             $toDelete = if ($sorted.Count -gt ($RetainCount + 1)) { $sorted | Select-Object -Skip ($RetainCount + 1) } else { @() }
 
             foreach ($app in $toDelete) {
@@ -8844,6 +9043,7 @@ function New-DATIntuneInstallScript {
     # Build status toast blocks (Success on completion, Issues on error)
     $statusToastBlock = ''
     $statusToastErrorBlock = ''
+    $statusToastACPowerBlock = ''
     if (-not $DisableToast) {
         # Reusable function that launches a toast script in the user's interactive session
         $statusToastFunction = @'
@@ -8966,6 +9166,17 @@ function Show-DATStatusToast {
     Show-DATStatusToast -ToastScript `$issuesScript
 "@
         }
+        # Shown (BIOS only) when an update is deferred because the device is on battery.
+        # Unlike the generic issues toast, this gives the user an actionable, self-remediable
+        # message (connect AC power). Injected inline at the AC-power exit points so it fires
+        # even though those paths use 'exit 1618' rather than throwing into the catch block.
+        $statusToastACPowerBlock = if ($UpdateType -eq 'BIOS') {
+            @"
+
+                            `$acPowerToastScript = Join-Path `$ScriptDir "Show-StatusToast-BIOSACPower.ps1"
+                            Show-DATStatusToast -ToastScript `$acPowerToastScript
+"@
+        } else { '' }
         # Place the helper function BEFORE the try block (PS 5.1 compatibility --
         # function definitions inside try{} cause MissingCatchOrFinally parse errors)
         $toastFunctions = $statusToastFunction
@@ -9008,6 +9219,7 @@ function Show-DATStatusToast {
     $scriptContent = $scriptContent.Replace('{{TOAST_BLOCK}}', $toastBlock)
     $scriptContent = $scriptContent.Replace('{{STATUS_TOAST_BLOCK}}', $statusToastBlock)
     $scriptContent = $scriptContent.Replace('{{STATUS_TOAST_ERROR_BLOCK}}', $statusToastErrorBlock)
+    $scriptContent = $scriptContent.Replace('{{STATUS_TOAST_ACPOWER_BLOCK}}', $statusToastACPowerBlock)
     $scriptContent = $scriptContent.Replace('{{RESTART_DELAY_SECONDS}}', [string]$RestartDelaySeconds)
     $scriptContent = $scriptContent.Replace('{{DISABLE_RESTART}}', $(if ($DisableRestart) { '$true' } else { '$false' }))
 
@@ -10127,7 +10339,8 @@ function Invoke-DATIntunePackageCreation {
         [string]$CustomBIOSSuccessDismissButton,
         [string]$CustomBIOSIssuesActionButton,
         [string]$MaintenanceWindowsJson = '',
-        [switch]$AlarmMode
+        [switch]$AlarmMode,
+        [switch]$CreateIntuneWinOnly
     )
     if (-not [string]::IsNullOrEmpty($IntuneAuthToken)) {
         $script:IntuneAuthToken = $IntuneAuthToken
@@ -10137,7 +10350,9 @@ function Invoke-DATIntunePackageCreation {
         }
     }
 
-    if (-not (Test-DATIntuneAuth)) {
+    # CreateIntuneWinOnly builds the .intunewin offline and skips the upload, so Intune
+    # authentication is not required in that mode.
+    if (-not $CreateIntuneWinOnly -and -not (Test-DATIntuneAuth)) {
         throw "Intune authentication required for Win32 app creation."
     }
 
@@ -10167,6 +10382,8 @@ function Invoke-DATIntunePackageCreation {
     Set-DATRegistryValue -Name "RunningMode" -Value "Packaging" -Type String
 
     # --- Duplicate detection: skip if same displayName + version already exists in Intune ---
+    # CreateIntuneWinOnly builds the package offline only, so the Intune duplicate query is skipped.
+    if (-not $CreateIntuneWinOnly) {
     try {
         Write-DATLogEntry -Value "[Intune Pipeline] Checking for existing package: $displayName (version $version)" -Severity 1
         $escapedName = $displayName -replace "'", "''"
@@ -10193,6 +10410,7 @@ function Invoke-DATIntunePackageCreation {
         Write-DATLogEntry -Value "[Intune Pipeline] No existing package found -- proceeding with creation" -Severity 1
     } catch {
         Write-DATLogEntry -Value "[Intune Pipeline] Duplicate check failed ($($_.Exception.Message)) -- proceeding with creation" -Severity 2
+    }
     }
 
     # Create staging directory for the package
@@ -10310,6 +10528,16 @@ function Invoke-DATIntunePackageCreation {
                 if (-not [string]::IsNullOrEmpty($CustomBIOSIssuesActionButton)) { $biosIssuesParams['CustomActionButton'] = $CustomBIOSIssuesActionButton }
                 New-DATIntuneToastScript -OutputPath $biosIssuesToastPath -UpdateType 'BIOSIssues' @biosIssuesParams
                 Write-DATLogEntry -Value "[Intune Pipeline] BIOS issues toast script created: $biosIssuesToastPath" -Severity 1 -UpdateUI
+
+                # AC-power-required toast: shown when a BIOS update is deferred because the
+                # device is running on battery. Reuses the BIOS Issues warning styling but
+                # carries an actionable, self-remediable message (connect AC power).
+                $biosACPowerToastPath = Join-Path $stagingDir "Show-StatusToast-BIOSACPower.ps1"
+                $biosACPowerParams = @{} + $statusToastParams
+                $biosACPowerParams['CustomToastTitle'] = 'BIOS Update Paused - Connect Power'
+                $biosACPowerParams['CustomToastBody']  = 'Your device needs to install a BIOS firmware update, but it must be connected to AC power first. Please plug in your charger - the update will continue automatically the next time it runs.'
+                New-DATIntuneToastScript -OutputPath $biosACPowerToastPath -UpdateType 'BIOSIssues' @biosACPowerParams
+                Write-DATLogEntry -Value "[Intune Pipeline] BIOS AC-power toast script created: $biosACPowerToastPath" -Severity 1 -UpdateUI
             }
         }
 
@@ -10360,6 +10588,15 @@ function Invoke-DATIntunePackageCreation {
         }
         $intuneWinSize = [math]::Round((Get-Item $intuneWinFile).Length / 1MB, 2)
         Write-DATLogEntry -Value "[Intune Pipeline] IntuneWin package created: $intuneWinFile ($intuneWinSize MB)" -Severity 1 -UpdateUI
+
+        # CreateIntuneWinOnly: stop here. The .intunewin now resides in the Package path
+        # (IntuneWin\<OEM>\<Model>\<OS>) ready for manual upload -- skip the Graph upload.
+        if ($CreateIntuneWinOnly) {
+            Write-DATLogEntry -Value "[Intune Pipeline] CreateIntuneWinOnly mode -- .intunewin retained at: $intuneWinFile (upload skipped)" -Severity 1 -UpdateUI
+            Set-DATRegistryValue -Name "RunningMode" -Value "Packaging" -Type String
+            Set-DATRegistryValue -Name "RunningMessage" -Value "IntuneWin created (upload skipped): $OEM $Model" -Type String
+            return @{ IntuneWinPath = $intuneWinFile; CreatedOnly = $true; Skipped = $false }
+        }
 
         # Transition to Upload stage now that .intunewin is ready
         Set-DATRegistryValue -Name "RunningMode" -Value "Intune Upload" -Type String
