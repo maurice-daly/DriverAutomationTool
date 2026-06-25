@@ -52,6 +52,7 @@ public class ModelItem : INotifyPropertyChanged {
     public string OEM        { get; set; }
     public string Model      { get; set; }
     public string OS         { get; set; }
+    public string Architecture { get; set; }
     public string Build      { get; set; }
     public string Baseboards { get; set; }
     public bool   HasGFX     { get; set; }
@@ -6140,6 +6141,8 @@ $script:OSCheckboxes = [ordered]@{
     'Windows 11 23H2' = $Window.FindName('chk_OS_Win11_23H2')
     'Windows 11 22H2' = $Window.FindName('chk_OS_Win11_22H2')
     'Windows 11 21H2' = $Window.FindName('chk_OS_Win11_21H2')
+    'Windows 10 22H2' = $Window.FindName('chk_OS_Win10_22H2')
+    'Windows 10 21H2' = $Window.FindName('chk_OS_Win10_21H2')
 }
 $script:OSBorders = [ordered]@{
     'Windows 11 25H2' = $Window.FindName('border_OS_Win11_25H2')
@@ -6147,6 +6150,8 @@ $script:OSBorders = [ordered]@{
     'Windows 11 23H2' = $Window.FindName('border_OS_Win11_23H2')
     'Windows 11 22H2' = $Window.FindName('border_OS_Win11_22H2')
     'Windows 11 21H2' = $Window.FindName('border_OS_Win11_21H2')
+    'Windows 10 22H2' = $Window.FindName('border_OS_Win10_22H2')
+    'Windows 10 21H2' = $Window.FindName('border_OS_Win10_21H2')
 }
 
 # Backing store for selected OS values -- survives regardless of popup/checkbox state
@@ -6190,7 +6195,11 @@ function Update-DATOSSelectionHighlight {
 # Wire OS checkbox change events -- deferred refresh on popup close (like OEM)
 $script:OSSelectionDirty = $false
 $osSelectionChangedHandler = {
+    param($eventSender, $eArgs)
     if ($script:SuppressOSSync) { return }
+    # Resolve the originating checkbox -- depending on how the event delegate is invoked the
+    # sender may arrive as a positional argument or via the automatic $this variable.
+    if ($null -eq $eventSender) { $eventSender = $this }
     # Rebuild backing store from checkbox state
     $script:SelectedOSValues.Clear()
     foreach ($entry in $script:OSCheckboxes.GetEnumerator()) {
@@ -6198,6 +6207,58 @@ $osSelectionChangedHandler = {
             $script:SelectedOSValues.Add($entry.Key)
         }
     }
+
+    # Legacy OS guard: Windows 10 support is served only from the OEM-direct catalogs,
+    # so Windows 10 and Windows 11 builds are mutually exclusive while the DAT API catalog
+    # is the active source. Whichever family the user just checked wins; the other family
+    # is deselected. Selecting a Windows 10 build also informs the user that the OEM-direct
+    # catalogs are used. Selecting a Windows 11 build switches back to the API silently.
+    if ($chk_UseDATAPICatalog.IsChecked -eq $true -and
+        $eventSender -is [System.Windows.Controls.CheckBox] -and
+        $eventSender.IsChecked -eq $true) {
+        $changedOS = ($script:OSCheckboxes.GetEnumerator() | Where-Object { $_.Value -eq $eventSender } | Select-Object -First 1).Key
+        if ($changedOS -like 'Windows 10*') {
+            $conflicting = @($script:SelectedOSValues | Where-Object { $_ -like 'Windows 11*' })
+            if ($conflicting.Count -gt 0) {
+                $script:SuppressOSSync = $true
+                foreach ($osName in $conflicting) {
+                    $cb = $script:OSCheckboxes[$osName]
+                    if ($null -ne $cb) { $cb.IsChecked = $false }
+                    [void]$script:SelectedOSValues.Remove($osName)
+                }
+                $script:SuppressOSSync = $false
+                Write-DATActivityLog "Windows 10 selected with DAT API catalog enabled -- deselected Windows 11 builds; Windows 10 models are sourced from OEM-direct catalogs." -Level Warn
+                Show-DATInfoDialog -Title 'Legacy OS Support' -Type 'Warning' -Message ("Windows 10 driver support is provided through the OEM direct catalogs rather than the DAT API catalog.`n`nThe selected Windows 11 builds have been deselected so the model list shows the correct devices with Windows 10 support. Windows 10 packages will be sourced directly from each OEM.")
+                # The Legacy OS modal steals focus and closes the OS popup before the
+                # deferred (popup-close) refresh can run, so refresh the model list
+                # explicitly now that the user has acknowledged the change.
+                Update-DATOSDisplayText
+                Update-DATOSSelectionHighlight
+                Set-DATRegistryValue -Name "OS" -Value ((Get-DATSelectedOSes) -join ';') -Type String
+                $script:OSSelectionDirty = $false
+                if ($popup_OS.IsOpen) { $popup_OS.IsOpen = $false }
+                if (-not $script:SuppressModelRefresh -and (Get-DATSelectedOEMs).Count -gt 0 -and (Get-DATSelectedOSes).Count -gt 0) {
+                    if ($script:ModelData.Count -gt 0) { Save-DATModelSelections }
+                    Invoke-DATRefreshModelsClick
+                }
+                return
+            }
+        }
+        elseif ($changedOS -like 'Windows 11*') {
+            $conflicting = @($script:SelectedOSValues | Where-Object { $_ -like 'Windows 10*' })
+            if ($conflicting.Count -gt 0) {
+                $script:SuppressOSSync = $true
+                foreach ($osName in $conflicting) {
+                    $cb = $script:OSCheckboxes[$osName]
+                    if ($null -ne $cb) { $cb.IsChecked = $false }
+                    [void]$script:SelectedOSValues.Remove($osName)
+                }
+                $script:SuppressOSSync = $false
+                Write-DATActivityLog "Windows 11 selected with DAT API catalog enabled -- deselected Windows 10 builds; models will be sourced from the DAT API catalog." -Level Info
+            }
+        }
+    }
+
     Update-DATOSDisplayText
     Update-DATOSSelectionHighlight
     if (-not $script:SuppressModelRefresh) {
@@ -6624,16 +6685,27 @@ $btn_RefreshModels.Add_Click({
 
                     $OSList = $OS -split ';' | Where-Object { $_ }
                     $OEMSupportedModels = @()
+                    # "All" architecture: include both x64 and Arm64 entries (do not filter by arch);
+                    # each model is tagged with its own native architecture below.
+                    $IsAllArch = ($Architecture -eq 'All')
 
                     foreach ($entry in $driverCatalogRaw) {
                         # Filter by selected OEMs
                         if ($entry.Manufacturer -notin $RequiredOEMs) { continue }
 
-                        # Filter by architecture (normalize amd64 -> x64)
+                        # Determine the entry's native architecture (normalize amd64 -> x64)
                         $entryArch = $entry.SupportedArchitecture
+                        $entryArchNorm = 'x64'
                         if ($entryArch) {
-                            $normalizedArch = $entryArch -replace 'amd64', 'x64'
-                            if ($normalizedArch -notmatch [regex]::Escape($Architecture)) { continue }
+                            if ($entryArch -match 'arm') { $entryArchNorm = 'Arm64' } else { $entryArchNorm = 'x64' }
+                            # Filter by architecture unless "All" is selected
+                            if (-not $IsAllArch) {
+                                $normalizedArch = $entryArch -replace 'amd64', 'x64'
+                                if ($normalizedArch -notmatch [regex]::Escape($Architecture)) { continue }
+                            }
+                        } else {
+                            # No architecture metadata -- treat as x64 and respect a specific Arm64 filter
+                            if (-not $IsAllArch -and $Architecture -eq 'Arm64') { continue }
                         }
 
                         # Match OS: API returns various formats like "win11 25H2", "Windows 11 64-bit, 25H2", "Windows11", "Windows 11"
@@ -6656,6 +6728,7 @@ $btn_RefreshModels.Add_Click({
                                     OS         = "$($firstOS[0]) $($firstOS[1])"
                                     'OS Build' = 'All'
                                     Version    = $dellVer
+                                    Architecture = $entryArchNorm
                                     DownloadURL = if ($entry.DownloadURL) { $entry.DownloadURL } else { '' }
                                 }
                                 continue
@@ -6686,6 +6759,7 @@ $btn_RefreshModels.Add_Click({
                                     'OS Build' = $WindowsBuild
                                     Version    = $displayVersion
                                     DriverPackVersion = $hpPackVersion
+                                    Architecture = $entryArchNorm
                                     DownloadURL = if ($entry.DownloadURL) { $entry.DownloadURL } else { '' }
                                 }
                             }
@@ -6744,6 +6818,7 @@ $btn_RefreshModels.Add_Click({
                                     'OS Build' = $WindowsBuild
                                     Version    = $displayVersion
                                     DriverPackVersion = $hpPackVersion
+                                    Architecture = $entryArchNorm
                                     DownloadURL = if ($entry.DownloadURL) { $entry.DownloadURL } else { '' }
                                 }
                             }
@@ -6765,6 +6840,7 @@ $btn_RefreshModels.Add_Click({
                                 OS         = "$($firstOS[0]) $($firstOS[1])"
                                 'OS Build' = 'All'
                                 Version    = $dellDisplayVersion
+                                Architecture = $entryArchNorm
                                 DownloadURL = if ($entry.DownloadURL) { $entry.DownloadURL } else { '' }
                             }
                         }
@@ -6904,9 +6980,21 @@ $btn_RefreshModels.Add_Click({
         # Support multiple OS values separated by semicolons
         $OSList = $OS -split ';' | Where-Object { $_ }
         $OEMSupportedModels = @()
+        # "All" architecture: iterate both x64 and Arm64. Only OEMs whose catalogs are
+        # architecture-aware (Dell, Microsoft) are processed in the Arm64 pass to avoid
+        # duplicating x64-only models as fake Arm64 rows. Each model is stamped with the
+        # iteration's architecture after the OEM loop completes.
+        $OriginalArchitecture = $Architecture
+        $ArchList = if ($Architecture -eq 'All') { @('x64', 'Arm64') } else { @($Architecture) }
+
+        foreach ($ArchIter in $ArchList) {
+        # Reassign $Architecture so existing per-OEM arch filters operate on a concrete value
+        $Architecture = $ArchIter
+        $preArchCount = @($OEMSupportedModels).Count
 
         foreach ($OEM in $RequiredOEMs) {
-            Write-Log "--- Processing $OEM ---"
+            if ($OriginalArchitecture -eq 'All' -and $ArchIter -eq 'Arm64' -and $OEM -notin @('Dell', 'Microsoft')) { continue }
+            Write-Log "--- Processing $OEM ($ArchIter) ---"
             $LogQueue.Enqueue("[SOURCE:${OEM}:Loading]")
             switch ($OEM) {
                 "HP" {
@@ -7307,6 +7395,13 @@ $btn_RefreshModels.Add_Click({
             }
         } # end foreach ($OEM in $RequiredOEMs)
 
+        # Stamp newly-added models with this iteration's architecture
+        for ($archStampIdx = $preArchCount; $archStampIdx -lt @($OEMSupportedModels).Count; $archStampIdx++) {
+            try { $OEMSupportedModels[$archStampIdx] | Add-Member -NotePropertyName 'Architecture' -NotePropertyValue $ArchIter -Force } catch { }
+        }
+        } # end foreach ($ArchIter in $ArchList)
+        $Architecture = $OriginalArchitecture
+
         $totalCount = @($OEMSupportedModels).Count
         Write-Log "=== Complete: $totalCount total models found ===" -Level Success
 
@@ -7453,6 +7548,19 @@ $btn_RefreshModels.Add_Click({
                     if ($latest.Manufacturer -eq 'HP') {
                         $displayName = $displayName -replace '^(HP|Hewlett-Packard|COMPAQ|Compaq)\s+', ''
                     }
+                    if ($latest.Manufacturer -eq 'Dell') {
+                        # Dell BIOS catalog DisplayName prefixes the brand line before the
+                        # actual model, sometimes duplicating the family token
+                        # (e.g. "Precision Precision 5280 XE Compact", "XPS Notebook XPS 13 9340",
+                        # "Latitude Latitude 7455"). The real model name -- matching the Dell
+                        # driver catalog -- begins at the LAST family keyword, so trim everything
+                        # before it.
+                        $dellFamilyPattern = '\b(Latitude|Precision|OptiPlex|XPS|Inspiron|Vostro|Venue|Wyse)\b'
+                        $dellFamilyMatches = [regex]::Matches($displayName, $dellFamilyPattern)
+                        if ($dellFamilyMatches.Count -gt 1) {
+                            $displayName = $displayName.Substring($dellFamilyMatches[$dellFamilyMatches.Count - 1].Index).Trim()
+                        }
+                    }
 
                     $key = "$($latest.Manufacturer)|$displayName"
                     if ($existingKeys.Contains($key) -or $existingNorm.Contains($key)) { continue }
@@ -7496,6 +7604,7 @@ $btn_RefreshModels.Add_Click({
                         'OS Build'  = $WindowsBuild
                         Version     = ''
                         BIOSVersion = $latest.Version
+                        Architecture = 'x64'
                         BIOSOnly    = $true
                     }
                     [void]$existingKeys.Add($key)
@@ -7518,7 +7627,13 @@ $btn_RefreshModels.Add_Click({
     [void]$script:RefreshPS.AddArgument($selectedArch)
     [void]$script:RefreshPS.AddArgument($selectedPackageType)
     [void]$script:RefreshPS.AddArgument($refreshTempDir)
-    [void]$script:RefreshPS.AddArgument(($chk_UseDATAPICatalog.IsChecked -eq $true))
+    # Windows 10 support is only available from OEM-direct catalogs (the DAT API catalog
+    # does not carry reliable Windows 10 data). When any Windows 10 build is selected,
+    # force OEM catalog mode for this refresh regardless of the API toggle, so the model
+    # list reflects the OEM Windows 10 catalogs.
+    $anyWin10Selected = @($selectedOSes | Where-Object { $_ -like 'Windows 10*' }).Count -gt 0
+    $effectiveUseDATAPICatalog = ($chk_UseDATAPICatalog.IsChecked -eq $true) -and (-not $anyWin10Selected)
+    [void]$script:RefreshPS.AddArgument($effectiveUseDATAPICatalog)
     [void]$script:RefreshPS.AddArgument($script:WebRequestTimeoutSec)
     $hpSourceMode = (Get-ItemProperty -Path $global:RegPath -Name 'HPDriverPackSource' -ErrorAction SilentlyContinue).HPDriverPackSource
     if ([string]::IsNullOrEmpty($hpSourceMode)) { $hpSourceMode = 'DriverPack' }
@@ -7554,7 +7669,7 @@ $btn_RefreshModels.Add_Click({
                     Write-DATActivityLog "Fatal error: $($errorResult._Error)" -Level Error
                     $txt_Status.Text = "Error: $($errorResult._Error)"
                 } else {
-                    foreach ($model in ($models | Sort-Object OEM, Model)) {
+                    foreach ($model in ($models | Sort-Object OEM, Model, Architecture)) {
                         if ($null -ne $model -and -not [string]::IsNullOrEmpty($model.Model) -and $null -eq $model._Error) {
                             $modelItem = [ModelItem]@{
                                 Selected   = $false
@@ -7568,6 +7683,7 @@ $btn_RefreshModels.Add_Click({
                                 Version    = if ($model.Version) { $model.Version } else { '' }
                             }
                             # BIOSVersion / BIOSOnly / DownloadURL set separately -- property may not exist on stale cached type
+                            try { $modelItem.Architecture = if ($model.Architecture) { $model.Architecture } else { 'x64' } } catch { }
                             try { $modelItem.BIOSVersion = if ($model.BIOSVersion) { $model.BIOSVersion } else { '' } } catch { }
                             try { $modelItem.BIOSOnly = if ($model.BIOSOnly) { $true } else { $false } } catch { }
                             try { $modelItem.DownloadURL = if ($model.DownloadURL) { $model.DownloadURL } else { '' } } catch { }
@@ -7890,7 +8006,7 @@ function Save-DATModelSelections {
     $jsonPath = Join-Path $settingsDir 'SelectedModels.json'
 
     $selections = @($script:ModelData | Where-Object { $_.Selected } | ForEach-Object {
-        @{ OEM = $_.OEM; Model = $_.Model; Baseboards = $_.Baseboards; OS = $_.OS; Build = $_.Build }
+        @{ OEM = $_.OEM; Model = $_.Model; Baseboards = $_.Baseboards; OS = $_.OS; Build = $_.Build; Architecture = $_.Architecture }
     })
     $json = if ($selections.Count -eq 0) { '[]' } else { $selections | ConvertTo-Json -Depth 2 -Compress }
     Set-Content -Path $jsonPath -Value $json -Encoding UTF8 -Force
@@ -7920,7 +8036,10 @@ function Restore-DATModelSelections {
         foreach ($entry in $saved) {
             $hasBuild = -not [string]::IsNullOrEmpty($entry.Build)
             if ($hasBuild) {
-                [void]$savedExactSet.Add("$($entry.OEM)|$($entry.Model)|$($entry.OS)|$($entry.Build)")
+                # Architecture-aware key: entries saved without an Architecture (legacy)
+                # use '*' so they match any architecture row on restore.
+                $archPart = if (-not [string]::IsNullOrEmpty($entry.Architecture)) { $entry.Architecture } else { '*' }
+                [void]$savedExactSet.Add("$($entry.OEM)|$($entry.Model)|$($entry.OS)|$($entry.Build)|$archPart")
                 $bbKey = "$($entry.OEM)|$($entry.OS)|$($entry.Build)"
             } else {
                 [void]$savedLegacySet.Add("$($entry.OEM)|$($entry.Model)")
@@ -7939,8 +8058,10 @@ function Restore-DATModelSelections {
 
         $matchCount = 0
         foreach ($item in $script:ModelData) {
-            # Primary (new format): exact OEM + Model + OS + Build match
-            if ($savedExactSet.Contains("$($item.OEM)|$($item.Model)|$($item.OS)|$($item.Build)")) {
+            # Primary (new format): exact OEM + Model + OS + Build + Architecture match.
+            # Also accept the '*' architecture wildcard saved by legacy entries.
+            if ($savedExactSet.Contains("$($item.OEM)|$($item.Model)|$($item.OS)|$($item.Build)|$($item.Architecture)") -or
+                $savedExactSet.Contains("$($item.OEM)|$($item.Model)|$($item.OS)|$($item.Build)|*")) {
                 $item.Selected = $true
                 $matchCount++
                 continue
@@ -8625,7 +8746,7 @@ $btn_Build.Add_Click({
             Model            = $model.Model
             Baseboards       = $model.Baseboards
             OS               = $osForPackage
-            Architecture     = $selectedArch
+            Architecture     = if (-not [string]::IsNullOrEmpty($model.Architecture)) { $model.Architecture } else { $selectedArch }
             CustomDriverPath = $model.CustomDriverPath
             Version          = $model.Version
             BIOSVersion      = $(try { $model.BIOSVersion } catch { '' })
@@ -9198,7 +9319,8 @@ $btn_Build.Add_Click({
                     $modelKeys = @()
                     if ($null -ne $script:SelectedModels) {
                         $modelKeys = @($script:SelectedModels | ForEach-Object {
-                            "$($_.OEM)|$($_.Model)|$selectedOS|$selectedArch|$($_.PackageType)"
+                            $keyArch = if (-not [string]::IsNullOrEmpty($_.Architecture)) { $_.Architecture } else { $selectedArch }
+                            "$($_.OEM)|$($_.Model)|$selectedOS|$keyArch|$($_.PackageType)"
                         })
                     }
                     if ($modelKeys.Count -gt 0) {
@@ -11735,7 +11857,7 @@ function Invoke-DATPackageRefresh {
 
     # Build the name prefix: "Drivers -", "Drivers Pilot -", "BIOS Update Retired -", etc.
     $typePrefix = switch ($pkgType) {
-        'BIOS Update'    { 'BIOS Update' }
+        'BIOS'           { 'BIOS Update' }
         'Drivers Pilot'  { 'Drivers Pilot' }
         'BIOS Pilot'     { 'BIOS Update Pilot' }
         default          { 'Drivers' }
@@ -11749,10 +11871,15 @@ function Invoke-DATPackageRefresh {
             default   { '' }
         }
     }
-    # Handle "All Pilot" - query both prefixes
+    # Handle "All Pilot" - query both pilot prefixes
     if ($pkgType -eq 'All Pilot') {
         $namePrefix = $null  # Signal to query both
         $namePrefixes = @('Drivers Pilot -*', 'BIOS Update Pilot -*')
+    } elseif ($pkgType -eq 'All') {
+        # "All" returns both Drivers and BIOS packages (for the selected deployment state),
+        # but never the Pilot package types.
+        $namePrefix = $null  # Signal to query both
+        $namePrefixes = @("Drivers$stateInfix -*", "BIOS Update$stateInfix -*")
     } else {
         $namePrefix = "$typePrefix$stateInfix -*"
         $namePrefixes = @($namePrefix)
@@ -16501,6 +16628,100 @@ $btn_ClearCustomBranding.Add_Click({
     Remove-ItemProperty -Path $global:RegPath -Name 'CustomBrandingPath' -ErrorAction SilentlyContinue
 })
 
+# Intune Package Icon -- custom PNG used as the Win32 app large icon
+$txt_IntunePackageIconPath    = $Window.FindName('txt_IntunePackageIconPath')
+$btn_BrowseIntunePackageIcon  = $Window.FindName('btn_BrowseIntunePackageIcon')
+$btn_ClearIntunePackageIcon   = $Window.FindName('btn_ClearIntunePackageIcon')
+$img_IntunePackageIconPreview = $Window.FindName('img_IntunePackageIconPreview')
+$txt_IntuneIconPlaceholder    = $Window.FindName('txt_IntuneIconPlaceholder')
+$panel_IntuneIconValidation   = $Window.FindName('panel_IntuneIconValidation')
+$txt_IntuneIconValidationIcon = $Window.FindName('txt_IntuneIconValidationIcon')
+$txt_IntuneIconValidationText = $Window.FindName('txt_IntuneIconValidationText')
+
+function Set-DATIntuneIconPreview {
+    param([Parameter()][AllowEmptyString()][string]$Path)
+    if ([string]::IsNullOrEmpty($Path) -or -not (Test-Path -LiteralPath $Path)) {
+        $img_IntunePackageIconPreview.Source = $null
+        $img_IntunePackageIconPreview.Visibility = 'Collapsed'
+        $txt_IntuneIconPlaceholder.Visibility = 'Visible'
+        return
+    }
+    try {
+        # OnLoad caching reads the file fully then releases the handle, so the PNG is
+        # not locked for the process lifetime (allows Clear/overwrite later).
+        $bmp = New-Object System.Windows.Media.Imaging.BitmapImage
+        $bmp.BeginInit()
+        $bmp.CacheOption = [System.Windows.Media.Imaging.BitmapCacheOption]::OnLoad
+        $bmp.UriSource = [Uri]::new($Path)
+        $bmp.EndInit()
+        $img_IntunePackageIconPreview.Source = $bmp
+        $img_IntunePackageIconPreview.Visibility = 'Visible'
+        $txt_IntuneIconPlaceholder.Visibility = 'Collapsed'
+    } catch {
+        $img_IntunePackageIconPreview.Source = $null
+        $img_IntunePackageIconPreview.Visibility = 'Collapsed'
+        $txt_IntuneIconPlaceholder.Visibility = 'Visible'
+    }
+}
+
+function Show-DATIntuneIconValidation {
+    param([string]$Glyph, [string]$Message, [string]$ColorHex)
+    $panel_IntuneIconValidation.Visibility = 'Visible'
+    $txt_IntuneIconValidationIcon.Text = $Glyph
+    $txt_IntuneIconValidationIcon.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.ColorConverter]::ConvertFromString($ColorHex))
+    $txt_IntuneIconValidationText.Text = $Message
+    $txt_IntuneIconValidationText.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.ColorConverter]::ConvertFromString($ColorHex))
+}
+
+# Restore persisted custom package icon
+$savedIconPath = (Get-ItemProperty -Path $global:RegPath -Name 'IntuneCustomIconPath' -ErrorAction SilentlyContinue).IntuneCustomIconPath
+if (-not [string]::IsNullOrEmpty($savedIconPath) -and (Test-Path -LiteralPath $savedIconPath)) {
+    $txt_IntunePackageIconPath.Text = $savedIconPath
+    Set-DATIntuneIconPreview -Path $savedIconPath
+    try {
+        Add-Type -AssemblyName System.Drawing
+        $img = [System.Drawing.Image]::FromFile($savedIconPath)
+        $w = $img.Width; $h = $img.Height; $img.Dispose()
+        Show-DATIntuneIconValidation -Glyph ([string][char]0xE73E) -Message "Custom icon active -- ${w} x ${h} pixels" -ColorHex '#2ECC40'
+    } catch { }
+}
+
+$btn_BrowseIntunePackageIcon.Add_Click({
+    $ofd = [Microsoft.Win32.OpenFileDialog]::new()
+    $ofd.Title = "Select custom package icon"
+    $ofd.Filter = "PNG Images (*.png)|*.png"
+    if ($ofd.ShowDialog() -eq $true) {
+        $filePath = $ofd.FileName
+        try {
+            Add-Type -AssemblyName System.Drawing
+            $img = [System.Drawing.Image]::FromFile($filePath)
+            $w = $img.Width; $h = $img.Height; $img.Dispose()
+
+            $txt_IntunePackageIconPath.Text = $filePath
+            Set-DATIntuneIconPreview -Path $filePath
+            Set-DATRegistryValue -Name 'IntuneCustomIconPath' -Value $filePath -Type String
+
+            if ($w -eq $h) {
+                Show-DATIntuneIconValidation -Glyph ([string][char]0xE73E) -Message "Perfect -- ${w} x ${h} pixels (square)" -ColorHex '#2ECC40'
+            } else {
+                Show-DATIntuneIconValidation -Glyph ([string][char]0xE7BA) -Message "Image is ${w} x ${h} -- a square image is recommended. Intune will adjust it to fit." -ColorHex '#E8A035'
+            }
+        } catch {
+            Show-DATIntuneIconValidation -Glyph ([string][char]0xEA39) -Message "Invalid image file: $($_.Exception.Message)" -ColorHex '#E74C3C'
+        }
+    }
+})
+
+$btn_ClearIntunePackageIcon.Add_Click({
+    $txt_IntunePackageIconPath.Text = ''
+    Set-DATIntuneIconPreview -Path ''
+    $panel_IntuneIconValidation.Visibility = 'Collapsed'
+    Set-DATRegistryValue -Name 'IntuneCustomIconPath' -Value '' -Type String
+    Remove-ItemProperty -Path $global:RegPath -Name 'IntuneCustomIconPath' -ErrorAction SilentlyContinue
+})
+
 # Custom Toast Text -- Per notification type customization
 $txt_CustomToastTitle = $Window.FindName('txt_CustomToastTitle')
 $txt_CustomToastBody  = $Window.FindName('txt_CustomToastBody')
@@ -18232,14 +18453,14 @@ function Update-DATIntuneAppFilter {
 
     # Build the display name prefix to match: "Drivers -" or "BIOS -"
     $typePrefix = switch ($pkgType) {
-        'BIOS Update'    { 'BIOS ' }
+        'BIOS'           { 'BIOS ' }
         'Drivers Pilot'  { 'Drivers Pilot ' }
         'BIOS Pilot'     { 'BIOS Pilot ' }
         'All Pilot'      { $null }
         default          { 'Drivers ' }
     }
 
-    $isBios = ($pkgType -in @('BIOS Update', 'BIOS Pilot'))
+    $isBios = ($pkgType -in @('BIOS', 'BIOS Pilot'))
     $hasOem = ($oemFilter -ne 'All')
     $hasOs = (-not $isBios -and $osFilter -ne 'All')
 
@@ -18772,12 +18993,22 @@ $btn_VerifyIntunePermissions.Add_Click({
     # Permission rows container
     $permItemsPanel = [System.Windows.Controls.StackPanel]::new()
 
-    # Create placeholder rows for the three permissions (pending state)
+    # Create placeholder rows for the required permissions (pending state).
+    # This list MUST mirror the permission checks performed by Test-DATIntunePermissions
+    # in the core module -- otherwise a permission returned by the backend has no
+    # placeholder icon row and is silently skipped when results are applied.
     $requiredPerms = @(
         @{ Name = 'DeviceManagementApps.ReadWrite.All'; Description = 'Create and manage Win32 app packages' }
         @{ Name = 'DeviceManagementManagedDevices.Read.All'; Description = 'Read managed devices for model lookup' }
         @{ Name = 'GroupMember.Read.All'; Description = 'Read group memberships for deployment targeting' }
     )
+
+    # Assignment filter automation requires an extra permission. The backend only checks
+    # it when AutoAssignmentFilter is enabled, so add the matching placeholder row here.
+    $autoFilterReg = (Get-ItemProperty -Path $global:RegPath -Name 'AutoAssignmentFilter' -ErrorAction SilentlyContinue).AutoAssignmentFilter
+    if ($null -ne $autoFilterReg -and $autoFilterReg -eq 1) {
+        $requiredPerms += @{ Name = 'DeviceManagementConfiguration.ReadWrite.All'; Description = 'Create and manage assignment filters' }
+    }
     $script:PermDlgIcons = @{}
     foreach ($rp in $requiredPerms) {
         $rpRow = [System.Windows.Controls.Grid]::new()

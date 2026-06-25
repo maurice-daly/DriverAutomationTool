@@ -623,6 +623,19 @@
 
         <!-- DataGrid Style -->
         <!-- DataGrid Column Header Style -->
+        <!-- Invisible, hit-testable grip used to drag-resize DataGrid columns -->
+        <Style x:Key="ColumnHeaderGripper" TargetType="Thumb">
+            <Setter Property="Width" Value="8"/>
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="Cursor" Value="SizeWE"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Thumb">
+                        <Border Background="{TemplateBinding Background}"/>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
         <Style x:Key="ModernColumnHeader" TargetType="DataGridColumnHeader">
             <Setter Property="Background" Value="{DynamicResource SidebarActive}"/>
             <Setter Property="Foreground" Value="{DynamicResource SidebarForeground}"/>
@@ -635,24 +648,32 @@
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="DataGridColumnHeader">
-                        <Border Background="{TemplateBinding Background}"
-                                BorderBrush="{TemplateBinding BorderBrush}"
-                                BorderThickness="{TemplateBinding BorderThickness}"
-                                Padding="{TemplateBinding Padding}"
-                                Cursor="Hand">
-                            <Grid>
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="*"/>
-                                    <ColumnDefinition Width="Auto"/>
-                                </Grid.ColumnDefinitions>
-                                <ContentPresenter Grid.Column="0" VerticalAlignment="Center" HorizontalAlignment="Left"/>
-                                <Path x:Name="SortArrow" Grid.Column="1"
-                                      VerticalAlignment="Center" Margin="6,0,2,0"
-                                      Fill="{DynamicResource SidebarForeground}"
-                                      Visibility="Collapsed"
-                                      RenderTransformOrigin="0.5,0.5"/>
-                            </Grid>
-                        </Border>
+                        <Grid>
+                            <Border Background="{TemplateBinding Background}"
+                                    BorderBrush="{TemplateBinding BorderBrush}"
+                                    BorderThickness="{TemplateBinding BorderThickness}"
+                                    Padding="{TemplateBinding Padding}"
+                                    Cursor="Hand">
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <ContentPresenter Grid.Column="0" VerticalAlignment="Center" HorizontalAlignment="Left"/>
+                                    <Path x:Name="SortArrow" Grid.Column="1"
+                                          VerticalAlignment="Center" Margin="6,0,2,0"
+                                          Fill="{DynamicResource SidebarForeground}"
+                                          Visibility="Collapsed"
+                                          RenderTransformOrigin="0.5,0.5"/>
+                                </Grid>
+                            </Border>
+                            <Thumb x:Name="PART_LeftHeaderGripper"
+                                   HorizontalAlignment="Left"
+                                   Style="{StaticResource ColumnHeaderGripper}"/>
+                            <Thumb x:Name="PART_RightHeaderGripper"
+                                   HorizontalAlignment="Right"
+                                   Style="{StaticResource ColumnHeaderGripper}"/>
+                        </Grid>
                         <ControlTemplate.Triggers>
                             <Trigger Property="SortDirection" Value="Ascending">
                                 <Setter TargetName="SortArrow" Property="Visibility" Value="Visible"/>
@@ -1297,6 +1318,30 @@
                                                             </Border.Style>
                                                             <CheckBox x:Name="chk_OS_Win11_21H2" Content="Windows 11 21H2" Margin="0"/>
                                                         </Border>
+                                                        <Border x:Name="border_OS_Win10_22H2" Background="Transparent" CornerRadius="8" Padding="12,7" Margin="0,1" Cursor="Hand">
+                                                            <Border.Style>
+                                                                <Style TargetType="Border">
+                                                                    <Style.Triggers>
+                                                                        <Trigger Property="IsMouseOver" Value="True">
+                                                                            <Setter Property="Background" Value="{DynamicResource SidebarHover}"/>
+                                                                        </Trigger>
+                                                                    </Style.Triggers>
+                                                                </Style>
+                                                            </Border.Style>
+                                                            <CheckBox x:Name="chk_OS_Win10_22H2" Content="Windows 10 22H2" Margin="0"/>
+                                                        </Border>
+                                                        <Border x:Name="border_OS_Win10_21H2" Background="Transparent" CornerRadius="8" Padding="12,7" Margin="0,1" Cursor="Hand">
+                                                            <Border.Style>
+                                                                <Style TargetType="Border">
+                                                                    <Style.Triggers>
+                                                                        <Trigger Property="IsMouseOver" Value="True">
+                                                                            <Setter Property="Background" Value="{DynamicResource SidebarHover}"/>
+                                                                        </Trigger>
+                                                                    </Style.Triggers>
+                                                                </Style>
+                                                            </Border.Style>
+                                                            <CheckBox x:Name="chk_OS_Win10_21H2" Content="Windows 10 21H2" Margin="0"/>
+                                                        </Border>
                                                     </StackPanel>
                                                 </Border>
                                             </Popup>
@@ -1306,6 +1351,7 @@
                                               VerticalAlignment="Top" Height="34">
                                         <ComboBoxItem Content="x64" IsSelected="True"/>
                                         <ComboBoxItem Content="Arm64"/>
+                                        <ComboBoxItem Content="All"/>
                                     </ComboBox>
                                     <ComboBox x:Name="cmb_Platform" Grid.Column="3" Grid.Row="1" Margin="8,0,8,0"
                                               VerticalAlignment="Top" Height="34">
@@ -1586,6 +1632,9 @@
                                                 <DataGridTextColumn Header="OS" Width="120"
                                                                     Binding="{Binding OS}" IsReadOnly="True"
                                                                     SortMemberPath="OS"/>
+                                                <DataGridTextColumn Header="Arch" Width="70"
+                                                                    Binding="{Binding Architecture}" IsReadOnly="True"
+                                                                    SortMemberPath="Architecture"/>
                                                 <DataGridTemplateColumn Header="Build" Width="80" SortMemberPath="Build">
                                                     <DataGridTemplateColumn.CellTemplate>
                                                         <DataTemplate>
@@ -1896,7 +1945,8 @@
 
                                     <ComboBox x:Name="cmb_PkgPackageType" Grid.Column="0" Grid.Row="1" Margin="0,0,8,0" Height="34">
                                         <ComboBoxItem Content="Drivers" IsSelected="True"/>
-                                        <ComboBoxItem Content="BIOS Update"/>
+                                        <ComboBoxItem Content="BIOS"/>
+                                        <ComboBoxItem Content="All"/>
                                         <ComboBoxItem Content="Drivers Pilot"/>
                                         <ComboBoxItem Content="BIOS Pilot"/>
                                         <ComboBoxItem Content="All Pilot"/>
@@ -1953,6 +2003,8 @@
                                     <ComboBoxItem Content="Windows 11 23H2"/>
                                     <ComboBoxItem Content="Windows 11 22H2"/>
                                     <ComboBoxItem Content="Windows 11 21H2"/>
+                                    <ComboBoxItem Content="Windows 10 22H2"/>
+                                    <ComboBoxItem Content="Windows 10 21H2"/>
                                 </ComboBox>
                             </Grid>
 
@@ -3287,6 +3339,64 @@
                                 </StackPanel>
                             </Border>
 
+                            <!-- Package Icon -->
+                            <Border Style="{StaticResource CardPanel}" Margin="0,0,0,12">
+                                <StackPanel>
+                                    <TextBlock FontSize="14" FontWeight="SemiBold"
+                                               Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,4">
+                                        <Run Text="&#xE91B;" FontFamily="Segoe MDL2 Assets" FontSize="14"/><Run Text="  Package Icon"/>
+                                    </TextBlock>
+                                    <TextBlock Text="Select a custom PNG image to use as the icon for the driver and BIOS apps created in Intune. When no custom icon is selected, the default Driver Automation Tool logo is used. A square image (for example 256 x 256 pixels) is recommended."
+                                               FontSize="12" Foreground="{DynamicResource InputPlaceholder}" Margin="0,0,0,12" TextWrapping="Wrap" LineHeight="18"/>
+
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto"/>
+                                            <ColumnDefinition Width="*"/>
+                                        </Grid.ColumnDefinitions>
+
+                                        <!-- Preview -->
+                                        <Border Grid.Column="0" Width="72" Height="72" CornerRadius="8"
+                                                Background="{DynamicResource InputBackground}"
+                                                BorderBrush="{DynamicResource InputBorder}" BorderThickness="1"
+                                                Margin="0,0,16,0">
+                                            <Grid>
+                                                <TextBlock x:Name="txt_IntuneIconPlaceholder" Text="&#xE91B;"
+                                                           FontFamily="Segoe MDL2 Assets" FontSize="28"
+                                                           Foreground="{DynamicResource InputPlaceholder}"
+                                                           HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                                <Image x:Name="img_IntunePackageIconPreview" Stretch="Uniform"
+                                                       Margin="6" Visibility="Collapsed"/>
+                                            </Grid>
+                                        </Border>
+
+                                        <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                            <TextBox x:Name="txt_IntunePackageIconPath" Style="{StaticResource RoundedTextBox}" Height="34"
+                                                     IsReadOnly="True" VerticalContentAlignment="Center"
+                                                     Tag="No custom icon selected -- default logo will be used"/>
+                                            <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                                                <Button x:Name="btn_BrowseIntunePackageIcon"
+                                                        Style="{StaticResource SecondaryButton}" Height="34" Margin="0,0,8,0">
+                                                    <TextBlock><Run Text="&#xED25;" FontFamily="Segoe MDL2 Assets"/><Run Text="  Browse"/></TextBlock>
+                                                </Button>
+                                                <Button x:Name="btn_ClearIntunePackageIcon"
+                                                        Style="{StaticResource SecondaryButton}" Height="34">
+                                                    <TextBlock><Run Text="&#xE894;" FontFamily="Segoe MDL2 Assets"/><Run Text="  Clear"/></TextBlock>
+                                                </Button>
+                                            </StackPanel>
+                                        </StackPanel>
+                                    </Grid>
+
+                                    <!-- Validation -->
+                                    <StackPanel x:Name="panel_IntuneIconValidation" Orientation="Horizontal" Margin="0,12,0,0" Visibility="Collapsed">
+                                        <TextBlock x:Name="txt_IntuneIconValidationIcon" FontFamily="Segoe MDL2 Assets" FontSize="14"
+                                                   VerticalAlignment="Center" Margin="0,0,8,0"/>
+                                        <TextBlock x:Name="txt_IntuneIconValidationText" FontSize="12" TextWrapping="Wrap"
+                                                   VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </StackPanel>
+                            </Border>
+
                             <!-- Package Deployment -->
                             <Border Style="{StaticResource CardPanel}" Margin="0,0,0,12">
                                 <StackPanel>
@@ -4118,7 +4228,7 @@
 
                                     <ComboBox x:Name="cmb_IntunePkgType" Grid.Column="0" Grid.Row="1" Margin="0,0,8,0" Height="34">
                                         <ComboBoxItem Content="Drivers" IsSelected="True"/>
-                                        <ComboBoxItem Content="BIOS Update"/>
+                                        <ComboBoxItem Content="BIOS"/>
                                         <ComboBoxItem Content="Drivers Pilot"/>
                                         <ComboBoxItem Content="BIOS Pilot"/>
                                     </ComboBox>
@@ -4164,6 +4274,8 @@
                                     <ComboBoxItem Content="Windows 11 23H2"/>
                                     <ComboBoxItem Content="Windows 11 22H2"/>
                                     <ComboBoxItem Content="Windows 11 21H2"/>
+                                    <ComboBoxItem Content="Windows 10 22H2"/>
+                                    <ComboBoxItem Content="Windows 10 21H2"/>
                                 </ComboBox>
                             </Grid>
 
@@ -5840,6 +5952,8 @@
                                                     <ComboBoxItem Content="Windows 11 23H2"/>
                                                     <ComboBoxItem Content="Windows 11 22H2"/>
                                                     <ComboBoxItem Content="Windows 11 21H2"/>
+                                                    <ComboBoxItem Content="Windows 10 22H2"/>
+                                                    <ComboBoxItem Content="Windows 10 21H2"/>
                                                 </ComboBox>
                                             </Grid>
 

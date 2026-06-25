@@ -3,6 +3,15 @@ Release Notes
 IMPORTANT
 - DAT Downloads have been moved to GitHub - https://github.com/maurice-daly/DriverAutomationTool
 
+Version 10.1.5
+What's New & Fixed
+- **Windows 10 Support** — Added Windows 10 22H2 and 21H2 across the OS picker and all deployment/packaging views. Windows 10 driver packages are now sourced directly from the OEM catalogs. When the DAT API catalog is active, Windows 10 and Windows 11 selections are kept mutually exclusive, with a clear prompt explaining the switch to OEM-direct sourcing.
+- **Architecture Awareness** — The model list now shows an **Arch** column, and a new **All** architecture option lists both x64 and Arm64 devices in a single pass. Each model carries its own native architecture through selection, saved selections, and packaging — so x64 and Arm64 variants of the same model are tracked independently.
+- **Custom Intune Package Icon** — You can now select a custom PNG icon for the driver and BIOS apps created in Intune, with a live preview, square-image validation, and the choice persisted between sessions. The bundled Driver Automation Tool logo is used when no custom icon is set.
+- **Driver Packaging** — Added an **All** package type that returns both Drivers and BIOS packages in one action, and renamed the **BIOS Update** option to **BIOS** for clarity across the Configuration Manager and Intune package views.
+- **OEM Support** — Cleaned up Dell BIOS model names that previously duplicated the product family (for example "Precision Precision 5280" now displays as "Precision 5280"), so they match the Dell driver catalog and pair correctly.
+- **UI / Theme Fixes** — Model list columns can now be drag-resized via invisible grips on each column header, and the OS selection checkboxes handle their change events more reliably.
+
 Version 10.1.4
 What's New & Fixed
 - Intune Packaging — Added a new "Create IntuneWin file only (skip upload)" option. When enabled, each driver and BIOS package is built and the .intunewin file is saved locally for inspection or manual publishing, without uploading to Intune (automatic deployment and assignment filters are skipped). Available in the UI, scheduled tasks, and headless builds.

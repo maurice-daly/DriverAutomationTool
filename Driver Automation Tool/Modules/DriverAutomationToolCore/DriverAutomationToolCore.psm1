@@ -3420,7 +3420,7 @@ function Install-DATDriverPackage {
     [CmdletBinding()]
     param (
         [Parameter(Mandatory)][ValidateSet('Windows 10', 'Windows 11')][string]$TargetOS,
-        [Parameter(Mandatory)][ValidateSet('22H2', '23H2', '24H2', '25H2')][string]$TargetOSBuild,
+        [Parameter(Mandatory)][ValidateSet('21H2', '22H2', '23H2', '24H2', '25H2')][string]$TargetOSBuild,
         [Parameter(Mandatory)][ValidatePattern('^[A-Z]:$')][string]$TargetDrive
     )
     Write-DATLogEntry -Value "[Driver Install] - $TargetOS $TargetOSBuild on $TargetDrive" -Severity 1
@@ -9858,7 +9858,9 @@ function Invoke-DATIntuneWin32AppUpload {
         [string]$InstallCommandLine = "powershell.exe -ExecutionPolicy Bypass -File Install-Drivers.ps1",
         [string]$UninstallCommandLine = "powershell.exe -ExecutionPolicy Bypass -File Install-Drivers.ps1",
         [int]$ChunkSizeMB = 50,
-        [int]$ParallelUploads = 2
+        [int]$ParallelUploads = 2,
+        [AllowEmptyString()]
+        [string]$CustomIconPath = ''
     )
 
     if (-not (Test-DATIntuneAuth)) { throw "Intune authentication required." }
@@ -9880,8 +9882,13 @@ function Invoke-DATIntuneWin32AppUpload {
         Write-DATLogEntry -Value "[Intune Upload] Creating Win32 app: $DisplayName" -Severity 1
         Set-DATRegistryValue -Name "RunningMessage" -Value "Creating Intune Win32 app: $DisplayName..." -Type String
 
-        # Load application icon from Branding folder
+        # Load application icon. A user-selected custom PNG (Intune Package Options)
+        # takes precedence; otherwise fall back to the bundled Driver Automation Tool logo.
         $iconPath = Join-Path -Path $global:ScriptDirectory -ChildPath "Branding\DATLogo.png"
+        if (-not [string]::IsNullOrEmpty($CustomIconPath) -and (Test-Path -LiteralPath $CustomIconPath)) {
+            $iconPath = $CustomIconPath
+            Write-DATLogEntry -Value "[Intune Upload] Using custom package icon: $iconPath" -Severity 1
+        }
         $largeIcon = $null
         if (Test-Path $iconPath) {
             $iconBase64 = [Convert]::ToBase64String([System.IO.File]::ReadAllBytes($iconPath))
@@ -10618,6 +10625,9 @@ function Invoke-DATIntunePackageCreation {
         $uploadChunkSizeMB = if ($null -ne $savedConfig.IntuneChunkSizeMB -and $savedConfig.IntuneChunkSizeMB -gt 0) { [int]$savedConfig.IntuneChunkSizeMB } else { 6 }
         $uploadParallelCount = if ($null -ne $savedConfig.IntuneParallelUploads -and $savedConfig.IntuneParallelUploads -gt 0) { [int]$savedConfig.IntuneParallelUploads } else { 1 }
 
+        # Optional user-selected custom package icon (Intune Package Options)
+        $customIconPath = if (-not [string]::IsNullOrEmpty($savedConfig.IntuneCustomIconPath) -and (Test-Path -LiteralPath $savedConfig.IntuneCustomIconPath)) { [string]$savedConfig.IntuneCustomIconPath } else { '' }
+
         Write-DATLogEntry -Value "[Intune Pipeline] Uploading to Intune (chunk: ${uploadChunkSizeMB}MB, parallel: $uploadParallelCount)..." -Severity 1 -UpdateUI
         Set-DATRegistryValue -Name "RunningMessage" -Value "Uploading to Intune: $OEM $Model ($intuneWinSize MB)..." -Type String
         $result = Invoke-DATIntuneWin32AppUpload -IntuneWinFile $intuneWinFile `
@@ -10631,7 +10641,8 @@ function Invoke-DATIntunePackageCreation {
             -InstallCommandLine "powershell.exe -ExecutionPolicy Bypass -File $installScriptName" `
             -UninstallCommandLine "powershell.exe -ExecutionPolicy Bypass -File $installScriptName" `
             -ChunkSizeMB $uploadChunkSizeMB `
-            -ParallelUploads $uploadParallelCount
+            -ParallelUploads $uploadParallelCount `
+            -CustomIconPath $customIconPath
 
         Write-DATLogEntry -Value "[Intune Pipeline] SUCCESS: $displayName uploaded to Intune (App ID: $($result.AppId))" -Severity 1 -UpdateUI
         Set-DATRegistryValue -Name "RunningMessage" -Value "Intune package created: $OEM $Model ($intuneWinSize MB)" -Type String
