@@ -98,6 +98,35 @@ if (-not (Test-Path $CoreModulePath)) {
 }
 Import-Module $CoreModulePath -Force -ErrorAction Stop
 
+function Add-DATCoreRunspaceBootstrap {
+    param (
+        [Parameter(Mandatory)][System.Management.Automation.PowerShell]$PowerShell,
+        [object]$IntuneAuthContext = $null,
+        [switch]$CaptureIntuneAuthContext,
+        [switch]$OptionalIntuneAuthContext,
+        [string]$ModulePath = $CoreModulePath
+    )
+
+    if ($CaptureIntuneAuthContext -and $null -eq $IntuneAuthContext) {
+        try {
+            $IntuneAuthContext = Get-DATIntuneAuthContext
+        } catch {
+            if (-not $OptionalIntuneAuthContext) { throw }
+            $IntuneAuthContext = $null
+        }
+    }
+
+    [void]$PowerShell.AddScript({
+        param ($DATCoreModulePath, $DATIntuneAuthContext)
+        Import-Module $DATCoreModulePath -Force
+        if ($null -ne $DATIntuneAuthContext) {
+            Set-DATIntuneAuthContext -AuthContext $DATIntuneAuthContext | Out-Null
+        }
+    })
+    [void]$PowerShell.AddArgument($ModulePath)
+    [void]$PowerShell.AddArgument($IntuneAuthContext)
+}
+
 # Load theme definitions (#7 -- dot-source failure)
 $ThemePath = Join-Path $UIPath "Themes\ThemeDefinitions.ps1"
 if (-not (Test-Path $ThemePath)) {
@@ -1480,6 +1509,7 @@ function Test-DATConnectivity {
     [System.Net.ServicePointManager]::SecurityProtocol =
         [System.Net.ServicePointManager]::SecurityProtocol -bor [System.Net.SecurityProtocolType]::Tls12
 
+    $intuneEnvironment = Get-DATIntuneEnvironment
     $endpoints = @(
         @{ URL = 'https://raw.githubusercontent.com'; Description = 'GitHub Raw Content (OEM catalogs, updates, release notes)' }
         @{ URL = 'https://github.com';                Description = 'GitHub (self-update, Intune packaging tools)' }
@@ -1489,8 +1519,8 @@ function Test-DATConnectivity {
         @{ URL = 'https://ftp.hp.com';                 Description = 'HP driver catalog and SoftPaqs' }
         @{ URL = 'https://download.lenovo.com';        Description = 'Lenovo driver catalog' }
         @{ URL = 'https://global-download.acer.com';   Description = 'Acer driver and BIOS catalog' }
-        @{ URL = 'https://login.microsoftonline.com';  Description = 'Microsoft Entra ID (Intune authentication)' }
-        @{ URL = 'https://graph.microsoft.com';        Description = 'Microsoft Graph API (Intune management)' }
+        @{ URL = $intuneEnvironment.AuthorityHost;     Description = 'Microsoft Entra ID (Intune authentication)' }
+        @{ URL = $intuneEnvironment.GraphResource;     Description = 'Microsoft Graph API (Intune management)' }
     )
 
     $total = $endpoints.Count
@@ -3418,12 +3448,9 @@ function Show-DATBiosNameRepairModal {
 
     $dlg.Add_Loaded({
         $repairPS = [powershell]::Create()
+        Add-DATCoreRunspaceBootstrap -PowerShell $repairPS -CaptureIntuneAuthContext:($Platform -in @('Intune', 'Both')) -OptionalIntuneAuthContext
         $repairPS.AddScript({
-            param ($CoreModulePath, $Platform, $SiteServer, $SiteCode, $State, $Token, $TokenExpiry)
-            Import-Module $CoreModulePath -Force
-            if (-not [string]::IsNullOrEmpty($Token)) {
-                Set-DATIntuneAuthToken -Token $Token -ExpiresOn $TokenExpiry
-            }
+            param ($Platform, $SiteServer, $SiteCode, $State)
             try {
                 $params = @{
                     Platform      = $Platform
@@ -3439,24 +3466,10 @@ function Show-DATBiosNameRepairModal {
             }
         })
 
-        # Gather auth state
-        $authToken = $null
-        $authExpiry = $null
-        if ($Platform -in @('Intune', 'Both')) {
-            try {
-                $authStatus = Get-DATIntuneAuthStatus
-                $authToken = $authStatus.Token
-                $authExpiry = $authStatus.ExpiresOn
-            } catch { }
-        }
-
-        [void]$repairPS.AddArgument($CoreModulePath)
         [void]$repairPS.AddArgument($Platform)
         [void]$repairPS.AddArgument($global:SiteServer)
         [void]$repairPS.AddArgument($global:SiteCode)
         [void]$repairPS.AddArgument($repairState)
-        [void]$repairPS.AddArgument($authToken)
-        [void]$repairPS.AddArgument($authExpiry)
         $repairState.PS = $repairPS
         $repairState.AsyncResult = $repairPS.BeginInvoke()
 
@@ -8959,78 +8972,18 @@ $btn_Build.Add_Click({
     # Show build progress modal with per-model pipeline stages
     Show-DATBuildProgressModal -Models $global:SelectedModels -Platform $selectedPlatform -PackageType $buildPackageType
 
-    # Launch processing in a background job
-    $script:BuildRunspace = [runspacefactory]::CreateRunspace()
-    $script:BuildRunspace.ApartmentState = 'STA'
-    $script:BuildRunspace.Open()
-    $script:BuildPS = [powershell]::Create()
-    $script:BuildPS.Runspace = $script:BuildRunspace
-    [void]$script:BuildPS.AddScript({
-        param($ModulePath, $ScriptDir, $RegPath, $RunningMode, $SelectedModels, $StoragePath, $PackagePath, $IntuneToken, $IntuneRefreshTok, $IntuneAuthClientIdParam, $IntuneTokenExpSec, $DisableToast, $DisableRestart, $SiteServer, $SiteCode, $PackageType, $DPGroups, $DPs, $DistPriority, $EnableBDR, $DebugBuildPath, $CustomBrandingPath, $HPPasswordBinPath, $ToastTimeoutAction, $MaxDeferrals, $BIOSRestartDelayMinutes, $TeamsWebhookUrl, $TeamsNotificationsEnabled, $CustomToastTextsJson, $ConsoleFolderID, $MaintenanceWindowsJson, $AlarmMode, $CreateIntuneWinOnly)
-        try {
-        Import-Module $ModulePath -Force
-        $procParams = @{
-            ScriptDirectory = $ScriptDir
-            RegPath         = $RegPath
-            RunningMode     = $RunningMode
-            SelectedModels  = $SelectedModels
-            StoragePath     = $StoragePath
-            PackagePath     = $PackagePath
-            IntuneAuthToken = $IntuneToken
-        }
-        if (-not [string]::IsNullOrEmpty($IntuneRefreshTok)) { $procParams['IntuneRefreshToken'] = $IntuneRefreshTok }
-        if (-not [string]::IsNullOrEmpty($IntuneAuthClientIdParam)) { $procParams['IntuneAuthClientId'] = $IntuneAuthClientIdParam }
-        if ($IntuneTokenExpSec -gt 0) { $procParams['IntuneTokenExpiresInSec'] = $IntuneTokenExpSec }
-        if ($DisableToast) { $procParams['DisableToast'] = $true }
-        if ($DisableRestart) { $procParams['DisableRestart'] = $true }
-        if ($AlarmMode) { $procParams['AlarmMode'] = $true }
-        if ($CreateIntuneWinOnly) { $procParams['CreateIntuneWinOnly'] = $true }
-        if ($ToastTimeoutAction -ne 'RemindMeLater') { $procParams['ToastTimeoutAction'] = $ToastTimeoutAction }
-        if ($MaxDeferrals -gt 0) { $procParams['MaxDeferrals'] = $MaxDeferrals }
-        if ($BIOSRestartDelayMinutes -gt 0 -and $BIOSRestartDelayMinutes -ne 10) { $procParams['RestartDelaySeconds'] = $BIOSRestartDelayMinutes * 60 }
-        if (-not [string]::IsNullOrEmpty($DebugBuildPath)) { $procParams['DebugBuildPath'] = $DebugBuildPath }
-        if (-not [string]::IsNullOrEmpty($CustomBrandingPath)) { $procParams['CustomBrandingPath'] = $CustomBrandingPath }
-        if (-not [string]::IsNullOrEmpty($HPPasswordBinPath)) { $procParams['HPPasswordBinPath'] = $HPPasswordBinPath }
-        if (-not [string]::IsNullOrEmpty($CustomToastTextsJson)) { $procParams['CustomToastTextsJson'] = $CustomToastTextsJson }
-        if (-not [string]::IsNullOrEmpty($MaintenanceWindowsJson)) { $procParams['MaintenanceWindowsJson'] = $MaintenanceWindowsJson }
-        if (-not [string]::IsNullOrEmpty($SiteServer)) { $procParams['SiteServer'] = $SiteServer }
-        if (-not [string]::IsNullOrEmpty($SiteCode)) { $procParams['SiteCode'] = $SiteCode }
-        if (-not [string]::IsNullOrEmpty($PackageType)) { $procParams['PackageType'] = $PackageType }
-        if ($DPGroups -and $DPGroups.Count -gt 0) { $procParams['DistributionPointGroups'] = $DPGroups }
-        if ($DPs -and $DPs.Count -gt 0) { $procParams['DistributionPoints'] = $DPs }
-        if (-not [string]::IsNullOrEmpty($DistPriority)) { $procParams['DistributionPriority'] = $DistPriority }
-        if ($EnableBDR) { $procParams['EnableBinaryDeltaReplication'] = $true }
-        if ($null -ne $ConsoleFolderID -and $ConsoleFolderID -ge 0) { $procParams['ConsoleFolderID'] = $ConsoleFolderID }
-        if ($TeamsNotificationsEnabled -and -not [string]::IsNullOrEmpty($TeamsWebhookUrl)) {
-            $procParams['TeamsNotificationsEnabled'] = $true
-            $procParams['TeamsWebhookUrl'] = $TeamsWebhookUrl
-        }
-        Start-DATModelProcessing @procParams
-        } catch [System.Management.Automation.PipelineStoppedException] {
-            # Abort signal received -- set registry state and exit cleanly
-            try { Set-ItemProperty -Path $RegPath -Name 'RunningState' -Value 'Aborted' -Force -ErrorAction SilentlyContinue } catch {}
-        }
-    })
     $modulePath = Join-Path $PSScriptRoot "..\Modules\DriverAutomationToolCore\DriverAutomationToolCore.psd1"
+    $resolvedModulePath = (Resolve-Path $modulePath).Path
 
     # Read user-configured storage paths from registry (already validated above)
     $tempStoragePath = if ($regConfig -and -not [string]::IsNullOrEmpty($regConfig.TempStoragePath)) { $regConfig.TempStoragePath } else { Join-Path $global:ScriptDirectory 'Temp' }
 
-    # Pass Intune auth token, refresh token, and real expiry for Intune mode
-    $intuneToken = $null
-    $intuneRefreshToken = $null
-    $intuneAuthClientId = $null
-    $intuneTokenExpSec = 0
+    # Capture the complete Intune auth context before opening the background runspace.
+    $intuneAuthContext = $null
     if ($selectedPlatform -eq 'Intune') {
         $authStatus = Get-DATIntuneAuthStatus
         if ($authStatus.IsAuthenticated) {
-            $coreModule = Get-Module -Name DriverAutomationToolCore
-            if ($coreModule) {
-                $intuneToken = & $coreModule { $script:IntuneAuthToken }
-                $intuneRefreshToken = & $coreModule { $script:IntuneRefreshToken }
-                $intuneAuthClientId = & $coreModule { $script:IntuneAuthClientId }
-                $intuneTokenExpSec = [math]::Max(0, [int]($authStatus.MinutesRemaining * 60))
-            }
+            $intuneAuthContext = Get-DATIntuneAuthContext
         } else {
             Write-DATActivityLog "Intune platform selected but not authenticated. Build aborted." -Level Warn
             $txt_Status.Text = "Please authenticate to Intune before building packages."
@@ -9047,6 +9000,55 @@ $btn_Build.Add_Click({
             return
         }
     }
+
+    # Launch processing in a background job
+    $script:BuildRunspace = [runspacefactory]::CreateRunspace()
+    $script:BuildRunspace.ApartmentState = 'STA'
+    $script:BuildRunspace.Open()
+    $script:BuildPS = [powershell]::Create()
+    $script:BuildPS.Runspace = $script:BuildRunspace
+    Add-DATCoreRunspaceBootstrap -PowerShell $script:BuildPS -IntuneAuthContext $intuneAuthContext -ModulePath $resolvedModulePath
+    [void]$script:BuildPS.AddScript({
+        param($ScriptDir, $RegPath, $RunningMode, $SelectedModels, $StoragePath, $PackagePath, $DisableToast, $DisableRestart, $SiteServer, $SiteCode, $PackageType, $DPGroups, $DPs, $DistPriority, $EnableBDR, $DebugBuildPath, $CustomBrandingPath, $HPPasswordBinPath, $ToastTimeoutAction, $MaxDeferrals, $BIOSRestartDelayMinutes, $TeamsWebhookUrl, $TeamsNotificationsEnabled, $CustomToastTextsJson, $ConsoleFolderID, $MaintenanceWindowsJson, $AlarmMode, $CreateIntuneWinOnly)
+        try {
+            $procParams = @{
+                ScriptDirectory = $ScriptDir
+                RegPath         = $RegPath
+                RunningMode     = $RunningMode
+                SelectedModels  = $SelectedModels
+                StoragePath     = $StoragePath
+                PackagePath     = $PackagePath
+            }
+            if ($DisableToast) { $procParams['DisableToast'] = $true }
+            if ($DisableRestart) { $procParams['DisableRestart'] = $true }
+            if ($AlarmMode) { $procParams['AlarmMode'] = $true }
+            if ($CreateIntuneWinOnly) { $procParams['CreateIntuneWinOnly'] = $true }
+            if ($ToastTimeoutAction -ne 'RemindMeLater') { $procParams['ToastTimeoutAction'] = $ToastTimeoutAction }
+            if ($MaxDeferrals -gt 0) { $procParams['MaxDeferrals'] = $MaxDeferrals }
+            if ($BIOSRestartDelayMinutes -gt 0 -and $BIOSRestartDelayMinutes -ne 10) { $procParams['RestartDelaySeconds'] = $BIOSRestartDelayMinutes * 60 }
+            if (-not [string]::IsNullOrEmpty($DebugBuildPath)) { $procParams['DebugBuildPath'] = $DebugBuildPath }
+            if (-not [string]::IsNullOrEmpty($CustomBrandingPath)) { $procParams['CustomBrandingPath'] = $CustomBrandingPath }
+            if (-not [string]::IsNullOrEmpty($HPPasswordBinPath)) { $procParams['HPPasswordBinPath'] = $HPPasswordBinPath }
+            if (-not [string]::IsNullOrEmpty($CustomToastTextsJson)) { $procParams['CustomToastTextsJson'] = $CustomToastTextsJson }
+            if (-not [string]::IsNullOrEmpty($MaintenanceWindowsJson)) { $procParams['MaintenanceWindowsJson'] = $MaintenanceWindowsJson }
+            if (-not [string]::IsNullOrEmpty($SiteServer)) { $procParams['SiteServer'] = $SiteServer }
+            if (-not [string]::IsNullOrEmpty($SiteCode)) { $procParams['SiteCode'] = $SiteCode }
+            if (-not [string]::IsNullOrEmpty($PackageType)) { $procParams['PackageType'] = $PackageType }
+            if ($DPGroups -and $DPGroups.Count -gt 0) { $procParams['DistributionPointGroups'] = $DPGroups }
+            if ($DPs -and $DPs.Count -gt 0) { $procParams['DistributionPoints'] = $DPs }
+            if (-not [string]::IsNullOrEmpty($DistPriority)) { $procParams['DistributionPriority'] = $DistPriority }
+            if ($EnableBDR) { $procParams['EnableBinaryDeltaReplication'] = $true }
+            if ($null -ne $ConsoleFolderID -and $ConsoleFolderID -ge 0) { $procParams['ConsoleFolderID'] = $ConsoleFolderID }
+            if ($TeamsNotificationsEnabled -and -not [string]::IsNullOrEmpty($TeamsWebhookUrl)) {
+                $procParams['TeamsNotificationsEnabled'] = $true
+                $procParams['TeamsWebhookUrl'] = $TeamsWebhookUrl
+            }
+            Start-DATModelProcessing @procParams
+        } catch [System.Management.Automation.PipelineStoppedException] {
+            # Abort signal received -- set registry state and exit cleanly
+            try { Set-ItemProperty -Path $RegPath -Name 'RunningState' -Value 'Aborted' -Force -ErrorAction SilentlyContinue } catch {}
+        }
+    })
 
     # Read the Disable Toast checkbox state (Intune only)
     $disableToast = ($selectedPlatform -eq 'Intune') -and ($chk_DisableToastPrompt.IsChecked -eq $true)
@@ -9075,17 +9077,12 @@ $btn_Build.Add_Click({
     $cmDPs = if ($regConfig -and -not [string]::IsNullOrEmpty($regConfig.SelectedDPs)) { @($regConfig.SelectedDPs -split '\|') } else { @() }
     $cmDistPriority = if ($null -ne $cmb_DistPriority -and $null -ne $cmb_DistPriority.SelectedItem) { $cmb_DistPriority.SelectedItem.Content } else { 'Normal' }
 
-    [void]$script:BuildPS.AddArgument((Resolve-Path $modulePath).Path)
     [void]$script:BuildPS.AddArgument($global:ScriptDirectory)
     [void]$script:BuildPS.AddArgument($global:RegPath)
     [void]$script:BuildPS.AddArgument($selectedPlatform)
     [void]$script:BuildPS.AddArgument($global:SelectedModels.ToArray())
     [void]$script:BuildPS.AddArgument($tempStoragePath)
     [void]$script:BuildPS.AddArgument($packageStoragePath)
-    [void]$script:BuildPS.AddArgument($intuneToken)
-    [void]$script:BuildPS.AddArgument($intuneRefreshToken)
-    [void]$script:BuildPS.AddArgument($intuneAuthClientId)
-    [void]$script:BuildPS.AddArgument($intuneTokenExpSec)
     [void]$script:BuildPS.AddArgument($disableToast)
     $disableRestart = ($selectedPlatform -eq 'Intune') -and ($chk_DisableBIOSRestart.IsChecked -eq $true)
     [void]$script:BuildPS.AddArgument($disableRestart)
@@ -10610,8 +10607,9 @@ function Invoke-DATIntuneKnownModelLookup {
     Write-DATActivityLog "Starting Intune known model lookup via Graph API" -Level Info
 
     # Capture auth state before launching background runspace
-    $intuneAuthToken = (Get-DATIntuneAuthStatus).Token
-    $graphBaseUrl = "https://graph.microsoft.com/beta"
+    $intuneAuthStatus = Get-DATIntuneAuthStatus
+    $intuneAuthToken = $intuneAuthStatus.Token
+    $graphBaseUrl = $intuneAuthStatus.GraphBaseUrl
 
     # Shared state for background progress reporting
     $script:IntuneModelLookupState = [hashtable]::Synchronized(@{
@@ -13652,6 +13650,7 @@ $btn_ScheduleSave.Add_Click({
         return
     }
     $schedPlatform = if ($null -ne $cmb_Platform.SelectedItem) { $cmb_Platform.SelectedItem.Content } else { 'Download Only' }
+    $schedTenantEnvironment = Get-DATSelectedIntuneTenantEnvironment
 
     # Intune scheduled builds require App Registration credentials for unattended auth
     if ($schedPlatform -eq 'Intune') {
@@ -13715,6 +13714,7 @@ $btn_ScheduleSave.Add_Click({
 
     # Intune credentials for unattended auth
     $schedIntune = @{
+        TenantEnvironment = if ($schedPlatform -eq 'Intune') { $schedTenantEnvironment } else { 'Commercial' }
         TenantId  = if ($schedPlatform -eq 'Intune') { $schedTenantId } else { '' }
         AppId     = if ($schedPlatform -eq 'Intune') { $schedAppId } else { '' }
         AppSecret = if ($schedPlatform -eq 'Intune') { $schedSecret } else { '' }
@@ -14667,13 +14667,6 @@ $btn_CustomBuild.Add_Click({
     $osLabel = if ($null -ne $cmb_CustomOS.SelectedItem) { $cmb_CustomOS.SelectedItem.Content } else { 'Windows 11 - 24H2' }
     $detectedArch = if ([System.Environment]::Is64BitOperatingSystem) { 'x64' } else { 'x86' }
 
-    # Gather Intune token for Intune platform
-    $intuneToken = $null
-    if ($platform -eq 'Intune') {
-        $coreModule = Get-Module -Name DriverAutomationToolCore
-        if ($coreModule) { $intuneToken = & $coreModule { $script:IntuneAuthToken } }
-    }
-
     # Gather ConfigMgr settings
     $siteServer = if ($regConfig) { $regConfig.SiteServer } else { $null }
     $siteCode = $global:SiteCode
@@ -14709,12 +14702,12 @@ $btn_CustomBuild.Add_Click({
     $script:CustomBuildRunspace.Open()
     $script:CustomBuildPS = [powershell]::Create()
     $script:CustomBuildPS.Runspace = $script:CustomBuildRunspace
+    Add-DATCoreRunspaceBootstrap -PowerShell $script:CustomBuildPS -CaptureIntuneAuthContext:($platform -eq 'Intune') -ModulePath (Resolve-Path $modulePath).Path
     [void]$script:CustomBuildPS.AddScript({
-        param($ModulePath, $Make, $Model, $BaseBoard, $Platform, $TempStorage, $PackageStorage, $RegPath,
-              $OSLabel, $Architecture, $Version, $ScriptDir, $IntuneToken, $SiteServer, $SiteCode, $DisableToast, $TotalSteps,
+        param($Make, $Model, $BaseBoard, $Platform, $TempStorage, $PackageStorage, $RegPath,
+              $OSLabel, $Architecture, $Version, $ScriptDir, $SiteServer, $SiteCode, $DisableToast, $TotalSteps,
               $Method, $DriverFolderPath, $DPGroups, $DPs, $DistPriority, $DebugBuildPath, $CustomBrandingPath, $AlarmMode, $CreateIntuneWinOnly)
 
-        Import-Module $ModulePath -Force
         $global:ScriptDirectory = $ScriptDir
         $global:RegPath = $RegPath
 
@@ -15197,7 +15190,6 @@ $btn_CustomBuild.Add_Click({
                     Architecture       = $Architecture
                     WimFilePath        = $WimFile
                     PackageDestination = $PackageStorage
-                    IntuneAuthToken    = $IntuneToken
                     DisableToast       = $DisableToast
                 }
                 if (-not [string]::IsNullOrEmpty($DebugBuildPath)) { $intuneCreateParams['DebugBuildPath'] = $DebugBuildPath }
@@ -15288,7 +15280,6 @@ $btn_CustomBuild.Add_Click({
     })
 
     $customVersion = Get-Date -Format "ddMMyyyy"
-    [void]$script:CustomBuildPS.AddArgument((Resolve-Path $modulePath).Path)
     [void]$script:CustomBuildPS.AddArgument($make)
     [void]$script:CustomBuildPS.AddArgument($model)
     [void]$script:CustomBuildPS.AddArgument($baseBoard)
@@ -15300,7 +15291,6 @@ $btn_CustomBuild.Add_Click({
     [void]$script:CustomBuildPS.AddArgument($detectedArch)
     [void]$script:CustomBuildPS.AddArgument($customVersion)
     [void]$script:CustomBuildPS.AddArgument($global:ScriptDirectory)
-    [void]$script:CustomBuildPS.AddArgument($intuneToken)
     [void]$script:CustomBuildPS.AddArgument($siteServer)
     [void]$script:CustomBuildPS.AddArgument($siteCode)
     [void]$script:CustomBuildPS.AddArgument($disableToast)
@@ -17693,9 +17683,6 @@ function Invoke-DATIntuneAssignmentWithProgress {
     $script:AssignDlg.Content = $asBorder
 
     # Prepare data for the background runspace
-    $authStatus = Get-DATIntuneAuthStatus
-    $token = $authStatus.Token
-    $tokenExpiry = $authStatus.ExpiresOn
     $appList = @($Apps | ForEach-Object { @{ AppId = $_.AppId; DisplayName = $_.DisplayName } })
 
     $script:AssignState = [hashtable]::Synchronized(@{
@@ -17705,10 +17692,9 @@ function Invoke-DATIntuneAssignmentWithProgress {
     })
 
     $script:AssignPS = [powershell]::Create()
+    Add-DATCoreRunspaceBootstrap -PowerShell $script:AssignPS -CaptureIntuneAuthContext
     $script:AssignPS.AddScript({
-        param ($ModulePath, $State, $Token, $TokenExpiry, $AppList, $GroupId, $Intent)
-        Import-Module $ModulePath -Force
-        Set-DATIntuneAuthToken -Token $Token -ExpiresOn $TokenExpiry
+        param ($State, $AppList, $GroupId, $Intent)
         foreach ($app in $AppList) {
             $entry = @{ AppId = $app.AppId; DisplayName = $app.DisplayName; Success = $false; Error = '' }
             try {
@@ -17721,10 +17707,7 @@ function Invoke-DATIntuneAssignmentWithProgress {
         }
         $State.Status = 'Complete'
     })
-    [void]$script:AssignPS.AddArgument($CoreModulePath)
     [void]$script:AssignPS.AddArgument($script:AssignState)
-    [void]$script:AssignPS.AddArgument($token)
-    [void]$script:AssignPS.AddArgument($tokenExpiry)
     [void]$script:AssignPS.AddArgument($appList)
     [void]$script:AssignPS.AddArgument($GroupResult.GroupId)
     [void]$script:AssignPS.AddArgument($Intent)
@@ -18189,10 +18172,70 @@ $grid_IntuneApps.Add_PreviewKeyDown({
 
 # Auth mode toggle - show/hide app credential fields and interactive app selection panel
 $cmb_IntuneAuthMode = $Window.FindName('cmb_IntuneAuthMode')
+$cmb_IntuneTenantEnvironment = $Window.FindName('cmb_IntuneTenantEnvironment')
 $cmb_InteractiveAppSource = $Window.FindName('cmb_InteractiveAppSource')
 $panel_CustomInteractiveAppId = $Window.FindName('panel_CustomInteractiveAppId')
 $panel_InteractiveAppSelection = $Window.FindName('panel_InteractiveAppSelection')
 $txt_InteractiveAppId = $Window.FindName('txt_InteractiveAppId')
+
+if ($null -ne $cmb_IntuneTenantEnvironment) {
+    $cmb_IntuneTenantEnvironment.Items.Clear()
+    foreach ($environment in Get-DATIntuneEnvironments) {
+        $item = [System.Windows.Controls.ComboBoxItem]::new()
+        $item.Content = $environment.DisplayName
+        $item.Tag = $environment.Name
+        [void]$cmb_IntuneTenantEnvironment.Items.Add($item)
+    }
+    if ($cmb_IntuneTenantEnvironment.Items.Count -gt 0) {
+        $cmb_IntuneTenantEnvironment.SelectedIndex = 0
+    }
+}
+
+function Get-DATSelectedIntuneTenantEnvironment {
+    if ($null -eq $cmb_IntuneTenantEnvironment -or $null -eq $cmb_IntuneTenantEnvironment.SelectedItem) {
+        return 'Commercial'
+    }
+
+    $tenantEnvironment = [string]$cmb_IntuneTenantEnvironment.SelectedItem.Tag
+    if ([string]::IsNullOrWhiteSpace($tenantEnvironment)) { return 'Commercial' }
+    return $tenantEnvironment
+}
+
+function Set-DATIntuneTenantEnvironmentSelection {
+    param (
+        [string]$TenantEnvironment = 'Commercial'
+    )
+
+    $environmentResult = Resolve-DATIntuneEnvironment -Environment $TenantEnvironment
+    $definition = Set-DATIntuneEnvironment -Environment $environmentResult.Name -Silent
+
+    if ($environmentResult.UsedFallback) {
+        $invalidTenantEnvironment = $environmentResult.RequestedEnvironment
+        try {
+            Set-DATRegistryValue -Name 'IntuneTenantEnvironment' -Value $definition.Name -Type String
+            Write-DATActivityLog "Unsupported saved Intune tenant environment '$invalidTenantEnvironment' -- reset to Commercial" -Level Warn
+        } catch { }
+        try {
+            if ($null -ne $txt_IntuneStatus) {
+                $txt_IntuneStatus.Text = "Unsupported saved tenant environment '$invalidTenantEnvironment'. Reset to Commercial."
+                $txt_IntuneStatus.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+                    [System.Windows.Media.ColorConverter]::ConvertFromString(
+                        (Get-DATTheme -ThemeName $script:CurrentTheme)['StatusWarning']))
+            }
+        } catch { }
+    }
+
+    if ($null -ne $cmb_IntuneTenantEnvironment) {
+        foreach ($item in $cmb_IntuneTenantEnvironment.Items) {
+            if ([string]$item.Tag -eq [string]$definition.Name) {
+                $cmb_IntuneTenantEnvironment.SelectedItem = $item
+                break
+            }
+        }
+    }
+
+    return $definition.Name
+}
 
 $cmb_IntuneAuthMode.Add_SelectionChanged({
     if ($cmb_IntuneAuthMode.SelectedIndex -eq 2) {
@@ -18205,6 +18248,22 @@ $cmb_IntuneAuthMode.Add_SelectionChanged({
         $panel_InteractiveAppSelection.Visibility = 'Visible'
     }
     Set-DATRegistryValue -Name 'IntuneAuthMode' -Value $cmb_IntuneAuthMode.SelectedIndex -Type DWord
+})
+
+$cmb_IntuneTenantEnvironment.Add_SelectionChanged({
+    $tenantEnvironment = Get-DATSelectedIntuneTenantEnvironment
+    Set-DATIntuneEnvironment -Environment $tenantEnvironment -Silent | Out-Null
+    Set-DATRegistryValue -Name 'IntuneTenantEnvironment' -Value $tenantEnvironment -Type String
+
+    $authStatus = Get-DATIntuneAuthStatus -NoRefresh
+    if (-not [string]::IsNullOrEmpty($authStatus.Token)) {
+        Disconnect-DATIntuneGraph
+        Update-DATIntuneAuthUI
+        $txt_IntuneStatus.Text = "Tenant environment changed. Authenticate again."
+        $txt_IntuneStatus.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+            [System.Windows.Media.ColorConverter]::ConvertFromString(
+                (Get-DATTheme -ThemeName $script:CurrentTheme)['StatusWarning']))
+    }
 })
 
 # Show/hide custom App ID textbox based on app source selection
@@ -18230,7 +18289,7 @@ function Update-DATIntuneAuthUI {
             [System.Windows.Media.ColorConverter]::ConvertFromString(
                 (Get-DATTheme -ThemeName $script:CurrentTheme)['StatusSuccess']))
         $txt_IntuneAuthLabel.Text = "Connected"
-        $txt_IntuneGraphStatus.Text = "Connected to Microsoft Graph -- Tenant: $($authStatus.TenantId)"
+        $txt_IntuneGraphStatus.Text = "Connected to Microsoft Graph ($($authStatus.TenantEnvironmentDisplayName)) -- Tenant: $($authStatus.TenantId)"
         $txt_IntuneGraphStatus.Foreground = [System.Windows.Media.SolidColorBrush]::new(
             [System.Windows.Media.ColorConverter]::ConvertFromString(
                 (Get-DATTheme -ThemeName $script:CurrentTheme)['StatusSuccess']))
@@ -18365,26 +18424,19 @@ function Invoke-DATIntunePermissionCheckAsync {
         [scriptblock]$OnComplete
     )
 
-    $authStatus = Get-DATIntuneAuthStatus
-    $token = $authStatus.Token
-    $tokenExpiry = $authStatus.ExpiresOn
     $script:PermCheckState = [hashtable]::Synchronized(@{
         Status = 'Running'
         Result = $null
     })
 
     $script:PermCheckPS = [powershell]::Create()
+    Add-DATCoreRunspaceBootstrap -PowerShell $script:PermCheckPS -CaptureIntuneAuthContext
     $script:PermCheckPS.AddScript({
-        param ($CoreModulePath, $State, $Token, $TokenExpiry)
-        Import-Module $CoreModulePath -Force
-        Set-DATIntuneAuthToken -Token $Token -ExpiresOn $TokenExpiry
+        param ($State)
         $State.Result = Test-DATIntunePermissions
         $State.Status = 'Complete'
     })
-    [void]$script:PermCheckPS.AddArgument($CoreModulePath)
     [void]$script:PermCheckPS.AddArgument($script:PermCheckState)
-    [void]$script:PermCheckPS.AddArgument($token)
-    [void]$script:PermCheckPS.AddArgument($tokenExpiry)
     $script:PermCheckAsync = $script:PermCheckPS.BeginInvoke()
 
     $script:PermCheckTimer = New-Object System.Windows.Threading.DispatcherTimer
@@ -18421,12 +18473,14 @@ $script:IntuneTokenTimer.Add_Tick({
                 $savedAppId = (Get-ItemProperty -Path $global:RegPath -Name 'IntuneAppId' -ErrorAction SilentlyContinue).IntuneAppId
                 $savedEncSecret = (Get-ItemProperty -Path $global:RegPath -Name 'IntuneClientSecret' -ErrorAction SilentlyContinue).IntuneClientSecret
                 $savedAuthMode = (Get-ItemProperty -Path $global:RegPath -Name 'IntuneAuthMode' -ErrorAction SilentlyContinue).IntuneAuthMode
+                $savedTenantEnvironment = (Get-ItemProperty -Path $global:RegPath -Name 'IntuneTenantEnvironment' -ErrorAction SilentlyContinue).IntuneTenantEnvironment
+                if ([string]::IsNullOrEmpty($savedTenantEnvironment)) { $savedTenantEnvironment = Get-DATSelectedIntuneTenantEnvironment }
                 if ($savedAuthMode -eq 2 -and -not [string]::IsNullOrEmpty($savedTenantId) -and
                     -not [string]::IsNullOrEmpty($savedAppId) -and -not [string]::IsNullOrEmpty($savedEncSecret)) {
                     $secStr = ConvertTo-SecureString -String $savedEncSecret
                     $plainSecret = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto(
                         [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($secStr))
-                    $ccResult = Connect-DATIntuneGraphClientCredential -TenantId $savedTenantId -AppId $savedAppId -ClientSecret $plainSecret
+                    $ccResult = Connect-DATIntuneGraphClientCredential -TenantId $savedTenantId -AppId $savedAppId -ClientSecret $plainSecret -TenantEnvironment $savedTenantEnvironment
                     if ($ccResult.Success) {
                         $ccRenewed = $true
                         Write-DATActivityLog "Token renewed silently using saved client credentials" -Level Info
@@ -18466,12 +18520,14 @@ $script:IntuneTokenTimer.Add_Tick({
                     $savedAppId = (Get-ItemProperty -Path $global:RegPath -Name 'IntuneAppId' -ErrorAction SilentlyContinue).IntuneAppId
                     $savedEncSecret = (Get-ItemProperty -Path $global:RegPath -Name 'IntuneClientSecret' -ErrorAction SilentlyContinue).IntuneClientSecret
                     $savedAuthMode = (Get-ItemProperty -Path $global:RegPath -Name 'IntuneAuthMode' -ErrorAction SilentlyContinue).IntuneAuthMode
+                    $savedTenantEnvironment = (Get-ItemProperty -Path $global:RegPath -Name 'IntuneTenantEnvironment' -ErrorAction SilentlyContinue).IntuneTenantEnvironment
+                    if ([string]::IsNullOrEmpty($savedTenantEnvironment)) { $savedTenantEnvironment = Get-DATSelectedIntuneTenantEnvironment }
                     if ($savedAuthMode -eq 2 -and -not [string]::IsNullOrEmpty($savedTenantId) -and
                         -not [string]::IsNullOrEmpty($savedAppId) -and -not [string]::IsNullOrEmpty($savedEncSecret)) {
                         $secStr = ConvertTo-SecureString -String $savedEncSecret
                         $plainSecret = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto(
                             [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($secStr))
-                        $ccResult = Connect-DATIntuneGraphClientCredential -TenantId $savedTenantId -AppId $savedAppId -ClientSecret $plainSecret
+                        $ccResult = Connect-DATIntuneGraphClientCredential -TenantId $savedTenantId -AppId $savedAppId -ClientSecret $plainSecret -TenantEnvironment $savedTenantEnvironment
                         if ($ccResult.Success) {
                             $ccProactive = $true
                             Write-DATActivityLog "Token renewed proactively using saved client credentials (was expiring in $($status.MinutesRemaining) min)" -Level Info
@@ -18691,6 +18747,9 @@ $btn_ConnectIntune.Add_Click({
     } else {
         $null   # let the function use the built-in default
     }
+    $tenantEnvironment = Get-DATSelectedIntuneTenantEnvironment
+    Set-DATIntuneEnvironment -Environment $tenantEnvironment -Silent | Out-Null
+    Set-DATRegistryValue -Name 'IntuneTenantEnvironment' -Value $tenantEnvironment -Type String
 
     if ($cmb_IntuneAuthMode.SelectedIndex -eq 0) {
         # --- Interactive (Browser) - Auth Code + PKCE ---
@@ -18711,6 +18770,7 @@ $btn_ConnectIntune.Add_Click({
             $browserParams['ClientId']   = $interactiveClientId
             $browserParams['FixedPort']  = 38400
         }
+        $browserParams['TenantEnvironment'] = $tenantEnvironment
         $setupResult = Connect-DATIntuneGraphInteractive @browserParams
 
         if (-not $setupResult.Success) {
@@ -18823,9 +18883,9 @@ $btn_ConnectIntune.Add_Click({
         }
 
         $txt_IntuneStatus.Text = "Authenticating with client credentials..."
-        Write-DATActivityLog "Authenticating with client credentials for tenant $tenantId" -Level Info
+        Write-DATActivityLog "Authenticating with client credentials for tenant $tenantId ($tenantEnvironment)" -Level Info
 
-        $result = Connect-DATIntuneGraphClientCredential -TenantId $tenantId -AppId $appId -ClientSecret $secret
+        $result = Connect-DATIntuneGraphClientCredential -TenantId $tenantId -AppId $appId -ClientSecret $secret -TenantEnvironment $tenantEnvironment
 
         if ($result.Success) {
             Update-DATIntuneAuthUI
@@ -18867,6 +18927,7 @@ $btn_ConnectIntune.Add_Click({
             Set-DATRegistryValue -Name 'IntuneTenantId' -Value $tenantId -Type String
             Set-DATRegistryValue -Name 'IntuneAppId' -Value $appId -Type String
             Set-DATRegistryValue -Name 'IntuneAuthMode' -Value 2 -Type DWord
+            Set-DATRegistryValue -Name 'IntuneTenantEnvironment' -Value $tenantEnvironment -Type String
             try {
                 $secSecret = ConvertTo-SecureString -String $secret -AsPlainText -Force
                 $encSecret = ConvertFrom-SecureString -SecureString $secSecret
@@ -18914,6 +18975,7 @@ $btn_ConnectIntune.Add_Click({
 
         $dcParams = @{}
         if ($null -ne $interactiveClientId) { $dcParams['ClientId'] = $interactiveClientId }
+        $dcParams['TenantEnvironment'] = $tenantEnvironment
         $dcResult = Connect-DATIntuneGraph @dcParams
 
         if (-not $dcResult.Success) {
@@ -19214,25 +19276,18 @@ $btn_VerifyIntunePermissions.Add_Click({
     $script:PermDlg.Content = $permBorder
 
     # Start the permission check background runspace BEFORE showing the dialog
-    $authStatus = Get-DATIntuneAuthStatus
-    $token = $authStatus.Token
-    $tokenExpiry = $authStatus.ExpiresOn
     $script:PermVerifyState = [hashtable]::Synchronized(@{
         Status = 'Running'
         Result = $null
     })
     $script:PermVerifyPS = [powershell]::Create()
+    Add-DATCoreRunspaceBootstrap -PowerShell $script:PermVerifyPS -CaptureIntuneAuthContext
     $script:PermVerifyPS.AddScript({
-        param ($ModulePath, $State, $Token, $TokenExpiry)
-        Import-Module $ModulePath -Force
-        Set-DATIntuneAuthToken -Token $Token -ExpiresOn $TokenExpiry
+        param ($State)
         $State.Result = Test-DATIntunePermissions
         $State.Status = 'Complete'
     })
-    [void]$script:PermVerifyPS.AddArgument($CoreModulePath)
     [void]$script:PermVerifyPS.AddArgument($script:PermVerifyState)
-    [void]$script:PermVerifyPS.AddArgument($token)
-    [void]$script:PermVerifyPS.AddArgument($tokenExpiry)
     $script:PermVerifyAsync = $script:PermVerifyPS.BeginInvoke()
 
     # Poll timer fires during the ShowDialog message pump
@@ -19313,6 +19368,7 @@ $btn_ResetIntuneAuth.Add_Click({
     Remove-ItemProperty -Path $global:RegPath -Name 'IntuneAppId'               -Force -ErrorAction SilentlyContinue
     Remove-ItemProperty -Path $global:RegPath -Name 'IntuneClientSecret'        -Force -ErrorAction SilentlyContinue
     Remove-ItemProperty -Path $global:RegPath -Name 'IntuneAuthMode'            -Force -ErrorAction SilentlyContinue
+    Remove-ItemProperty -Path $global:RegPath -Name 'IntuneTenantEnvironment'   -Force -ErrorAction SilentlyContinue
     Remove-ItemProperty -Path $global:RegPath -Name 'IntuneInteractiveAppSource' -Force -ErrorAction SilentlyContinue
     Remove-ItemProperty -Path $global:RegPath -Name 'IntuneInteractiveAppId'    -Force -ErrorAction SilentlyContinue
 
@@ -19322,6 +19378,7 @@ $btn_ResetIntuneAuth.Add_Click({
     $txt_IntuneClientSecret.Password = ''
     $txt_InteractiveAppId.Text = ''
     $cmb_IntuneAuthMode.SelectedIndex = 0
+    Set-DATIntuneTenantEnvironmentSelection -TenantEnvironment 'Commercial' | Out-Null
     $cmb_InteractiveAppSource.SelectedIndex = 0
     $panel_CustomInteractiveAppId.Visibility = 'Collapsed'
 
@@ -19367,10 +19424,9 @@ function Invoke-DATIntuneAppRefresh {
     })
 
     $script:AppRefreshPS = [powershell]::Create()
+    Add-DATCoreRunspaceBootstrap -PowerShell $script:AppRefreshPS -CaptureIntuneAuthContext
     $script:AppRefreshPS.AddScript({
-        param ($CoreModulePath, $State, $Token, $TokenExpiry)
-        Import-Module $CoreModulePath -Force
-        Set-DATIntuneAuthToken -Token $Token -ExpiresOn $TokenExpiry
+        param ($State)
         try {
             $allApps = Get-DATIntuneWin32Apps | Where-Object { $_.notes -eq 'Created by the Driver Automation Tool' }
             $State.Apps = @($allApps)
@@ -19380,11 +19436,7 @@ function Invoke-DATIntuneAppRefresh {
             $State.Status = 'Failed'
         }
     })
-    $authStatus = Get-DATIntuneAuthStatus
-    [void]$script:AppRefreshPS.AddArgument($CoreModulePath)
     [void]$script:AppRefreshPS.AddArgument($script:AppRefreshState)
-    [void]$script:AppRefreshPS.AddArgument($authStatus.Token)
-    [void]$script:AppRefreshPS.AddArgument($authStatus.ExpiresOn)
     $script:AppRefreshAsync = $script:AppRefreshPS.BeginInvoke()
 
     $script:AppRefreshTimer = New-Object System.Windows.Threading.DispatcherTimer
@@ -19796,10 +19848,9 @@ $btn_DeleteIntuneApp.Add_Click({
 
     $script:deletePS = [powershell]::Create()
     $script:deletePS.Runspace = $script:deleteRunspace
+    Add-DATCoreRunspaceBootstrap -PowerShell $script:deletePS -CaptureIntuneAuthContext
     [void]$script:deletePS.AddScript({
-        param ($CoreModulePath, $AppIds, $AppNames, $State, $Token, $TokenExpiry)
-        Import-Module $CoreModulePath -Force
-        Set-DATIntuneAuthToken -Token $Token -ExpiresOn $TokenExpiry
+        param ($AppIds, $AppNames, $State)
         for ($i = 0; $i -lt $AppIds.Count; $i++) {
             if ($State.CancelRequested) {
                 $State.Cancelled = $true
@@ -19816,13 +19867,9 @@ $btn_DeleteIntuneApp.Add_Click({
         }
         $State.Done = $true
     })
-    $authStatus = Get-DATIntuneAuthStatus
-    [void]$script:deletePS.AddArgument($CoreModulePath)
     [void]$script:deletePS.AddArgument($appIds)
     [void]$script:deletePS.AddArgument($appNames)
     [void]$script:deletePS.AddArgument($script:deleteState)
-    [void]$script:deletePS.AddArgument($authStatus.Token)
-    [void]$script:deletePS.AddArgument($authStatus.ExpiresOn)
     $script:deleteAsync = $script:deletePS.BeginInvoke()
 
     # Poll timer to update modal UI
@@ -22133,7 +22180,17 @@ try {
             Write-Host "Disabled" -ForegroundColor DarkYellow
         }
 
-        # Restore Intune Auth Mode and App Registration credentials
+        # Restore Intune tenant environment, auth mode, and app registration credentials
+        $savedTenantEnvironment = if (-not [string]::IsNullOrEmpty($savedConfig.IntuneTenantEnvironment)) {
+            $savedConfig.IntuneTenantEnvironment
+        } else {
+            'Commercial'
+        }
+        Set-DATIntuneTenantEnvironmentSelection -TenantEnvironment $savedTenantEnvironment | Out-Null
+        $tenantEnvironmentInfo = Get-DATIntuneEnvironment
+        Write-Host "  Intune Env    : " -NoNewline -ForegroundColor DarkGray
+        Write-Host $tenantEnvironmentInfo.DisplayName -ForegroundColor White
+
         if ($null -ne $savedConfig.IntuneAuthMode) {
             $cmb_IntuneAuthMode.SelectedIndex = [int]$savedConfig.IntuneAuthMode
             Write-Host "  Intune Auth   : " -NoNewline -ForegroundColor DarkGray
@@ -22511,6 +22568,7 @@ $script:splash.ShowDialog() | Out-Null
 
 # Auto-connect Intune if App Registration (client credentials) mode was saved
 if ($cmb_IntuneAuthMode.SelectedIndex -eq 2) {
+    $autoTenantEnvironment = Get-DATSelectedIntuneTenantEnvironment
     $autoTenantId = $txt_IntuneTenantId.Text.Trim()
     $autoAppId    = $txt_IntuneAppId.Text.Trim()
     $autoSecret   = $txt_IntuneClientSecret.Password
@@ -22519,8 +22577,8 @@ if ($cmb_IntuneAuthMode.SelectedIndex -eq 2) {
         -not [string]::IsNullOrEmpty($autoSecret)) {
         Write-Host "  Intune        : " -NoNewline -ForegroundColor DarkGray
         Write-Host "Auto-connecting with saved client credentials..." -ForegroundColor Cyan
-        Write-DATActivityLog "Auto-connecting to Intune with saved client credentials (tenant: $autoTenantId)" -Level Info
-        $autoResult = Connect-DATIntuneGraphClientCredential -TenantId $autoTenantId -AppId $autoAppId -ClientSecret $autoSecret
+        Write-DATActivityLog "Auto-connecting to Intune with saved client credentials (environment: $autoTenantEnvironment, tenant: $autoTenantId)" -Level Info
+        $autoResult = Connect-DATIntuneGraphClientCredential -TenantId $autoTenantId -AppId $autoAppId -ClientSecret $autoSecret -TenantEnvironment $autoTenantEnvironment
         if ($autoResult.Success) {
             Update-DATIntuneAuthUI
             $script:IntuneTokenTimer.Start()
@@ -23477,7 +23535,9 @@ $Window.Add_ContentRendered({
         $connRunspace.SessionStateProxy.SetVariable('ConnState', $connState)
         $connPS = [powershell]::Create()
         $connPS.Runspace = $connRunspace
+        $intuneConnectivityEnvironment = Get-DATIntuneEnvironment
         [void]$connPS.AddScript({
+            param ($AuthorityHost, $GraphResource)
             [System.Net.ServicePointManager]::SecurityProtocol =
                 [System.Net.ServicePointManager]::SecurityProtocol -bor [System.Net.SecurityProtocolType]::Tls12
 
@@ -23490,8 +23550,8 @@ $Window.Add_ContentRendered({
                 @{ URL = 'https://ftp.hp.com';                 Description = 'HP driver catalog and SoftPaqs' }
                 @{ URL = 'https://download.lenovo.com';        Description = 'Lenovo driver catalog' }
                 @{ URL = 'https://global-download.acer.com';   Description = 'Acer driver and BIOS catalog' }
-                @{ URL = 'https://login.microsoftonline.com';  Description = 'Microsoft Entra ID (Intune authentication)' }
-                @{ URL = 'https://graph.microsoft.com';        Description = 'Microsoft Graph API (Intune management)' }
+                @{ URL = $AuthorityHost;                       Description = 'Microsoft Entra ID (Intune authentication)' }
+                @{ URL = $GraphResource;                       Description = 'Microsoft Graph API (Intune management)' }
             )
             $ConnState.Total = $endpoints.Count
             $results = foreach ($ep in $endpoints) {
@@ -23520,6 +23580,8 @@ $Window.Add_ContentRendered({
             $ConnState.Results = @($results)
             $ConnState.Done = $true
         })
+        [void]$connPS.AddArgument($intuneConnectivityEnvironment.AuthorityHost)
+        [void]$connPS.AddArgument($intuneConnectivityEnvironment.GraphResource)
         $connAsync = $connPS.BeginInvoke()
 
         # DispatcherFrame keeps the UI pumping; the timer ends the frame when the probe finishes.

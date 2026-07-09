@@ -215,6 +215,7 @@ if ($config.Platform -in @('ConfigMgr', 'Configuration Manager')) {
 switch ($config.Platform) {
     'Intune' {
         if ($config.Intune) {
+            $tenantEnvironment = if ($config.Intune.TenantEnvironment) { $config.Intune.TenantEnvironment } else { '' }
             $tenantId = $config.Intune.TenantId
             $appId    = $config.Intune.AppId
             $appSecret = $config.Intune.AppSecret
@@ -224,6 +225,7 @@ switch ($config.Platform) {
                 $uiRegPath = 'HKCU:\SOFTWARE\DriverAutomationTool'
                 $uiReg = Get-ItemProperty -Path $uiRegPath -ErrorAction SilentlyContinue
                 if ($uiReg) {
+                    if ([string]::IsNullOrEmpty($tenantEnvironment) -and $uiReg.IntuneTenantEnvironment) { $tenantEnvironment = $uiReg.IntuneTenantEnvironment }
                     if ([string]::IsNullOrEmpty($tenantId) -and $uiReg.IntuneTenantId) { $tenantId = $uiReg.IntuneTenantId }
                     if ([string]::IsNullOrEmpty($appId) -and $uiReg.IntuneAppId) { $appId = $uiReg.IntuneAppId }
                     if ([string]::IsNullOrEmpty($appSecret) -and $uiReg.IntuneClientSecret) {
@@ -238,23 +240,23 @@ switch ($config.Platform) {
                     }
                 }
             }
+            if ([string]::IsNullOrEmpty($tenantEnvironment)) { $tenantEnvironment = 'Commercial' }
 
             if ([string]::IsNullOrEmpty($tenantId) -or [string]::IsNullOrEmpty($appId) -or [string]::IsNullOrEmpty($appSecret)) {
                 Write-Error "[Headless] Intune mode requires TenantId, AppId, and AppSecret in BuildConfig.json or saved in the UI registry."
                 exit 1
             }
 
-            Write-Host "[Headless] Authenticating to Intune (tenant: $tenantId, app: $appId)..."
-            $authResult = Connect-DATIntuneGraphClientCredential -TenantId $tenantId -AppId $appId -ClientSecret $appSecret
+            Write-Host "[Headless] Authenticating to Intune (environment: $tenantEnvironment, tenant: $tenantId, app: $appId)..."
+            $authResult = Connect-DATIntuneGraphClientCredential -TenantId $tenantId -AppId $appId -ClientSecret $appSecret -TenantEnvironment $tenantEnvironment
             if (-not $authResult.Success) {
                 Write-Error "[Headless] Intune authentication failed: $($authResult.Error)"
                 exit 1
             }
             Write-Host "[Headless] Intune authentication successful (expires: $($authResult.ExpiresOn))"
 
-            # Pass the live token to the processing function
-            $authStatus = Get-DATIntuneAuthStatus
-            $processingParams['IntuneAuthToken'] = $authStatus.Token
+            # Pass the live auth context to the processing function.
+            $processingParams['IntuneAuthContext'] = Get-DATIntuneAuthContext -NoRefresh
         }
     }
     { $_ -in @('ConfigMgr', 'Configuration Manager') } {

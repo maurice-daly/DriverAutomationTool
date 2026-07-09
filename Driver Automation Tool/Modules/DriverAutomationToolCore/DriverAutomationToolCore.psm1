@@ -3440,6 +3440,7 @@ function Start-DATModelProcessing {
         [string]$IntuneRefreshToken,
         [string]$IntuneAuthClientId,
         [int]$IntuneTokenExpiresInSec = 0,
+        [object]$IntuneAuthContext,
         [string]$SiteServer,
         [string]$SiteCode,
         [string]$PackageType = 'Drivers',
@@ -3512,25 +3513,25 @@ function Start-DATModelProcessing {
         if (-not (Test-Path $dir)) { New-Item -Path $dir -ItemType Directory -Force | Out-Null }
     }
 
-    # Set Intune auth token if provided (for background runspace)
-    if (-not [string]::IsNullOrEmpty($IntuneAuthToken) -and $RunningMode -eq 'Intune') {
-        $script:IntuneAuthToken = $IntuneAuthToken
-        # Use real expiry if provided, otherwise estimate conservatively
-        if ($IntuneTokenExpiresInSec -gt 0) {
-            $script:IntuneTokenExpiry = (Get-Date).AddSeconds($IntuneTokenExpiresInSec)
-        } else {
-            $script:IntuneTokenExpiry = (Get-Date).AddMinutes(55)
-        }
-        # Store the client ID used during auth (required for refresh token to work with custom app registrations)
-        if (-not [string]::IsNullOrEmpty($IntuneAuthClientId)) {
-            $script:IntuneAuthClientId = $IntuneAuthClientId
-        }
-        # Store refresh token for automatic renewal during long builds
-        if (-not [string]::IsNullOrEmpty($IntuneRefreshToken)) {
-            $script:IntuneRefreshToken = $IntuneRefreshToken
-            Write-DATLogEntry -Value "[Intune] Auth token and refresh token set for background runspace -- token expires $($script:IntuneTokenExpiry)" -Severity 1
-        } else {
-            Write-DATLogEntry -Value "[Intune] Auth token set for background runspace -- token expires $($script:IntuneTokenExpiry) (no refresh token; will attempt client credentials renewal if needed)" -Severity 1
+    # Set Intune auth context if provided (for background runspace)
+    if ($RunningMode -eq 'Intune') {
+        if ($null -ne $IntuneAuthContext) {
+            Set-DATIntuneAuthContext -AuthContext $IntuneAuthContext | Out-Null
+            Write-DATLogEntry -Value "[Intune] Auth context set for background runspace ($script:IntuneTenantEnvironment) -- token expires $($script:IntuneTokenExpiry)" -Severity 1
+        } elseif (-not [string]::IsNullOrEmpty($IntuneAuthToken)) {
+            $legacyAuthContext = @{
+                Token             = $IntuneAuthToken
+                ExpiresInSec      = if ($IntuneTokenExpiresInSec -gt 0) { $IntuneTokenExpiresInSec } else { 3300 }
+                RefreshToken      = $IntuneRefreshToken
+                AuthClientId      = $IntuneAuthClientId
+                TenantEnvironment = $script:IntuneTenantEnvironment
+            }
+            Set-DATIntuneAuthContext -AuthContext $legacyAuthContext | Out-Null
+            if (-not [string]::IsNullOrEmpty($IntuneRefreshToken)) {
+                Write-DATLogEntry -Value "[Intune] Auth token and refresh token set for background runspace -- token expires $($script:IntuneTokenExpiry)" -Severity 1
+            } else {
+                Write-DATLogEntry -Value "[Intune] Auth token set for background runspace -- token expires $($script:IntuneTokenExpiry) (no refresh token; will attempt client credentials renewal if needed)" -Severity 1
+            }
         }
     }
 
@@ -3833,7 +3834,6 @@ function Start-DATModelProcessing {
                             Architecture       = $arch
                             WimFilePath        = $wimPath
                             PackageDestination = $PackagePath
-                            IntuneAuthToken    = $IntuneAuthToken
                         }
                         if ($isPilotBuild) { $intuneParams['NamePrefix'] = $driverNamePrefix }
                         $resolvedVersion = if (-not [string]::IsNullOrEmpty($catalogVersion)) { "$catalogVersion" } elseif (-not [string]::IsNullOrEmpty($catalogDriverVersion)) { "$catalogDriverVersion" } else { '' }
@@ -4290,11 +4290,10 @@ function Start-DATModelProcessing {
                                     Architecture       = $arch
                                     WimFilePath        = $biosPackagePath
                                     PackageDestination = $PackagePath
-                                    IntuneAuthToken    = $IntuneAuthToken
                                     UpdateType         = 'BIOS'
                                 }
                                 if ($isPilotBuild) { $intuneParams['NamePrefix'] = $biosNamePrefix }
-                if (-not [string]::IsNullOrEmpty($biosEntry.Version)) { $intuneParams['Version'] = "$($biosEntry.Version)" }
+                                if (-not [string]::IsNullOrEmpty($biosEntry.Version)) { $intuneParams['Version'] = "$($biosEntry.Version)" }
                                 if (-not [string]::IsNullOrEmpty($biosEntry.ReleaseDate)) { $intuneParams['ReleaseDate'] = $biosEntry.ReleaseDate }
                                 if ($DisableToast) { $intuneParams['DisableToast'] = $true }
                                 if ($DisableRestart) { $intuneParams['DisableRestart'] = $true }
@@ -4766,7 +4765,7 @@ function Export-DATBuildConfig {
         CreateIntuneWinOnly        = $CreateIntuneWinOnly
         TeamsWebhookUrl            = if ($TeamsWebhookUrl) { $TeamsWebhookUrl } else { '' }
         TeamsNotificationsEnabled  = $TeamsNotificationsEnabled
-        Intune                     = if ($Intune) { $Intune } else { [ordered]@{ TenantId = ''; AppId = ''; AppSecret = '' } }
+        Intune                     = if ($Intune) { $Intune } else { [ordered]@{ TenantEnvironment = 'Commercial'; TenantId = ''; AppId = ''; AppSecret = '' } }
         ConfigMgr                  = if ($ConfigMgr) { $ConfigMgr } else { [ordered]@{ SiteServer = ''; SiteCode = ''; DistributionPointGroups = @(); DistributionPriority = 'Normal' } }
         MaintenanceWindowEnabled   = $MaintenanceWindowEnabled
         MaintenanceWindowMode      = $MaintenanceWindowMode
@@ -6487,7 +6486,45 @@ $script:GraphScopes = @(
     "DeviceManagementManagedDevices.Read.All"
     "GroupMember.Read.All"
 )
-$script:GraphBaseUrl = "https://graph.microsoft.com/beta"
+$script:GraphEnvironmentDefinitions = [ordered]@{
+    Commercial = [ordered]@{
+        Name          = 'Commercial'
+        DisplayName   = 'Commercial'
+        AuthorityHost = 'https://login.microsoftonline.com'
+        GraphResource = 'https://graph.microsoft.com'
+        GraphBaseUrl  = 'https://graph.microsoft.com/beta'
+    }
+    GCC = [ordered]@{
+        Name          = 'GCC'
+        DisplayName   = 'GCC'
+        AuthorityHost = 'https://login.microsoftonline.com'
+        GraphResource = 'https://graph.microsoft.com'
+        GraphBaseUrl  = 'https://graph.microsoft.com/beta'
+    }
+    GCCHigh = [ordered]@{
+        Name          = 'GCCHigh'
+        DisplayName   = 'GCC High / US Gov L4'
+        AuthorityHost = 'https://login.microsoftonline.us'
+        GraphResource = 'https://graph.microsoft.us'
+        GraphBaseUrl  = 'https://graph.microsoft.us/beta'
+    }
+    DoD = [ordered]@{
+        Name          = 'DoD'
+        DisplayName   = 'DoD / US Gov L5'
+        AuthorityHost = 'https://login.microsoftonline.us'
+        GraphResource = 'https://dod-graph.microsoft.us'
+        GraphBaseUrl  = 'https://dod-graph.microsoft.us/beta'
+    }
+    China = [ordered]@{
+        Name          = 'China'
+        DisplayName   = 'China (21Vianet)'
+        AuthorityHost = 'https://login.partner.microsoftonline.cn'
+        GraphResource = 'https://microsoftgraph.chinacloudapi.cn'
+        GraphBaseUrl  = 'https://microsoftgraph.chinacloudapi.cn/beta'
+    }
+}
+$script:IntuneTenantEnvironment = 'Commercial'
+$script:GraphBaseUrl = $script:GraphEnvironmentDefinitions.Commercial.GraphBaseUrl
 
 # In-memory token store - discarded when the process exits
 $script:IntuneAuthToken = $null
@@ -6498,6 +6535,121 @@ $script:IntuneAuthClientId = $null  # Tracks which client ID was used during aut
 
 # Device code flow state - active only during sign-in
 $script:DeviceCodeContext = $null
+
+function ConvertTo-DATIntuneEnvironmentName {
+    [OutputType([string])]
+    param (
+        [string]$Environment = 'Commercial'
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Environment)) { return 'Commercial' }
+
+    switch -Regex ($Environment.Trim()) {
+        '^(Commercial|Global|Public|Worldwide)$' { return 'Commercial' }
+        '^(GCC|USGovGCC|US Government GCC)$' { return 'GCC' }
+        '^(GCCHigh|GCC High|USGov|US Gov|US Government|USGovernment|L4)$' { return 'GCCHigh' }
+        '^(DoD|DOD|USGovDoD|US Government DoD|L5)$' { return 'DoD' }
+        '^(China|China21Vianet|21Vianet)$' { return 'China' }
+        default { throw "Unsupported Intune tenant environment '$Environment'." }
+    }
+}
+
+function Get-DATIntuneEnvironmentDefinition {
+    [OutputType([hashtable])]
+    param (
+        [string]$Environment = $script:IntuneTenantEnvironment
+    )
+
+    $name = ConvertTo-DATIntuneEnvironmentName -Environment $Environment
+    return $script:GraphEnvironmentDefinitions[$name]
+}
+
+function Set-DATIntuneEnvironment {
+    [CmdletBinding()]
+    param (
+        [string]$Environment = 'Commercial',
+        [switch]$Silent
+    )
+
+    $definition = Get-DATIntuneEnvironmentDefinition -Environment $Environment
+    $script:IntuneTenantEnvironment = $definition.Name
+    $script:GraphBaseUrl = $definition.GraphBaseUrl
+
+    if (-not $Silent) {
+        Write-DATLogEntry -Value "[Intune Auth] Tenant environment set to $($definition.DisplayName) ($($definition.GraphBaseUrl))" -Severity 1
+    }
+
+    return $definition
+}
+
+function Get-DATIntuneEnvironment {
+    [OutputType([hashtable])]
+    param ()
+
+    return Get-DATIntuneEnvironmentDefinition -Environment $script:IntuneTenantEnvironment
+}
+
+function Resolve-DATIntuneEnvironment {
+    [OutputType([PSCustomObject])]
+    param (
+        [string]$Environment = 'Commercial',
+        [string]$FallbackEnvironment = 'Commercial'
+    )
+
+    $requestedEnvironment = if ([string]::IsNullOrWhiteSpace($Environment)) { 'Commercial' } else { $Environment }
+
+    try {
+        $definition = Get-DATIntuneEnvironmentDefinition -Environment $requestedEnvironment
+        [PSCustomObject]@{
+            Name                 = $definition.Name
+            DisplayName          = $definition.DisplayName
+            Definition           = $definition
+            RequestedEnvironment = $requestedEnvironment
+            UsedFallback         = $false
+            Error                = $null
+        }
+    } catch {
+        $fallbackDefinition = Get-DATIntuneEnvironmentDefinition -Environment $FallbackEnvironment
+        [PSCustomObject]@{
+            Name                 = $fallbackDefinition.Name
+            DisplayName          = $fallbackDefinition.DisplayName
+            Definition           = $fallbackDefinition
+            RequestedEnvironment = $requestedEnvironment
+            UsedFallback         = $true
+            Error                = $_.Exception.Message
+        }
+    }
+}
+
+function Get-DATIntuneEnvironments {
+    [OutputType([PSCustomObject[]])]
+    param ()
+
+    foreach ($name in $script:GraphEnvironmentDefinitions.Keys) {
+        $definition = $script:GraphEnvironmentDefinitions[$name]
+        [PSCustomObject]@{
+            Name          = $definition.Name
+            DisplayName   = $definition.DisplayName
+            AuthorityHost = $definition.AuthorityHost
+            GraphResource = $definition.GraphResource
+            GraphBaseUrl  = $definition.GraphBaseUrl
+        }
+    }
+}
+
+function Get-DATGraphScopeString {
+    [OutputType([string])]
+    param (
+        [hashtable]$EnvironmentDefinition = (Get-DATIntuneEnvironment)
+    )
+
+    $graphResource = $EnvironmentDefinition.GraphResource.TrimEnd('/')
+    $qualifiedScopes = foreach ($scope in $script:GraphScopes) {
+        if ($scope -match '^https://') { $scope } else { "$graphResource/$scope" }
+    }
+
+    return (($qualifiedScopes + @('openid', 'profile', 'offline_access')) -join ' ')
+}
 
 function ConvertTo-DATIntuneMinimumOS {
     <#
@@ -6552,15 +6704,17 @@ function Connect-DATIntuneGraph {
     [CmdletBinding()]
     param (
         # Optional: override the built-in Microsoft Graph PowerShell client ID with a custom app registration.
-        [string]$ClientId = $script:GraphClientId
+        [string]$ClientId = $script:GraphClientId,
+        [string]$TenantEnvironment = $script:IntuneTenantEnvironment
     )
 
+    $environment = Set-DATIntuneEnvironment -Environment $TenantEnvironment
     $tenantEndpoint = "organizations"
-    $scopeString = ($script:GraphScopes -join " ") + " openid profile offline_access"
+    $scopeString = Get-DATGraphScopeString -EnvironmentDefinition $environment
 
-    $deviceCodeUrl = "https://login.microsoftonline.com/$tenantEndpoint/oauth2/v2.0/devicecode"
+    $deviceCodeUrl = "$($environment.AuthorityHost)/$tenantEndpoint/oauth2/v2.0/devicecode"
 
-    Write-DATLogEntry -Value "[Intune Auth] Requesting device code for interactive sign-in (client: $ClientId)" -Severity 1
+    Write-DATLogEntry -Value "[Intune Auth] Requesting device code for interactive sign-in (client: $ClientId, environment: $($environment.DisplayName))" -Severity 1
 
     try {
         $proxyParams = Get-DATWebRequestProxy
@@ -6576,6 +6730,8 @@ function Connect-DATIntuneGraph {
             Interval     = [math]::Max([int]$dcResponse.interval, 5)
             ExpiresAt    = (Get-Date).AddSeconds([int]$dcResponse.expires_in)
             ClientId     = $ClientId
+            Environment  = $environment.Name
+            AuthorityHost = $environment.AuthorityHost
         }
 
         Write-DATLogEntry -Value "[Intune Auth] Device code: $($dcResponse.user_code) - open $($dcResponse.verification_uri)" -Severity 1
@@ -6618,7 +6774,8 @@ function Complete-DATDeviceCodeAuth {
     }
 
     $tenantEndpoint = "organizations"
-    $tokenUrl = "https://login.microsoftonline.com/$tenantEndpoint/oauth2/v2.0/token"
+    $authorityHost = if ($script:DeviceCodeContext.AuthorityHost) { $script:DeviceCodeContext.AuthorityHost } else { (Get-DATIntuneEnvironment).AuthorityHost }
+    $tokenUrl = "$authorityHost/$tenantEndpoint/oauth2/v2.0/token"
 
     try {
         $proxyParams = Get-DATWebRequestProxy
@@ -6632,6 +6789,9 @@ function Complete-DATDeviceCodeAuth {
         $script:IntuneAuthToken = $tokenResponse.access_token
         $script:IntuneTokenExpiry = (Get-Date).AddSeconds([int]$tokenResponse.expires_in - 60)
         $script:IntuneAuthClientId = $script:DeviceCodeContext.ClientId
+        if ($script:DeviceCodeContext.Environment) {
+            Set-DATIntuneEnvironment -Environment $script:DeviceCodeContext.Environment -Silent | Out-Null
+        }
         # Store refresh token for silent renewal (device code flow includes offline_access)
         if ($tokenResponse.refresh_token) {
             $script:IntuneRefreshToken = $tokenResponse.refresh_token
@@ -6698,19 +6858,22 @@ function Connect-DATIntuneGraphClientCredential {
     param (
         [Parameter(Mandatory)][string]$TenantId,
         [Parameter(Mandatory)][string]$AppId,
-        [Parameter(Mandatory)][string]$ClientSecret
+        [Parameter(Mandatory)][string]$ClientSecret,
+        [string]$TenantEnvironment = $script:IntuneTenantEnvironment
     )
 
-    $tokenUrl = "https://login.microsoftonline.com/$TenantId/oauth2/v2.0/token"
+    $environment = Set-DATIntuneEnvironment -Environment $TenantEnvironment
+    $tokenUrl = "$($environment.AuthorityHost)/$TenantId/oauth2/v2.0/token"
+    $defaultScope = "$($environment.GraphResource.TrimEnd('/'))/.default"
 
-    Write-DATLogEntry -Value "[Intune Auth] Authenticating with client credentials for tenant: $TenantId" -Severity 1
+    Write-DATLogEntry -Value "[Intune Auth] Authenticating with client credentials for tenant: $TenantId (environment: $($environment.DisplayName))" -Severity 1
 
     try {
         $proxyParams = Get-DATWebRequestProxy
         $tokenResponse = Invoke-RestMethod -Method POST -Uri $tokenUrl -Body @{
             client_id     = $AppId
             client_secret = $ClientSecret
-            scope         = "https://graph.microsoft.com/.default"
+            scope         = $defaultScope
             grant_type    = "client_credentials"
         } -ContentType "application/x-www-form-urlencoded" -ErrorAction Stop @proxyParams
 
@@ -6724,6 +6887,7 @@ function Connect-DATIntuneGraphClientCredential {
             Success   = $true
             ExpiresOn = $script:IntuneTokenExpiry
             TenantId  = $TenantId
+            TenantEnvironment = $environment.Name
         }
     }
     catch {
@@ -6750,12 +6914,14 @@ function Connect-DATIntuneGraphInteractive {
         # When a custom ClientId is supplied, use this fixed port so the user only needs
         # to register one redirect URI (http://localhost:38400/) in their app registration.
         # The built-in Microsoft Graph PowerShell app accepts any port via http://localhost.
-        [int]$FixedPort = 0
+        [int]$FixedPort = 0,
+        [string]$TenantEnvironment = $script:IntuneTenantEnvironment
     )
 
-    $scopeString = ($script:GraphScopes -join " ") + " openid profile offline_access"
+    $environment = Set-DATIntuneEnvironment -Environment $TenantEnvironment
+    $scopeString = Get-DATGraphScopeString -EnvironmentDefinition $environment
 
-    Write-DATLogEntry -Value "[Intune Auth] Starting interactive browser sign-in (Auth Code + PKCE, client: $ClientId)" -Severity 1
+    Write-DATLogEntry -Value "[Intune Auth] Starting interactive browser sign-in (Auth Code + PKCE, client: $ClientId, environment: $($environment.DisplayName))" -Severity 1
 
     try {
         # 1. Generate PKCE code verifier & challenge
@@ -6781,7 +6947,7 @@ function Connect-DATIntuneGraphInteractive {
 
         # 3. Build the authorize URL with PKCE and CSRF state
         $state = [guid]::NewGuid().ToString('N')
-        $authUrl = "https://login.microsoftonline.com/organizations/oauth2/v2.0/authorize?" + (
+        $authUrl = "$($environment.AuthorityHost)/organizations/oauth2/v2.0/authorize?" + (
             @(
                 "client_id=$([uri]::EscapeDataString($ClientId))"
                 "response_type=code"
@@ -6807,6 +6973,8 @@ function Connect-DATIntuneGraphInteractive {
             RedirectUri  = $redirectUri
             ScopeString  = $scopeString
             ClientId     = $ClientId
+            Environment  = $environment.Name
+            AuthorityHost = $environment.AuthorityHost
             StartedAt    = Get-Date
             TimeoutSec   = 120
         }
@@ -6889,7 +7057,7 @@ function Complete-DATBrowserAuth {
         $authCode = $query['code']
 
         # Exchange auth code + verifier for tokens
-        $tokenUrl = "https://login.microsoftonline.com/organizations/oauth2/v2.0/token"
+        $tokenUrl = "$($ctx.AuthorityHost)/organizations/oauth2/v2.0/token"
         $proxyParams = Get-DATWebRequestProxy
         $tokenResponse = Invoke-RestMethod -Method POST -Uri $tokenUrl -Body @{
             client_id     = $ctx.ClientId
@@ -6905,6 +7073,9 @@ function Complete-DATBrowserAuth {
         $script:IntuneTokenExpiry = (Get-Date).AddSeconds([int]$tokenResponse.expires_in - 60)
         $script:IntuneRefreshToken = $tokenResponse.refresh_token
         $script:IntuneAuthClientId = $ctx.ClientId
+        if ($ctx.Environment) {
+            Set-DATIntuneEnvironment -Environment $ctx.Environment -Silent | Out-Null
+        }
 
         # Extract tenant ID from JWT
         $tokenParts = $script:IntuneAuthToken.Split('.')
@@ -6959,8 +7130,9 @@ function Invoke-DATTokenRefresh {
 
     # Use the client ID that was used during the original auth (critical for custom app registrations)
     $refreshClientId = if (-not [string]::IsNullOrEmpty($script:IntuneAuthClientId)) { $script:IntuneAuthClientId } else { $script:GraphClientId }
-    $scopeString = ($script:GraphScopes -join " ") + " openid profile offline_access"
-    $tokenUrl = "https://login.microsoftonline.com/organizations/oauth2/v2.0/token"
+    $environment = Get-DATIntuneEnvironment
+    $scopeString = Get-DATGraphScopeString -EnvironmentDefinition $environment
+    $tokenUrl = "$($environment.AuthorityHost)/organizations/oauth2/v2.0/token"
 
     try {
         $proxyParams = Get-DATWebRequestProxy
@@ -6978,7 +7150,7 @@ function Invoke-DATTokenRefresh {
             $script:IntuneRefreshToken = $tokenResponse.refresh_token
         }
 
-        Write-DATLogEntry -Value "[Intune Auth] Token refreshed silently (client: $refreshClientId) - expires $($script:IntuneTokenExpiry)" -Severity 1
+        Write-DATLogEntry -Value "[Intune Auth] Token refreshed silently (client: $refreshClientId, environment: $($environment.DisplayName)) - expires $($script:IntuneTokenExpiry)" -Severity 1
         return @{ Success = $true; ExpiresOn = $script:IntuneTokenExpiry }
     }
     catch {
@@ -7021,16 +7193,19 @@ function Test-DATIntunePermissions {
         "Content-Type"  = "application/json"
     }
 
+    $environment = Get-DATIntuneEnvironment
+    $graphBaseUrl = $environment.GraphBaseUrl.TrimEnd('/')
+    $graphV1Url = "$($environment.GraphResource.TrimEnd('/'))/v1.0"
     $permChecks = @(
-        @{ Name = "DeviceManagementApps.ReadWrite.All"; TestUri = "https://graph.microsoft.com/beta/deviceAppManagement/mobileApps?`$top=1"; Description = "Create and manage Win32 app packages" }
-        @{ Name = "DeviceManagementManagedDevices.Read.All"; TestUri = "https://graph.microsoft.com/beta/deviceManagement/managedDevices?`$top=1"; Description = "Read managed devices for model lookup" }
-        @{ Name = "GroupMember.Read.All"; TestUri = "https://graph.microsoft.com/v1.0/groups?`$top=1"; Description = "Read group memberships for deployment targeting" }
+        @{ Name = "DeviceManagementApps.ReadWrite.All"; TestUri = "$graphBaseUrl/deviceAppManagement/mobileApps?`$top=1"; Description = "Create and manage Win32 app packages" }
+        @{ Name = "DeviceManagementManagedDevices.Read.All"; TestUri = "$graphBaseUrl/deviceManagement/managedDevices?`$top=1"; Description = "Read managed devices for model lookup" }
+        @{ Name = "GroupMember.Read.All"; TestUri = "$graphV1Url/groups?`$top=1"; Description = "Read group memberships for deployment targeting" }
     )
 
     # Add assignment filter permission check when auto-filter is enabled
     $regConfig = Get-ItemProperty -Path $global:RegPath -ErrorAction SilentlyContinue
     if ($null -ne $regConfig.AutoAssignmentFilter -and $regConfig.AutoAssignmentFilter -eq 1) {
-        $permChecks += @{ Name = "DeviceManagementConfiguration.ReadWrite.All"; TestUri = "https://graph.microsoft.com/beta/deviceManagement/assignmentFilters?`$top=1"; Description = "Create and manage assignment filters" }
+        $permChecks += @{ Name = "DeviceManagementConfiguration.ReadWrite.All"; TestUri = "$graphBaseUrl/deviceManagement/assignmentFilters?`$top=1"; Description = "Create and manage assignment filters" }
     }
 
     $results = @()
@@ -7092,6 +7267,13 @@ function Test-DATIntuneAuth {
     return $true
 }
 
+function Test-DATIntuneAuthTokenValid {
+    [OutputType([bool])]
+    param ()
+
+    return (-not [string]::IsNullOrEmpty($script:IntuneAuthToken) -and (Get-Date) -lt $script:IntuneTokenExpiry)
+}
+
 function Update-DATIntuneTokenIfNeeded {
     <#
     .SYNOPSIS
@@ -7140,6 +7322,7 @@ function Update-DATIntuneTokenIfNeeded {
         $appId = $regValues.IntuneAppId
         $encSecret = $regValues.IntuneClientSecret
         $tenantId = $regValues.IntuneTenantId
+        $tenantEnvironment = if ($regValues.IntuneTenantEnvironment) { $regValues.IntuneTenantEnvironment } else { 'Commercial' }
 
         if ($authMode -eq 2 -and -not [string]::IsNullOrEmpty($appId) -and
             -not [string]::IsNullOrEmpty($encSecret) -and -not [string]::IsNullOrEmpty($tenantId)) {
@@ -7150,8 +7333,8 @@ function Update-DATIntuneTokenIfNeeded {
             $clientSecret = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($bstr)
             [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
 
-            Write-DATLogEntry -Value "[Intune Auth] Attempting client credentials refresh for tenant $tenantId" -Severity 1
-            $ccResult = Connect-DATIntuneGraphClientCredential -TenantId $tenantId -AppId $appId -ClientSecret $clientSecret
+            Write-DATLogEntry -Value "[Intune Auth] Attempting client credentials refresh for tenant $tenantId ($tenantEnvironment)" -Severity 1
+            $ccResult = Connect-DATIntuneGraphClientCredential -TenantId $tenantId -AppId $appId -ClientSecret $clientSecret -TenantEnvironment $tenantEnvironment
             if ($ccResult.Success) {
                 Write-DATLogEntry -Value "[Intune Auth] Token refreshed via client credentials -- new expiry: $($ccResult.ExpiresOn)" -Severity 1
                 return $true
@@ -7180,10 +7363,155 @@ function Set-DATIntuneAuthToken {
     [CmdletBinding()]
     param (
         [Parameter(Mandatory)][string]$Token,
-        [Parameter(Mandatory)][datetime]$ExpiresOn
+        [Parameter(Mandatory)][datetime]$ExpiresOn,
+        [string]$TenantEnvironment = $script:IntuneTenantEnvironment
     )
-    $script:IntuneAuthToken = $Token
-    $script:IntuneTokenExpiry = $ExpiresOn
+
+    if ([string]::IsNullOrWhiteSpace($TenantEnvironment)) {
+        $TenantEnvironment = $script:IntuneTenantEnvironment
+    }
+
+    Set-DATIntuneAuthContext -AuthContext @{
+        Token             = $Token
+        ExpiresOn         = $ExpiresOn
+        TenantEnvironment = $TenantEnvironment
+    } | Out-Null
+}
+
+function ConvertTo-DATIntuneAuthContextMap {
+    [OutputType([hashtable])]
+    param (
+        [Parameter(Mandatory)]$AuthContext
+    )
+
+    $knownFields = @(
+        'Token',
+        'ExpiresOn',
+        'ExpiresInSec',
+        'RefreshToken',
+        'AuthClientId',
+        'TenantId',
+        'TenantEnvironment'
+    )
+    $context = @{}
+
+    if ($AuthContext -is [System.Collections.IDictionary]) {
+        foreach ($field in $knownFields) {
+            if ($AuthContext.Contains($field)) {
+                $context[$field] = $AuthContext[$field]
+            }
+        }
+    } else {
+        $properties = $AuthContext.PSObject.Properties
+        foreach ($field in $knownFields) {
+            $property = $properties[$field]
+            if ($null -ne $property) {
+                $context[$field] = $property.Value
+            }
+        }
+    }
+
+    if ([string]::IsNullOrWhiteSpace([string]$context['TenantEnvironment'])) {
+        throw "Intune auth context is missing TenantEnvironment."
+    }
+
+    if ($context.ContainsKey('Token') -and -not [string]::IsNullOrEmpty([string]$context['Token'])) {
+        $expiresInSecValue = 0
+        $hasExpiresOn = $context.ContainsKey('ExpiresOn') -and -not [string]::IsNullOrWhiteSpace([string]$context['ExpiresOn'])
+        $hasExpiresInSec = $context.ContainsKey('ExpiresInSec') -and
+            [int]::TryParse([string]$context['ExpiresInSec'], [ref]$expiresInSecValue) -and
+            $expiresInSecValue -gt 0
+
+        if (-not $hasExpiresOn -and -not $hasExpiresInSec) {
+            throw "Intune auth context token requires ExpiresOn or positive ExpiresInSec."
+        }
+    }
+
+    return $context
+}
+
+function Get-DATIntuneAuthContext {
+    <#
+    .SYNOPSIS
+        Returns the complete Intune auth state needed by a background runspace.
+    #>
+    [OutputType([hashtable])]
+    param (
+        [switch]$NoRefresh
+    )
+
+    $status = Get-DATIntuneAuthStatus -NoRefresh:$NoRefresh
+    $expiresInSec = if ($status.IsAuthenticated) {
+        [math]::Max(0, [int](($script:IntuneTokenExpiry - (Get-Date)).TotalSeconds))
+    } else { 0 }
+
+    return @{
+        Token                        = $script:IntuneAuthToken
+        ExpiresOn                    = $script:IntuneTokenExpiry
+        ExpiresInSec                 = $expiresInSec
+        RefreshToken                 = $script:IntuneRefreshToken
+        AuthClientId                 = $script:IntuneAuthClientId
+        TenantId                     = $script:IntuneTenantId
+        TenantEnvironment            = $status.TenantEnvironment
+        TenantEnvironmentDisplayName = $status.TenantEnvironmentDisplayName
+        GraphBaseUrl                 = $status.GraphBaseUrl
+        GraphResource                = $status.GraphResource
+        AuthorityHost                = $status.AuthorityHost
+        IsAuthenticated              = $status.IsAuthenticated
+        MinutesRemaining             = $status.MinutesRemaining
+    }
+}
+
+function Set-DATIntuneAuthContext {
+    <#
+    .SYNOPSIS
+        Restores Intune auth state in the current runspace.
+    #>
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory)]$AuthContext
+    )
+
+    $context = ConvertTo-DATIntuneAuthContextMap -AuthContext $AuthContext
+    $tenantEnvironment = [string]$context['TenantEnvironment']
+    Set-DATIntuneEnvironment -Environment $tenantEnvironment -Silent | Out-Null
+
+    if ($context.ContainsKey('Token')) {
+        $token = [string]$context['Token']
+        if ([string]::IsNullOrEmpty($token)) {
+            $script:IntuneAuthToken = $null
+            $script:IntuneTokenExpiry = [datetime]::MinValue
+        } else {
+            $script:IntuneAuthToken = $token
+
+            $expiresOn = if ($context.ContainsKey('ExpiresOn')) { $context['ExpiresOn'] } else { $null }
+            $expiresInSec = if ($context.ContainsKey('ExpiresInSec')) { $context['ExpiresInSec'] } else { $null }
+            if ($null -ne $expiresOn -and $expiresOn -is [datetime]) {
+                $script:IntuneTokenExpiry = $expiresOn
+            } elseif ($null -ne $expiresOn -and -not [string]::IsNullOrWhiteSpace([string]$expiresOn)) {
+                $script:IntuneTokenExpiry = [datetime]$expiresOn
+            } elseif ($null -ne $expiresInSec -and [int]$expiresInSec -gt 0) {
+                $script:IntuneTokenExpiry = (Get-Date).AddSeconds([int]$expiresInSec)
+            }
+        }
+    }
+
+    if ($context.ContainsKey('TenantId')) {
+        $tenantId = $context['TenantId']
+        $script:IntuneTenantId = if ($null -eq $tenantId -or [string]::IsNullOrEmpty([string]$tenantId)) { $null } else { [string]$tenantId }
+    }
+
+    if ($context.ContainsKey('RefreshToken')) {
+        $refreshToken = $context['RefreshToken']
+        $script:IntuneRefreshToken = if ($null -eq $refreshToken -or [string]::IsNullOrEmpty([string]$refreshToken)) { $null } else { [string]$refreshToken }
+    }
+
+    if ($context.ContainsKey('AuthClientId')) {
+        $authClientId = $context['AuthClientId']
+        $script:IntuneAuthClientId = if ($null -eq $authClientId -or [string]::IsNullOrEmpty([string]$authClientId)) { $null } else { [string]$authClientId }
+    }
+
+    return Get-DATIntuneAuthStatus -NoRefresh
 }
 
 function Disconnect-DATIntuneGraph {
@@ -10700,14 +11028,24 @@ function Get-DATIntuneAuthStatus {
         Returns current auth status for UI display.
     #>
     [OutputType([hashtable])]
-    param ()
+    param (
+        [switch]$NoRefresh
+    )
+
+    $isAuthenticated = if ($NoRefresh) { Test-DATIntuneAuthTokenValid } else { Test-DATIntuneAuth }
+    $environment = Get-DATIntuneEnvironment
 
     return @{
-        IsAuthenticated = Test-DATIntuneAuth
-        TenantId        = $script:IntuneTenantId
-        Token           = $script:IntuneAuthToken
-        ExpiresOn       = $script:IntuneTokenExpiry
-        MinutesRemaining = if (Test-DATIntuneAuth) {
+        IsAuthenticated              = $isAuthenticated
+        TenantId                     = $script:IntuneTenantId
+        TenantEnvironment            = $environment.Name
+        TenantEnvironmentDisplayName = $environment.DisplayName
+        GraphBaseUrl                 = $environment.GraphBaseUrl
+        GraphResource                = $environment.GraphResource
+        AuthorityHost                = $environment.AuthorityHost
+        Token                        = $script:IntuneAuthToken
+        ExpiresOn                    = $script:IntuneTokenExpiry
+        MinutesRemaining             = if ($isAuthenticated) {
             [math]::Round(($script:IntuneTokenExpiry - (Get-Date)).TotalMinutes, 1)
         } else { 0 }
     }

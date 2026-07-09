@@ -2951,6 +2951,10 @@
                                             <ComboBoxItem Content="App Registration (Client Credentials)"/>
                                         </ComboBox>
 
+                                        <TextBlock Text="Tenant Environment" FontSize="12" FontWeight="SemiBold"
+                                                   Foreground="{DynamicResource InputPlaceholder}" Margin="0,12,0,6"/>
+                                        <ComboBox x:Name="cmb_IntuneTenantEnvironment" Height="34" FontSize="13" SelectedIndex="0"/>
+
                                     <!-- Interactive app source (built-in vs custom) - shown for Browser and Device Code modes -->
                                     <Border x:Name="panel_InteractiveAppSelection" Visibility="Visible"
                                             Background="{DynamicResource CardBackground}"

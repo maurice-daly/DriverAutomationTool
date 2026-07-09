@@ -39,7 +39,7 @@ The Driver Automation Tool is a PowerShell WPF desktop application that automate
 - **BIOS Update Management** — Version comparison, release classification (Recommended/Critical), minimum version validation, and hash verification
 - **WIM Packaging** — Create WIM packages using DISM (built-in), wimlib (multi-threaded), or 7-Zip (recommended) with configurable compression
 - **ConfigMgr Integration** — Automatic package creation, content distribution to DPs, WinRM/WMI connectivity, and deployment state tracking
-- **Intune Integration** — Device code or app registration auth, chunked Azure Blob uploads, parallel threading, and Win32 app packaging
+- **Intune Integration** — Tenant environment selection, device code or app registration auth, chunked Azure Blob uploads, parallel threading, and Win32 app packaging
 
 ## Deployment Platforms
 
@@ -141,6 +141,18 @@ Three authentication methods are supported for connecting to Intune via the Micr
 | **Interactive (Browser)** | Browser-based sign-in with full MFA and Conditional Access support (Recommended) |
 | **Interactive (Device Code)** | Device code flow for restricted environments |
 | **App Registration** | Tenant ID, App ID, and Client Secret for automated/scheduled runs |
+
+Select the tenant environment before authenticating. The selected environment is saved for interactive sessions and scheduled builds.
+
+| Environment | Authority | Microsoft Graph |
+|-------------|-----------|-----------------|
+| Commercial | `login.microsoftonline.com` | `graph.microsoft.com` |
+| GCC | `login.microsoftonline.com` | `graph.microsoft.com` |
+| GCC High / US Gov L4 | `login.microsoftonline.us` | `graph.microsoft.us` |
+| DoD / US Gov L5 | `login.microsoftonline.us` | `dod-graph.microsoft.us` |
+| China (21Vianet) | `login.partner.microsoftonline.cn` | `microsoftgraph.chinacloudapi.cn` |
+
+For unattended Intune builds, set `Intune.TenantEnvironment` in `BuildConfig.json` to `Commercial`, `GCC`, `GCCHigh`, `DoD`, or `China`. If omitted, Commercial is used.
 
 **Required Graph API Permissions (Application):**
 - `DeviceManagementApps.ReadWrite.All`
@@ -309,4 +321,3 @@ If you find this tool useful and would like to support its continued development
 ## Virus Warning
 
 Due to the nature of how the PowerShell script downloads EXEs and extracts / interacts with them, the code can be picked up as a false positive on some AV solutions. The code is all available for clear text review with your security team in this instance. 
-
