@@ -10,9 +10,9 @@ What's New & Fixed
 - Update Available Indicator — The model list now highlights which selected models have a newer package available compared with what's already deployed, with a right-click option to select all models that have updates.
 - Intune Packaging — Added a "Create .intunewin only (skip upload)" mode with an on-screen banner and build-summary messaging, so it's obvious when a package was built but intentionally not uploaded.
 OEM Support — Fixed Dell Flash64W BIOS utility downloads returning a 403 error by switching to a more resilient download path. (#852)
-Driver Packaging — Fixed invalid package source folder paths when a model or OS name ended in a dot or space, which could break ConfigMgr package creation. (#861)
+- Driver Packaging — Fixed invalid package source folder paths when a model or OS name ended in a dot or space, which could break ConfigMgr package creation. (#861)
 - Intune Assignment Filters — Fixed duplicate assignment filters being created when a matching filter already existed. (#862)
-Selection Profiles — Fixed a race condition where applying a selection profile could be overwritten by a background refresh; profile selections now apply reliably.
+- Selection Profiles — Fixed a race condition where applying a selection profile could be overwritten by a background refresh; profile selections now apply reliably.
 - Reliability — Added timeouts and automatic retries to Microsoft Graph calls to prevent hangs, made the background cleanup/progress dialogs always cancellable and self-closing, and hardened saving of model selections against a file-write error.
 - Build Counters — Fixed package counters not resetting between builds, which previously showed stale totals.
 
