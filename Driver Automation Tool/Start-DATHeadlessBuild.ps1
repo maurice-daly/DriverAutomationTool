@@ -215,6 +215,7 @@ if ($config.Platform -in @('ConfigMgr', 'Configuration Manager')) {
 switch ($config.Platform) {
     'Intune' {
         if ($config.Intune) {
+            $tenantEnvironment = if ($config.Intune.TenantEnvironment) { $config.Intune.TenantEnvironment } else { '' }
             $tenantId = $config.Intune.TenantId
             $appId    = $config.Intune.AppId
             $appSecret = $config.Intune.AppSecret
@@ -224,6 +225,7 @@ switch ($config.Platform) {
                 $uiRegPath = 'HKCU:\SOFTWARE\DriverAutomationTool'
                 $uiReg = Get-ItemProperty -Path $uiRegPath -ErrorAction SilentlyContinue
                 if ($uiReg) {
+                    if ([string]::IsNullOrEmpty($tenantEnvironment) -and $uiReg.IntuneTenantEnvironment) { $tenantEnvironment = $uiReg.IntuneTenantEnvironment }
                     if ([string]::IsNullOrEmpty($tenantId) -and $uiReg.IntuneTenantId) { $tenantId = $uiReg.IntuneTenantId }
                     if ([string]::IsNullOrEmpty($appId) -and $uiReg.IntuneAppId) { $appId = $uiReg.IntuneAppId }
                     if ([string]::IsNullOrEmpty($appSecret) -and $uiReg.IntuneClientSecret) {
@@ -238,23 +240,23 @@ switch ($config.Platform) {
                     }
                 }
             }
+            if ([string]::IsNullOrEmpty($tenantEnvironment)) { $tenantEnvironment = 'Commercial' }
 
             if ([string]::IsNullOrEmpty($tenantId) -or [string]::IsNullOrEmpty($appId) -or [string]::IsNullOrEmpty($appSecret)) {
                 Write-Error "[Headless] Intune mode requires TenantId, AppId, and AppSecret in BuildConfig.json or saved in the UI registry."
                 exit 1
             }
 
-            Write-Host "[Headless] Authenticating to Intune (tenant: $tenantId, app: $appId)..."
-            $authResult = Connect-DATIntuneGraphClientCredential -TenantId $tenantId -AppId $appId -ClientSecret $appSecret
+            Write-Host "[Headless] Authenticating to Intune (environment: $tenantEnvironment, tenant: $tenantId, app: $appId)..."
+            $authResult = Connect-DATIntuneGraphClientCredential -TenantId $tenantId -AppId $appId -ClientSecret $appSecret -TenantEnvironment $tenantEnvironment
             if (-not $authResult.Success) {
                 Write-Error "[Headless] Intune authentication failed: $($authResult.Error)"
                 exit 1
             }
             Write-Host "[Headless] Intune authentication successful (expires: $($authResult.ExpiresOn))"
 
-            # Pass the live token to the processing function
-            $authStatus = Get-DATIntuneAuthStatus
-            $processingParams['IntuneAuthToken'] = $authStatus.Token
+            # Pass the live auth context to the processing function.
+            $processingParams['IntuneAuthContext'] = Get-DATIntuneAuthContext -NoRefresh
         }
     }
     { $_ -in @('ConfigMgr', 'Configuration Manager') } {
@@ -283,6 +285,102 @@ $buildExitCode = 0
 
 try {
     Start-DATModelProcessing @processingParams
+
+    # Package retention -- remove superseded packages after a successful build. This mirrors the
+    # UI post-build cleanup, which previously ran ONLY in the WPF event handler, so scheduled and
+    # headless runs never cleaned up old packages even with auto-cleanup enabled (#849). Settings
+    # come from the BuildConfig 'PackageRetention' section, falling back to the UI-saved registry
+    # values so an operator who toggled retention in the UI gets the same behaviour when scheduled.
+    if ($config.Platform -in @('ConfigMgr', 'Configuration Manager', 'Intune')) {
+        try {
+            $retEnabled      = $false
+            $retCount        = 0
+            $retDeleteSource = $false
+            if ($config.PackageRetention) {
+                $retEnabled = [bool]$config.PackageRetention.Enabled
+                if ($null -ne $config.PackageRetention.RetainCount) {
+                    [int]::TryParse([string]$config.PackageRetention.RetainCount, [ref]$retCount) | Out-Null
+                }
+                $retDeleteSource = [bool]$config.PackageRetention.DeleteSourceFolderOnRemoval
+            } else {
+                # Fallback: honour the values the UI persists to the current user's registry.
+                $uiReg = Get-ItemProperty -Path 'HKCU:\SOFTWARE\DriverAutomationTool' -ErrorAction SilentlyContinue
+                if ($uiReg) {
+                    if ($null -ne $uiReg.PackageRetentionEnabled -and $uiReg.PackageRetentionEnabled -eq 1) { $retEnabled = $true }
+                    if ($null -ne $uiReg.PackageRetentionCount) {
+                        [int]::TryParse([string]$uiReg.PackageRetentionCount, [ref]$retCount) | Out-Null
+                    }
+                    if ($null -ne $uiReg.DeleteSourceFolderOnRemoval -and $uiReg.DeleteSourceFolderOnRemoval -eq 1) { $retDeleteSource = $true }
+                }
+            }
+
+            if ($retEnabled) {
+                Write-Host "[Headless] Package retention enabled -- cleaning superseded packages (keep $retCount previous, delete source folder: $retDeleteSource)"
+                Write-DATLogEntry -Value "[Headless] Package retention enabled (RetainCount=$retCount, DeleteSourceFolder=$retDeleteSource)" -Severity 1
+
+                $isIntunePlatform = $config.Platform -eq 'Intune'
+                $isCMPlatform     = $config.Platform -in @('ConfigMgr', 'Configuration Manager')
+
+                # Which package types to clean is driven by the build's PackageType.
+                $retPkgTypes = switch ($config.PackageType) {
+                    'All'  { @('Drivers', 'BIOS') }
+                    'BIOS' { @('BIOS') }
+                    default { @('Drivers') }
+                }
+
+                foreach ($m in $headlessModels) {
+                    # Resolve the OS list for this model (per-model OS wins; else the global config OS,
+                    # which may be an array or a semicolon-separated string).
+                    $modelOSList = if (-not [string]::IsNullOrEmpty($m.OS)) {
+                        @($m.OS)
+                    } elseif ($config.OS -is [array]) {
+                        @($config.OS)
+                    } else {
+                        @([string]$config.OS -split ';' | Where-Object { $_.Trim() } | ForEach-Object { $_.Trim() })
+                    }
+                    $modelArch = if (-not [string]::IsNullOrEmpty($m.Architecture)) { $m.Architecture } else { $config.Architecture }
+
+                    foreach ($osValue in $modelOSList) {
+                        # Retention matches names with an anchored LIKE that tolerates the build
+                        # segment (e.g. "24H2"), so pass the base OS label without the build.
+                        $baseOS = ([string]$osValue -replace '\s*\d{2}H\d.*$', '').Trim()
+                        if ([string]::IsNullOrEmpty($baseOS)) { continue }
+
+                        foreach ($pt in $retPkgTypes) {
+                            if ($pt -eq 'BIOS' -and $m.OEM -eq 'Microsoft') { continue }
+                            $retParams = @{
+                                OEM          = $m.OEM
+                                Model        = $m.Model
+                                OS           = $baseOS
+                                Architecture = $modelArch
+                                PackageType  = $pt
+                                RetainCount  = $retCount
+                            }
+                            if ($retDeleteSource) { $retParams['DeleteSourceFolder'] = $true }
+                            if ($isCMPlatform -and $config.ConfigMgr) {
+                                if ($config.ConfigMgr.SiteServer) { $retParams['SiteServer'] = $config.ConfigMgr.SiteServer }
+                                if ($config.ConfigMgr.SiteCode)   { $retParams['SiteCode']   = $config.ConfigMgr.SiteCode }
+                            }
+                            if ($isIntunePlatform) { $retParams['Intune'] = $true }
+
+                            try {
+                                $retResults = Invoke-DATPackageRetention @retParams
+                                foreach ($rr in $retResults) {
+                                    Write-Host "[Headless]   [$($rr.Platform)] $($rr.Action): $($rr.Name) v$($rr.Version)$(if ($rr.Error) { " -- $($rr.Error)" })"
+                                }
+                            } catch {
+                                Write-DATLogEntry -Value "[Headless] Package retention error for $($m.OEM) $($m.Model) [$pt/$baseOS]: $($_.Exception.Message)" -Severity 3
+                            }
+                        }
+                    }
+                }
+                Write-DATLogEntry -Value "[Headless] Package retention completed" -Severity 1
+            }
+        } catch {
+            Write-DATLogEntry -Value "[Headless] Package retention block failed: $($_.Exception.Message)" -Severity 2
+            Write-Host "[Headless] Package retention failed: $($_.Exception.Message)"
+        }
+    }
 
     # Optionally generate the ConfigMgr XML Logic Package after a successful build (ConfigMgr only)
     if ($config.Platform -in @('ConfigMgr', 'Configuration Manager') -and $config.ConfigMgr -and

@@ -934,7 +934,7 @@
                                    Foreground="{DynamicResource AccentColor}" VerticalAlignment="Center" Margin="0,0,8,0"/>
                         <TextBlock Text="Driver Automation Tool" FontSize="13" FontWeight="SemiBold"
                                    Foreground="{DynamicResource WindowForeground}" VerticalAlignment="Center"/>
-                        <TextBlock x:Name="txt_Version" Text=" Version 10.1.5" FontSize="11"
+                        <TextBlock x:Name="txt_Version" Text=" Version 10.1.6" FontSize="11"
                                    Foreground="{DynamicResource InputPlaceholder}" VerticalAlignment="Center" Margin="4,0"/>
                     </StackPanel>
 
@@ -1428,11 +1428,27 @@
                                 <Grid>
                                     <Grid.RowDefinitions>
                                         <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="Auto"/>
                                         <RowDefinition Height="*"/>
                                     </Grid.RowDefinitions>
 
+                                    <!-- Create .intunewin-only banner (shown when the upload-skip toggle is active) -->
+                                    <Border x:Name="banner_CreateWinOnly" Grid.Row="0" Visibility="Collapsed"
+                                            CornerRadius="8" Margin="0,0,0,8" Padding="12,8"
+                                            Background="{DynamicResource StatusWarningBackground}"
+                                            BorderBrush="{DynamicResource StatusWarning}" BorderThickness="1">
+                                        <StackPanel Orientation="Horizontal">
+                                            <TextBlock Text="&#xE896;" FontFamily="Segoe MDL2 Assets" FontSize="14"
+                                                       Foreground="{DynamicResource StatusWarning}"
+                                                       VerticalAlignment="Center" Margin="0,0,8,0"/>
+                                            <TextBlock TextWrapping="Wrap" VerticalAlignment="Center"
+                                                       Foreground="{DynamicResource StatusWarning}" FontSize="12"
+                                                       Text="&quot;Create .intunewin file only&quot; is enabled -- packages will be built locally but NOT uploaded to Intune. Turn it off in Intune Settings &gt; Package Options to publish."/>
+                                        </StackPanel>
+                                    </Border>
+
                                     <!-- Search and Select Controls -->
-                                    <Grid Grid.Row="0" Margin="0,0,0,8">
+                                    <Grid Grid.Row="1" Margin="0,0,0,8">
                                         <Grid.ColumnDefinitions>
                                             <ColumnDefinition Width="325"/>
                                             <ColumnDefinition Width="*"/>
@@ -1468,7 +1484,7 @@
                                     </Grid>
 
                                     <!-- DataGrid -->
-                                    <Border Grid.Row="1" CornerRadius="10"
+                                    <Border Grid.Row="2" CornerRadius="10"
                                             BorderBrush="{DynamicResource SidebarActive}"
                                             BorderThickness="1"
                                             Background="{DynamicResource SidebarBackground}"
@@ -1601,6 +1617,15 @@
                                                                        Foreground="{DynamicResource AccentColor}"/>
                                                         </MenuItem.Icon>
                                                     </MenuItem>
+
+                                                    <Separator/>
+
+                                                    <MenuItem x:Name="ctx_SelectModelsWithUpdates" Header="Select Models With Updates Available">
+                                                        <MenuItem.Icon>
+                                                            <TextBlock Text="&#xE74A;" FontFamily="Segoe MDL2 Assets" FontSize="14"
+                                                                       Foreground="{DynamicResource StatusWarning}"/>
+                                                        </MenuItem.Icon>
+                                                    </MenuItem>
                                                 </ContextMenu>
                                             </DataGrid.ContextMenu>
                                             <DataGrid.Columns>
@@ -1658,54 +1683,105 @@
                                                 <DataGridTextColumn Header="Baseboards" Width="140"
                                                                     Binding="{Binding Baseboards}" IsReadOnly="True"
                                                                     SortMemberPath="Baseboards"/>
-                                                <DataGridTemplateColumn Header="Driver" Width="80" SortMemberPath="Version">
+                                                <DataGridTemplateColumn Header="Driver" Width="90" SortMemberPath="Version">
                                                     <DataGridTemplateColumn.CellTemplate>
                                                         <DataTemplate>
-                                                            <TextBlock VerticalAlignment="Center"
-                                                                       TextTrimming="CharacterEllipsis"
-                                                                       ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}">
-                                                                <TextBlock.Style>
-                                                                    <Style TargetType="TextBlock">
-                                                                        <!-- Default: show driver Version -->
-                                                                        <Setter Property="Text" Value="{Binding Version}"/>
-                                                                        <Style.Triggers>
-                                                                            <!-- BIOS-only models have no driver package -->
-                                                                            <DataTrigger Binding="{Binding BIOSOnly}" Value="True">
-                                                                                <Setter Property="Text" Value="N/A"/>
-                                                                                <Setter Property="Foreground" Value="{DynamicResource DriverNoPackForeground}"/>
-                                                                                <Setter Property="FontWeight" Value="SemiBold"/>
-                                                                            </DataTrigger>
-                                                                        </Style.Triggers>
-                                                                    </Style>
-                                                                </TextBlock.Style>
-                                                            </TextBlock>
+                                                            <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                                                <TextBlock VerticalAlignment="Center"
+                                                                           TextTrimming="CharacterEllipsis"
+                                                                           ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}">
+                                                                    <TextBlock.Style>
+                                                                        <Style TargetType="TextBlock">
+                                                                            <!-- Default: show driver Version -->
+                                                                            <Setter Property="Text" Value="{Binding Version}"/>
+                                                                            <Style.Triggers>
+                                                                                <!-- Deployed and current -->
+                                                                                <DataTrigger Binding="{Binding DriverStatus}" Value="Current">
+                                                                                    <Setter Property="Foreground" Value="{DynamicResource StatusSuccess}"/>
+                                                                                </DataTrigger>
+                                                                                <!-- Newer catalog version than deployed -->
+                                                                                <DataTrigger Binding="{Binding DriverStatus}" Value="UpdateAvailable">
+                                                                                    <Setter Property="Foreground" Value="{DynamicResource StatusWarning}"/>
+                                                                                    <Setter Property="FontWeight" Value="SemiBold"/>
+                                                                                </DataTrigger>
+                                                                                <!-- BIOS-only models have no driver package -->
+                                                                                <DataTrigger Binding="{Binding BIOSOnly}" Value="True">
+                                                                                    <Setter Property="Text" Value="N/A"/>
+                                                                                    <Setter Property="Foreground" Value="{DynamicResource DriverNoPackForeground}"/>
+                                                                                    <Setter Property="FontWeight" Value="SemiBold"/>
+                                                                                </DataTrigger>
+                                                                            </Style.Triggers>
+                                                                        </Style>
+                                                                    </TextBlock.Style>
+                                                                </TextBlock>
+                                                                <!-- Update-available glyph (hover for deployed vs available versions) -->
+                                                                <TextBlock Text="&#x2191;" Margin="3,0,0,0" VerticalAlignment="Center"
+                                                                           FontWeight="Bold"
+                                                                           Foreground="{DynamicResource StatusWarning}"
+                                                                           ToolTip="{Binding DriverTooltip}">
+                                                                    <TextBlock.Style>
+                                                                        <Style TargetType="TextBlock">
+                                                                            <Setter Property="Visibility" Value="Collapsed"/>
+                                                                            <Style.Triggers>
+                                                                                <DataTrigger Binding="{Binding DriverStatus}" Value="UpdateAvailable">
+                                                                                    <Setter Property="Visibility" Value="Visible"/>
+                                                                                </DataTrigger>
+                                                                            </Style.Triggers>
+                                                                        </Style>
+                                                                    </TextBlock.Style>
+                                                                </TextBlock>
+                                                            </StackPanel>
                                                         </DataTemplate>
                                                     </DataGridTemplateColumn.CellTemplate>
                                                 </DataGridTemplateColumn>
-                                                <DataGridTemplateColumn Header="BIOS" Width="80" SortMemberPath="BIOSVersion">
+                                                <DataGridTemplateColumn Header="BIOS" Width="90" SortMemberPath="BIOSVersion">
                                                     <DataGridTemplateColumn.CellTemplate>
                                                         <DataTemplate>
-                                                            <TextBlock VerticalAlignment="Center"
-                                                                       TextTrimming="CharacterEllipsis"
-                                                                       ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}">
-                                                                <TextBlock.Style>
-                                                                    <Style TargetType="TextBlock">
-                                                                        <Setter Property="Text" Value="{Binding BIOSVersion}"/>
-                                                                        <Style.Triggers>
-                                                                            <DataTrigger Binding="{Binding BIOSVersion}" Value="">
-                                                                                <Setter Property="Text" Value="N/A"/>
-                                                                                <Setter Property="Foreground" Value="{DynamicResource DriverNoPackForeground}"/>
-                                                                                <Setter Property="FontWeight" Value="SemiBold"/>
-                                                                            </DataTrigger>
-                                                                            <DataTrigger Binding="{Binding BIOSVersion}" Value="{x:Null}">
-                                                                                <Setter Property="Text" Value="N/A"/>
-                                                                                <Setter Property="Foreground" Value="{DynamicResource DriverNoPackForeground}"/>
-                                                                                <Setter Property="FontWeight" Value="SemiBold"/>
-                                                                            </DataTrigger>
-                                                                        </Style.Triggers>
-                                                                    </Style>
-                                                                </TextBlock.Style>
-                                                            </TextBlock>
+                                                            <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                                                <TextBlock VerticalAlignment="Center"
+                                                                           TextTrimming="CharacterEllipsis"
+                                                                           ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}">
+                                                                    <TextBlock.Style>
+                                                                        <Style TargetType="TextBlock">
+                                                                            <Setter Property="Text" Value="{Binding BIOSVersion}"/>
+                                                                            <Style.Triggers>
+                                                                                <DataTrigger Binding="{Binding BIOSStatus}" Value="Current">
+                                                                                    <Setter Property="Foreground" Value="{DynamicResource StatusSuccess}"/>
+                                                                                </DataTrigger>
+                                                                                <DataTrigger Binding="{Binding BIOSStatus}" Value="UpdateAvailable">
+                                                                                    <Setter Property="Foreground" Value="{DynamicResource StatusWarning}"/>
+                                                                                    <Setter Property="FontWeight" Value="SemiBold"/>
+                                                                                </DataTrigger>
+                                                                                <DataTrigger Binding="{Binding BIOSVersion}" Value="">
+                                                                                    <Setter Property="Text" Value="N/A"/>
+                                                                                    <Setter Property="Foreground" Value="{DynamicResource DriverNoPackForeground}"/>
+                                                                                    <Setter Property="FontWeight" Value="SemiBold"/>
+                                                                                </DataTrigger>
+                                                                                <DataTrigger Binding="{Binding BIOSVersion}" Value="{x:Null}">
+                                                                                    <Setter Property="Text" Value="N/A"/>
+                                                                                    <Setter Property="Foreground" Value="{DynamicResource DriverNoPackForeground}"/>
+                                                                                    <Setter Property="FontWeight" Value="SemiBold"/>
+                                                                                </DataTrigger>
+                                                                            </Style.Triggers>
+                                                                        </Style>
+                                                                    </TextBlock.Style>
+                                                                </TextBlock>
+                                                                <TextBlock Text="&#x2191;" Margin="3,0,0,0" VerticalAlignment="Center"
+                                                                           FontWeight="Bold"
+                                                                           Foreground="{DynamicResource StatusWarning}"
+                                                                           ToolTip="{Binding BIOSTooltip}">
+                                                                    <TextBlock.Style>
+                                                                        <Style TargetType="TextBlock">
+                                                                            <Setter Property="Visibility" Value="Collapsed"/>
+                                                                            <Style.Triggers>
+                                                                                <DataTrigger Binding="{Binding BIOSStatus}" Value="UpdateAvailable">
+                                                                                    <Setter Property="Visibility" Value="Visible"/>
+                                                                                </DataTrigger>
+                                                                            </Style.Triggers>
+                                                                        </Style>
+                                                                    </TextBlock.Style>
+                                                                </TextBlock>
+                                                            </StackPanel>
                                                         </DataTemplate>
                                                     </DataGridTemplateColumn.CellTemplate>
                                                 </DataGridTemplateColumn>
@@ -2951,6 +3027,10 @@
                                             <ComboBoxItem Content="App Registration (Client Credentials)"/>
                                         </ComboBox>
 
+                                        <TextBlock Text="Tenant Environment" FontSize="12" FontWeight="SemiBold"
+                                                   Foreground="{DynamicResource InputPlaceholder}" Margin="0,12,0,6"/>
+                                        <ComboBox x:Name="cmb_IntuneTenantEnvironment" Height="34" FontSize="13" SelectedIndex="0"/>
+
                                     <!-- Interactive app source (built-in vs custom) - shown for Browser and Device Code modes -->
                                     <Border x:Name="panel_InteractiveAppSelection" Visibility="Visible"
                                             Background="{DynamicResource CardBackground}"
@@ -2980,6 +3060,21 @@
                                                                  Style="{StaticResource RoundedTextBox}" Height="34"
                                                                  ToolTip="Enter the Application (client) ID of your Entra ID app registration"/>
                                                     </Grid>
+                                                    <Grid Margin="0,8,0,0">
+                                                        <Grid.ColumnDefinitions>
+                                                            <ColumnDefinition Width="100"/>
+                                                            <ColumnDefinition Width="*"/>
+                                                        </Grid.ColumnDefinitions>
+                                                        <TextBlock Grid.Column="0" Text="Tenant ID" FontSize="12"
+                                                                   Foreground="{DynamicResource InputPlaceholder}"
+                                                                   VerticalAlignment="Center"/>
+                                                        <TextBox x:Name="txt_InteractiveTenantId" Grid.Column="1"
+                                                                 Style="{StaticResource RoundedTextBox}" Height="34"
+                                                                 ToolTip="Optional. Required for single-tenant app registrations. Enter your Directory (tenant) ID or verified domain. Leave blank for multi-tenant apps."/>
+                                                    </Grid>
+                                                    <TextBlock FontSize="11" Foreground="{DynamicResource InputPlaceholder}"
+                                                               TextWrapping="Wrap" Margin="0,4,0,0"
+                                                               Text="Tenant ID is optional -- required only for single-tenant app registrations. Leave blank to use the multi-tenant (organizations) authority."/>
                                                     <!-- Setup instructions -->
                                                     <Border Background="{DynamicResource InputBackground}"
                                                             CornerRadius="6" Padding="10,8" Margin="0,10,0,0">
@@ -3429,6 +3524,63 @@
                                                    Foreground="{DynamicResource InputPlaceholder}"
                                                    VerticalAlignment="Center"/>
                                     </Grid>
+
+                                    <!-- Custom deployment target sub-section -->
+                                    <Border Height="1" Background="{DynamicResource CardBorder}" Margin="0,16,0,16"/>
+                                    <TextBlock Text="Custom deployment target (optional)" FontSize="13" FontWeight="SemiBold"
+                                               Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,6"/>
+                                    <TextBlock Text="Override the built-in 'All Devices' group by targeting a specific Entra security group. Search by display name, or paste a group Object ID. When set, all auto-deployed packages (and any assignment filters) are assigned to this group instead of All Devices. Leave empty to use All Devices."
+                                               FontSize="13" Foreground="{DynamicResource InputPlaceholder}"
+                                               TextWrapping="Wrap" Margin="0,0,0,12" LineHeight="20"/>
+
+                                    <!-- Search row -->
+                                    <Grid Margin="0,0,0,8">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <TextBox x:Name="txt_DeployGroupSearch" Grid.Column="0" Style="{StaticResource RoundedTextBox}" Height="34"
+                                                 ToolTip="Enter a group display name to search, or paste a group Object ID"/>
+                                        <Button x:Name="btn_SearchDeployGroup" Grid.Column="1" Style="{StaticResource RoundedButton}" Height="34"
+                                                Margin="8,0,0,0" Cursor="Hand" ToolTip="Search Entra groups by display name" Padding="12,4"
+                                                VerticalAlignment="Center">
+                                            <TextBlock FontSize="11" Foreground="{DynamicResource WindowForeground}">
+                                                <Run Text="&#xE721;" FontFamily="Segoe MDL2 Assets" FontSize="10"/><Run Text="  Search"/>
+                                            </TextBlock>
+                                        </Button>
+                                    </Grid>
+
+                                    <!-- Search status / results -->
+                                    <TextBlock x:Name="txt_DeployGroupStatus" FontSize="11" Foreground="{DynamicResource InputPlaceholder}"
+                                               Visibility="Collapsed" Margin="0,0,0,6" TextWrapping="Wrap"/>
+                                    <ComboBox x:Name="cmb_DeployGroupResults" Height="34" Visibility="Collapsed" Margin="0,0,0,8"
+                                              ToolTip="Select a group from the search results"/>
+
+                                    <!-- Selected group panel -->
+                                    <Border x:Name="panel_DeployGroupSelected" Background="{DynamicResource InputBackground}" CornerRadius="6"
+                                            Padding="12,8" Visibility="Collapsed">
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*"/>
+                                                <ColumnDefinition Width="Auto"/>
+                                            </Grid.ColumnDefinitions>
+                                            <StackPanel Grid.Column="0" VerticalAlignment="Center">
+                                                <TextBlock Text="Target group" FontSize="11" FontWeight="SemiBold"
+                                                           Foreground="{DynamicResource InputPlaceholder}" Margin="0,0,0,2"/>
+                                                <TextBlock x:Name="txt_DeployGroupSelectedName" FontSize="13" FontWeight="SemiBold"
+                                                           Foreground="{DynamicResource WindowForeground}" TextWrapping="Wrap"/>
+                                                <TextBlock x:Name="txt_DeployGroupSelectedId" FontSize="11" FontFamily="Consolas"
+                                                           Foreground="{DynamicResource InputPlaceholder}" Margin="0,2,0,0" TextWrapping="Wrap"/>
+                                            </StackPanel>
+                                            <Button x:Name="btn_ClearDeployGroup" Grid.Column="1" Style="{StaticResource RoundedButton}" Height="30"
+                                                    Cursor="Hand" ToolTip="Clear custom target and revert to All Devices" Padding="10,4"
+                                                    VerticalAlignment="Center" Margin="8,0,0,0">
+                                                <TextBlock FontSize="11" Foreground="{DynamicResource WindowForeground}">
+                                                    <Run Text="&#xE711;" FontFamily="Segoe MDL2 Assets" FontSize="10"/><Run Text="  Clear"/>
+                                                </TextBlock>
+                                            </Button>
+                                        </Grid>
+                                    </Border>
 
                                 </StackPanel>
                             </Border>
@@ -6210,7 +6362,7 @@
                                     <StackPanel>
                                         <TextBlock Text="Driver Automation Tool" FontSize="22" FontWeight="Bold"
                                                    Foreground="{DynamicResource AccentColor}" Margin="0,0,0,4"/>
-                                        <TextBlock x:Name="txt_AboutVersion" Text="Version 10.1.5" FontSize="14"
+                                        <TextBlock x:Name="txt_AboutVersion" Text="Version 10.1.6" FontSize="14"
                                                    Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,16"/>
 
                                         <TextBlock TextWrapping="Wrap" FontSize="13"

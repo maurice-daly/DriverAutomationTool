@@ -1,6 +1,6 @@
 @{
     RootModule        = 'DriverAutomationToolCore.psm1'
-    ModuleVersion     = '10.1.5.0'
+    ModuleVersion     = '10.1.6.0'
     GUID              = 'a3e0e746-8e3a-4c5b-b8d0-3b2e4f6a9c1d'
     Author            = 'Maurice Daly'
     CompanyName       = 'MSEndpointMgr'
@@ -36,10 +36,16 @@
         'Connect-DATIntuneGraphInteractive',
         'Complete-DATBrowserAuth',
         'Complete-DATDeviceCodeAuth',
+        'Set-DATIntuneEnvironment',
+        'Get-DATIntuneEnvironment',
+        'Resolve-DATIntuneEnvironment',
+        'Get-DATIntuneEnvironments',
         'Test-DATIntunePermissions',
         'Test-DATIntuneAuth',
         'Update-DATIntuneTokenIfNeeded',
         'Set-DATIntuneAuthToken',
+        'Get-DATIntuneAuthContext',
+        'Set-DATIntuneAuthContext',
         'Invoke-DATTokenRefresh',
         'Disconnect-DATIntuneGraph',
         'Invoke-DATGraphRequest',
@@ -47,6 +53,9 @@
         'Get-DATIntuneWin32Apps',
         'Get-DATIntuneAppById',
         'Remove-DATIntuneApp',
+        'Remove-DATIntuneAppAssignments',
+        'Get-DATIntuneAppAssignmentTargetKeys',
+        'Remove-DATIntuneAppAssignmentTargets',
         'New-DATIntuneWin32App',
         'Get-DATIntuneAuthStatus',
         'New-DATIntuneToastScript',
@@ -68,6 +77,7 @@
         'Test-DATHPCMSLReady',
         'Search-DATEntraGroups',
         'Set-DATIntuneAppAssignment',
+        'Get-DATDeployedPackageVersions',
         'Get-DATIntuneAssignmentFilters',
         'Get-DATIntuneAssignmentFilterCount',
         'New-DATIntuneAssignmentFilter',

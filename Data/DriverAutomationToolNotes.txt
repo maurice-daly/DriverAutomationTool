@@ -3,6 +3,19 @@ Release Notes
 IMPORTANT
 - DAT Downloads have been moved to GitHub - https://github.com/maurice-daly/DriverAutomationTool
 
+Version 10.1.6
+What's New & Fixed
+- Authentication — Added support for national/sovereign clouds (GCC, GCC High, DoD, and China 21Vianet) via a new Tenant Environment selector. Fixed device-code sign-in failing with a 400 error by fully qualifying Microsoft Graph permission scopes, and added an optional Tenant ID field so single-tenant custom app registrations can authenticate. The interactive app-source selection is now correctly ignored when using App Registration (Client Credentials), so it no longer blocks a client-credentials connection.
+- Package Supersedence / Cleanup — New automated cleanup of superseded driver and BIOS packages after a build: keep a configurable number of recent versions and remove or unassign the older ones across both Intune and ConfigMgr. Cleanup runs in the background with a live progress display and clear start/complete logging, and is also available for scheduled/headless builds via config.
+- Update Available Indicator — The model list now highlights which selected models have a newer package available compared with what's already deployed, with a right-click option to select all models that have updates.
+- Intune Packaging — Added a "Create .intunewin only (skip upload)" mode with an on-screen banner and build-summary messaging, so it's obvious when a package was built but intentionally not uploaded.
+OEM Support — Fixed Dell Flash64W BIOS utility downloads returning a 403 error by switching to a more resilient download path. (#852)
+Driver Packaging — Fixed invalid package source folder paths when a model or OS name ended in a dot or space, which could break ConfigMgr package creation. (#861)
+- Intune Assignment Filters — Fixed duplicate assignment filters being created when a matching filter already existed. (#862)
+Selection Profiles — Fixed a race condition where applying a selection profile could be overwritten by a background refresh; profile selections now apply reliably.
+- Reliability — Added timeouts and automatic retries to Microsoft Graph calls to prevent hangs, made the background cleanup/progress dialogs always cancellable and self-closing, and hardened saving of model selections against a file-write error.
+- Build Counters — Fixed package counters not resetting between builds, which previously showed stale totals.
+
 Version 10.1.5
 What's New & Fixed
 - **Windows 10 Support** — Added Windows 10 22H2 and 21H2 across the OS picker and all deployment/packaging views. Windows 10 driver packages are now sourced directly from the OEM catalogs. When the DAT API catalog is active, Windows 10 and Windows 11 selections are kept mutually exclusive, with a clear prompt explaining the switch to OEM-direct sourcing.
