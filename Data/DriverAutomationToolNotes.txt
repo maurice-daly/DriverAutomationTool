@@ -3,6 +3,18 @@ Release Notes
 IMPORTANT
 - DAT Downloads have been moved to GitHub - https://github.com/maurice-daly/DriverAutomationTool
 
+Version 10.1.7
+What's New & Fixed
+- Lenovo BIOS Cleanup (#863) — Lenovo BIOS updates no longer leave residual C:\SWTOOLS\FLASH and C:\DRIVERS\FLASH folders on the system drive. Because Lenovo's BIOS installers extract to hardcoded system-drive locations regardless of the target path, the build now snapshots those folders beforehand and removes only what the installer newly created (on both success and failure), leaving any pre-existing content untouched.
+- Package Retention (ConfigMgr) — Fixed automatic cleanup of superseded packages silently doing nothing. The site code was being read from a status-display field instead of the resolved site connection, producing an invalid WMI namespace so the retention query failed quietly. It now uses the same site globals as every other ConfigMgr operation.
+- Intune Applicability — Reworked how driver and BIOS packages decide which devices they apply to. Applicability is now based purely on the hardware identifier (manufacturer + system SKU/baseboard) and OS, with the "is a newer version already installed?" decision moved to the detection rule. This fixes devices on older BIOS/driver versions wrongly showing as Not Applicable, and makes up-to-date devices report as Installed instead of inflating the Not Applicable count.
+- BIOS Management — Hardened all BIOS release-date handling. Dates are now parsed culture-invariantly against explicit formats and compared as strict 8-digit values, so a catalog date can no longer be misread on a non-US machine and flip a whole model's fleet to Not Applicable. Null/absent BIOS dates are guarded, and unparseable dates fall back safely to the registry version marker.
+- Assignment Filters — Fixed an error when opening the Update / Remove Assignment Filter dialog. Resolved a PowerShell 5.1 incompatibility in the button rendering, gave the dialog its own isolated theme resources, and added clear error reporting so any issue is shown rather than crashing.
+- Startup Connectivity Check — Added retry with backoff so a one-off slow endpoint (e.g. Microsoft Graph cold-start) no longer produces a false "connectivity issues" warning. The overlay now shows live retry progress instead of appearing frozen, and a failsafe deadline ensures the check can never hang startup.
+- Driver Packaging — The WIM compression level options are now hidden when 7-Zip is selected as the packaging engine, since 7-Zip doesn't support WIM compression.
+- Stability — The model search box no longer errors when typing wildcard characters (e.g. [), and unhandled UI exceptions are now written to the log rather than surfaced as raw error text in the status bar.
+
+
 Version 10.1.6
 What's New & Fixed
 - Authentication — Added support for national/sovereign clouds (GCC, GCC High, DoD, and China 21Vianet) via a new Tenant Environment selector. Fixed device-code sign-in failing with a 400 error by fully qualifying Microsoft Graph permission scopes, and added an optional Tenant ID field so single-tenant custom app registrations can authenticate. The interactive app-source selection is now correctly ignored when using App Registration (Client Credentials), so it no longer blocks a client-credentials connection.

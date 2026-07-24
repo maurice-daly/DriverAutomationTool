@@ -255,8 +255,10 @@ try {
 
             $msg = "Unhandled UI exception: $errMsg"
             Write-Warning $msg
-            $statusCtrl = $Window.FindName('txt_Status')
-            if ($statusCtrl) { $statusCtrl.Text = $msg }
+            # Route to the CMTrace log file rather than the UI. Surfacing raw exception
+            # text in the status bar confuses users and can trigger further layout/redraw
+            # errors while the dispatcher is already unwinding an exception.
+            try { Write-DATLogEntry -Value $msg -Severity 3 } catch { }
         } catch { }
     }
 
@@ -1550,7 +1552,8 @@ function Test-DATConnectivity {
     #>
     [OutputType([PSCustomObject[]])]
     param(
-        [scriptblock]$OnProgress
+        [scriptblock]$OnProgress,
+        [int]$MaxAttempts = 3
     )
 
     # Ensure TLS 1.2 is available (PS 5.1 defaults to TLS 1.0)
@@ -1571,32 +1574,47 @@ function Test-DATConnectivity {
         @{ URL = $intuneEnvironment.GraphResource;     Description = 'Microsoft Graph API (Intune management)' }
     )
 
+    if ($MaxAttempts -lt 1) { $MaxAttempts = 1 }
+
     $total = $endpoints.Count
     $current = 0
     $results = foreach ($ep in $endpoints) {
         $current++
         $reachable = $false
-        try {
-            $request = [System.Net.HttpWebRequest]::Create($ep.URL)
-            $request.Method = 'HEAD'
-            $request.Timeout = 8000
-            $request.AllowAutoRedirect = $true
+        # Retry transient failures. The first attempt to a host pays the full DNS + TCP + TLS
+        # cold-start cost (which can exceed the timeout on startup or behind a proxy); subsequent
+        # attempts reuse cached DNS/connections, so a single retry usually clears a false failure.
+        # Any HTTP response (including 4xx/5xx) counts as reachable -- only DNS/TCP/TLS/timeout
+        # failures are treated as unreachable, and only after every attempt has failed.
+        for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
             try {
-                $response = $request.GetResponse()
-                $response.Close()
-                $reachable = $true
-            } catch [System.Net.WebException] {
-                # A WebException with an HTTP response means the server IS reachable
-                # (e.g. 400, 403, 404, 500) -- only connection/DNS failures are truly unreachable
-                if ($null -ne $_.Exception.Response) {
+                $request = [System.Net.HttpWebRequest]::Create($ep.URL)
+                $request.Method = 'HEAD'
+                $request.Timeout = 8000
+                $request.AllowAutoRedirect = $true
+                # Some CDNs/WAFs reject requests with no User-Agent; set a benign one.
+                $request.UserAgent = 'DriverAutomationTool/ConnectivityCheck'
+                try {
+                    $response = $request.GetResponse()
+                    $response.Close()
                     $reachable = $true
-                    $_.Exception.Response.Close()
-                } else {
-                    $reachable = $false
+                } catch [System.Net.WebException] {
+                    # A WebException with an HTTP response means the server IS reachable
+                    # (e.g. 400, 403, 404, 405, 500) -- only connection/DNS failures are truly unreachable
+                    if ($null -ne $_.Exception.Response) {
+                        $reachable = $true
+                        $_.Exception.Response.Close()
+                    } else {
+                        $reachable = $false
+                    }
                 }
+            } catch {
+                $reachable = $false
             }
-        } catch {
-            $reachable = $false
+            if ($reachable) { break }
+            # Short, escalating backoff between attempts (400 ms, 800 ms ...). Only failing
+            # endpoints incur this cost, so a fully-reachable environment is unaffected.
+            if ($attempt -lt $MaxAttempts) { Start-Sleep -Milliseconds (400 * $attempt) }
         }
         if ($null -ne $OnProgress) {
             try { & $OnProgress $current $total $ep.URL $reachable } catch { }
@@ -8193,9 +8211,12 @@ $txt_ModelSearch.Add_TextChanged({
     if ([string]::IsNullOrEmpty($searchText)) {
         $view.Filter = $null
     } else {
+        # Escape wildcard metacharacters (* ? [ ]) so a partially typed pattern such as
+        # "p[" is matched literally instead of throwing "invalid wildcard pattern".
+        $escapedSearch = [System.Management.Automation.WildcardPattern]::Escape($searchText)
         $view.Filter = [System.Predicate[object]]{
             param($item)
-            $item.Model -like "*$searchText*" -or $item.OEM -like "*$searchText*" -or $item.Baseboards -like "*$searchText*"
+            $item.Model -like "*$escapedSearch*" -or $item.OEM -like "*$escapedSearch*" -or $item.Baseboards -like "*$escapedSearch*"
         }
     }
     $grid_Models.ItemsSource = $view
@@ -10061,7 +10082,11 @@ $btn_Build.Add_Click({
                     }
                     $platform = if ($null -ne $cmb_Platform.SelectedItem) { $cmb_Platform.SelectedItem.Content } else { '' }
                     $isIntune  = $platform -match 'Intune'
-                    $isCM      = $platform -match 'ConfigMgr|SCCM|MECM'
+                    # The platform combo value is the literal "Configuration Manager" (see MainWindow.xaml),
+                    # so the previous 'ConfigMgr|SCCM|MECM' pattern never matched and ConfigMgr retention
+                    # silently never ran -- only Intune was cleaned up. Match the actual value plus the
+                    # common aliases so post-build cleanup works for ConfigMgr too.
+                    $isCM      = $platform -match 'Configuration Manager|ConfigMgr|SCCM|MECM'
                     $selectedArch = if ($null -ne $cmb_Architecture.SelectedItem) { $cmb_Architecture.SelectedItem.Content } else { 'x64' }
                     $selectedOSes = Get-DATSelectedOSes
                     $selectedOS   = if ($selectedOSes.Count -gt 0) { ($selectedOSes[0] -split '\s+')[0..1] -join ' ' } else { 'Windows 11' }
@@ -10098,8 +10123,13 @@ $btn_Build.Add_Click({
                             RetainCount = $retainCount
                         }
                         if ($isCM) {
-                            $cmSiteServer = if ($null -ne $txt_SiteServer) { $txt_SiteServer.Text } else { '' }
-                            $cmSiteCode   = if ($null -ne $txt_SiteCode)   { $txt_SiteCode.Text }   else { '' }
+                            # Use the resolved site connection globals -- NOT $txt_SiteCode, which is a
+                            # status-display textbox holding strings like "Connected - Site Code: P01".
+                            # Passing that as the site code produced an invalid WMI namespace
+                            # (root\SMS\Site_Connected - Site Code: P01), so the retention query threw
+                            # and silently cleaned up nothing. Every other CM call uses these globals.
+                            $cmSiteServer = if (-not [string]::IsNullOrEmpty($global:SiteServer)) { $global:SiteServer } else { '' }
+                            $cmSiteCode   = if (-not [string]::IsNullOrEmpty($global:SiteCode))   { $global:SiteCode }   else { '' }
                             if ($cmSiteServer -and $cmSiteCode) {
                                 $retentionParams['SiteServer'] = $cmSiteServer
                                 $retentionParams['SiteCode']   = $cmSiteCode
@@ -14711,6 +14741,12 @@ $cmb_WimEngine.Add_SelectionChanged({
             default                   { 'dism' }
         }
         Set-DATRegistryValue -Name 'WimEngine' -Value $val -Type String
+        # 7-Zip does not support WIM compression -- hide the compression level options
+        $panel_WimCompression.Visibility = if ($val -eq '7zip') {
+            [System.Windows.Visibility]::Collapsed
+        } else {
+            [System.Windows.Visibility]::Visible
+        }
         # Update compression description to match selected engine
         $txt_CompressionDescription.Text = switch ($val) {
             '7zip'  { 'Controls compression when creating WIM packages. Fast (-mx=1) is recommended for most scenarios. Maximum (-mx=9) produces smaller files but is significantly slower.' }
@@ -14723,6 +14759,7 @@ $cmb_WimEngine.Add_SelectionChanged({
 # WIM Compression Level
 $txt_CompressionDescription = $Window.FindName('txt_CompressionDescription')
 $cmb_DismCompression = $Window.FindName('cmb_DismCompression')
+$panel_WimCompression = $Window.FindName('panel_WimCompression')
 $cmb_DismCompression.Add_SelectionChanged({
     $selected = $cmb_DismCompression.SelectedItem
     if ($selected) {
@@ -18290,6 +18327,17 @@ $btn_ResetToastDefaults.Add_Click({
 $script:IntuneAppsData = [System.Collections.ObjectModel.ObservableCollection[PSObject]]::new()
 $grid_IntuneApps.ItemsSource = $script:IntuneAppsData
 
+function Get-DATCheckedIntuneApps {
+    # Returns apps that are both checked (Selected) AND visible in the current filtered view.
+    # This ensures actions only apply to the on-screen selection, not stale selections that were
+    # left checked under a previous filter (e.g. Drivers selected, then switched to BIOS).
+    $view = [System.Windows.Data.CollectionViewSource]::GetDefaultView($grid_IntuneApps.ItemsSource)
+    if ($null -eq $view) {
+        return @($script:IntuneAppsData | Where-Object { $_.Selected -eq $true })
+    }
+    return @($view | Where-Object { $_.Selected -eq $true })
+}
+
 # Intune context menu: theme sync + state management
 $grid_IntuneApps.ContextMenu.Add_Opened({
     # Sync theme resources into the ContextMenu (separate visual tree)
@@ -18305,7 +18353,7 @@ $grid_IntuneApps.ContextMenu.Add_Opened({
     }
 
     # Enable assignment options when authenticated and at least one row is checked or highlighted
-    $checkedApps = @($script:IntuneAppsData | Where-Object { $_.Selected -eq $true })
+    $checkedApps = Get-DATCheckedIntuneApps
     $hasSelection = ($checkedApps.Count -gt 0) -or ($null -ne $grid_IntuneApps.SelectedItem)
     $canAssign = $hasSelection -and (Test-DATIntuneAuth)
     $ctx_AssignAvailable.IsEnabled = $canAssign
@@ -18576,7 +18624,7 @@ function Invoke-DATIntuneAssignmentWithProgress {
 
 # Assign Package -- Available
 $ctx_AssignAvailable.Add_Click({
-    $checkedApps = @($script:IntuneAppsData | Where-Object { $_.Selected -eq $true })
+    $checkedApps = Get-DATCheckedIntuneApps
     if ($checkedApps.Count -eq 0) {
         $highlighted = $grid_IntuneApps.SelectedItem
         if ($null -eq $highlighted) { return }
@@ -18592,7 +18640,7 @@ $ctx_AssignAvailable.Add_Click({
 
 # Assign Package -- Required
 $ctx_AssignRequired.Add_Click({
-    $checkedApps = @($script:IntuneAppsData | Where-Object { $_.Selected -eq $true })
+    $checkedApps = Get-DATCheckedIntuneApps
     if ($checkedApps.Count -eq 0) {
         $highlighted = $grid_IntuneApps.SelectedItem
         if ($null -eq $highlighted) { return }
@@ -18608,7 +18656,8 @@ $ctx_AssignRequired.Add_Click({
 
 # Update / Remove Assignment Filter
 $ctx_UpdateRemoveFilter.Add_Click({
-    $checkedApps = @($script:IntuneAppsData | Where-Object { $_.Selected -eq $true })
+  try {
+    $checkedApps = Get-DATCheckedIntuneApps
     if ($checkedApps.Count -eq 0) {
         $highlighted = $grid_IntuneApps.SelectedItem
         if ($null -eq $highlighted) { return }
@@ -18727,11 +18776,16 @@ $ctx_UpdateRemoveFilter.Add_Click({
     $fClearBtn.Style = $Window.FindResource('DangerButton')
     $fClearContent = [System.Windows.Controls.TextBlock]::new()
     $fClearContent.Foreground = [System.Windows.Media.Brushes]::White
-    $fClearContent.Inlines.Add([System.Windows.Documents.Run]::new([string][char]0xE74D))
-    $fClearContent.Inlines[0].FontFamily = [System.Windows.Media.FontFamily]::new('Segoe MDL2 Assets')
-    $fClearContent.Inlines[0].FontSize = 11
-    $fClearContent.Inlines.Add([System.Windows.Documents.Run]::new('  Clear Filter'))
-    $fClearContent.Inlines[1].FontSize = 12
+    # Build each Run explicitly and set its properties before adding. In Windows PowerShell 5.1
+    # $TextBlock.Inlines[0] returns the InlineCollection itself (not the Run), so setting a Run
+    # property via the indexer throws "property 'FontFamily' cannot be found on this object".
+    $fClearIcon = [System.Windows.Documents.Run]::new([string][char]0xE74D)
+    $fClearIcon.FontFamily = [System.Windows.Media.FontFamily]::new('Segoe MDL2 Assets')
+    $fClearIcon.FontSize = 11
+    $fClearContent.Inlines.Add($fClearIcon)
+    $fClearLabel = [System.Windows.Documents.Run]::new('  Clear Filter')
+    $fClearLabel.FontSize = 12
+    $fClearContent.Inlines.Add($fClearLabel)
     $fClearBtn.Content = $fClearContent
     $fBtnPanel.Children.Add($fClearBtn) | Out-Null
 
@@ -18744,11 +18798,13 @@ $ctx_UpdateRemoveFilter.Add_Click({
     $fApplyBtn.Style = $Window.FindResource('RoundedButton')
     $fApplyContent = [System.Windows.Controls.TextBlock]::new()
     $fApplyContent.Foreground = [System.Windows.Media.Brushes]::White
-    $fApplyContent.Inlines.Add([System.Windows.Documents.Run]::new([string][char]0xE73E))
-    $fApplyContent.Inlines[0].FontFamily = [System.Windows.Media.FontFamily]::new('Segoe MDL2 Assets')
-    $fApplyContent.Inlines[0].FontSize = 11
-    $fApplyContent.Inlines.Add([System.Windows.Documents.Run]::new('  Apply Filter'))
-    $fApplyContent.Inlines[1].FontSize = 12
+    $fApplyIcon = [System.Windows.Documents.Run]::new([string][char]0xE73E)
+    $fApplyIcon.FontFamily = [System.Windows.Media.FontFamily]::new('Segoe MDL2 Assets')
+    $fApplyIcon.FontSize = 11
+    $fApplyContent.Inlines.Add($fApplyIcon)
+    $fApplyLabel = [System.Windows.Documents.Run]::new('  Apply Filter')
+    $fApplyLabel.FontSize = 12
+    $fApplyContent.Inlines.Add($fApplyLabel)
     $fApplyBtn.Content = $fApplyContent
     $fBtnPanel.Children.Add($fApplyBtn) | Out-Null
 
@@ -18763,8 +18819,16 @@ $ctx_UpdateRemoveFilter.Add_Click({
     $fPanel.Children.Add($fStatusText) | Out-Null
 
     $fBorder.Child = $fPanel
-    # Merge main window resources so ComboBox pill style is inherited
-    $filterDlg.Resources.MergedDictionaries.Add($Window.Resources)
+    # Give the dialog its own isolated resource dictionary: theme brushes plus copies of the app's
+    # implicit pill ComboBox / ComboBoxItem styles. Merging the live $Window.Resources (the main
+    # window's in-use dictionary) into a second window can raise a resource-collection re-entrancy
+    # error during rendering, so copy only what the dialog needs instead.
+    $fDlgResources = Get-DATThemeResourceDictionary -ThemeName $script:CurrentTheme
+    foreach ($resKey in @('PillComboBoxToggleButton', [System.Windows.Controls.ComboBox], [System.Windows.Controls.ComboBoxItem])) {
+        $resVal = $Window.TryFindResource($resKey)
+        if ($null -ne $resVal) { $fDlgResources[$resKey] = $resVal }
+    }
+    $filterDlg.Resources.MergedDictionaries.Add($fDlgResources)
     $filterDlg.Content = $fBorder
 
     # Load filters after dialog renders
@@ -18931,6 +18995,10 @@ $ctx_UpdateRemoveFilter.Add_Click({
     $fBorder.Add_MouseLeftButtonDown({ $filterDlg.DragMove() })
 
     $filterDlg.ShowDialog() | Out-Null
+  } catch {
+    Write-DATActivityLog "Update / Remove Assignment Filter dialog error: $($_.Exception.Message)" -Level Error
+    try { Show-DATInfoDialog -Title 'Assignment Filter' -Type Error -Message "Could not open the assignment filter dialog.`n`n$($_.Exception.Message)" } catch { }
+  }
 })
 
 # Row-click checkbox toggle for IntuneApps grid
@@ -19183,6 +19251,10 @@ function Update-DATIntunePermissionUI {
             $icon.Text = [char]0xE73E  # Checkmark
             $icon.Foreground = [System.Windows.Media.SolidColorBrush]::new(
                 [System.Windows.Media.ColorConverter]::ConvertFromString('#22C55E'))
+        } elseif ($perm.Optional) {
+            $icon.Text = [char]0xE946  # Info -- optional permission not granted
+            $icon.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+                [System.Windows.Media.ColorConverter]::ConvertFromString('#F59E0B'))
         } else {
             $icon.Text = [char]0xE711  # X
             $icon.Foreground = [System.Windows.Media.SolidColorBrush]::new(
@@ -20024,14 +20096,10 @@ $btn_VerifyIntunePermissions.Add_Click({
         @{ Name = 'DeviceManagementApps.ReadWrite.All'; Description = 'Create and manage Win32 app packages' }
         @{ Name = 'DeviceManagementManagedDevices.Read.All'; Description = 'Read managed devices for model lookup' }
         @{ Name = 'GroupMember.Read.All'; Description = 'Read group memberships for deployment targeting' }
+        # Optional -- only needed for the assignment filter feature. Always shown (mirrors
+        # Test-DATIntunePermissions) so it is never invisible; a missing result is informational.
+        @{ Name = 'DeviceManagementConfiguration.ReadWrite.All'; Description = 'Create and manage assignment filters (optional)'; Optional = $true }
     )
-
-    # Assignment filter automation requires an extra permission. The backend only checks
-    # it when AutoAssignmentFilter is enabled, so add the matching placeholder row here.
-    $autoFilterReg = (Get-ItemProperty -Path $global:RegPath -Name 'AutoAssignmentFilter' -ErrorAction SilentlyContinue).AutoAssignmentFilter
-    if ($null -ne $autoFilterReg -and $autoFilterReg -eq 1) {
-        $requiredPerms += @{ Name = 'DeviceManagementConfiguration.ReadWrite.All'; Description = 'Create and manage assignment filters' }
-    }
     $script:PermDlgIcons = @{}
     foreach ($rp in $requiredPerms) {
         $rpRow = [System.Windows.Controls.Grid]::new()
@@ -20117,6 +20185,10 @@ $btn_VerifyIntunePermissions.Add_Click({
                     $icon.Text = [string][char]0xE73E  # Checkmark
                     $icon.Foreground = [System.Windows.Media.SolidColorBrush]::new(
                         [System.Windows.Media.ColorConverter]::ConvertFromString('#22C55E'))
+                } elseif ($p.Optional) {
+                    $icon.Text = [string][char]0xE946  # Info -- optional permission not granted
+                    $icon.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+                        [System.Windows.Media.ColorConverter]::ConvertFromString('#F59E0B'))
                 } else {
                     $icon.Text = [string][char]0xE711  # X
                     $icon.Foreground = [System.Windows.Media.SolidColorBrush]::new(
@@ -20133,7 +20205,7 @@ $btn_VerifyIntunePermissions.Add_Click({
                 $script:PermDlgSummary.Foreground = [System.Windows.Media.SolidColorBrush]::new(
                     [System.Windows.Media.ColorConverter]::ConvertFromString('#22C55E'))
             } else {
-                $denied = ($result.Permissions | Where-Object { $_.Status -ne 'Granted' }).Count
+                $denied = ($result.Permissions | Where-Object { $_.Status -ne 'Granted' -and -not $_.Optional }).Count
                 $script:PermDlgSummary.Inlines.Clear()
                 $iconRun = [System.Windows.Documents.Run]::new([string][char]0xE7BA + '  ')
                 $iconRun.FontFamily = [System.Windows.Media.FontFamily]::new('Segoe MDL2 Assets')
@@ -20488,7 +20560,7 @@ $btn_Detail_CopyId.Add_Click({
 
 # Delete selected apps
 $btn_DeleteIntuneApp.Add_Click({
-    $selectedApps = @($script:IntuneAppsData | Where-Object { $_.Selected -eq $true })
+    $selectedApps = Get-DATCheckedIntuneApps
     if ($selectedApps.Count -eq 0) {
         $txt_IntuneStatus.Text = "No applications selected."
         return
@@ -20752,7 +20824,7 @@ $btn_DeleteIntuneApp.Add_Click({
 })
 
 function Update-DATIntuneDeleteButtonState {
-    $selectedCount = @($script:IntuneAppsData | Where-Object { $_.Selected -eq $true }).Count
+    $selectedCount = (Get-DATCheckedIntuneApps).Count
     $btn_DeleteIntuneApp.IsEnabled = ($selectedCount -gt 0)
 }
 
@@ -23116,6 +23188,12 @@ try {
             '7zip'  { 'Controls compression when creating WIM packages. Fast (-mx=1) is recommended for most scenarios. Maximum (-mx=9) produces smaller files but is significantly slower.' }
             default { 'Controls compression when creating WIM packages. Fast (XPRESS) is recommended for most scenarios. Maximum (LZX) produces smaller files but is significantly slower.' }
         }
+        # 7-Zip does not support WIM compression -- hide the compression level options
+        $panel_WimCompression.Visibility = if ($restoredEngine -eq '7zip') {
+            [System.Windows.Visibility]::Collapsed
+        } else {
+            [System.Windows.Visibility]::Visible
+        }
 
         # Restore DISM Compression Level
         Write-Host "  DISM Compress : " -NoNewline -ForegroundColor DarkGray
@@ -23280,7 +23358,7 @@ if (Test-Path $logoPath) {
 
 # Read version from module manifest
 $manifestPath = Join-Path $AppRoot "Modules\DriverAutomationToolCore\DriverAutomationToolCore.psd1"
-$script:versionString = "v10.1.6"
+$script:versionString = "v10.1.7"
 if (Test-Path $manifestPath) {
     $manifestData = Import-PowerShellDataFile $manifestPath
     $ver = [version]$manifestData.ModuleVersion
@@ -24361,7 +24439,7 @@ $Window.Add_ContentRendered({
         # DispatcherFrame keeps the UI message pump alive while we wait -- so the calling code
         # below (update check, etc.) still runs sequentially after completion.
         $connState = [hashtable]::Synchronized(@{
-            Current = 0; Total = 0; Url = 'Preparing...'; Done = $false; Results = $null
+            Current = 0; Total = 0; Url = 'Preparing...'; Done = $false; Results = $null; TimedOut = $false
         })
 
         $connRunspace = [runspacefactory]::CreateRunspace()
@@ -24389,26 +24467,41 @@ $Window.Add_ContentRendered({
                 @{ URL = $GraphResource;                       Description = 'Microsoft Graph API (Intune management)' }
             )
             $ConnState.Total = $endpoints.Count
+            # One retry (2 attempts) clears the common cold-start timeout without dragging startup
+            # out. Only endpoints that fail the first attempt pay for the retry.
+            $connMaxAttempts = 2
             $results = foreach ($ep in $endpoints) {
-                $ConnState.Url = $ep.URL
                 $reachable = $false
-                try {
-                    $request = [System.Net.HttpWebRequest]::Create($ep.URL)
-                    $request.Method = 'HEAD'
-                    $request.Timeout = 8000
-                    $request.AllowAutoRedirect = $true
+                # Retry transient failures. The first hit to a host pays the full cold-start
+                # DNS + TCP + TLS cost (which can exceed the timeout at startup or behind a proxy);
+                # retries reuse cached DNS/connections and clear most false failures. Only DNS/TCP/
+                # TLS/timeout errors count as unreachable, and only after every attempt has failed.
+                for ($connAttempt = 1; $connAttempt -le $connMaxAttempts; $connAttempt++) {
+                    # Surface the current activity (including retries) so the overlay label never
+                    # sits frozen while a slow endpoint is being re-probed.
+                    $ConnState.Url = if ($connAttempt -eq 1) { $ep.URL } else { "$($ep.URL)  --  retry $connAttempt of $connMaxAttempts" }
                     try {
-                        $response = $request.GetResponse()
-                        $response.Close()
-                        $reachable = $true
-                    } catch [System.Net.WebException] {
-                        # Any HTTP response (4xx/5xx) means the host IS reachable
-                        if ($null -ne $_.Exception.Response) {
+                        $request = [System.Net.HttpWebRequest]::Create($ep.URL)
+                        $request.Method = 'HEAD'
+                        # Give the cold first attempt more headroom; retries hit warm DNS/connections.
+                        $request.Timeout = if ($connAttempt -eq 1) { 8000 } else { 5000 }
+                        $request.AllowAutoRedirect = $true
+                        $request.UserAgent = 'DriverAutomationTool/ConnectivityCheck'
+                        try {
+                            $response = $request.GetResponse()
+                            $response.Close()
                             $reachable = $true
-                            $_.Exception.Response.Close()
+                        } catch [System.Net.WebException] {
+                            # Any HTTP response (4xx/5xx) means the host IS reachable
+                            if ($null -ne $_.Exception.Response) {
+                                $reachable = $true
+                                $_.Exception.Response.Close()
+                            }
                         }
-                    }
-                } catch { $reachable = $false }
+                    } catch { $reachable = $false }
+                    if ($reachable) { break }
+                    if ($connAttempt -lt $connMaxAttempts) { Start-Sleep -Milliseconds (400 * $connAttempt) }
+                }
                 $ConnState.Current++
                 [PSCustomObject]@{ URL = $ep.URL; Description = $ep.Description; Reachable = $reachable }
             }
@@ -24423,11 +24516,19 @@ $Window.Add_ContentRendered({
         $connFrame = [System.Windows.Threading.DispatcherFrame]::new()
         $connTimer = [System.Windows.Threading.DispatcherTimer]::new()
         $connTimer.Interval = [TimeSpan]::FromMilliseconds(120)
+        # Failsafe: never let the overlay block startup indefinitely. Worst-case sequential
+        # probing (all endpoints failing both attempts) is well under this budget, so the
+        # deadline only fires if the background runspace stalls or crashes.
+        $connDeadlineTick = [Environment]::TickCount + 150000
         $connTimer.Add_Tick({
             $connUrlLabel.Text = [string]$connState.Url
             if ($connState.Total -gt 0) {
                 $connProgress.Value = [math]::Round(($connState.Current / $connState.Total) * 100)
                 $connCounter.Text = "$($connState.Current) of $($connState.Total)"
+            }
+            if (-not $connState.Done -and [Environment]::TickCount -ge $connDeadlineTick) {
+                $connState.TimedOut = $true
+                $connState.Done = $true
             }
             if ($connState.Done) {
                 $connTimer.Stop()
@@ -24437,8 +24538,13 @@ $Window.Add_ContentRendered({
         $connTimer.Start()
         [System.Windows.Threading.Dispatcher]::PushFrame($connFrame)
 
-        # Probe complete -- collect results and tear down the runspace
-        try { $connPS.EndInvoke($connAsync) } catch { }
+        # Probe complete (or failsafe deadline reached) -- collect results and tear down the runspace
+        if ($connState.TimedOut) {
+            Write-DATActivityLog "Connectivity check exceeded its time budget -- continuing startup without blocking" -Level Warn
+            try { $connPS.Stop() } catch { }
+        } else {
+            try { $connPS.EndInvoke($connAsync) } catch { }
+        }
         $connPS.Dispose()
         $connRunspace.Dispose()
         $connectivityResults = @($connState.Results)

@@ -268,19 +268,25 @@ function Compare-BIOSVersion {
         }
         '*Lenovo*' {
             try {
-                $currentReleaseDate = $currentBIOS.ReleaseDate.ToString('yyyyMMdd')
+                # Guard a null/absent BIOS release date, and require a strict 8-digit yyyyMMdd on
+                # BOTH sides before comparing. The compare is ordinal (culture-independent).
+                $currentReleaseDate = if ($null -ne $currentBIOS.ReleaseDate) {
+                    ([datetime]$currentBIOS.ReleaseDate).ToString('yyyyMMdd')
+                } else { '' }
                 Write-CMTraceLog "Lenovo: Current BIOS release date: $currentReleaseDate"
                 Write-CMTraceLog "Lenovo: Available BIOS version: $AvailableBIOSVersion"
 
-                # Use release date comparison when available (version strings like M43KT32A are not reliably sortable)
-                if (-not [string]::IsNullOrEmpty($AvailableReleaseDate)) {
+                # Use release date comparison only when both dates are valid 8-digit stamps
+                # (version strings like M43KT32A are not reliably sortable).
+                $datesComparable = ($AvailableReleaseDate -match '^\d{8}$') -and ($currentReleaseDate -match '^\d{8}$')
+                if ($datesComparable) {
                     Write-CMTraceLog "Lenovo: Available BIOS release date: $AvailableReleaseDate"
-                    if ($AvailableReleaseDate -gt $currentReleaseDate) {
+                    if ([string]::CompareOrdinal($AvailableReleaseDate, $currentReleaseDate) -gt 0) {
                         Write-CMTraceLog "Lenovo: Newer BIOS available (release date $AvailableReleaseDate > $currentReleaseDate)"
                         return $true
                     }
                 } else {
-                    Write-CMTraceLog "Lenovo: No release date provided -- falling back to version string comparison" -Severity 2
+                    Write-CMTraceLog "Lenovo: No usable release date -- falling back to version string comparison" -Severity 2
                     if ($AvailableBIOSVersion -gt $currentVersion) {
                         Write-CMTraceLog "Lenovo: Newer BIOS available (version $AvailableBIOSVersion > $currentVersion)"
                         return $true

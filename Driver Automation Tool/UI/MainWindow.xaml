@@ -934,7 +934,7 @@
                                    Foreground="{DynamicResource AccentColor}" VerticalAlignment="Center" Margin="0,0,8,0"/>
                         <TextBlock Text="Driver Automation Tool" FontSize="13" FontWeight="SemiBold"
                                    Foreground="{DynamicResource WindowForeground}" VerticalAlignment="Center"/>
-                        <TextBlock x:Name="txt_Version" Text=" Version 10.1.6" FontSize="11"
+                        <TextBlock x:Name="txt_Version" Text=" Version 10.1.7" FontSize="11"
                                    Foreground="{DynamicResource InputPlaceholder}" VerticalAlignment="Center" Margin="4,0"/>
                     </StackPanel>
 
@@ -5532,19 +5532,21 @@
                                                 <ComboBoxItem x:Name="cmbi_7Zip" Content="7-Zip"/>
                                             </ComboBox>
 
-                                            <!-- WIM Compression Level -->
-                                            <TextBlock Text="WIM Compression Level" FontSize="12" FontWeight="SemiBold"
-                                                       Foreground="{DynamicResource InputPlaceholder}" Margin="0,16,0,6"/>
-                                            <TextBlock x:Name="txt_CompressionDescription" TextWrapping="Wrap" FontSize="12" LineHeight="18"
-                                                       Foreground="{DynamicResource InputPlaceholder}" Margin="0,0,0,8">
-                                                Controls compression when creating WIM packages. Fast (XPRESS) is recommended for most scenarios. Maximum (LZX) produces smaller files but is significantly slower.
-                                            </TextBlock>
-                                            <ComboBox x:Name="cmb_DismCompression" Height="34" Width="Auto" MinWidth="140"
-                                                      HorizontalAlignment="Left">
-                                                <ComboBoxItem Content="Fast (Recommended)" IsSelected="True"/>
-                                                <ComboBoxItem Content="Maximum"/>
-                                                <ComboBoxItem Content="None"/>
-                                            </ComboBox>
+                                            <!-- WIM Compression Level (hidden for 7-Zip, which does not support WIM compression) -->
+                                            <StackPanel x:Name="panel_WimCompression">
+                                                <TextBlock Text="WIM Compression Level" FontSize="12" FontWeight="SemiBold"
+                                                           Foreground="{DynamicResource InputPlaceholder}" Margin="0,16,0,6"/>
+                                                <TextBlock x:Name="txt_CompressionDescription" TextWrapping="Wrap" FontSize="12" LineHeight="18"
+                                                           Foreground="{DynamicResource InputPlaceholder}" Margin="0,0,0,8">
+                                                    Controls compression when creating WIM packages. Fast (XPRESS) is recommended for most scenarios. Maximum (LZX) produces smaller files but is significantly slower.
+                                                </TextBlock>
+                                                <ComboBox x:Name="cmb_DismCompression" Height="34" Width="Auto" MinWidth="140"
+                                                          HorizontalAlignment="Left">
+                                                    <ComboBoxItem Content="Fast (Recommended)" IsSelected="True"/>
+                                                    <ComboBoxItem Content="Maximum"/>
+                                                    <ComboBoxItem Content="None"/>
+                                                </ComboBox>
+                                            </StackPanel>
 
                                             <!-- Disable WIM Compression for Configuration Manager -->
                                             <Border BorderBrush="{DynamicResource InputBorder}" BorderThickness="0,1,0,0"
@@ -6362,7 +6364,7 @@
                                     <StackPanel>
                                         <TextBlock Text="Driver Automation Tool" FontSize="22" FontWeight="Bold"
                                                    Foreground="{DynamicResource AccentColor}" Margin="0,0,0,4"/>
-                                        <TextBlock x:Name="txt_AboutVersion" Text="Version 10.1.6" FontSize="14"
+                                        <TextBlock x:Name="txt_AboutVersion" Text="Version 10.1.7" FontSize="14"
                                                    Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,16"/>
 
                                         <TextBlock TextWrapping="Wrap" FontSize="13"

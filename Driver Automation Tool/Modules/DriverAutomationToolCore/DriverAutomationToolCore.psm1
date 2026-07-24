@@ -4,7 +4,7 @@
      Organization:  MSEndpointMgr / Patch My PC
      Filename:      DriverAutomationToolCore.psm1
      Purpose:       Core functions for Driver Automation Tool v2.0
-     Version:       10.1.6.0
+     Version:       10.1.7.0
     ===========================================================================
 #>
 
@@ -37,8 +37,8 @@ if ($PSVersionTable.PSVersion.Major -le 5) {
 
 #region Variables
 
-[version]$global:ScriptRelease = "10.1.6.0"
-$global:ScriptBuildDate = "15-07-2026"
+[version]$global:ScriptRelease = "10.1.7.0"
+$global:ScriptBuildDate = "24-07-2026"
 $global:ReleaseNotesURL = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/DriverAutomationToolNotes.txt"
 $OEMLinksURL = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/OEMLinks.xml"
 
@@ -7293,39 +7293,42 @@ function Test-DATIntunePermissions {
         @{ Name = "GroupMember.Read.All"; TestUri = "$graphV1Url/groups?`$top=1"; Description = "Read group memberships for deployment targeting" }
     )
 
-    # Add assignment filter permission check when auto-filter is enabled
-    $regConfig = Get-ItemProperty -Path $global:RegPath -ErrorAction SilentlyContinue
-    if ($null -ne $regConfig.AutoAssignmentFilter -and $regConfig.AutoAssignmentFilter -eq 1) {
-        $permChecks += @{ Name = "DeviceManagementConfiguration.ReadWrite.All"; TestUri = "$graphBaseUrl/deviceManagement/assignmentFilters?`$top=1"; Description = "Create and manage assignment filters" }
-    }
+    # DeviceManagementConfiguration.ReadWrite.All is OPTIONAL -- it is only needed for the
+    # assignment filter feature (auto-filter on build, and the manual Update/Remove filter
+    # action in Package Management). It is ALWAYS checked so it is never invisible in the
+    # logs or UI, but a missing/denied result does NOT fail the overall permission check.
+    $permChecks += @{ Name = "DeviceManagementConfiguration.ReadWrite.All"; TestUri = "$graphBaseUrl/deviceManagement/assignmentFilters?`$top=1"; Description = "Create and manage assignment filters (optional)"; Optional = $true }
 
     $results = @()
     $allGranted = $true
 
     foreach ($perm in $permChecks) {
+        $isOptional = [bool]$perm.Optional
         try {
             $proxyParams = Get-DATWebRequestProxy
             Invoke-RestMethod -Method GET -Uri $perm.TestUri -Headers $headers -ErrorAction Stop @proxyParams | Out-Null
-            $results += @{ Name = $perm.Name; Description = $perm.Description; Status = "Granted" }
+            $results += @{ Name = $perm.Name; Description = $perm.Description; Status = "Granted"; Optional = $isOptional }
             Write-DATLogEntry -Value "[Intune Auth] Permission check: $($perm.Name) - Granted" -Severity 1
         } catch {
             $statusCode = $null
             if ($_.Exception.Response) {
                 $statusCode = [int]$_.Exception.Response.StatusCode
             }
+            # Optional permissions are reported but never fail the overall check.
+            $optionalSuffix = if ($isOptional) { ' (optional)' } else { '' }
             if ($statusCode -eq 403) {
-                $results += @{ Name = $perm.Name; Description = $perm.Description; Status = "Denied" }
-                $allGranted = $false
-                Write-DATLogEntry -Value "[Intune Auth] Permission check: $($perm.Name) - Denied (403)" -Severity 2
+                $results += @{ Name = $perm.Name; Description = $perm.Description; Status = "Denied"; Optional = $isOptional }
+                if (-not $isOptional) { $allGranted = $false }
+                Write-DATLogEntry -Value "[Intune Auth] Permission check: $($perm.Name) - Denied (403)$optionalSuffix" -Severity 2
             } elseif ($statusCode -eq 401) {
-                $results += @{ Name = $perm.Name; Description = $perm.Description; Status = "Unauthorized" }
-                $allGranted = $false
-                Write-DATLogEntry -Value "[Intune Auth] Permission check: $($perm.Name) - Unauthorized (401)" -Severity 3
+                $results += @{ Name = $perm.Name; Description = $perm.Description; Status = "Unauthorized"; Optional = $isOptional }
+                if (-not $isOptional) { $allGranted = $false }
+                Write-DATLogEntry -Value "[Intune Auth] Permission check: $($perm.Name) - Unauthorized (401)$optionalSuffix" -Severity 3
             } else {
                 # Other errors (e.g. network) - treat as unknown
-                $results += @{ Name = $perm.Name; Description = $perm.Description; Status = "Error" }
-                $allGranted = $false
-                Write-DATLogEntry -Value "[Intune Auth] Permission check: $($perm.Name) - Error: $($_.Exception.Message)" -Severity 3
+                $results += @{ Name = $perm.Name; Description = $perm.Description; Status = "Error"; Optional = $isOptional }
+                if (-not $isOptional) { $allGranted = $false }
+                Write-DATLogEntry -Value "[Intune Auth] Permission check: $($perm.Name) - Error: $($_.Exception.Message)$optionalSuffix" -Severity 3
             }
         }
     }
@@ -8038,6 +8041,44 @@ function ConvertTo-DATPackageDate {
     $parsed = [datetime]::MinValue
     if ([datetime]::TryParse($text, [ref]$parsed)) { return $parsed }
     return [datetime]::MinValue
+}
+
+function ConvertTo-DATReleaseDateStamp {
+    <#
+    .SYNOPSIS
+        Normalises a catalog release-date string to a strict 8-digit yyyyMMdd stamp.
+    .DESCRIPTION
+        Parses culture-invariantly against an explicit set of expected formats (so a US-style
+        catalog date is not misread on a non-US build host, and vice-versa). Returns an empty
+        string when the value is missing or cannot be parsed -- callers must treat an empty
+        result as "no usable date" and fall back to a registry/version marker rather than feed a
+        raw, un-normalised string into a lexical (yyyyMMdd) comparison. The output is guaranteed
+        to be either exactly 8 digits or an empty string.
+    #>
+    [CmdletBinding()]
+    param ([string]$ReleaseDate)
+
+    if ([string]::IsNullOrWhiteSpace($ReleaseDate)) { return '' }
+
+    $inv    = [System.Globalization.CultureInfo]::InvariantCulture
+    $styles = [System.Globalization.DateTimeStyles]::None
+    # Ordered, explicit expected formats. ISO first (the catalog's canonical form); ambiguous
+    # slash/dash forms are resolved deterministically by list order (MM/dd before dd-MM).
+    $formats = @(
+        'yyyy-MM-dd', 'yyyyMMdd', 'yyyy/MM/dd',
+        'yyyy-MM-ddTHH:mm:ss', 'yyyy-MM-ddTHH:mm:ssZ', 'yyyy-MM-dd HH:mm:ss',
+        'MM/dd/yyyy', 'dd-MM-yyyy'
+    )
+    $parsed = [datetime]::MinValue
+    if ([datetime]::TryParseExact($ReleaseDate.Trim(), [string[]]$formats, $inv, $styles, [ref]$parsed)) {
+        return $parsed.ToString('yyyyMMdd', $inv)
+    }
+    # Final invariant fallback for ISO variants with fractional seconds / offsets. Still strictly
+    # culture-invariant -- never a raw string passthrough.
+    if ([datetime]::TryParse($ReleaseDate.Trim(), $inv, $styles, [ref]$parsed)) {
+        return $parsed.ToString('yyyyMMdd', $inv)
+    }
+    return ''
 }
 
 function Get-DATVersionSortKey {
@@ -9903,9 +9944,12 @@ function Show-DATStatusToast {
     $scriptContent = $scriptContent.Replace('{{Model}}', $Model)
     $scriptContent = $scriptContent.Replace('{{OS}}', $OS)
     $scriptContent = $scriptContent.Replace('{{Version}}', $Version)
-    $releaseDate8 = ''
-    if (-not [string]::IsNullOrEmpty($ReleaseDate)) {
-        try { $releaseDate8 = ([datetime]$ReleaseDate).ToString('yyyyMMdd') } catch { $releaseDate8 = $ReleaseDate }
+    # Normalise the release date to a strict 8-digit yyyyMMdd stamp (or empty). The BIOS install
+    # template's Compare-BIOSVersion does a lexical date compare, so a raw/culture-ambiguous value
+    # must never be baked in.
+    $releaseDate8 = ConvertTo-DATReleaseDateStamp -ReleaseDate $ReleaseDate
+    if (-not [string]::IsNullOrWhiteSpace($ReleaseDate) -and [string]::IsNullOrEmpty($releaseDate8)) {
+        Write-DATLogEntry -Value "[Intune] WARNING: Could not parse BIOS ReleaseDate '$ReleaseDate' for $OEM $Model -- install-time date comparison disabled, using version-string comparison" -Severity 2
     }
     $scriptContent = $scriptContent.Replace('{{ReleaseDate}}', $releaseDate8)
     $scriptContent = $scriptContent.Replace('{{Generated}}', (Get-Date -Format "yyyy-MM-dd HH:mm:ss"))
@@ -9927,11 +9971,18 @@ function Show-DATStatusToast {
 function New-DATIntuneRequirementScript {
     <#
     .SYNOPSIS
-        Generates a requirement rule script that checks:
+        Generates a requirement rule script that determines whether a package is APPLICABLE
+        to the device -- i.e. whether it is the right hardware. It checks:
         - Device manufacturer matches the OEM
         - WMI SystemSKU, Baseboard Product or system Model matches one of the model's values
         - OS matches the target OS (Drivers only -- BIOS packages are OS-agnostic)
-        - Package version is newer than any previously installed version (ddMMyyyy comparison)
+
+        Recency ("is a newer version already installed?") is intentionally NOT evaluated here.
+        That decision belongs to the detection rule (New-DATIntuneDetectionScript): a device that
+        is the correct hardware is always applicable, and detection reports whether it is already
+        up to date. This avoids up-to-date devices showing as "Not Applicable" instead of
+        "Installed", and keeps applicability tied to the true hardware identifier (SKU/baseboard).
+        The ReleaseDate/Version parameters are retained for signature compatibility.
     #>
     [CmdletBinding()]
     param (
@@ -9969,77 +10020,10 @@ function New-DATIntuneRequirementScript {
 "@
     }
 
-    # Build Check 4: version/release-date comparison block
-    $releaseDate8 = ''
-    if (-not [string]::IsNullOrEmpty($ReleaseDate)) {
-        try { $releaseDate8 = ([datetime]$ReleaseDate).ToString('yyyyMMdd') } catch { $releaseDate8 = $ReleaseDate }
-    }
-    $versionCheckBlock = if ($UpdateType -eq 'BIOS' -and -not [string]::IsNullOrEmpty($releaseDate8)) {
-        @"
-    # Check 4: BIOS release date comparison
-    try {
-        `$currentBIOS = Get-CimInstance -ClassName Win32_BIOS -ErrorAction Stop
-        `$currentReleaseDate = `$currentBIOS.ReleaseDate.ToString('yyyyMMdd')
-        `$packageReleaseDate = "$releaseDate8"
-        if (`$packageReleaseDate -le `$currentReleaseDate) {
-            Write-Output "BIOS release date not newer: package=`$packageReleaseDate, current=`$currentReleaseDate"
-            exit 0
-        }
-    } catch { }
-
-    # Also check if this exact version is already installed via registry
-    `$regPath = "HKLM:\SOFTWARE\DriverAutomationTool\$regSubKey\$OEM\$Model"
-    if (Test-Path `$regPath) {
-        `$installedVer = (Get-ItemProperty -Path `$regPath -Name 'Version' -ErrorAction SilentlyContinue).Version
-        if (`$installedVer -eq "$Version") {
-            Write-Output "Package already installed: version=$Version"
-            exit 0
-        }
-    }
-"@
-    } elseif ($UpdateType -eq 'BIOS') {
-        # BIOS without a catalog release date -- registry exact-match only
-        # (ddMMyyyy parsing is not valid for OEM BIOS version strings like M43KT32A)
-        @"
-    # Check 4: BIOS version check - registry exact match
-    `$regPath = "HKLM:\SOFTWARE\DriverAutomationTool\$regSubKey\$OEM\$Model"
-    if (Test-Path `$regPath) {
-        `$installedVer = (Get-ItemProperty -Path `$regPath -Name 'Version' -ErrorAction SilentlyContinue).Version
-        if (`$installedVer -eq "$Version") {
-            Write-Output "Package already installed: version=$Version"
-            exit 0
-        }
-    }
-"@
-    } else {
-        @"
-    # Check 4: Version check - registry-based installed version
-    `$packageVersion = "$Version"
-    `$regPath = "HKLM:\SOFTWARE\DriverAutomationTool\$regSubKey\$OEM\$Model"
-
-    if (Test-Path `$regPath) {
-        `$installedVer = (Get-ItemProperty -Path `$regPath -Name 'Version' -ErrorAction SilentlyContinue).Version
-        if (-not [string]::IsNullOrEmpty(`$installedVer)) {
-            try {
-                `$pkgDay = [int]`$packageVersion.Substring(0, 2)
-                `$pkgMonth = [int]`$packageVersion.Substring(2, 2)
-                `$pkgYear = [int]`$packageVersion.Substring(4, 4)
-                `$pkgDate = [datetime]::new(`$pkgYear, `$pkgMonth, `$pkgDay)
-
-                `$instDay = [int]`$installedVer.Substring(0, 2)
-                `$instMonth = [int]`$installedVer.Substring(2, 2)
-                `$instYear = [int]`$installedVer.Substring(4, 4)
-                `$instDate = [datetime]::new(`$instYear, `$instMonth, `$instDay)
-
-                if (`$pkgDate -le `$instDate) {
-                    Write-Output "Version not newer: package=`$packageVersion, installed=`$installedVer"
-                    exit 0
-                }
-            } catch { }
-        }
-    }
-"@
-    }
+    # NOTE: No version/recency gate here. Applicability is based purely on the hardware
+    # identifier (manufacturer + SKU/baseboard) and OS. Whether a newer version still needs
+    # installing is decided by the detection rule, so up-to-date devices report as "Installed"
+    # rather than "Not Applicable".
 
     # Build the maintenance-window gate (Check 0). Empty when no schedule is supplied, so
     # packages built without a maintenance window behave exactly as before.
@@ -10151,7 +10135,6 @@ try {{
     }}
 
 {8}
-%%VERSION_CHECK%%
 
     # All checks passed
     $RequirementMet = $true
@@ -10168,7 +10151,6 @@ if ($RequirementMet) {{
 }}
 '@ -f $OEM, $Model, $OS, $Version, $bbValues, (Get-Date -Format "yyyy-MM-dd HH:mm:ss"), $osNumber, $UpdateType, $osCheckBlock, $regSubKey
 
-    $scriptContent = $scriptContent.Replace('%%VERSION_CHECK%%', $versionCheckBlock)
     $scriptContent = $scriptContent.Replace('%%MAINTENANCE_WINDOW%%', $maintenanceWindowBlock)
 
     # UTF-8 WITHOUT BOM -- Intune requirement rule scripts must not carry a BOM, otherwise
@@ -10218,10 +10200,13 @@ function New-DATIntuneDetectionScript {
 "@
     }
 
-    # Build release date for BIOS detection
-    $releaseDate8 = ''
-    if (-not [string]::IsNullOrEmpty($ReleaseDate)) {
-        try { $releaseDate8 = ([datetime]$ReleaseDate).ToString('yyyyMMdd') } catch { $releaseDate8 = $ReleaseDate }
+    # Build release date for BIOS detection. Normalise to a strict 8-digit yyyyMMdd stamp (or
+    # empty) using culture-invariant parsing; if the catalog value cannot be parsed we leave this
+    # empty and fall back to the registry version marker rather than feeding a malformed value
+    # into a lexical date comparison (which could otherwise flip detection results).
+    $releaseDate8 = ConvertTo-DATReleaseDateStamp -ReleaseDate $ReleaseDate
+    if (-not [string]::IsNullOrWhiteSpace($ReleaseDate) -and [string]::IsNullOrEmpty($releaseDate8)) {
+        Write-DATLogEntry -Value "[Intune] WARNING: Could not parse BIOS ReleaseDate '$ReleaseDate' for $OEM $Model -- release-date detection disabled, using registry version marker only" -Severity 2
     }
 
     # Build Check 4: detection block
@@ -10233,10 +10218,15 @@ function New-DATIntuneDetectionScript {
     `$detected = `$false
     try {
         `$currentBIOS = Get-CimInstance -ClassName Win32_BIOS -ErrorAction Stop
-        `$currentReleaseDate = `$currentBIOS.ReleaseDate.ToString('yyyyMMdd')
-        `$packageReleaseDate = "$releaseDate8"
-        if (`$currentReleaseDate -ge `$packageReleaseDate) {
-            `$detected = `$true
+        if (`$null -ne `$currentBIOS.ReleaseDate) {
+            `$currentReleaseDate = ([datetime]`$currentBIOS.ReleaseDate).ToString('yyyyMMdd')
+            `$packageReleaseDate = "$releaseDate8"
+            # Both sides are strict 8-digit yyyyMMdd, so an ordinal compare is chronological
+            # and culture-independent.
+            if (`$currentReleaseDate.Length -eq 8 -and `$packageReleaseDate.Length -eq 8 -and
+                [string]::CompareOrdinal(`$currentReleaseDate, `$packageReleaseDate) -ge 0) {
+                `$detected = `$true
+            }
         }
     } catch { }
 
@@ -12436,6 +12426,26 @@ function Invoke-DATBiosPackaging {
             $flashProcessNames = @('WinUPTP64', 'WinUPTP', 'wFlashGUIX64', 'wFlashGUI',
                                    'AFUWINx64', 'AFUWIN', 'Flash64', 'InsydeFlash')
 
+            # Lenovo Inno Setup BIOS installers extract their flash payload to hardcoded
+            # system-drive locations (C:\DRIVERS\FLASH, C:\SWTOOLS\FLASH) regardless of the
+            # /DIR argument we pass. Snapshot those roots first so we can remove only the
+            # folders the installer creates, without touching anything already present (#863).
+            $lenovoResidualRoots = @(
+                (Join-Path $env:SystemDrive 'DRIVERS\FLASH'),
+                (Join-Path $env:SystemDrive 'SWTOOLS\FLASH')
+            )
+            $lenovoResidualSnapshot = @{}
+            foreach ($residualRoot in $lenovoResidualRoots) {
+                if (Test-Path $residualRoot) {
+                    $lenovoResidualSnapshot[$residualRoot] = @(
+                        Get-ChildItem -Path $residualRoot -Force -ErrorAction SilentlyContinue |
+                            Select-Object -ExpandProperty FullName)
+                } else {
+                    # Root did not exist before extraction -- flag for full removal afterwards.
+                    $lenovoResidualSnapshot[$residualRoot] = $null
+                }
+            }
+
             try {
                 Unblock-File -Path $BiosFilePath -ErrorAction SilentlyContinue
 
@@ -12526,6 +12536,40 @@ function Invoke-DATBiosPackaging {
                     Remove-Item -Force -ErrorAction SilentlyContinue
             } catch {
                 throw "Lenovo BIOS extraction failed: $($_.Exception.Message)"
+            } finally {
+                # Remove residual folders the Lenovo installer created on the system drive.
+                # These hardcoded C:\DRIVERS\FLASH / C:\SWTOOLS\FLASH payload folders are
+                # created regardless of the /DIR argument and are otherwise never cleaned
+                # up by the build, tool close, or Purge button (#863). Runs on both success
+                # and failure so nothing is left behind.
+                foreach ($residualRoot in $lenovoResidualRoots) {
+                    try {
+                        if (-not (Test-Path $residualRoot)) { continue }
+                        $preExisting = $lenovoResidualSnapshot[$residualRoot]
+                        if ($null -eq $preExisting) {
+                            # Root was created by this extraction -- remove it entirely.
+                            Remove-Item -Path $residualRoot -Recurse -Force -ErrorAction SilentlyContinue
+                            Write-DATLogEntry -Value "[BIOS] Lenovo: Removed residual extraction folder $residualRoot" -Severity 1
+                            # Remove the parent (DRIVERS / SWTOOLS) too if we left it empty.
+                            $residualParent = Split-Path $residualRoot -Parent
+                            if ((Test-Path $residualParent) -and
+                                -not (Get-ChildItem -Path $residualParent -Force -ErrorAction SilentlyContinue)) {
+                                Remove-Item -Path $residualParent -Recurse -Force -ErrorAction SilentlyContinue
+                                Write-DATLogEntry -Value "[BIOS] Lenovo: Removed empty residual folder $residualParent" -Severity 1
+                            }
+                        } else {
+                            # Root pre-existed -- only remove entries the installer newly added.
+                            $newEntries = Get-ChildItem -Path $residualRoot -Force -ErrorAction SilentlyContinue |
+                                Where-Object { $preExisting -notcontains $_.FullName }
+                            foreach ($entry in $newEntries) {
+                                Remove-Item -Path $entry.FullName -Recurse -Force -ErrorAction SilentlyContinue
+                                Write-DATLogEntry -Value "[BIOS] Lenovo: Removed residual extraction item $($entry.FullName)" -Severity 1
+                            }
+                        }
+                    } catch {
+                        Write-DATLogEntry -Value "[BIOS] Lenovo: Could not clean residual folder $residualRoot -- $($_.Exception.Message)" -Severity 2
+                    }
+                }
             }
         }
         default {
