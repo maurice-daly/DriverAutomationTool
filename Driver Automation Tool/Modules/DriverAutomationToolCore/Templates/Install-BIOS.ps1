@@ -85,6 +85,45 @@ function Write-CMTraceLog {
     }
 }
 
+function Set-DATInstallStatus {
+    <#
+        Records a machine-readable status record alongside the version marker so custom
+        reporting (registry scraping) can see the outcome of the LAST run -- including
+        failures, which otherwise leave no registry trace at all. Written on every real
+        (non-WhatIf) exit path, success or failure. Exit codes are stored as strings so
+        negative / large tool codes (e.g. -1, HRESULTs) survive intact.
+    #>
+    param (
+        [Parameter(Mandatory)][string]$RegPath,
+        [Parameter(Mandatory)][ValidateSet('Success','PendingReboot','AlreadyCurrent','NoContent','RetryScheduled','Failed')][string]$Result,
+        [int]$ToolExitCode = 0,
+        [int]$ScriptExitCode = 0,
+        [string]$Phase = '',
+        [string]$ErrorMessage = ''
+    )
+    try {
+        if (-not (Test-Path $RegPath)) { New-Item -Path $RegPath -Force | Out-Null }
+        $nowUtc = (Get-Date).ToUniversalTime().ToString('o')
+        Set-ItemProperty -Path $RegPath -Name 'LastResult'         -Value $Result                   -Force
+        Set-ItemProperty -Path $RegPath -Name 'LastRunUtc'         -Value $nowUtc                   -Force
+        Set-ItemProperty -Path $RegPath -Name 'LastToolExitCode'   -Value ([string]$ToolExitCode)   -Force
+        Set-ItemProperty -Path $RegPath -Name 'LastScriptExitCode' -Value ([string]$ScriptExitCode) -Force
+        Set-ItemProperty -Path $RegPath -Name 'LastErrorPhase'     -Value $Phase                    -Force
+        Set-ItemProperty -Path $RegPath -Name 'LastError'          -Value $ErrorMessage             -Force
+
+        # Running attempt counter -- lets reporting spot devices stuck retrying/failing
+        $priorAttempts = 0
+        try { $priorAttempts = [int](Get-ItemProperty -Path $RegPath -Name 'AttemptCount' -ErrorAction SilentlyContinue).AttemptCount } catch { $priorAttempts = 0 }
+        Set-ItemProperty -Path $RegPath -Name 'AttemptCount' -Value ($priorAttempts + 1) -Type DWord -Force
+
+        if ($Result -in @('Success','PendingReboot','AlreadyCurrent')) {
+            Set-ItemProperty -Path $RegPath -Name 'LastSuccessUtc' -Value $nowUtc -Force
+        }
+    } catch {
+        Write-CMTraceLog "WARNING: Failed to write install status to registry -- $($_.Exception.Message)" -Severity 2
+    }
+}
+
 function Get-BIOSPasswordFromRegistry {
     <#
     .SYNOPSIS
@@ -344,6 +383,38 @@ function Compare-BIOSVersion {
                 return $true
             }
         }
+        '*Acer*' {
+            try {
+                # Acer BIOS versions are clean dotted values (e.g. 1.05, 1.27) -- use System.Version.
+                # Fall back to release-date comparison (yyyyMMdd, ordinal) when either side is not
+                # a parseable version.
+                $availableIsVersion = $AvailableBIOSVersion -match '^\d+(\.\d+){1,3}$'
+                $currentIsVersion   = $currentVersion -match '^\d+(\.\d+){1,3}$'
+                if ($availableIsVersion -and $currentIsVersion) {
+                    if ([System.Version]$AvailableBIOSVersion -gt [System.Version]$currentVersion) {
+                        Write-CMTraceLog "Acer: Newer BIOS available ($AvailableBIOSVersion > $currentVersion)"
+                        return $true
+                    }
+                } else {
+                    $currentReleaseDate = if ($null -ne $currentBIOS.ReleaseDate) {
+                        ([datetime]$currentBIOS.ReleaseDate).ToString('yyyyMMdd')
+                    } else { '' }
+                    $datesComparable = ($AvailableReleaseDate -match '^\d{8}$') -and ($currentReleaseDate -match '^\d{8}$')
+                    if ($datesComparable) {
+                        if ([string]::CompareOrdinal($AvailableReleaseDate, $currentReleaseDate) -gt 0) {
+                            Write-CMTraceLog "Acer: Newer BIOS available (release date $AvailableReleaseDate > $currentReleaseDate)"
+                            return $true
+                        }
+                    } else {
+                        Write-CMTraceLog "Acer: Version/date not comparable -- proceeding with update" -Severity 2
+                        return $true
+                    }
+                }
+            } catch {
+                Write-CMTraceLog "WARNING: Acer BIOS version comparison failed -- $($_.Exception.Message). Proceeding with update." -Severity 2
+                return $true
+            }
+        }
         default {
             Write-CMTraceLog "Unknown manufacturer '$Manufacturer' -- skipping version comparison, proceeding with update" -Severity 2
             return $true
@@ -363,11 +434,30 @@ try {
     Write-CMTraceLog "Script Generated: {{Generated}}"
     Write-CMTraceLog "=========================================="
 
+    # -- Verbose device / environment context (aids Intune and custom log troubleshooting) --
+    # The current BIOS version and release date are logged explicitly because the requirement
+    # rule now gates applicability on the BIOS release date -- this makes the comparison auditable.
+    try {
+        $ctxCs = Get-CimInstance -ClassName Win32_ComputerSystem -ErrorAction Stop
+        $ctxOs = Get-CimInstance -ClassName Win32_OperatingSystem -ErrorAction Stop
+        $ctxBios = Get-CimInstance -ClassName Win32_BIOS -ErrorAction Stop
+        $ctxBiosDate = if ($ctxBios.ReleaseDate) { ([datetime]$ctxBios.ReleaseDate).ToString('yyyy-MM-dd') } else { 'unknown' }
+        Write-CMTraceLog "Device: $($ctxCs.Manufacturer) | Model: $($ctxCs.Model) | SKU: $($ctxCs.SystemSKUNumber)"
+        Write-CMTraceLog "OS: $($ctxOs.Caption) ($($ctxOs.Version)) | Build: $($ctxOs.BuildNumber)"
+        Write-CMTraceLog "Current BIOS: version '$($ctxBios.SMBIOSBIOSVersion)' | release date $ctxBiosDate"
+        Write-CMTraceLog "Package BIOS: version '{{Version}}' | release date '{{ReleaseDate}}'"
+        Write-CMTraceLog "PowerShell: $($PSVersionTable.PSVersion) | 64-bit process: $([Environment]::Is64BitProcess)"
+    } catch {
+        Write-CMTraceLog "WARNING: Could not gather full device context -- $($_.Exception.Message)" -Severity 2
+    }
+
     $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
     $WimFile = Join-Path $ScriptDir "DriverPackage.wim"
     $ExtractPath = Join-Path $env:ProgramData "DriverAutomationTool\Extract"
     $VersionRegPath = 'HKLM:\SOFTWARE\DriverAutomationTool\BIOS\{{OEM}}\{{Model}}'
     $Manufacturer = '{{OEM}}'
+    $installPhase = 'Init'
+    $flashExitCode = $null
 
     Write-CMTraceLog "Script directory: $ScriptDir"
     Write-CMTraceLog "WIM file path: $WimFile"
@@ -387,6 +477,7 @@ try {
     # Compare versions BEFORE prompting the user -- no point showing a toast if
     # the BIOS is already current.
     Write-CMTraceLog "Performing BIOS version comparison..."
+    $installPhase = 'VersionCheck'
     $updateNeeded = Compare-BIOSVersion -AvailableBIOSVersion '{{Version}}' -Manufacturer $Manufacturer -AvailableReleaseDate '{{ReleaseDate}}'
 
     if (-not $updateNeeded) {
@@ -399,7 +490,13 @@ try {
         Set-ItemProperty -Path $VersionRegPath -Name 'Version' -Value '{{Version}}' -Force
         Set-ItemProperty -Path $VersionRegPath -Name 'InstalledDate' -Value (Get-Date -Format 'o') -Force
         Set-ItemProperty -Path $VersionRegPath -Name 'OS' -Value '{{OS}}' -Force
+        # Real hardware confirms the BIOS is current -- clear any stale PendingReboot marker
+        # left over from a prior staged update whose reboot has since completed.
+        Remove-ItemProperty -Path $VersionRegPath -Name 'PendingReboot' -ErrorAction SilentlyContinue
+        Remove-ItemProperty -Path $VersionRegPath -Name 'PendingRebootBootTime' -ErrorAction SilentlyContinue
         Write-CMTraceLog "Version marker written to registry (already current): $VersionRegPath"
+
+        Set-DATInstallStatus -RegPath $VersionRegPath -Result 'AlreadyCurrent' -ScriptExitCode 0 -Phase 'VersionCheck'
 
         Write-CMTraceLog "=========================================="
         Write-CMTraceLog "BIOS update skipped -- already up to date"
@@ -423,6 +520,7 @@ try {
     # This avoids mounting entirely, bypassing WOF overlay issues where
     # WIM-mounted files have FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS causing
     # both Copy-Item and robocopy to fail with error 4350 / 0x10FE
+    $installPhase = 'Extraction'
     try {
         Write-CMTraceLog "Extracting BIOS package WIM directly to: $ExtractPath"
         Expand-WindowsImage -ImagePath $WimFile -ApplyPath $ExtractPath -Index 1 -ErrorAction Stop
@@ -451,6 +549,7 @@ try {
 
     # -- Manufacturer-Specific BIOS Flash ----------------------------------------
 
+    $installPhase = 'Flash'
     switch -Wildcard ($Manufacturer) {
 
         # -- Dell ----------------------------------------------------------------
@@ -489,6 +588,7 @@ try {
                         # BatteryStatus 2 = AC power connected
                         if ($battery.BatteryStatus -ne 2) {
                             Write-CMTraceLog "AC power adapter not detected (BatteryStatus=$($battery.BatteryStatus)). Dell BIOS updates require AC power -- will retry on next Intune cycle." -Severity 2
+                            Set-DATInstallStatus -RegPath $VersionRegPath -Result 'RetryScheduled' -Phase 'ACPower' -ScriptExitCode 1618 -ErrorMessage 'AC power adapter not connected -- deferred to next Intune cycle'
 {{STATUS_TOAST_ACPOWER_BLOCK}}
                             exit 1618  # ERROR_INSTALL_ALREADY_RUNNING -- tells Intune to retry
                         }
@@ -526,6 +626,7 @@ try {
                 Write-CMTraceLog "Dell BIOS update completed successfully (exit code: $flashExitCode)"
             } elseif ($flashExitCode -eq 10) {
                 Write-CMTraceLog "Dell BIOS update returned exit code 10 -- AC power adapter not connected. Will retry on next Intune cycle." -Severity 2
+                Set-DATInstallStatus -RegPath $VersionRegPath -Result 'RetryScheduled' -Phase 'ACPower' -ToolExitCode 10 -ScriptExitCode 1618 -ErrorMessage 'Dell updater reported exit code 10 (AC power not connected) -- deferred to next Intune cycle'
 {{STATUS_TOAST_ACPOWER_BLOCK}}
                 exit 1618  # ERROR_INSTALL_ALREADY_RUNNING -- tells Intune to retry
             } else {
@@ -564,6 +665,7 @@ try {
                         # BatteryStatus 2 = AC power connected
                         if ($battery.BatteryStatus -ne 2) {
                             Write-CMTraceLog "AC power adapter not detected (BatteryStatus=$($battery.BatteryStatus)). HP BIOS updates require AC power -- will retry on next Intune cycle." -Severity 2
+                            Set-DATInstallStatus -RegPath $VersionRegPath -Result 'RetryScheduled' -Phase 'ACPower' -ScriptExitCode 1618 -ErrorMessage 'AC power adapter not connected -- deferred to next Intune cycle'
 {{STATUS_TOAST_ACPOWER_BLOCK}}
                             exit 1618  # ERROR_INSTALL_ALREADY_RUNNING -- tells Intune to retry
                         }
@@ -651,6 +753,7 @@ try {
                         # BatteryStatus 2 = AC power connected
                         if ($battery.BatteryStatus -ne 2) {
                             Write-CMTraceLog "AC power adapter not detected (BatteryStatus=$($battery.BatteryStatus)). Lenovo BIOS updates require AC power -- will retry on next Intune cycle." -Severity 2
+                            Set-DATInstallStatus -RegPath $VersionRegPath -Result 'RetryScheduled' -Phase 'ACPower' -ScriptExitCode 1618 -ErrorMessage 'AC power adapter not connected -- deferred to next Intune cycle'
 {{STATUS_TOAST_ACPOWER_BLOCK}}
                             exit 1618  # ERROR_INSTALL_ALREADY_RUNNING -- tells Intune to retry
                         }
@@ -796,16 +899,40 @@ try {
     $script:FlashSucceeded = $true
 
     # -- Write version marker to registry for detection --------------------------------------
+    # Dell exit codes 1/2, HP/MSI/Surface 3010, and Lenovo 1 all mean the BIOS was staged
+    # successfully but requires a reboot before it actually takes effect. Until that reboot
+    # happens, the physical BIOS chip still reports the OLD version -- so the marker below is
+    # tagged as "PendingReboot" and the detection script will not trust it as installed until it
+    # can confirm (via LastBootUpTime) that a reboot has actually occurred since it was staged.
+    # Without this, a device whose reboot never happens (Focus Assist, "Disable Automatic
+    # Restart" policy, or a user who never restarts) would report as Installed in Intune forever
+    # despite never actually running the new BIOS.
+    $rebootRequiredForMarker = $flashExitCode -in @(1, 2, 3010)
     if ($WhatIf) {
         Write-CMTraceLog "WHATIF: Would write version '{{Version}}' to registry at $VersionRegPath" -Severity 2
     } else {
+        $installPhase = 'RegistryMarker'
         if (-not (Test-Path $VersionRegPath)) {
             New-Item -Path $VersionRegPath -Force | Out-Null
         }
         Set-ItemProperty -Path $VersionRegPath -Name 'Version' -Value '{{Version}}' -Force
         Set-ItemProperty -Path $VersionRegPath -Name 'InstalledDate' -Value (Get-Date -Format 'o') -Force
         Set-ItemProperty -Path $VersionRegPath -Name 'OS' -Value '{{OS}}' -Force
-        Write-CMTraceLog "Version marker written to registry: $VersionRegPath = {{Version}}"
+        if ($rebootRequiredForMarker) {
+            try {
+                $bootTimeNow = (Get-CimInstance -ClassName Win32_OperatingSystem -ErrorAction Stop).LastBootUpTime
+                Set-ItemProperty -Path $VersionRegPath -Name 'PendingReboot' -Value 1 -Type DWord -Force
+                Set-ItemProperty -Path $VersionRegPath -Name 'PendingRebootBootTime' -Value $bootTimeNow.ToString('o') -Force
+                Write-CMTraceLog "Version marker written to registry: $VersionRegPath = {{Version}} (PendingReboot -- not yet applied)"
+            } catch {
+                Write-CMTraceLog "WARNING: Failed to record PendingReboot boot time -- $($_.Exception.Message)" -Severity 2
+                Write-CMTraceLog "Version marker written to registry: $VersionRegPath = {{Version}} (PendingReboot -- not yet applied)"
+            }
+        } else {
+            Remove-ItemProperty -Path $VersionRegPath -Name 'PendingReboot' -ErrorAction SilentlyContinue
+            Remove-ItemProperty -Path $VersionRegPath -Name 'PendingRebootBootTime' -ErrorAction SilentlyContinue
+            Write-CMTraceLog "Version marker written to registry: $VersionRegPath = {{Version}}"
+        }
     }
 
     # -- Clean up extracted files ----------------------------------------------------
@@ -830,6 +957,7 @@ try {
             if ($DisableRestart) {
                 Write-CMTraceLog "Automatic BIOS restart is DISABLED by admin policy. The update will apply on the next manual reboot."
                 Write-CMTraceLog "NOTE: BitLocker protection remains suspended until the device is restarted."
+                Set-DATInstallStatus -RegPath $VersionRegPath -Result 'PendingReboot' -ToolExitCode $flashExitCode -ScriptExitCode 3010 -Phase 'RestartSuppressed'
                 Write-CMTraceLog "=========================================="
                 exit 3010
             }
@@ -861,6 +989,7 @@ try {
 
             if ($focusAssistBlocking) {
                 Write-CMTraceLog "BIOS update prestaged but restart suppressed due to Focus Assist. The update will apply on the next manual reboot."
+                Set-DATInstallStatus -RegPath $VersionRegPath -Result 'PendingReboot' -ToolExitCode $flashExitCode -ScriptExitCode 3010 -Phase 'RestartSuppressedFocusAssist'
                 Write-CMTraceLog "=========================================="
                 # Exit 3010 signals soft-reboot-needed to Intune without forcing a restart
                 exit 3010
@@ -869,9 +998,13 @@ try {
             Write-CMTraceLog "Scheduling system restart in $RestartDelayMinutes minute(s) ($RestartDelaySeconds seconds) to apply BIOS update"
             shutdown.exe /r /t $RestartDelaySeconds /c "BIOS firmware update prestaged by Driver Automation Tool. Your system will restart in $RestartDelayMinutes minute(s) to apply the update. Please save your work." /d p:1:18
             Write-CMTraceLog "Restart scheduled -- shutdown.exe exit code: $LASTEXITCODE"
+            Set-DATInstallStatus -RegPath $VersionRegPath -Result 'PendingReboot' -ToolExitCode $flashExitCode -ScriptExitCode 3010 -Phase 'RestartScheduled'
             Write-CMTraceLog "=========================================="
             exit 3010
         }
+
+        # Reached only when the flash needed no reboot (exit code 0 or 6) -- record success
+        Set-DATInstallStatus -RegPath $VersionRegPath -Result 'Success' -ToolExitCode $flashExitCode -ScriptExitCode 0 -Phase 'Complete'
     }
     Write-CMTraceLog "=========================================="
 
@@ -880,6 +1013,11 @@ try {
 catch {
     Write-CMTraceLog "FATAL ERROR: $($_.Exception.Message)" -Severity 3
     Write-CMTraceLog "Stack: $($_.ScriptStackTrace)" -Severity 3
+    if (-not $WhatIf -and $VersionRegPath) {
+        $phaseForStatus = if ($installPhase) { $installPhase } else { 'Unknown' }
+        $toolCodeForStatus = if ($null -ne $flashExitCode) { $flashExitCode } else { 0 }
+        Set-DATInstallStatus -RegPath $VersionRegPath -Result 'Failed' -Phase $phaseForStatus -ToolExitCode $toolCodeForStatus -ScriptExitCode 1 -ErrorMessage $_.Exception.Message
+    }
 {{STATUS_TOAST_ERROR_BLOCK}}
     exit 1
 }

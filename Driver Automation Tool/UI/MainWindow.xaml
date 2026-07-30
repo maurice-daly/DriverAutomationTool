@@ -934,7 +934,7 @@
                                    Foreground="{DynamicResource AccentColor}" VerticalAlignment="Center" Margin="0,0,8,0"/>
                         <TextBlock Text="Driver Automation Tool" FontSize="13" FontWeight="SemiBold"
                                    Foreground="{DynamicResource WindowForeground}" VerticalAlignment="Center"/>
-                        <TextBlock x:Name="txt_Version" Text=" Version 10.1.7" FontSize="11"
+                        <TextBlock x:Name="txt_Version" Text=" Version 10.1.8" FontSize="11"
                                    Foreground="{DynamicResource InputPlaceholder}" VerticalAlignment="Center" Margin="4,0"/>
                     </StackPanel>
 
@@ -2526,8 +2526,8 @@
                                                   VerticalAlignment="Center"
                                                   Margin="0,0,12,0"/>
                                         <TextBlock x:Name="txt_CustomConsoleFolderState" Grid.Column="1"
-                                                   Text="Use Default" FontSize="12" FontWeight="SemiBold"
-                                                   Foreground="{DynamicResource InputPlaceholder}"
+                                                   Text="Use Custom Folder" FontSize="12" FontWeight="SemiBold"
+                                                   Foreground="{DynamicResource WindowForeground}"
                                                    VerticalAlignment="Center" Margin="0,0,16,0"/>
                                     </Grid>
 
@@ -4563,20 +4563,42 @@
 
                                             <Separator/>
 
-                                            <MenuItem x:Name="ctx_AssignAvailable" Header="Assign Package — Available">
+                                            <MenuItem x:Name="ctx_AssignPackage" Header="Assign Package">
                                                 <MenuItem.Icon>
                                                     <TextBlock Text="&#xE73E;" FontFamily="Segoe MDL2 Assets" FontSize="14"
-                                                               Foreground="{DynamicResource AccentColor}"/>
-                                                </MenuItem.Icon>
-                                            </MenuItem>
-                                            <MenuItem x:Name="ctx_AssignRequired" Header="Assign Package — Required">
-                                                <MenuItem.Icon>
-                                                    <TextBlock Text="&#xE7BA;" FontFamily="Segoe MDL2 Assets" FontSize="14"
-                                                               Foreground="{DynamicResource StatusWarning}"/>
+                                                               Foreground="{DynamicResource StatusSuccess}"/>
                                                 </MenuItem.Icon>
                                             </MenuItem>
 
                                             <Separator/>
+
+                                            <MenuItem x:Name="ctx_UpdateDetectionScript" Header="Update Detection &amp; Remediation Scripts">
+                                                <MenuItem.Icon>
+                                                    <TextBlock Text="&#xE9F5;" FontFamily="Segoe MDL2 Assets" FontSize="14"
+                                                               Foreground="{DynamicResource AccentColor}"/>
+                                                </MenuItem.Icon>
+                                            </MenuItem>
+                                            <MenuItem x:Name="ctx_UpdateRequirementScript" Header="Update Requirement Script">
+                                                <MenuItem.Icon>
+                                                    <TextBlock Text="&#xE90F;" FontFamily="Segoe MDL2 Assets" FontSize="14"
+                                                               Foreground="{DynamicResource AccentColor}"/>
+                                                </MenuItem.Icon>
+                                            </MenuItem>
+                                            <MenuItem x:Name="ctx_RepublishMetadata" Header="Republish Metadata">
+                                                <MenuItem.Icon>
+                                                    <TextBlock Text="&#xE898;" FontFamily="Segoe MDL2 Assets" FontSize="14"
+                                                               Foreground="{DynamicResource AccentColor}"/>
+                                                </MenuItem.Icon>
+                                            </MenuItem>
+
+                                            <Separator/>
+
+                                            <MenuItem x:Name="ctx_RemoveAssignments" Header="Remove Assignments">
+                                                <MenuItem.Icon>
+                                                    <TextBlock Text="&#xE711;" FontFamily="Segoe MDL2 Assets" FontSize="14"
+                                                               Foreground="{DynamicResource StatusError}"/>
+                                                </MenuItem.Icon>
+                                            </MenuItem>
 
                                             <MenuItem x:Name="ctx_UpdateRemoveFilter" Header="Update / Remove Assignment Filter">
                                                 <MenuItem.Icon>
@@ -5379,12 +5401,26 @@
                                             <!-- Divider -->
                                             <Border Height="1" Background="{DynamicResource SidebarActive}" Margin="0,0,0,14"/>
 
-                                            <!-- CURL Section -->
+                                            <!-- Download Engine Section -->
+                                            <TextBlock Text="Download Engine" FontSize="13" FontWeight="SemiBold"
+                                                       Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,6"/>
+                                            <TextBlock TextWrapping="Wrap" FontSize="12" LineHeight="20"
+                                                       Foreground="{DynamicResource InputPlaceholder}" Margin="0,0,0,8">
+                                                Select the engine used to download driver and BIOS packages. CURL + .NET HttpClient (Fallback) uses curl for its resume support and automatic retry, falling back to the native .NET HttpClient if curl is unavailable. .NET HttpClient downloads natively without curl -- useful if curl retries or times out in your environment.
+                                            </TextBlock>
+                                            <ComboBox x:Name="cmb_DownloadEngine" Height="34" Width="Auto" MinWidth="220"
+                                                      HorizontalAlignment="Left" Margin="0,0,0,14">
+                                                <ComboBoxItem Content="CURL + .NET HttpClient (Fallback)" IsSelected="True"/>
+                                                <ComboBoxItem Content=".NET HttpClient"/>
+                                            </ComboBox>
+
+                                            <!-- CURL settings: shown only when the CURL engine is selected -->
+                                            <StackPanel x:Name="panel_CurlSettings">
                                             <TextBlock Text="CURL Download Utility" FontSize="13" FontWeight="SemiBold"
                                                        Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,6"/>
                                             <TextBlock TextWrapping="Wrap" FontSize="12" LineHeight="20"
                                                        Foreground="{DynamicResource InputPlaceholder}" Margin="0,0,0,4">
-                                                CURL is used for downloading driver packages with resume support and automatic retry. By default, the built-in Windows system curl is used. You can also use a third-party bundled copy from the Tools folder.
+                                                By default, the built-in Windows system curl is used. You can also use a third-party bundled copy from the Tools folder.
                                             </TextBlock>
                                             <StackPanel x:Name="panel_CurlThirdParty" Visibility="Collapsed">
                                             <TextBlock TextWrapping="Wrap" FontSize="12" LineHeight="20"
@@ -5462,6 +5498,7 @@
                                                 <ComboBoxItem Content="Silent" IsSelected="True"/>
                                                 <ComboBoxItem Content="Show Window"/>
                                             </ComboBox>
+                                            </StackPanel>
                                         </StackPanel>
                                     </Border>
 
@@ -6364,7 +6401,7 @@
                                     <StackPanel>
                                         <TextBlock Text="Driver Automation Tool" FontSize="22" FontWeight="Bold"
                                                    Foreground="{DynamicResource AccentColor}" Margin="0,0,0,4"/>
-                                        <TextBlock x:Name="txt_AboutVersion" Text="Version 10.1.7" FontSize="14"
+                                        <TextBlock x:Name="txt_AboutVersion" Text="Version 10.1.8" FontSize="14"
                                                    Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,16"/>
 
                                         <TextBlock TextWrapping="Wrap" FontSize="13"

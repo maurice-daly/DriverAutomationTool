@@ -3,6 +3,19 @@ Release Notes
 IMPORTANT
 - DAT Downloads have been moved to GitHub - https://github.com/maurice-daly/DriverAutomationTool
 
+Version 10.1.8
+What's New & Fixed
+- BIOS Management — BIOS requirement, detection and install now share one manufacturer-aware version comparison (Dell/HP/Surface/Acer compare by version, Lenovo by release date), so a device already on the latest BIOS is no longer wrongly flagged as "update required" when the firmware build date predates the catalogue publish date.
+- BIOS Management — During a user's "Remind Me Later" snooze the package now reports Not applicable instead of exiting 1618, so it no longer burns Intune's 3-attempt retry budget; detection is untouched so a device is never falsely shown as installed. (#843)
+- OEM Support — Acer BIOS now works end-to-end: discovered, listed and packaged by matching the platform product code, with the Acer XML catalogue kept as an automatic fallback and integrity hashes carried through.
+- Intune Package Management — New "Republish Metadata" action refreshes an app's description, information URL, notes and logo in place without re-uploading content, and detection/requirement rule scripts can be regenerated and updated on existing apps in bulk. Metadata was also corrected: proper information URL, notes now record the tool version/build, and the description includes the package release date.
+- Download Engine — You can now skip curl entirely and download via .NET HttpClient, with a "Restore Download Engine" control, and downloaded size is verified against Content-Length. (#876)
+- Download Engine — The trusted curl SHA-256 pin is normalised (spaces/colons stripped) and persisted correctly. (#809)
+- Download Engine — Fixed a case where a stalled download could outlast the timeout guard. (#874)
+- Build Experience — The build progress modal now shows live statistics and available disk space with summary tiles, and the model grid keeps selected models sorted to the top. Fixed the build summary inheriting stale counts when all of the current build's models are skipped. (#862)
+- Reporting & Diagnostics — Driver and BIOS install scripts are more verbose and write per-device status to the registry (last result, tool/script exit codes, failure phase and message, attempt count); the driver install log is now DriverAutomationTool-Drivers.log, and an INF-level "drivers added" report is produced for patch reporting.
+- UI / Theme Fixes — Right-clicking a package row now selects it so single-package actions target the correct row; Assign Package is now a green check and Remove Assignments a red X.
+
 Version 10.1.7
 What's New & Fixed
 - Lenovo BIOS Cleanup (#863) — Lenovo BIOS updates no longer leave residual C:\SWTOOLS\FLASH and C:\DRIVERS\FLASH folders on the system drive. Because Lenovo's BIOS installers extract to hardcoded system-drive locations regardless of the target path, the build now snapshots those folders beforehand and removes only what the installer newly created (on both success and failure), leaving any pre-existing content untouched.
