@@ -4625,6 +4625,18 @@ function Start-DATModelProcessing {
         Set-DATRegistryValue -Name "FailedPackages" -Value "$($buildFailures.Count)" -Type String
         Set-DATRegistryValue -Name "PackagesCreated" -Value "$packagesCreated" -Type String
 
+        # Persist the structured failure list live (per model), not just at the end of the build,
+        # so the progress modal can mark the exact failed rows in real time. Without this the modal
+        # relies on a CurrentJob/CompletedJobs heuristic that misses a failure when the failed model
+        # is immediately followed by a skipped/successful model in the same poll -- the row then
+        # shows green while the "Failed" tile shows a count, and the two disagree.
+        if ($buildFailures.Count -gt 0) {
+            try {
+                $liveFailJson = ConvertTo-Json -InputObject @($buildFailures) -Depth 4 -Compress
+                Set-DATRegistryValue -Name 'BuildFailures' -Value $liveFailJson -Type String
+            } catch { }
+        }
+
         # Check for user abort between models -- do not continue processing or overwrite Aborted state
         $interModelReg = Get-ItemProperty -Path $global:RegPath -ErrorAction SilentlyContinue
         if ($interModelReg.RunningState -eq 'Aborted') {
@@ -10693,21 +10705,40 @@ function New-DATIntuneDetectionScript {
         @"
     # Check 4: BIOS detection. Detected when the installer's own manufacturer-aware comparison
     # reports the BIOS is already current (Dell/HP/Surface/Acer by version, Lenovo by release
-    # date), OR the registry version marker matches exactly and no reboot is still pending (covers
-    # the pre-reboot staged state, and OEMs whose live version is awkward to read).
+    # date). The registry version marker is only a FALLBACK for when the live BIOS version cannot
+    # be read: a flash that was staged but silently failed (or was rolled back) leaves the marker
+    # tattooed AHEAD of the real firmware, so trusting it would wrongly report the update as
+    # installed and permanently block any re-run of the upgrade. We therefore only trust the marker
+    # when the live BIOS version is unreadable; if the live version IS readable and the comparison
+    # still says an update is needed, the marker is stale and is ignored so the upgrade can proceed.
     `$detected = `$false
+    `$biosUpdateNeeded = `$true
     try {
         `$biosUpdateNeeded = Compare-BIOSVersion -AvailableBIOSVersion "$Version" -Manufacturer "$OEM" -AvailableReleaseDate "$releaseDate8"
         if (-not `$biosUpdateNeeded) { `$detected = `$true }
     } catch { }
 
     if (-not `$detected) {
+        # Can the live BIOS version be read? If so, the comparison above is authoritative and a
+        # registry marker must not override a genuine "update needed" result (guards against a
+        # marker that is ahead of the actual installed BIOS after a failed/rolled-back flash).
+        `$liveBiosReadable = `$false
+        try {
+            `$liveBios = Get-CimInstance -ClassName Win32_BIOS -ErrorAction Stop
+            if (`$liveBios -and -not [string]::IsNullOrWhiteSpace([string]`$liveBios.SMBIOSBIOSVersion)) { `$liveBiosReadable = `$true }
+        } catch { `$liveBiosReadable = `$false }
+
         `$regPath = "HKLM:\SOFTWARE\DriverAutomationTool\$regSubKey\$OEM\$Model"
         if (Test-Path `$regPath) {
             `$installedVer = (Get-ItemProperty -Path `$regPath -Name 'Version' -ErrorAction SilentlyContinue).Version
             if (`$installedVer -eq "$Version") {
 $pendingRebootGuard
-                if (`$mkTrusted) { `$detected = `$true }
+                if (`$mkTrusted -and -not `$liveBiosReadable) {
+                    # Live version unreadable -- trust the marker as a last resort.
+                    `$detected = `$true
+                } elseif (`$mkTrusted -and `$liveBiosReadable) {
+                    Write-Output "Registry marker (`$installedVer) is ahead of the live BIOS -- ignoring stale marker so the update can run"
+                }
             }
         }
     }
@@ -13859,7 +13890,7 @@ function Repair-DATBiosPackageNames {
                 })
             } else {
                 $allApps = Get-DATIntuneWin32Apps | Where-Object {
-                    $_.notes -eq 'Created by the Driver Automation Tool' -and
+                    $_.notes -like 'Created by the Driver Automation Tool*' -and
                     ($_.displayName -match '^BIOS\s*-\s*.+\s*-\s*Windows\s' -or
                      $_.displayName -match '^BIOS\s*-\s*.+\s*-\s*(x64|Arm64)\s*$')
                 }
@@ -14303,7 +14334,7 @@ function Repair-DATIntuneDriverPackageNames {
         # Get all driver packages (Win32 apps starting with "Drivers -")
         $allApps = @(Get-DATIntuneWin32Apps | Where-Object {
             $_.displayName -like 'Drivers -*' -and
-            $_.notes -eq 'Created by the Driver Automation Tool'
+            $_.notes -like 'Created by the Driver Automation Tool*'
         })
 
         if ($allApps.Count -eq 0) {

@@ -6561,6 +6561,61 @@ function Update-DATBuildModalFromRegistry {
     $script:BuildProgressLastJob = $currentJob
     $script:BuildProgressLastCompletedJobs = $currentCompletedJobs
 
+    # Authoritative per-model failure marking. The heuristic above can miss a failure when the
+    # failed model is immediately followed by a skipped/successful model within a single poll
+    # interval (that model's CompletedJobs increment masks the stall). Drive the row failure
+    # state from the structured BuildFailures list the runspace records instead, so the red row
+    # state and the "Failed" tile always agree.
+    $failuresJson = [string]$regValues.BuildFailures
+    if (-not [string]::IsNullOrEmpty($failuresJson)) {
+        $failList = $null
+        try { $failList = @($failuresJson | ConvertFrom-Json) } catch { $failList = $null }
+        if ($failList) {
+            foreach ($bf in $failList) {
+                if (-not $bf.Model) { continue }
+                # Resolve the failed model's job index (1-based). Match on OEM + Model, and when
+                # the same model appears for several OS/builds, disambiguate on OS.
+                $candidates = @()
+                for ($fi = 0; $fi -lt $global:SelectedModels.Count; $fi++) {
+                    $sm = $global:SelectedModels[$fi]
+                    if ($sm.OEM -eq $bf.OEM -and $sm.Model -eq $bf.Model) { $candidates += $fi }
+                }
+                if ($candidates.Count -eq 0) { continue }
+                $failIdx = $candidates[0]
+                if ($candidates.Count -gt 1 -and $bf.OS) {
+                    foreach ($c in $candidates) {
+                        $smOS = [string]$global:SelectedModels[$c].OS
+                        if ($smOS -and ($bf.OS -like "*$smOS*" -or $smOS -like "*$($bf.OS)*")) { $failIdx = $c; break }
+                    }
+                }
+                $failJob = $failIdx + 1
+                $failDisplay = if ($script:BuildModalPackageType -eq 'All') {
+                    if ($bf.PackageType -eq 'BIOS') { "$($bf.Model) (BIOS)" } else { "$($bf.Model) (Drivers)" }
+                } else {
+                    $bf.Model
+                }
+                $failKey = "$($bf.OEM)|$failJob|$failDisplay"
+                if (-not $script:BuildModalRows.ContainsKey($failKey)) { continue }
+                $failRow = $script:BuildModalRows[$failKey]
+                # Already flagged (or intentionally skipped)? leave it alone
+                $skipMark = $false
+                foreach ($s in $failRow.Stages) {
+                    if ($failRow.Status[$s] -in @('Error', 'Skipped')) { $skipMark = $true; break }
+                }
+                if ($skipMark) { continue }
+                # Mark the furthest-progressed stage as Error so the failure point is visible
+                $stageToError = $null
+                foreach ($s in $failRow.Stages) { if ($failRow.Status[$s] -eq 'Active') { $stageToError = $s; break } }
+                if (-not $stageToError) {
+                    foreach ($s in $failRow.Stages) { if ($failRow.Status[$s] -ne 'Success') { $stageToError = $s; break } }
+                }
+                if ($stageToError) {
+                    Update-DATBuildModalStage -ModelKey $failKey -Stage $stageToError -State Error
+                }
+            }
+        }
+    }
+
     # Mark all completed models as fully succeeded (skip models marked as Error or Skipped)
     for ($i = 0; $i -lt $modelIdx; $i++) {
         $prevModel = $global:SelectedModels[$i]
@@ -10090,6 +10145,8 @@ $btn_Build.Add_Click({
     Set-DATRegistryValue -Name "CompletedBiosPackages" -Value "0" -Type String
     Set-DATRegistryValue -Name "FailedPackages" -Value "0" -Type String
     Set-DATRegistryValue -Name "PackagesCreated" -Value "0" -Type String
+    # Clear the structured failure list so the progress modal cannot mark rows from a prior build.
+    Remove-ItemProperty -Path $global:RegPath -Name 'BuildFailures' -ErrorAction SilentlyContinue
     Set-DATRegistryValue -Name "RunningState"  -Value "Starting" -Type String
     Set-DATRegistryValue -Name "RunningMode"   -Value "Download" -Type String
     Set-DATRegistryValue -Name "PackagePhase"  -Value "" -Type String
@@ -21414,7 +21471,10 @@ function Invoke-DATIntuneAppRefresh {
     $script:AppRefreshPS.AddScript({
         param ($State)
         try {
-            $allApps = Get-DATIntuneWin32Apps | Where-Object { $_.notes -eq 'Created by the Driver Automation Tool' }
+            # Match both the legacy exact notes value and the newer versioned form
+            # ("Created by the Driver Automation Tool v10.x.x (build ...)") so packages built on
+            # either release are listed.
+            $allApps = Get-DATIntuneWin32Apps | Where-Object { $_.notes -like 'Created by the Driver Automation Tool*' }
             $State.Apps = @($allApps)
             $State.Status = 'Complete'
         } catch {
