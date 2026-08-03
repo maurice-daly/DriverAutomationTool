@@ -4723,26 +4723,31 @@ function Send-DATTeamsNotification {
 
     # Amber for a build that finished imperfectly or was cancelled, red only for a hard
     # failure. The status text names the state -- the counts live in the fact set below.
+    # "at" keeps the crash and abort timestamps distinct from the Failed count above them.
     switch ($effectiveOutcome) {
         'Completed' {
-            $statusColor = 'Good'
-            $statusIcon  = [char]0x2705
-            $statusText  = 'completed successfully'
+            $statusColor    = 'Good'
+            $statusIcon     = [char]0x2705
+            $statusText     = 'completed successfully'
+            $timestampLabel = 'Completed'
         }
         'Failed' {
-            $statusColor = 'Attention'
-            $statusIcon  = [char]0x274C
-            $statusText  = 'failed - see log for details'
+            $statusColor    = 'Attention'
+            $statusIcon     = [char]0x274C
+            $statusText     = 'failed - see log for details'
+            $timestampLabel = 'Failed at'
         }
         'Aborted' {
-            $statusColor = 'Warning'
-            $statusIcon  = [char]0x26A0
-            $statusText  = 'aborted by user'
+            $statusColor    = 'Warning'
+            $statusIcon     = [char]0x26A0
+            $statusText     = 'aborted by user'
+            $timestampLabel = 'Aborted at'
         }
         default {
-            $statusColor = 'Warning'
-            $statusIcon  = [char]0x26A0
-            $statusText  = 'completed with errors'
+            $statusColor    = 'Warning'
+            $statusIcon     = [char]0x26A0
+            $statusText     = 'completed with errors'
+            $timestampLabel = 'Completed'
         }
     }
     $hostname = $env:COMPUTERNAME
@@ -4816,7 +4821,7 @@ function Send-DATTeamsNotification {
                                         @{ title = 'Succeeded';   value = "$SuccessCount" },
                                         @{ title = 'Failed';      value = "$FailedCount" },
                                         @{ title = 'Host';        value = $hostname },
-                                        @{ title = 'Completed';   value = $timestamp }
+                                        @{ title = $timestampLabel; value = $timestamp }
                                     )
                                 }
                             )
