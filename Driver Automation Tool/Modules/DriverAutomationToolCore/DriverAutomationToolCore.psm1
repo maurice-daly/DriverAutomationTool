@@ -4856,8 +4856,9 @@ function Send-DATTeamsNotification {
 
     $jsonPayload = $card | ConvertTo-Json -Depth 20 -Compress
     $utf8 = [System.Text.Encoding]::UTF8
+    # Runs on the build's critical path -- an unreachable webhook must not stall the run
     Invoke-RestMethod -Uri $WebhookUrl -Method Post -Body ($utf8.GetBytes($jsonPayload)) `
-        -ContentType 'application/json; charset=utf-8' -ErrorAction Stop | Out-Null
+        -ContentType 'application/json; charset=utf-8' -TimeoutSec 30 -ErrorAction Stop | Out-Null
     Write-DATLogEntry -Value "[Teams] Notification posted to webhook" -Severity 1
 }
 
