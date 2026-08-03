@@ -3618,1075 +3618,1075 @@ function Start-DATModelProcessing {
     $packagesCreated = 0
     $currentIndex = 0
 
-    # Reset the per-build progress counters in the registry so the completion summary reflects
-    # ONLY this build. The per-model writes below are bypassed when a model is skipped (its
-    # package is already current), so without this reset the CompletedDriverPackages /
-    # CompletedBiosPackages values left by a PREVIOUS build would carry over and be shown in
-    # this build's summary dialog -- e.g. a 20-model Dell run followed by a 1-model Lenovo run
-    # would report 20 driver packages against 1 processed model. TotalJobs is stamped from the
-    # authoritative model count so "Models Processed" always matches what is actually processed.
-    Set-DATRegistryValue -Name "TotalJobs" -Value "$totalModels" -Type String
-    Set-DATRegistryValue -Name "CompletedJobs" -Value "0" -Type String
-    Set-DATRegistryValue -Name "CompletedDriverPackages" -Value "0" -Type String
-    Set-DATRegistryValue -Name "CompletedBiosPackages" -Value "0" -Type String
+        # Reset the per-build progress counters in the registry so the completion summary reflects
+        # ONLY this build. The per-model writes below are bypassed when a model is skipped (its
+        # package is already current), so without this reset the CompletedDriverPackages /
+        # CompletedBiosPackages values left by a PREVIOUS build would carry over and be shown in
+        # this build's summary dialog -- e.g. a 20-model Dell run followed by a 1-model Lenovo run
+        # would report 20 driver packages against 1 processed model. TotalJobs is stamped from the
+        # authoritative model count so "Models Processed" always matches what is actually processed.
+        Set-DATRegistryValue -Name "TotalJobs" -Value "$totalModels" -Type String
+        Set-DATRegistryValue -Name "CompletedJobs" -Value "0" -Type String
+        Set-DATRegistryValue -Name "CompletedDriverPackages" -Value "0" -Type String
+        Set-DATRegistryValue -Name "CompletedBiosPackages" -Value "0" -Type String
 
-    # Pre-fetch existing Intune Win32 apps once (avoids per-model Graph queries)
-    $cachedIntuneApps = @()
-    if ($RunningMode -eq 'Intune') {
-        try {
-            Write-DATLogEntry -Value "[Intune] Pre-fetching existing Win32 apps for skip-if-exists checks..." -Severity 1
-            $cachedIntuneApps = @(Get-DATIntuneWin32Apps)
-            Write-DATLogEntry -Value "[Intune] Cached $($cachedIntuneApps.Count) Win32 apps" -Severity 1
-        } catch {
-            Write-DATLogEntry -Value "[Intune] Failed to pre-fetch Win32 apps: $($_.Exception.Message) -- skip checks will be bypassed" -Severity 2
-        }
-    }
-
-    # Pre-build ConfigMgr package version cache (Name → Version hashtable) for O(1) lookups
-    $cmPkgVersionCache = @{}
-    $cmPkgIdSet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
-    if ($RunningMode -eq 'Configuration Manager' -and -not [string]::IsNullOrEmpty($SiteServer) -and -not [string]::IsNullOrEmpty($SiteCode)) {
-        try {
-            $smsNs = "root\SMS\Site_$SiteCode"
-            Write-DATLogEntry -Value "[ConfigMgr] Pre-fetching package versions for skip-if-current checks..." -Severity 1
-            $cimSess = New-DATCimSession -ComputerName $SiteServer
-            $cmPkgs = Invoke-DATRemoteQuery -CimSession $cimSess -ComputerName $SiteServer -Namespace $smsNs -Query "SELECT Name, Version, PackageID FROM SMS_Package"
-            foreach ($p in $cmPkgs) {
-                if (-not [string]::IsNullOrEmpty($p.Name) -and -not [string]::IsNullOrEmpty($p.Version)) {
-                    $cmPkgVersionCache[$p.Name] = $p.Version
-                }
-                if (-not [string]::IsNullOrEmpty($p.PackageID)) {
-                    [void]$cmPkgIdSet.Add($p.PackageID)
-                }
-            }
-            Write-DATLogEntry -Value "[ConfigMgr] Cached $($cmPkgVersionCache.Count) package versions" -Severity 1
-        } catch {
-            Write-DATLogEntry -Value "[ConfigMgr] Failed to pre-fetch package versions: $($_.Exception.Message)" -Severity 2
-        }
-    }
-
-    # Track BIOS packages already created in this build session to prevent duplicates
-    # (BIOS packages are OS-independent, so same model selected for multiple OS versions
-    # would otherwise create duplicate packages)
-    $processedBiosModels = @{}
-
-    # Collect per-model / per-package-type failures for the post-build "View Failures" report.
-    # Cleared at the start of every run so stale failures from a previous build are not shown.
-    $buildFailures = [System.Collections.Generic.List[object]]::new()
-    Remove-ItemProperty -Path $global:RegPath -Name 'BuildFailures' -ErrorAction SilentlyContinue
-
-    foreach ($model in $modelList) {
-        $currentIndex++
-        $oem = $model.OEM
-        $modelName = $model.Model
-
-        # Per-model failure tracking for the post-build failures report
-        $drvSuccessBefore = $driverPackageSuccessCount
-        $biosSuccessBefore = $biosPackageSuccessCount
-        $modelFailReason = ''
-        $thisBiosNoMatch = $false
-
-        # Proactively refresh Intune token before each model to prevent expiry during long builds
-        if ($RunningMode -eq 'Intune' -and -not [string]::IsNullOrEmpty($script:IntuneAuthToken)) {
-            if (-not (Update-DATIntuneTokenIfNeeded)) {
-                Write-DATLogEntry -Value "[$currentIndex/$totalModels] WARNING: Intune token refresh failed -- uploads for remaining models may fail" -Severity 3
-                Set-DATRegistryValue -Name "RunningMessage" -Value "WARNING: Intune token expired -- attempting to continue..." -Type String
+        # Pre-fetch existing Intune Win32 apps once (avoids per-model Graph queries)
+        $cachedIntuneApps = @()
+        if ($RunningMode -eq 'Intune') {
+            try {
+                Write-DATLogEntry -Value "[Intune] Pre-fetching existing Win32 apps for skip-if-exists checks..." -Severity 1
+                $cachedIntuneApps = @(Get-DATIntuneWin32Apps)
+                Write-DATLogEntry -Value "[Intune] Cached $($cachedIntuneApps.Count) Win32 apps" -Severity 1
+            } catch {
+                Write-DATLogEntry -Value "[Intune] Failed to pre-fetch Win32 apps: $($_.Exception.Message) -- skip checks will be bypassed" -Severity 2
             }
         }
 
-        $baseboards = if ($model.Baseboards -is [array]) { $model.Baseboards -join "," } else { [string]$model.Baseboards }
-        $os = $model.OS
-        $arch = $model.Architecture
-        $customDriverPath = $model.CustomDriverPath
-        $catalogDriverVersion = if ($model.Version) { $model.Version } else { '' }
-        $catalogBIOSVersion   = if ($model.BIOSVersion) { $model.BIOSVersion } else { '' }
-        $modelForceUpdate     = [bool]$model.ForceUpdate
-        $modelDownloadURL     = if ($model.DownloadURL) { [string]$model.DownloadURL } else { '' }
-
-        # Per-model package-type narrowing. The UI passes a PackageType per model derived from the
-        # deployed-version scan, so a model that only needs a BIOS update (driver already current)
-        # processes BIOS only -- and vice versa. Only narrows within the global effective type; it
-        # never widens it, and defaults to the global type when unspecified.
-        $modelPackageType = $effectivePackageType
-        if ($effectivePackageType -eq 'All' -and -not [string]::IsNullOrEmpty($model.PackageType)) {
-            $requestedType = if ($isPilotBuild) { ($model.PackageType -replace '\s+Pilot$', '').Trim() } else { [string]$model.PackageType }
-            if ($requestedType -in @('Drivers', 'BIOS', 'All')) { $modelPackageType = $requestedType }
-        }
-
-        Set-DATRegistryValue -Name "CurrentJob" -Value "$currentIndex" -Type String
-        Set-DATRegistryValue -Name "RunningMessage" -Value "[$currentIndex/$totalModels] $oem $modelName" -Type String
-        Set-DATRegistryValue -Name "RunningState" -Value "Running" -Type String
-        Set-DATRegistryValue -Name "RunningMode" -Value "Download" -Type String
-        Set-DATRegistryValue -Name "DownloadSize" -Value "---" -Type String
-        Set-DATRegistryValue -Name "BytesTransferred" -Value "0" -Type String
-        Set-DATRegistryValue -Name "DownloadBytes" -Value "0" -Type String
-        Set-DATRegistryValue -Name "DownloadSpeed" -Value "---" -Type String
-
-        Write-DATLogEntry -Value "[$currentIndex/$totalModels] Processing $oem $modelName ($os $arch)" -Severity 1
-
-        $osParts = $os.Split(" ")
-        $windowsBuild = if ($osParts.Count -ge 3) { $osParts[2] } else { $null }
-        $windowsVersion = if ($windowsBuild) { $os.Replace(" $windowsBuild", "").TrimEnd() } else { $os.TrimEnd() }
-
-        # Dell does not use Windows build-specific driver packages -- omit build from package name
-        $osPkgLabel = if ($oem -eq 'Dell') { $windowsVersion } else { "$windowsVersion $windowsBuild" }
-
-        try {
-            # ── Driver processing (when PackageType is 'Drivers' or 'All') ──────────
-            if ($modelPackageType -in @('Drivers', 'All')) {
-                $modelBIOSOnly = [bool]$model.BIOSOnly
-                if ($modelBIOSOnly) {
-                    Write-DATLogEntry -Value "[Warning] [$currentIndex/$totalModels] SKIPPED driver processing -- no driver package available for $oem $modelName ($windowsVersion $windowsBuild) -- BIOS only model" -Severity 2
-                    if ($modelPackageType -eq 'Drivers') {
-                        Set-DATRegistryValue -Name "PackagePhase" -Value "Drivers" -Type String
-                        Set-DATRegistryValue -Name "RunningMode" -Value "DriverNoMatch" -Type String
+        # Pre-build ConfigMgr package version cache (Name → Version hashtable) for O(1) lookups
+        $cmPkgVersionCache = @{}
+        $cmPkgIdSet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+        if ($RunningMode -eq 'Configuration Manager' -and -not [string]::IsNullOrEmpty($SiteServer) -and -not [string]::IsNullOrEmpty($SiteCode)) {
+            try {
+                $smsNs = "root\SMS\Site_$SiteCode"
+                Write-DATLogEntry -Value "[ConfigMgr] Pre-fetching package versions for skip-if-current checks..." -Severity 1
+                $cimSess = New-DATCimSession -ComputerName $SiteServer
+                $cmPkgs = Invoke-DATRemoteQuery -CimSession $cimSess -ComputerName $SiteServer -Namespace $smsNs -Query "SELECT Name, Version, PackageID FROM SMS_Package"
+                foreach ($p in $cmPkgs) {
+                    if (-not [string]::IsNullOrEmpty($p.Name) -and -not [string]::IsNullOrEmpty($p.Version)) {
+                        $cmPkgVersionCache[$p.Name] = $p.Version
                     }
-                } else {
-                Set-DATRegistryValue -Name "PackagePhase" -Value "Drivers" -Type String
-                Write-DATLogEntry -Value "[$currentIndex/$totalModels] Starting driver processing for $oem $modelName" -Severity 1
-
-                # ── Pre-flight: skip download+packaging if package version is current ──
-                $skipDriverDownload = $false
-                # Resolve the authoritative catalog driver version up front via a lightweight
-                # catalog lookup (no download). In scheduled/headless mode the model carries no
-                # Version (the UI grid populates it from the catalog, BuildConfig does not), so
-                # $catalogDriverVersion is empty and the skip-if-current check below is disabled,
-                # forcing a full download + packaging of drivers already current in
-                # ConfigMgr/Intune (#817). This mirrors the UI's catalog match so the same version
-                # is available before the download.
-                if ([string]::IsNullOrEmpty($catalogDriverVersion) -and -not [string]::IsNullOrEmpty($baseboards)) {
-                    $resolvedDriverVer = Find-DATDriverCatalogVersion -OEM $oem -Baseboards $baseboards -Architecture $arch -OS $os
-                    if (-not [string]::IsNullOrEmpty($resolvedDriverVer)) {
-                        $catalogDriverVersion = $resolvedDriverVer
-                        Write-DATLogEntry -Value "[$currentIndex/$totalModels] Resolved catalog driver version v$catalogDriverVersion for $oem $modelName from driver catalog" -Severity 1
+                    if (-not [string]::IsNullOrEmpty($p.PackageID)) {
+                        [void]$cmPkgIdSet.Add($p.PackageID)
                     }
                 }
-                # Extract core model identifier (last token) for fallback matching when OEM catalogs
-                # change naming conventions (e.g. "PA14250" vs "Pro Laptops PA14250")
-                $coreModelId = ($modelName -split '\s+')[-1]
+                Write-DATLogEntry -Value "[ConfigMgr] Cached $($cmPkgVersionCache.Count) package versions" -Severity 1
+            } catch {
+                Write-DATLogEntry -Value "[ConfigMgr] Failed to pre-fetch package versions: $($_.Exception.Message)" -Severity 2
+            }
+        }
 
-                if ($RunningMode -eq 'Configuration Manager') {
-                    $cmDriverPkgName = "$driverNamePrefix - $oem $modelName - $osPkgLabel $arch"
-                    Write-DATLogEntry -Value "[$currentIndex/$totalModels] Checking for existing ConfigMgr package: $cmDriverPkgName (catalog v${catalogDriverVersion})" -Severity 1
-                    if ($cmPkgVersionCache.Count -eq 0) {
-                        Write-DATLogEntry -Value "[$currentIndex/$totalModels] WARNING: ConfigMgr package cache is empty -- skip-if-current check disabled (CIM session may have failed)" -Severity 2
-                    } elseif ([string]::IsNullOrEmpty($catalogDriverVersion)) {
-                        Write-DATLogEntry -Value "[$currentIndex/$totalModels] WARNING: No catalog version available for $oem $modelName -- skip-if-current check disabled" -Severity 2
+        # Track BIOS packages already created in this build session to prevent duplicates
+        # (BIOS packages are OS-independent, so same model selected for multiple OS versions
+        # would otherwise create duplicate packages)
+        $processedBiosModels = @{}
+
+        # Collect per-model / per-package-type failures for the post-build "View Failures" report.
+        # Cleared at the start of every run so stale failures from a previous build are not shown.
+        $buildFailures = [System.Collections.Generic.List[object]]::new()
+        Remove-ItemProperty -Path $global:RegPath -Name 'BuildFailures' -ErrorAction SilentlyContinue
+
+        foreach ($model in $modelList) {
+            $currentIndex++
+            $oem = $model.OEM
+            $modelName = $model.Model
+
+            # Per-model failure tracking for the post-build failures report
+            $drvSuccessBefore = $driverPackageSuccessCount
+            $biosSuccessBefore = $biosPackageSuccessCount
+            $modelFailReason = ''
+            $thisBiosNoMatch = $false
+
+            # Proactively refresh Intune token before each model to prevent expiry during long builds
+            if ($RunningMode -eq 'Intune' -and -not [string]::IsNullOrEmpty($script:IntuneAuthToken)) {
+                if (-not (Update-DATIntuneTokenIfNeeded)) {
+                    Write-DATLogEntry -Value "[$currentIndex/$totalModels] WARNING: Intune token refresh failed -- uploads for remaining models may fail" -Severity 3
+                    Set-DATRegistryValue -Name "RunningMessage" -Value "WARNING: Intune token expired -- attempting to continue..." -Type String
+                }
+            }
+
+            $baseboards = if ($model.Baseboards -is [array]) { $model.Baseboards -join "," } else { [string]$model.Baseboards }
+            $os = $model.OS
+            $arch = $model.Architecture
+            $customDriverPath = $model.CustomDriverPath
+            $catalogDriverVersion = if ($model.Version) { $model.Version } else { '' }
+            $catalogBIOSVersion   = if ($model.BIOSVersion) { $model.BIOSVersion } else { '' }
+            $modelForceUpdate     = [bool]$model.ForceUpdate
+            $modelDownloadURL     = if ($model.DownloadURL) { [string]$model.DownloadURL } else { '' }
+
+            # Per-model package-type narrowing. The UI passes a PackageType per model derived from the
+            # deployed-version scan, so a model that only needs a BIOS update (driver already current)
+            # processes BIOS only -- and vice versa. Only narrows within the global effective type; it
+            # never widens it, and defaults to the global type when unspecified.
+            $modelPackageType = $effectivePackageType
+            if ($effectivePackageType -eq 'All' -and -not [string]::IsNullOrEmpty($model.PackageType)) {
+                $requestedType = if ($isPilotBuild) { ($model.PackageType -replace '\s+Pilot$', '').Trim() } else { [string]$model.PackageType }
+                if ($requestedType -in @('Drivers', 'BIOS', 'All')) { $modelPackageType = $requestedType }
+            }
+
+            Set-DATRegistryValue -Name "CurrentJob" -Value "$currentIndex" -Type String
+            Set-DATRegistryValue -Name "RunningMessage" -Value "[$currentIndex/$totalModels] $oem $modelName" -Type String
+            Set-DATRegistryValue -Name "RunningState" -Value "Running" -Type String
+            Set-DATRegistryValue -Name "RunningMode" -Value "Download" -Type String
+            Set-DATRegistryValue -Name "DownloadSize" -Value "---" -Type String
+            Set-DATRegistryValue -Name "BytesTransferred" -Value "0" -Type String
+            Set-DATRegistryValue -Name "DownloadBytes" -Value "0" -Type String
+            Set-DATRegistryValue -Name "DownloadSpeed" -Value "---" -Type String
+
+            Write-DATLogEntry -Value "[$currentIndex/$totalModels] Processing $oem $modelName ($os $arch)" -Severity 1
+
+            $osParts = $os.Split(" ")
+            $windowsBuild = if ($osParts.Count -ge 3) { $osParts[2] } else { $null }
+            $windowsVersion = if ($windowsBuild) { $os.Replace(" $windowsBuild", "").TrimEnd() } else { $os.TrimEnd() }
+
+            # Dell does not use Windows build-specific driver packages -- omit build from package name
+            $osPkgLabel = if ($oem -eq 'Dell') { $windowsVersion } else { "$windowsVersion $windowsBuild" }
+
+            try {
+                # ── Driver processing (when PackageType is 'Drivers' or 'All') ──────────
+                if ($modelPackageType -in @('Drivers', 'All')) {
+                    $modelBIOSOnly = [bool]$model.BIOSOnly
+                    if ($modelBIOSOnly) {
+                        Write-DATLogEntry -Value "[Warning] [$currentIndex/$totalModels] SKIPPED driver processing -- no driver package available for $oem $modelName ($windowsVersion $windowsBuild) -- BIOS only model" -Severity 2
+                        if ($modelPackageType -eq 'Drivers') {
+                            Set-DATRegistryValue -Name "PackagePhase" -Value "Drivers" -Type String
+                            Set-DATRegistryValue -Name "RunningMode" -Value "DriverNoMatch" -Type String
+                        }
                     } else {
-                        $existingCMVersion = $cmPkgVersionCache[$cmDriverPkgName]
-                        # Fallback: if exact name not found, try with just the core model identifier
-                        # Handles catalog naming changes (e.g. old pkg "Drivers - Dell PA14250 - ..." vs new catalog "Pro Laptops PA14250")
-                        if ([string]::IsNullOrEmpty($existingCMVersion) -and $coreModelId -ne $modelName) {
-                            $fallbackPkgName = "$driverNamePrefix - $oem $coreModelId - $osPkgLabel $arch"
-                            $existingCMVersion = $cmPkgVersionCache[$fallbackPkgName]
-                            if (-not [string]::IsNullOrEmpty($existingCMVersion)) {
-                                Write-DATLogEntry -Value "[$currentIndex/$totalModels] Matched variant ConfigMgr package: $fallbackPkgName (catalog model: $modelName)" -Severity 1
-                                $cmDriverPkgName = $fallbackPkgName
+                    Set-DATRegistryValue -Name "PackagePhase" -Value "Drivers" -Type String
+                    Write-DATLogEntry -Value "[$currentIndex/$totalModels] Starting driver processing for $oem $modelName" -Severity 1
+
+                    # ── Pre-flight: skip download+packaging if package version is current ──
+                    $skipDriverDownload = $false
+                    # Resolve the authoritative catalog driver version up front via a lightweight
+                    # catalog lookup (no download). In scheduled/headless mode the model carries no
+                    # Version (the UI grid populates it from the catalog, BuildConfig does not), so
+                    # $catalogDriverVersion is empty and the skip-if-current check below is disabled,
+                    # forcing a full download + packaging of drivers already current in
+                    # ConfigMgr/Intune (#817). This mirrors the UI's catalog match so the same version
+                    # is available before the download.
+                    if ([string]::IsNullOrEmpty($catalogDriverVersion) -and -not [string]::IsNullOrEmpty($baseboards)) {
+                        $resolvedDriverVer = Find-DATDriverCatalogVersion -OEM $oem -Baseboards $baseboards -Architecture $arch -OS $os
+                        if (-not [string]::IsNullOrEmpty($resolvedDriverVer)) {
+                            $catalogDriverVersion = $resolvedDriverVer
+                            Write-DATLogEntry -Value "[$currentIndex/$totalModels] Resolved catalog driver version v$catalogDriverVersion for $oem $modelName from driver catalog" -Severity 1
+                        }
+                    }
+                    # Extract core model identifier (last token) for fallback matching when OEM catalogs
+                    # change naming conventions (e.g. "PA14250" vs "Pro Laptops PA14250")
+                    $coreModelId = ($modelName -split '\s+')[-1]
+
+                    if ($RunningMode -eq 'Configuration Manager') {
+                        $cmDriverPkgName = "$driverNamePrefix - $oem $modelName - $osPkgLabel $arch"
+                        Write-DATLogEntry -Value "[$currentIndex/$totalModels] Checking for existing ConfigMgr package: $cmDriverPkgName (catalog v${catalogDriverVersion})" -Severity 1
+                        if ($cmPkgVersionCache.Count -eq 0) {
+                            Write-DATLogEntry -Value "[$currentIndex/$totalModels] WARNING: ConfigMgr package cache is empty -- skip-if-current check disabled (CIM session may have failed)" -Severity 2
+                        } elseif ([string]::IsNullOrEmpty($catalogDriverVersion)) {
+                            Write-DATLogEntry -Value "[$currentIndex/$totalModels] WARNING: No catalog version available for $oem $modelName -- skip-if-current check disabled" -Severity 2
+                        } else {
+                            $existingCMVersion = $cmPkgVersionCache[$cmDriverPkgName]
+                            # Fallback: if exact name not found, try with just the core model identifier
+                            # Handles catalog naming changes (e.g. old pkg "Drivers - Dell PA14250 - ..." vs new catalog "Pro Laptops PA14250")
+                            if ([string]::IsNullOrEmpty($existingCMVersion) -and $coreModelId -ne $modelName) {
+                                $fallbackPkgName = "$driverNamePrefix - $oem $coreModelId - $osPkgLabel $arch"
+                                $existingCMVersion = $cmPkgVersionCache[$fallbackPkgName]
+                                if (-not [string]::IsNullOrEmpty($existingCMVersion)) {
+                                    Write-DATLogEntry -Value "[$currentIndex/$totalModels] Matched variant ConfigMgr package: $fallbackPkgName (catalog model: $modelName)" -Severity 1
+                                    $cmDriverPkgName = $fallbackPkgName
+                                }
+                            }
+                            if ([string]::IsNullOrEmpty($existingCMVersion)) {
+                                Write-DATLogEntry -Value "[$currentIndex/$totalModels] No existing ConfigMgr package found matching: $cmDriverPkgName -- will download" -Severity 1
+                            } elseif ($existingCMVersion -eq $catalogDriverVersion -and -not $modelForceUpdate) {
+                                Write-DATLogEntry -Value "[$currentIndex/$totalModels] SKIPPED -- driver package version is current ($existingCMVersion): $cmDriverPkgName" -Severity 1
+                                Set-DATRegistryValue -Name "RunningMessage" -Value "Skipped (current v$existingCMVersion): $oem $modelName" -Type String
+                                $skipDriverDownload = $true
+                                $script:driverPipelineSuccess = $true
+                                $driverPackageSuccessCount++
+                            } elseif ($modelForceUpdate) {
+                                Write-DATLogEntry -Value "[$currentIndex/$totalModels] FORCE UPDATE -- bypassing version match (existing v$existingCMVersion, catalog v${catalogDriverVersion}): $cmDriverPkgName" -Severity 1
+                            } else {
+                                Write-DATLogEntry -Value "[$currentIndex/$totalModels] UPDATE needed -- existing v$existingCMVersion, catalog v${catalogDriverVersion}: $cmDriverPkgName" -Severity 1
                             }
                         }
-                        if ([string]::IsNullOrEmpty($existingCMVersion)) {
-                            Write-DATLogEntry -Value "[$currentIndex/$totalModels] No existing ConfigMgr package found matching: $cmDriverPkgName -- will download" -Severity 1
-                        } elseif ($existingCMVersion -eq $catalogDriverVersion -and -not $modelForceUpdate) {
-                            Write-DATLogEntry -Value "[$currentIndex/$totalModels] SKIPPED -- driver package version is current ($existingCMVersion): $cmDriverPkgName" -Severity 1
-                            Set-DATRegistryValue -Name "RunningMessage" -Value "Skipped (current v$existingCMVersion): $oem $modelName" -Type String
-                            $skipDriverDownload = $true
-                            $script:driverPipelineSuccess = $true
-                            $driverPackageSuccessCount++
-                        } elseif ($modelForceUpdate) {
-                            Write-DATLogEntry -Value "[$currentIndex/$totalModels] FORCE UPDATE -- bypassing version match (existing v$existingCMVersion, catalog v${catalogDriverVersion}): $cmDriverPkgName" -Severity 1
+                    } elseif ($RunningMode -eq 'Intune') {
+                        # Check cached Intune app list -- compare display version against catalog version
+                        $expectedDisplayName = "$driverNamePrefix - $oem $modelName - $osPkgLabel $arch"
+                        Write-DATLogEntry -Value "[$currentIndex/$totalModels] Checking for existing Intune package: $expectedDisplayName (catalog v${catalogDriverVersion})" -Severity 1
+                        if ($cachedIntuneApps.Count -eq 0) {
+                            Write-DATLogEntry -Value "[$currentIndex/$totalModels] WARNING: Intune app cache is empty -- skip-if-current check disabled (Graph API may have failed)" -Severity 2
+                        } elseif ([string]::IsNullOrEmpty($catalogDriverVersion)) {
+                            Write-DATLogEntry -Value "[$currentIndex/$totalModels] WARNING: No catalog version available for $oem $modelName -- skip-if-current check disabled" -Severity 2
                         } else {
-                            Write-DATLogEntry -Value "[$currentIndex/$totalModels] UPDATE needed -- existing v$existingCMVersion, catalog v${catalogDriverVersion}: $cmDriverPkgName" -Severity 1
-                        }
-                    }
-                } elseif ($RunningMode -eq 'Intune') {
-                    # Check cached Intune app list -- compare display version against catalog version
-                    $expectedDisplayName = "$driverNamePrefix - $oem $modelName - $osPkgLabel $arch"
-                    Write-DATLogEntry -Value "[$currentIndex/$totalModels] Checking for existing Intune package: $expectedDisplayName (catalog v${catalogDriverVersion})" -Severity 1
-                    if ($cachedIntuneApps.Count -eq 0) {
-                        Write-DATLogEntry -Value "[$currentIndex/$totalModels] WARNING: Intune app cache is empty -- skip-if-current check disabled (Graph API may have failed)" -Severity 2
-                    } elseif ([string]::IsNullOrEmpty($catalogDriverVersion)) {
-                        Write-DATLogEntry -Value "[$currentIndex/$totalModels] WARNING: No catalog version available for $oem $modelName -- skip-if-current check disabled" -Severity 2
-                    } else {
-                        $existingIntuneApp = $cachedIntuneApps | Where-Object {
-                            $_.displayName -eq $expectedDisplayName
-                        } | Sort-Object -Property displayVersion -Descending | Select-Object -First 1
-                        # Fallback: try with just the core model identifier
-                        if (-not $existingIntuneApp -and $coreModelId -ne $modelName) {
-                            $fallbackDisplayName = "$driverNamePrefix - $oem $coreModelId - $osPkgLabel $arch"
                             $existingIntuneApp = $cachedIntuneApps | Where-Object {
-                                $_.displayName -eq $fallbackDisplayName
+                                $_.displayName -eq $expectedDisplayName
                             } | Sort-Object -Property displayVersion -Descending | Select-Object -First 1
-                            if ($existingIntuneApp) {
-                                Write-DATLogEntry -Value "[$currentIndex/$totalModels] Matched variant Intune app: $fallbackDisplayName (catalog model: $modelName)" -Severity 1
-                                $expectedDisplayName = $fallbackDisplayName
+                            # Fallback: try with just the core model identifier
+                            if (-not $existingIntuneApp -and $coreModelId -ne $modelName) {
+                                $fallbackDisplayName = "$driverNamePrefix - $oem $coreModelId - $osPkgLabel $arch"
+                                $existingIntuneApp = $cachedIntuneApps | Where-Object {
+                                    $_.displayName -eq $fallbackDisplayName
+                                } | Sort-Object -Property displayVersion -Descending | Select-Object -First 1
+                                if ($existingIntuneApp) {
+                                    Write-DATLogEntry -Value "[$currentIndex/$totalModels] Matched variant Intune app: $fallbackDisplayName (catalog model: $modelName)" -Severity 1
+                                    $expectedDisplayName = $fallbackDisplayName
+                                }
                             }
-                        }
-                        if (-not $existingIntuneApp) {
-                            Write-DATLogEntry -Value "[$currentIndex/$totalModels] No existing Intune app found matching: $expectedDisplayName -- will download" -Severity 1
-                        } elseif ($existingIntuneApp.displayVersion -eq $catalogDriverVersion -and -not $modelForceUpdate) {
-                            Write-DATLogEntry -Value "[$currentIndex/$totalModels] SKIPPED -- Intune driver package version is current (v$($existingIntuneApp.displayVersion)): $($existingIntuneApp.displayName) (ID: $($existingIntuneApp.id))" -Severity 1
-                            Set-DATRegistryValue -Name "RunningMessage" -Value "Skipped (current v$($existingIntuneApp.displayVersion)): $oem $modelName" -Type String
-                            $skipDriverDownload = $true
-                            $script:driverPipelineSuccess = $true
-                            $driverPackageSuccessCount++
-                        } elseif ($modelForceUpdate) {
-                            Write-DATLogEntry -Value "[$currentIndex/$totalModels] FORCE UPDATE -- bypassing version match (Intune v$($existingIntuneApp.displayVersion), catalog v${catalogDriverVersion}): $expectedDisplayName" -Severity 1
-                        } else {
-                            Write-DATLogEntry -Value "[$currentIndex/$totalModels] UPDATE needed -- Intune v$($existingIntuneApp.displayVersion), catalog v${catalogDriverVersion}: $expectedDisplayName" -Severity 1
-                        }
-                    }
-                } else {
-                    # Download Only / WIM Package Only -- check if output already exists from today
-                    if ($RunningMode -eq 'Download Only') {
-                        # Download Only: check if raw download file exists from today
-                        $existingDlDir = Join-Path $StoragePath "$oem\$modelName"
-                        $existingDlFile = if (Test-Path $existingDlDir) {
-                            Get-ChildItem -Path $existingDlDir -File -ErrorAction SilentlyContinue |
-                                Where-Object { $_.LastWriteTime.Date -eq (Get-Date).Date } | Select-Object -First 1
-                        }
-                        if ($existingDlFile -and -not $modelForceUpdate) {
-                            Write-DATLogEntry -Value "[$currentIndex/$totalModels] SKIPPED download -- driver file already downloaded today: $($existingDlFile.FullName)" -Severity 1
-                            Set-DATRegistryValue -Name "RunningMessage" -Value "Skipped (exists): $oem $modelName" -Type String
-                            $skipDriverDownload = $true
-                            $driverPackageSuccessCount++
+                            if (-not $existingIntuneApp) {
+                                Write-DATLogEntry -Value "[$currentIndex/$totalModels] No existing Intune app found matching: $expectedDisplayName -- will download" -Severity 1
+                            } elseif ($existingIntuneApp.displayVersion -eq $catalogDriverVersion -and -not $modelForceUpdate) {
+                                Write-DATLogEntry -Value "[$currentIndex/$totalModels] SKIPPED -- Intune driver package version is current (v$($existingIntuneApp.displayVersion)): $($existingIntuneApp.displayName) (ID: $($existingIntuneApp.id))" -Severity 1
+                                Set-DATRegistryValue -Name "RunningMessage" -Value "Skipped (current v$($existingIntuneApp.displayVersion)): $oem $modelName" -Type String
+                                $skipDriverDownload = $true
+                                $script:driverPipelineSuccess = $true
+                                $driverPackageSuccessCount++
+                            } elseif ($modelForceUpdate) {
+                                Write-DATLogEntry -Value "[$currentIndex/$totalModels] FORCE UPDATE -- bypassing version match (Intune v$($existingIntuneApp.displayVersion), catalog v${catalogDriverVersion}): $expectedDisplayName" -Severity 1
+                            } else {
+                                Write-DATLogEntry -Value "[$currentIndex/$totalModels] UPDATE needed -- Intune v$($existingIntuneApp.displayVersion), catalog v${catalogDriverVersion}: $expectedDisplayName" -Severity 1
+                            }
                         }
                     } else {
-                        # WIM Package Only: check if WIM already exists from today
-                        $existingWimPath = Join-Path $global:TempDirectory "Packaged\$oem\$modelName\$osPkgLabel\DriverPackage.wim"
-                        if ((Test-Path $existingWimPath) -and (Get-Item $existingWimPath).LastWriteTime.Date -eq (Get-Date).Date -and -not $modelForceUpdate) {
-                            Write-DATLogEntry -Value "[$currentIndex/$totalModels] SKIPPED download -- driver WIM already created today: $existingWimPath" -Severity 1
-                            Set-DATRegistryValue -Name "RunningMessage" -Value "Skipped (exists): $oem $modelName" -Type String
-                            $skipDriverDownload = $true
-                            $driverPackageSuccessCount++
+                        # Download Only / WIM Package Only -- check if output already exists from today
+                        if ($RunningMode -eq 'Download Only') {
+                            # Download Only: check if raw download file exists from today
+                            $existingDlDir = Join-Path $StoragePath "$oem\$modelName"
+                            $existingDlFile = if (Test-Path $existingDlDir) {
+                                Get-ChildItem -Path $existingDlDir -File -ErrorAction SilentlyContinue |
+                                    Where-Object { $_.LastWriteTime.Date -eq (Get-Date).Date } | Select-Object -First 1
+                            }
+                            if ($existingDlFile -and -not $modelForceUpdate) {
+                                Write-DATLogEntry -Value "[$currentIndex/$totalModels] SKIPPED download -- driver file already downloaded today: $($existingDlFile.FullName)" -Severity 1
+                                Set-DATRegistryValue -Name "RunningMessage" -Value "Skipped (exists): $oem $modelName" -Type String
+                                $skipDriverDownload = $true
+                                $driverPackageSuccessCount++
+                            }
+                        } else {
+                            # WIM Package Only: check if WIM already exists from today
+                            $existingWimPath = Join-Path $global:TempDirectory "Packaged\$oem\$modelName\$osPkgLabel\DriverPackage.wim"
+                            if ((Test-Path $existingWimPath) -and (Get-Item $existingWimPath).LastWriteTime.Date -eq (Get-Date).Date -and -not $modelForceUpdate) {
+                                Write-DATLogEntry -Value "[$currentIndex/$totalModels] SKIPPED download -- driver WIM already created today: $existingWimPath" -Severity 1
+                                Set-DATRegistryValue -Name "RunningMessage" -Value "Skipped (exists): $oem $modelName" -Type String
+                                $skipDriverDownload = $true
+                                $driverPackageSuccessCount++
+                            }
                         }
                     }
-                }
 
-                if (-not $skipDriverDownload) {
-                $global:DATSoftPaqBuildSkipped = $false
+                    if (-not $skipDriverDownload) {
+                    $global:DATSoftPaqBuildSkipped = $false
 
-                # Build the list of remote package identifiers so the HP SoftPaq short-circuit
-                # can confirm a previously built package still exists before skipping a rebuild.
-                $existingRemoteIds = @()
-                $verifyRemote = $false
-                if ($RunningMode -eq 'Intune' -and $cachedIntuneApps.Count -gt 0) {
-                    $existingRemoteIds = @($cachedIntuneApps | ForEach-Object { "$($_.id)" } | Where-Object { -not [string]::IsNullOrEmpty($_) })
-                    $verifyRemote = $true
-                } elseif ($RunningMode -eq 'Configuration Manager' -and $cmPkgIdSet.Count -gt 0) {
-                    $existingRemoteIds = @($cmPkgIdSet)
-                    $verifyRemote = $true
-                }
+                    # Build the list of remote package identifiers so the HP SoftPaq short-circuit
+                    # can confirm a previously built package still exists before skipping a rebuild.
+                    $existingRemoteIds = @()
+                    $verifyRemote = $false
+                    if ($RunningMode -eq 'Intune' -and $cachedIntuneApps.Count -gt 0) {
+                        $existingRemoteIds = @($cachedIntuneApps | ForEach-Object { "$($_.id)" } | Where-Object { -not [string]::IsNullOrEmpty($_) })
+                        $verifyRemote = $true
+                    } elseif ($RunningMode -eq 'Configuration Manager' -and $cmPkgIdSet.Count -gt 0) {
+                        $existingRemoteIds = @($cmPkgIdSet)
+                        $verifyRemote = $true
+                    }
 
-                $catalogVersion = Invoke-DATOEMDownloadModule -OEM $oem `
-                    -Model $modelName `
-                    -SystemSKU "$baseboards" `
-                    -WindowsBuild $windowsBuild `
-                    -WindowsVersion $windowsVersion `
-                    -Architecture $arch `
-                    -DownloadDestination (Join-Path $StoragePath "$oem\$modelName") `
-                    -PackageDestination $PackagePath `
-                    -RegPath $RegPath `
-                    -LogDirectory $global:LogDirectory `
-                    -TempDirectory $global:TempDirectory `
-                    -RunningMode $RunningMode `
-                    -CustomDriverPath $customDriverPath `
-                    -CatalogDownloadURL $modelDownloadURL `
-                    -CatalogVersion $catalogDriverVersion `
-                    -ForceRebuild:$modelForceUpdate `
-                    -ExistingPackageIds $existingRemoteIds `
-                    -VerifyRemoteExistence:$verifyRemote
+                    $catalogVersion = Invoke-DATOEMDownloadModule -OEM $oem `
+                        -Model $modelName `
+                        -SystemSKU "$baseboards" `
+                        -WindowsBuild $windowsBuild `
+                        -WindowsVersion $windowsVersion `
+                        -Architecture $arch `
+                        -DownloadDestination (Join-Path $StoragePath "$oem\$modelName") `
+                        -PackageDestination $PackagePath `
+                        -RegPath $RegPath `
+                        -LogDirectory $global:LogDirectory `
+                        -TempDirectory $global:TempDirectory `
+                        -RunningMode $RunningMode `
+                        -CustomDriverPath $customDriverPath `
+                        -CatalogDownloadURL $modelDownloadURL `
+                        -CatalogVersion $catalogDriverVersion `
+                        -ForceRebuild:$modelForceUpdate `
+                        -ExistingPackageIds $existingRemoteIds `
+                        -VerifyRemoteExistence:$verifyRemote
 
-                if ($global:DATSoftPaqBuildSkipped) {
-                    Write-DATLogEntry -Value "[$currentIndex/$totalModels] $oem $modelName -- driver package unchanged (SoftPaq list identical); existing package retained" -Severity 1
-                    $script:driverPipelineSuccess = $true
-                }
+                    if ($global:DATSoftPaqBuildSkipped) {
+                        Write-DATLogEntry -Value "[$currentIndex/$totalModels] $oem $modelName -- driver package unchanged (SoftPaq list identical); existing package retained" -Severity 1
+                        $script:driverPipelineSuccess = $true
+                    }
 
-                # Resolve the authoritative package version once for telemetry reporting across
-                # all running modes. Prefer the version returned by the download module (e.g. the
-                # resolved Dell driver-pack revision), then the catalog version, then a date stamp.
-                $resolvedPkgVersion = if (-not [string]::IsNullOrEmpty($catalogVersion)) { "$catalogVersion" } elseif (-not [string]::IsNullOrEmpty($catalogDriverVersion)) { "$catalogDriverVersion" } else { Get-Date -Format "ddMMyyyy" }
+                    # Resolve the authoritative package version once for telemetry reporting across
+                    # all running modes. Prefer the version returned by the download module (e.g. the
+                    # resolved Dell driver-pack revision), then the catalog version, then a date stamp.
+                    $resolvedPkgVersion = if (-not [string]::IsNullOrEmpty($catalogVersion)) { "$catalogVersion" } elseif (-not [string]::IsNullOrEmpty($catalogDriverVersion)) { "$catalogDriverVersion" } else { Get-Date -Format "ddMMyyyy" }
 
-                # Intune: Create and upload Win32 app after packaging
-                if ($RunningMode -eq 'Intune') {
-                    $wimPath = Join-Path $global:TempDirectory "Packaged\$oem\$modelName\$osPkgLabel\DriverPackage.wim"
-                    if (Test-Path $wimPath) {
-                        Write-DATLogEntry -Value "[$currentIndex/$totalModels] Starting Intune pipeline for $oem $modelName" -Severity 1
-                        Set-DATRegistryValue -Name "RunningMessage" -Value "Creating Intune package: $oem $modelName..." -Type String
-
-                        $intuneParams = @{
-                            OEM                = $oem
-                            Model              = $modelName
-                            Baseboards         = $baseboards
-                            OS                 = $osPkgLabel
-                            Architecture       = $arch
-                            WimFilePath        = $wimPath
-                            PackageDestination = $PackagePath
-                        }
-                        if ($isPilotBuild) { $intuneParams['NamePrefix'] = $driverNamePrefix }
-                        $resolvedVersion = if (-not [string]::IsNullOrEmpty($catalogVersion)) { "$catalogVersion" } elseif (-not [string]::IsNullOrEmpty($catalogDriverVersion)) { "$catalogDriverVersion" } else { '' }
-                        if (-not [string]::IsNullOrEmpty($resolvedVersion)) { $intuneParams['Version'] = $resolvedVersion }
-                        if ($DisableToast) { $intuneParams['DisableToast'] = $true }
-                        if ($DisableRestart) { $intuneParams['DisableRestart'] = $true }
-                        if ($AlarmMode) { $intuneParams['AlarmMode'] = $true }
-                        if ($ToastTimeoutAction -ne 'RemindMeLater') { $intuneParams['ToastTimeoutAction'] = $ToastTimeoutAction }
-                        if ($MaxDeferrals -gt 0) { $intuneParams['MaxDeferrals'] = $MaxDeferrals }
-                        if (-not [string]::IsNullOrEmpty($MaintenanceWindowsJson)) { $intuneParams['MaintenanceWindowsJson'] = $MaintenanceWindowsJson }
-                        if ($RestartDelaySeconds -ne 600) { $intuneParams['RestartDelaySeconds'] = $RestartDelaySeconds }
-                        if (-not [string]::IsNullOrEmpty($DebugBuildPath)) { $intuneParams['DebugBuildPath'] = $DebugBuildPath }
-                        if (-not [string]::IsNullOrEmpty($CustomBrandingPath)) { $intuneParams['CustomBrandingPath'] = $CustomBrandingPath }
-                        if (-not [string]::IsNullOrEmpty($CustomToastTitle)) { $intuneParams['CustomToastTitle'] = $CustomToastTitle }
-                        if (-not [string]::IsNullOrEmpty($CustomToastBody)) { $intuneParams['CustomToastBody'] = $CustomToastBody }
-                        if (-not [string]::IsNullOrEmpty($CustomToastGreeting)) { $intuneParams['CustomToastGreeting'] = $CustomToastGreeting }
-                        if (-not [string]::IsNullOrEmpty($CustomToastSubtitle)) { $intuneParams['CustomToastSubtitle'] = $CustomToastSubtitle }
-                        if (-not [string]::IsNullOrEmpty($CustomToastActionButton)) { $intuneParams['CustomToastActionButton'] = $CustomToastActionButton }
-                        if (-not [string]::IsNullOrEmpty($CustomToastDismissButton)) { $intuneParams['CustomToastDismissButton'] = $CustomToastDismissButton }
-                        if (-not [string]::IsNullOrEmpty($CustomSuccessTitle)) { $intuneParams['CustomSuccessTitle'] = $CustomSuccessTitle }
-                        if (-not [string]::IsNullOrEmpty($CustomSuccessBody)) { $intuneParams['CustomSuccessBody'] = $CustomSuccessBody }
-                        if (-not [string]::IsNullOrEmpty($CustomSuccessActionButton)) { $intuneParams['CustomSuccessActionButton'] = $CustomSuccessActionButton }
-                        if (-not [string]::IsNullOrEmpty($CustomIssuesTitle)) { $intuneParams['CustomIssuesTitle'] = $CustomIssuesTitle }
-                        if (-not [string]::IsNullOrEmpty($CustomIssuesBody)) { $intuneParams['CustomIssuesBody'] = $CustomIssuesBody }
-                        if (-not [string]::IsNullOrEmpty($CustomIssuesActionButton)) { $intuneParams['CustomIssuesActionButton'] = $CustomIssuesActionButton }
-                        if ($modelForceUpdate) { $intuneParams['ForceUpdate'] = $true }
-                        if ($CreateIntuneWinOnly) { $intuneParams['CreateIntuneWinOnly'] = $true }
-                        $intuneResult = Invoke-DATIntunePackageCreation @intuneParams
-
-                        Write-DATLogEntry -Value "- $oem $modelName Intune driver upload completed" -Severity 1
-
-                        # Update cached app list so subsequent iterations detect this package
-                        if ($null -ne $intuneResult -and -not [string]::IsNullOrEmpty($intuneResult.AppId) -and -not $intuneResult.Skipped) {
-                            $driverDisplayName = "$driverNamePrefix - $oem $modelName - $osPkgLabel $arch"
-                            $driverCacheVersion = if (-not [string]::IsNullOrEmpty($catalogDriverVersion)) { $catalogDriverVersion } else { Get-Date -Format "ddMMyyyy" }
-                            $cachedIntuneApps += [PSCustomObject]@{
-                                id             = $intuneResult.AppId
-                                displayName    = $driverDisplayName
-                                displayVersion = $driverCacheVersion
-                            }
-                            Write-DATLogEntry -Value "[Intune] Added driver package to session cache: $driverDisplayName (v$driverCacheVersion)" -Severity 1
-                        }
-
-                        # Record the Intune application id on the HP SoftPaq manifest so a future
-                        # run can confirm the app still exists before skipping a rebuild.
-                        if ($oem -eq 'HP' -and $null -ne $intuneResult -and -not [string]::IsNullOrEmpty($intuneResult.AppId)) {
-                            $spRefKey = Get-DATHPSoftPaqManifestKey -Model $modelName -OSVersion $windowsVersion -Build $windowsBuild -Architecture $arch
-                            [void](Update-DATHPSoftPaqManifestReference -Key $spRefKey -Field 'intuneAppId' -Value "$($intuneResult.AppId)")
-                        }
-
-                        # Auto-deploy and auto-assignment-filter for driver packages
-                        if ($null -ne $intuneResult -and -not [string]::IsNullOrEmpty($intuneResult.AppId)) {
-                            $deployReg = Get-ItemProperty -Path $RegPath -ErrorAction SilentlyContinue
-
-                            # Deploy to target group (All Devices by default, or a custom Entra group override)
-                            if ($null -ne $deployReg.DeployAllDevices -and $deployReg.DeployAllDevices -eq 1 -and
-                                ($null -eq $deployReg.AutoAssignmentFilter -or $deployReg.AutoAssignmentFilter -ne 1)) {
-                                try {
-                                    $targetGroupId = if (-not [string]::IsNullOrEmpty($deployReg.DeployTargetGroupId)) { $deployReg.DeployTargetGroupId } else { 'adadadad-808e-44e2-905a-0b7873a8a531' }
-                                    $targetGroupName = if (-not [string]::IsNullOrEmpty($deployReg.DeployTargetGroupName)) { $deployReg.DeployTargetGroupName } else { 'All Devices' }
-                                    Set-DATRegistryValue -Name "RunningMode" -Value "Deploying" -Type String
-                                    Set-DATRegistryValue -Name "RunningMessage" -Value "Deploying to ${targetGroupName}: $oem $modelName" -Type String
-                                    Set-DATIntuneAppAssignment -AppId $intuneResult.AppId -GroupId $targetGroupId -Intent 'Required'
-                                    Write-DATLogEntry -Value "[Intune] Auto-deployed driver package to ${targetGroupName}: $oem $modelName" -Severity 1
-                                } catch {
-                                    Write-DATLogEntry -Value "[Intune] Auto-deploy to target group failed: $($_.Exception.Message)" -Severity 2
-                                }
-                            }
-
-                            # Auto-assignment filter
-                            if ($null -ne $deployReg.AutoAssignmentFilter -and $deployReg.AutoAssignmentFilter -eq 1) {
-                                try {
-                                    Set-DATRegistryValue -Name "RunningMode" -Value "AssignmentFilter" -Type String
-                                    Set-DATRegistryValue -Name "RunningMessage" -Value "Creating assignment filter: $oem $modelName" -Type String
-                                    $filterMode = if (-not [string]::IsNullOrEmpty($deployReg.AssignmentFilterMode)) { $deployReg.AssignmentFilterMode } else { 'Make' }
-                                    $filterParams = @{
-                                        AppId        = $intuneResult.AppId
-                                        Manufacturer = $oem
-                                        FilterMode   = $filterMode
-                                    }
-                                    if ($filterMode -eq 'Model') { $filterParams['Model'] = $modelName }
-                                    if (-not [string]::IsNullOrEmpty($deployReg.DeployTargetGroupId)) { $filterParams['TargetGroupId'] = $deployReg.DeployTargetGroupId }
-                                    Invoke-DATAutoAssignmentFilter @filterParams
-                                    Write-DATLogEntry -Value "[Intune] Auto-assignment filter applied for driver package: $oem $modelName ($filterMode)" -Severity 1
-                                } catch {
-                                    Write-DATLogEntry -Value "[Intune] Auto-assignment filter failed: $($_.Exception.Message)" -Severity 2
-                                }
-                            }
-                        }
-
-                        # Clean up staging WIM now that it has been wrapped into .intunewin
+                    # Intune: Create and upload Win32 app after packaging
+                    if ($RunningMode -eq 'Intune') {
+                        $wimPath = Join-Path $global:TempDirectory "Packaged\$oem\$modelName\$osPkgLabel\DriverPackage.wim"
                         if (Test-Path $wimPath) {
-                            Remove-Item -Path $wimPath -Force -ErrorAction SilentlyContinue
-                            $wimParent = Split-Path $wimPath -Parent
+                            Write-DATLogEntry -Value "[$currentIndex/$totalModels] Starting Intune pipeline for $oem $modelName" -Severity 1
+                            Set-DATRegistryValue -Name "RunningMessage" -Value "Creating Intune package: $oem $modelName..." -Type String
+
+                            $intuneParams = @{
+                                OEM                = $oem
+                                Model              = $modelName
+                                Baseboards         = $baseboards
+                                OS                 = $osPkgLabel
+                                Architecture       = $arch
+                                WimFilePath        = $wimPath
+                                PackageDestination = $PackagePath
+                            }
+                            if ($isPilotBuild) { $intuneParams['NamePrefix'] = $driverNamePrefix }
+                            $resolvedVersion = if (-not [string]::IsNullOrEmpty($catalogVersion)) { "$catalogVersion" } elseif (-not [string]::IsNullOrEmpty($catalogDriverVersion)) { "$catalogDriverVersion" } else { '' }
+                            if (-not [string]::IsNullOrEmpty($resolvedVersion)) { $intuneParams['Version'] = $resolvedVersion }
+                            if ($DisableToast) { $intuneParams['DisableToast'] = $true }
+                            if ($DisableRestart) { $intuneParams['DisableRestart'] = $true }
+                            if ($AlarmMode) { $intuneParams['AlarmMode'] = $true }
+                            if ($ToastTimeoutAction -ne 'RemindMeLater') { $intuneParams['ToastTimeoutAction'] = $ToastTimeoutAction }
+                            if ($MaxDeferrals -gt 0) { $intuneParams['MaxDeferrals'] = $MaxDeferrals }
+                            if (-not [string]::IsNullOrEmpty($MaintenanceWindowsJson)) { $intuneParams['MaintenanceWindowsJson'] = $MaintenanceWindowsJson }
+                            if ($RestartDelaySeconds -ne 600) { $intuneParams['RestartDelaySeconds'] = $RestartDelaySeconds }
+                            if (-not [string]::IsNullOrEmpty($DebugBuildPath)) { $intuneParams['DebugBuildPath'] = $DebugBuildPath }
+                            if (-not [string]::IsNullOrEmpty($CustomBrandingPath)) { $intuneParams['CustomBrandingPath'] = $CustomBrandingPath }
+                            if (-not [string]::IsNullOrEmpty($CustomToastTitle)) { $intuneParams['CustomToastTitle'] = $CustomToastTitle }
+                            if (-not [string]::IsNullOrEmpty($CustomToastBody)) { $intuneParams['CustomToastBody'] = $CustomToastBody }
+                            if (-not [string]::IsNullOrEmpty($CustomToastGreeting)) { $intuneParams['CustomToastGreeting'] = $CustomToastGreeting }
+                            if (-not [string]::IsNullOrEmpty($CustomToastSubtitle)) { $intuneParams['CustomToastSubtitle'] = $CustomToastSubtitle }
+                            if (-not [string]::IsNullOrEmpty($CustomToastActionButton)) { $intuneParams['CustomToastActionButton'] = $CustomToastActionButton }
+                            if (-not [string]::IsNullOrEmpty($CustomToastDismissButton)) { $intuneParams['CustomToastDismissButton'] = $CustomToastDismissButton }
+                            if (-not [string]::IsNullOrEmpty($CustomSuccessTitle)) { $intuneParams['CustomSuccessTitle'] = $CustomSuccessTitle }
+                            if (-not [string]::IsNullOrEmpty($CustomSuccessBody)) { $intuneParams['CustomSuccessBody'] = $CustomSuccessBody }
+                            if (-not [string]::IsNullOrEmpty($CustomSuccessActionButton)) { $intuneParams['CustomSuccessActionButton'] = $CustomSuccessActionButton }
+                            if (-not [string]::IsNullOrEmpty($CustomIssuesTitle)) { $intuneParams['CustomIssuesTitle'] = $CustomIssuesTitle }
+                            if (-not [string]::IsNullOrEmpty($CustomIssuesBody)) { $intuneParams['CustomIssuesBody'] = $CustomIssuesBody }
+                            if (-not [string]::IsNullOrEmpty($CustomIssuesActionButton)) { $intuneParams['CustomIssuesActionButton'] = $CustomIssuesActionButton }
+                            if ($modelForceUpdate) { $intuneParams['ForceUpdate'] = $true }
+                            if ($CreateIntuneWinOnly) { $intuneParams['CreateIntuneWinOnly'] = $true }
+                            $intuneResult = Invoke-DATIntunePackageCreation @intuneParams
+
+                            Write-DATLogEntry -Value "- $oem $modelName Intune driver upload completed" -Severity 1
+
+                            # Update cached app list so subsequent iterations detect this package
+                            if ($null -ne $intuneResult -and -not [string]::IsNullOrEmpty($intuneResult.AppId) -and -not $intuneResult.Skipped) {
+                                $driverDisplayName = "$driverNamePrefix - $oem $modelName - $osPkgLabel $arch"
+                                $driverCacheVersion = if (-not [string]::IsNullOrEmpty($catalogDriverVersion)) { $catalogDriverVersion } else { Get-Date -Format "ddMMyyyy" }
+                                $cachedIntuneApps += [PSCustomObject]@{
+                                    id             = $intuneResult.AppId
+                                    displayName    = $driverDisplayName
+                                    displayVersion = $driverCacheVersion
+                                }
+                                Write-DATLogEntry -Value "[Intune] Added driver package to session cache: $driverDisplayName (v$driverCacheVersion)" -Severity 1
+                            }
+
+                            # Record the Intune application id on the HP SoftPaq manifest so a future
+                            # run can confirm the app still exists before skipping a rebuild.
+                            if ($oem -eq 'HP' -and $null -ne $intuneResult -and -not [string]::IsNullOrEmpty($intuneResult.AppId)) {
+                                $spRefKey = Get-DATHPSoftPaqManifestKey -Model $modelName -OSVersion $windowsVersion -Build $windowsBuild -Architecture $arch
+                                [void](Update-DATHPSoftPaqManifestReference -Key $spRefKey -Field 'intuneAppId' -Value "$($intuneResult.AppId)")
+                            }
+
+                            # Auto-deploy and auto-assignment-filter for driver packages
+                            if ($null -ne $intuneResult -and -not [string]::IsNullOrEmpty($intuneResult.AppId)) {
+                                $deployReg = Get-ItemProperty -Path $RegPath -ErrorAction SilentlyContinue
+
+                                # Deploy to target group (All Devices by default, or a custom Entra group override)
+                                if ($null -ne $deployReg.DeployAllDevices -and $deployReg.DeployAllDevices -eq 1 -and
+                                    ($null -eq $deployReg.AutoAssignmentFilter -or $deployReg.AutoAssignmentFilter -ne 1)) {
+                                    try {
+                                        $targetGroupId = if (-not [string]::IsNullOrEmpty($deployReg.DeployTargetGroupId)) { $deployReg.DeployTargetGroupId } else { 'adadadad-808e-44e2-905a-0b7873a8a531' }
+                                        $targetGroupName = if (-not [string]::IsNullOrEmpty($deployReg.DeployTargetGroupName)) { $deployReg.DeployTargetGroupName } else { 'All Devices' }
+                                        Set-DATRegistryValue -Name "RunningMode" -Value "Deploying" -Type String
+                                        Set-DATRegistryValue -Name "RunningMessage" -Value "Deploying to ${targetGroupName}: $oem $modelName" -Type String
+                                        Set-DATIntuneAppAssignment -AppId $intuneResult.AppId -GroupId $targetGroupId -Intent 'Required'
+                                        Write-DATLogEntry -Value "[Intune] Auto-deployed driver package to ${targetGroupName}: $oem $modelName" -Severity 1
+                                    } catch {
+                                        Write-DATLogEntry -Value "[Intune] Auto-deploy to target group failed: $($_.Exception.Message)" -Severity 2
+                                    }
+                                }
+
+                                # Auto-assignment filter
+                                if ($null -ne $deployReg.AutoAssignmentFilter -and $deployReg.AutoAssignmentFilter -eq 1) {
+                                    try {
+                                        Set-DATRegistryValue -Name "RunningMode" -Value "AssignmentFilter" -Type String
+                                        Set-DATRegistryValue -Name "RunningMessage" -Value "Creating assignment filter: $oem $modelName" -Type String
+                                        $filterMode = if (-not [string]::IsNullOrEmpty($deployReg.AssignmentFilterMode)) { $deployReg.AssignmentFilterMode } else { 'Make' }
+                                        $filterParams = @{
+                                            AppId        = $intuneResult.AppId
+                                            Manufacturer = $oem
+                                            FilterMode   = $filterMode
+                                        }
+                                        if ($filterMode -eq 'Model') { $filterParams['Model'] = $modelName }
+                                        if (-not [string]::IsNullOrEmpty($deployReg.DeployTargetGroupId)) { $filterParams['TargetGroupId'] = $deployReg.DeployTargetGroupId }
+                                        Invoke-DATAutoAssignmentFilter @filterParams
+                                        Write-DATLogEntry -Value "[Intune] Auto-assignment filter applied for driver package: $oem $modelName ($filterMode)" -Severity 1
+                                    } catch {
+                                        Write-DATLogEntry -Value "[Intune] Auto-assignment filter failed: $($_.Exception.Message)" -Severity 2
+                                    }
+                                }
+                            }
+
+                            # Clean up staging WIM now that it has been wrapped into .intunewin
+                            if (Test-Path $wimPath) {
+                                Remove-Item -Path $wimPath -Force -ErrorAction SilentlyContinue
+                                $wimParent = Split-Path $wimPath -Parent
+                                if ((Test-Path $wimParent) -and @(Get-ChildItem -Path $wimParent -Force -ErrorAction SilentlyContinue).Count -eq 0) {
+                                    Remove-Item -Path $wimParent -Recurse -Force -ErrorAction SilentlyContinue
+                                }
+                                Write-DATLogEntry -Value "[$oem] Staging WIM cleaned up after Intune upload" -Severity 1
+                            }
+                            $script:driverPipelineSuccess = $true
+
+                            # Telemetry: driver report with .intunewin hash
+                            try {
+                                $intuneWinDir = Join-Path $PackagePath "IntuneWin\$oem\$modelName\$osPkgLabel"
+                                $intuneWinFile = Get-ChildItem -Path $intuneWinDir -Filter '*.intunewin' -ErrorAction SilentlyContinue | Select-Object -First 1
+                                $drvHash = if ($intuneWinFile) { Get-DATPackageHash -FilePath $intuneWinFile.FullName } else { $null }
+                                $drvSize = if ($intuneWinFile) { $intuneWinFile.Length } else { 0 }
+                                Send-DATDriverReport -Manufacturer $oem -Model $modelName `
+                                    -OSVersion $osPkgLabel -OSArchitecture $arch -Platform 'Intune' `
+                                    -Status 'Success' -PackageVersion $resolvedPkgVersion -PackageSize $drvSize -PackageHash $drvHash
+                            } catch {
+                                Write-DATLogEntry -Value "[Telemetry] Driver report failed: $($_.Exception.Message)" -Severity 2
+                            }
+                        } else {
+                            if (-not $global:DATSoftPaqBuildSkipped) {
+                                Write-DATLogEntry -Value "[Warning] - Driver WIM not found for Intune upload: $wimPath" -Severity 2
+                            }
+                        }
+                    }
+
+                    # ConfigMgr: Create driver package on site server after packaging
+                    if ($RunningMode -eq 'Configuration Manager') {
+                        $stagedDriverDir = Join-Path $global:TempDirectory "Packaged\$oem\$modelName\$osPkgLabel"
+                        $wimPath = Join-Path $stagedDriverDir "DriverPackage.wim"
+                        # When WIM compression is disabled for ConfigMgr the staged content is the
+                        # expanded driver folder rather than a single DriverPackage.wim file.
+                        $driverSource = if (Test-Path $wimPath) {
+                            $wimPath
+                        } elseif ((Test-Path $stagedDriverDir) -and @(Get-ChildItem -Path $stagedDriverDir -Force -ErrorAction SilentlyContinue).Count -gt 0) {
+                            $stagedDriverDir
+                        } else {
+                            $null
+                        }
+                        if ($driverSource) {
+                            if (-not [string]::IsNullOrEmpty($SiteServer) -and -not [string]::IsNullOrEmpty($SiteCode)) {
+                                Write-DATLogEntry -Value "[$currentIndex/$totalModels] Starting ConfigMgr driver pipeline for $oem $modelName" -Severity 1
+                                Write-DATLogEntry -Value "-- Site server: $SiteServer" -Severity 1
+                                Write-DATLogEntry -Value "-- Site code: $SiteCode" -Severity 1
+                                Set-DATRegistryValue -Name "RunningMessage" -Value "Creating ConfigMgr driver package: $oem $modelName..." -Type String
+
+                                $version = if (-not [string]::IsNullOrEmpty($catalogVersion)) { "$catalogVersion" } elseif (-not [string]::IsNullOrEmpty($catalogDriverVersion)) { "$catalogDriverVersion" } else { Get-Date -Format "ddMMyyyy" }
+                                $cmParams = @{
+                                    DriverPackage = $driverSource
+                                    OEM           = $oem
+                                    Model         = $modelName
+                                    OS            = $osPkgLabel
+                                    Architecture  = $arch
+                                    Baseboards    = $baseboards
+                                    PackagePath   = $PackagePath
+                                    SiteServer    = $SiteServer
+                                    SiteCode      = $SiteCode
+                                    Version       = $version
+                                    PackageType   = 'Drivers'
+                                    NamePrefix    = $driverNamePrefix
+                                    Priority      = $DistributionPriority
+                                }
+                                if ($DistributionPointGroups -and $DistributionPointGroups.Count -gt 0) {
+                                    $cmParams['DistributionPointGroups'] = $DistributionPointGroups
+                                }
+                                if ($DistributionPoints -and $DistributionPoints.Count -gt 0) {
+                                    $cmParams['DistributionPoints'] = $DistributionPoints
+                                }
+                                if ($modelForceUpdate) { $cmParams['ForceUpdate'] = $true }
+                                if ($EnableBinaryDeltaReplication) { $cmParams['EnableBinaryDeltaReplication'] = $true }
+                                if ($ConsoleFolderID -ge 0) { $cmParams['ConsoleFolderID'] = $ConsoleFolderID }
+                                $cmResult = New-DATConfigMgrPkg @cmParams
+
+                                if ($cmResult) {
+                                    Write-DATLogEntry -Value "- $oem $modelName ConfigMgr driver package created" -Severity 1
+
+                                    # Record the ConfigMgr package id on the HP SoftPaq manifest so a
+                                    # future run can confirm the package still exists before skipping.
+                                    if ($oem -eq 'HP') {
+                                        $spRefKey = Get-DATHPSoftPaqManifestKey -Model $modelName -OSVersion $windowsVersion -Build $windowsBuild -Architecture $arch
+                                        [void](Update-DATHPSoftPaqManifestReference -Key $spRefKey -Field 'configMgrPackageId' -Value "$cmResult")
+                                    }
+
+                                    # Telemetry: driver report with WIM hash (before cleanup). The hash
+                                    # runs on a timeout-guarded runspace so a stalled file read can never
+                                    # hang the build; the surrounding log lines make the previously-silent
+                                    # post-creation stretch diagnosable (#853).
+                                    try {
+                                        if (Test-Path $driverSource -PathType Leaf) {
+                                            # Compressed WIM -- hash the single file
+                                            Write-DATLogEntry -Value "[$oem] Post-package: hashing driver WIM for telemetry ($driverSource)" -Severity 1
+                                            $drvHash = Get-DATPackageHash -FilePath $driverSource
+                                            $drvSize = (Get-Item $driverSource).Length
+                                            Write-DATLogEntry -Value "[$oem] Post-package: driver WIM hashing complete" -Severity 1
+                                        } else {
+                                            # Expanded driver content -- sum the directory size, no single-file hash
+                                            Write-DATLogEntry -Value "[$oem] Post-package: measuring expanded driver content for telemetry" -Severity 1
+                                            $drvHash = $null
+                                            $drvSize = [int64](Get-ChildItem -Path $driverSource -Recurse -File -ErrorAction SilentlyContinue |
+                                                Measure-Object -Property Length -Sum).Sum
+                                        }
+                                        Send-DATDriverReport -Manufacturer $oem -Model $modelName `
+                                            -OSVersion $osPkgLabel -OSArchitecture $arch `
+                                            -Platform 'ConfigMgr' -Status 'Success' `
+                                            -PackageVersion $version -PackageSize $drvSize -PackageHash $drvHash
+                                    } catch {
+                                        Write-DATLogEntry -Value "[Telemetry] Driver report failed: $($_.Exception.Message)" -Severity 2
+                                    }
+
+                                    # Clean up staging content now that it has been copied to the CM package source
+                                    Write-DATLogEntry -Value "[$oem] Post-package: cleaning up staging content" -Severity 1
+                                    if (Test-Path $driverSource -PathType Leaf) {
+                                        # Compressed WIM -- remove the file then its parent if empty
+                                        Remove-Item -Path $driverSource -Force -ErrorAction SilentlyContinue
+                                        $wimParent = Split-Path $driverSource -Parent
+                                        if ((Test-Path $wimParent) -and @(Get-ChildItem -Path $wimParent -Force -ErrorAction SilentlyContinue).Count -eq 0) {
+                                            Remove-Item -Path $wimParent -Recurse -Force -ErrorAction SilentlyContinue
+                                        }
+                                        Write-DATLogEntry -Value "[$oem] Staging WIM cleaned up after ConfigMgr package creation" -Severity 1
+                                    } elseif (Test-Path $driverSource) {
+                                        # Expanded driver content -- remove the entire staging directory
+                                        Remove-Item -Path $driverSource -Recurse -Force -ErrorAction SilentlyContinue
+                                        Write-DATLogEntry -Value "[$oem] Staging directory cleaned up after ConfigMgr package creation" -Severity 1
+                                    }
+                                    $script:driverPipelineSuccess = $true
+                                } else {
+                                    Write-DATLogEntry -Value "[Warning] - $oem $modelName ConfigMgr driver package creation failed" -Severity 2
+                                }
+                            } else {
+                                Write-DATLogEntry -Value "[Warning] - ConfigMgr not connected -- driver package saved locally only" -Severity 2
+                            }
+                        } else {
+                            if (-not $global:DATSoftPaqBuildSkipped) {
+                                Write-DATLogEntry -Value "[Warning] - Driver package content not found for ConfigMgr: $stagedDriverDir" -Severity 2
+                            }
+                        }
+                    }
+
+                    # WIM Package Only: copy the final WIM from temp staging to the Package Storage Path
+                    if ($RunningMode -eq 'WIM Package Only') {
+                        $wimStagingPath = Join-Path $global:TempDirectory "Packaged\$oem\$modelName\$osPkgLabel\DriverPackage.wim"
+                        if (Test-Path $wimStagingPath) {
+                            $wimFinalDir = Join-Path $PackagePath "$oem\$modelName\$osPkgLabel"
+                            if (-not (Test-Path $wimFinalDir)) { New-Item -Path $wimFinalDir -ItemType Directory -Force | Out-Null }
+                            $wimFinalPath = Join-Path $wimFinalDir "DriverPackage.wim"
+                            Copy-Item -Path $wimStagingPath -Destination $wimFinalPath -Force
+                            Write-DATLogEntry -Value "[$currentIndex/$totalModels] WIM package stored: $wimFinalPath" -Severity 1
+                            # Clean up staging WIM
+                            Remove-Item -Path $wimStagingPath -Force -ErrorAction SilentlyContinue
+                            $wimParent = Split-Path $wimStagingPath -Parent
                             if ((Test-Path $wimParent) -and @(Get-ChildItem -Path $wimParent -Force -ErrorAction SilentlyContinue).Count -eq 0) {
                                 Remove-Item -Path $wimParent -Recurse -Force -ErrorAction SilentlyContinue
                             }
-                            Write-DATLogEntry -Value "[$oem] Staging WIM cleaned up after Intune upload" -Severity 1
+                            $script:driverPipelineSuccess = $true
                         }
-                        $script:driverPipelineSuccess = $true
+                    }
 
-                        # Telemetry: driver report with .intunewin hash
+                    # Telemetry: driver report for Download Only / WIM Only modes (no Intune or ConfigMgr)
+                    if ($RunningMode -notin @('Intune', 'Configuration Manager')) {
                         try {
-                            $intuneWinDir = Join-Path $PackagePath "IntuneWin\$oem\$modelName\$osPkgLabel"
-                            $intuneWinFile = Get-ChildItem -Path $intuneWinDir -Filter '*.intunewin' -ErrorAction SilentlyContinue | Select-Object -First 1
-                            $drvHash = if ($intuneWinFile) { Get-DATPackageHash -FilePath $intuneWinFile.FullName } else { $null }
-                            $drvSize = if ($intuneWinFile) { $intuneWinFile.Length } else { 0 }
-                            Send-DATDriverReport -Manufacturer $oem -Model $modelName `
-                                -OSVersion $osPkgLabel -OSArchitecture $arch -Platform 'Intune' `
-                                -Status 'Success' -PackageVersion $resolvedPkgVersion -PackageSize $drvSize -PackageHash $drvHash
-                        } catch {
-                            Write-DATLogEntry -Value "[Telemetry] Driver report failed: $($_.Exception.Message)" -Severity 2
-                        }
-                    } else {
-                        if (-not $global:DATSoftPaqBuildSkipped) {
-                            Write-DATLogEntry -Value "[Warning] - Driver WIM not found for Intune upload: $wimPath" -Severity 2
-                        }
-                    }
-                }
-
-                # ConfigMgr: Create driver package on site server after packaging
-                if ($RunningMode -eq 'Configuration Manager') {
-                    $stagedDriverDir = Join-Path $global:TempDirectory "Packaged\$oem\$modelName\$osPkgLabel"
-                    $wimPath = Join-Path $stagedDriverDir "DriverPackage.wim"
-                    # When WIM compression is disabled for ConfigMgr the staged content is the
-                    # expanded driver folder rather than a single DriverPackage.wim file.
-                    $driverSource = if (Test-Path $wimPath) {
-                        $wimPath
-                    } elseif ((Test-Path $stagedDriverDir) -and @(Get-ChildItem -Path $stagedDriverDir -Force -ErrorAction SilentlyContinue).Count -gt 0) {
-                        $stagedDriverDir
-                    } else {
-                        $null
-                    }
-                    if ($driverSource) {
-                        if (-not [string]::IsNullOrEmpty($SiteServer) -and -not [string]::IsNullOrEmpty($SiteCode)) {
-                            Write-DATLogEntry -Value "[$currentIndex/$totalModels] Starting ConfigMgr driver pipeline for $oem $modelName" -Severity 1
-                            Write-DATLogEntry -Value "-- Site server: $SiteServer" -Severity 1
-                            Write-DATLogEntry -Value "-- Site code: $SiteCode" -Severity 1
-                            Set-DATRegistryValue -Name "RunningMessage" -Value "Creating ConfigMgr driver package: $oem $modelName..." -Type String
-
-                            $version = if (-not [string]::IsNullOrEmpty($catalogVersion)) { "$catalogVersion" } elseif (-not [string]::IsNullOrEmpty($catalogDriverVersion)) { "$catalogDriverVersion" } else { Get-Date -Format "ddMMyyyy" }
-                            $cmParams = @{
-                                DriverPackage = $driverSource
-                                OEM           = $oem
-                                Model         = $modelName
-                                OS            = $osPkgLabel
-                                Architecture  = $arch
-                                Baseboards    = $baseboards
-                                PackagePath   = $PackagePath
-                                SiteServer    = $SiteServer
-                                SiteCode      = $SiteCode
-                                Version       = $version
-                                PackageType   = 'Drivers'
-                                NamePrefix    = $driverNamePrefix
-                                Priority      = $DistributionPriority
-                            }
-                            if ($DistributionPointGroups -and $DistributionPointGroups.Count -gt 0) {
-                                $cmParams['DistributionPointGroups'] = $DistributionPointGroups
-                            }
-                            if ($DistributionPoints -and $DistributionPoints.Count -gt 0) {
-                                $cmParams['DistributionPoints'] = $DistributionPoints
-                            }
-                            if ($modelForceUpdate) { $cmParams['ForceUpdate'] = $true }
-                            if ($EnableBinaryDeltaReplication) { $cmParams['EnableBinaryDeltaReplication'] = $true }
-                            if ($ConsoleFolderID -ge 0) { $cmParams['ConsoleFolderID'] = $ConsoleFolderID }
-                            $cmResult = New-DATConfigMgrPkg @cmParams
-
-                            if ($cmResult) {
-                                Write-DATLogEntry -Value "- $oem $modelName ConfigMgr driver package created" -Severity 1
-
-                                # Record the ConfigMgr package id on the HP SoftPaq manifest so a
-                                # future run can confirm the package still exists before skipping.
-                                if ($oem -eq 'HP') {
-                                    $spRefKey = Get-DATHPSoftPaqManifestKey -Model $modelName -OSVersion $windowsVersion -Build $windowsBuild -Architecture $arch
-                                    [void](Update-DATHPSoftPaqManifestReference -Key $spRefKey -Field 'configMgrPackageId' -Value "$cmResult")
+                            if ($RunningMode -eq 'Download Only') {
+                                # Download Only: use the raw downloaded file for telemetry
+                                $dlDestDir = Join-Path $StoragePath "$oem\$modelName"
+                                $dlFile = if (Test-Path $dlDestDir) {
+                                    Get-ChildItem -Path $dlDestDir -File -ErrorAction SilentlyContinue |
+                                        Sort-Object LastWriteTime -Descending | Select-Object -First 1
                                 }
-
-                                # Telemetry: driver report with WIM hash (before cleanup). The hash
-                                # runs on a timeout-guarded runspace so a stalled file read can never
-                                # hang the build; the surrounding log lines make the previously-silent
-                                # post-creation stretch diagnosable (#853).
-                                try {
-                                    if (Test-Path $driverSource -PathType Leaf) {
-                                        # Compressed WIM -- hash the single file
-                                        Write-DATLogEntry -Value "[$oem] Post-package: hashing driver WIM for telemetry ($driverSource)" -Severity 1
-                                        $drvHash = Get-DATPackageHash -FilePath $driverSource
-                                        $drvSize = (Get-Item $driverSource).Length
-                                        Write-DATLogEntry -Value "[$oem] Post-package: driver WIM hashing complete" -Severity 1
-                                    } else {
-                                        # Expanded driver content -- sum the directory size, no single-file hash
-                                        Write-DATLogEntry -Value "[$oem] Post-package: measuring expanded driver content for telemetry" -Severity 1
-                                        $drvHash = $null
-                                        $drvSize = [int64](Get-ChildItem -Path $driverSource -Recurse -File -ErrorAction SilentlyContinue |
-                                            Measure-Object -Property Length -Sum).Sum
-                                    }
+                                if ($dlFile) {
+                                    $drvHash = Get-DATPackageHash -FilePath $dlFile.FullName
+                                    $drvSize = $dlFile.Length
                                     Send-DATDriverReport -Manufacturer $oem -Model $modelName `
                                         -OSVersion $osPkgLabel -OSArchitecture $arch `
-                                        -Platform 'ConfigMgr' -Status 'Success' `
-                                        -PackageVersion $version -PackageSize $drvSize -PackageHash $drvHash
-                                } catch {
-                                    Write-DATLogEntry -Value "[Telemetry] Driver report failed: $($_.Exception.Message)" -Severity 2
+                                        -Platform $RunningMode -Status 'Success' `
+                                        -PackageVersion $resolvedPkgVersion -PackageSize $drvSize -PackageHash $drvHash
                                 }
-
-                                # Clean up staging content now that it has been copied to the CM package source
-                                Write-DATLogEntry -Value "[$oem] Post-package: cleaning up staging content" -Severity 1
-                                if (Test-Path $driverSource -PathType Leaf) {
-                                    # Compressed WIM -- remove the file then its parent if empty
-                                    Remove-Item -Path $driverSource -Force -ErrorAction SilentlyContinue
-                                    $wimParent = Split-Path $driverSource -Parent
-                                    if ((Test-Path $wimParent) -and @(Get-ChildItem -Path $wimParent -Force -ErrorAction SilentlyContinue).Count -eq 0) {
-                                        Remove-Item -Path $wimParent -Recurse -Force -ErrorAction SilentlyContinue
-                                    }
-                                    Write-DATLogEntry -Value "[$oem] Staging WIM cleaned up after ConfigMgr package creation" -Severity 1
-                                } elseif (Test-Path $driverSource) {
-                                    # Expanded driver content -- remove the entire staging directory
-                                    Remove-Item -Path $driverSource -Recurse -Force -ErrorAction SilentlyContinue
-                                    Write-DATLogEntry -Value "[$oem] Staging directory cleaned up after ConfigMgr package creation" -Severity 1
-                                }
-                                $script:driverPipelineSuccess = $true
                             } else {
-                                Write-DATLogEntry -Value "[Warning] - $oem $modelName ConfigMgr driver package creation failed" -Severity 2
+                            # WIM Package Only: use the WIM file for telemetry
+                            $dlWimPath = Join-Path $global:TempDirectory "Packaged\$oem\$modelName\$osPkgLabel\DriverPackage.wim"
+                            if (-not (Test-Path $dlWimPath)) {
+                                $dlWimPath = Join-Path $PackagePath "$oem\$modelName\$osPkgLabel\DriverPackage.wim"
                             }
-                        } else {
-                            Write-DATLogEntry -Value "[Warning] - ConfigMgr not connected -- driver package saved locally only" -Severity 2
-                        }
-                    } else {
-                        if (-not $global:DATSoftPaqBuildSkipped) {
-                            Write-DATLogEntry -Value "[Warning] - Driver package content not found for ConfigMgr: $stagedDriverDir" -Severity 2
-                        }
-                    }
-                }
-
-                # WIM Package Only: copy the final WIM from temp staging to the Package Storage Path
-                if ($RunningMode -eq 'WIM Package Only') {
-                    $wimStagingPath = Join-Path $global:TempDirectory "Packaged\$oem\$modelName\$osPkgLabel\DriverPackage.wim"
-                    if (Test-Path $wimStagingPath) {
-                        $wimFinalDir = Join-Path $PackagePath "$oem\$modelName\$osPkgLabel"
-                        if (-not (Test-Path $wimFinalDir)) { New-Item -Path $wimFinalDir -ItemType Directory -Force | Out-Null }
-                        $wimFinalPath = Join-Path $wimFinalDir "DriverPackage.wim"
-                        Copy-Item -Path $wimStagingPath -Destination $wimFinalPath -Force
-                        Write-DATLogEntry -Value "[$currentIndex/$totalModels] WIM package stored: $wimFinalPath" -Severity 1
-                        # Clean up staging WIM
-                        Remove-Item -Path $wimStagingPath -Force -ErrorAction SilentlyContinue
-                        $wimParent = Split-Path $wimStagingPath -Parent
-                        if ((Test-Path $wimParent) -and @(Get-ChildItem -Path $wimParent -Force -ErrorAction SilentlyContinue).Count -eq 0) {
-                            Remove-Item -Path $wimParent -Recurse -Force -ErrorAction SilentlyContinue
-                        }
-                        $script:driverPipelineSuccess = $true
-                    }
-                }
-
-                # Telemetry: driver report for Download Only / WIM Only modes (no Intune or ConfigMgr)
-                if ($RunningMode -notin @('Intune', 'Configuration Manager')) {
-                    try {
-                        if ($RunningMode -eq 'Download Only') {
-                            # Download Only: use the raw downloaded file for telemetry
-                            $dlDestDir = Join-Path $StoragePath "$oem\$modelName"
-                            $dlFile = if (Test-Path $dlDestDir) {
-                                Get-ChildItem -Path $dlDestDir -File -ErrorAction SilentlyContinue |
-                                    Sort-Object LastWriteTime -Descending | Select-Object -First 1
-                            }
-                            if ($dlFile) {
-                                $drvHash = Get-DATPackageHash -FilePath $dlFile.FullName
-                                $drvSize = $dlFile.Length
+                            if (Test-Path $dlWimPath) {
+                                $drvHash = Get-DATPackageHash -FilePath $dlWimPath
+                                $drvSize = (Get-Item $dlWimPath).Length
                                 Send-DATDriverReport -Manufacturer $oem -Model $modelName `
                                     -OSVersion $osPkgLabel -OSArchitecture $arch `
                                     -Platform $RunningMode -Status 'Success' `
                                     -PackageVersion $resolvedPkgVersion -PackageSize $drvSize -PackageHash $drvHash
                             }
-                        } else {
-                        # WIM Package Only: use the WIM file for telemetry
-                        $dlWimPath = Join-Path $global:TempDirectory "Packaged\$oem\$modelName\$osPkgLabel\DriverPackage.wim"
-                        if (-not (Test-Path $dlWimPath)) {
-                            $dlWimPath = Join-Path $PackagePath "$oem\$modelName\$osPkgLabel\DriverPackage.wim"
+                            }
+                        } catch {
+                            Write-DATLogEntry -Value "[Telemetry] Driver report failed: $($_.Exception.Message)" -Severity 2
                         }
-                        if (Test-Path $dlWimPath) {
-                            $drvHash = Get-DATPackageHash -FilePath $dlWimPath
-                            $drvSize = (Get-Item $dlWimPath).Length
-                            Send-DATDriverReport -Manufacturer $oem -Model $modelName `
-                                -OSVersion $osPkgLabel -OSArchitecture $arch `
-                                -Platform $RunningMode -Status 'Success' `
-                                -PackageVersion $resolvedPkgVersion -PackageSize $drvSize -PackageHash $drvHash
-                        }
-                        }
-                    } catch {
-                        Write-DATLogEntry -Value "[Telemetry] Driver report failed: $($_.Exception.Message)" -Severity 2
                     }
+
+                    # Count driver package success -- check if the WIM was produced
+                    # or if it was successfully consumed by the Intune/ConfigMgr pipeline
+                    # For Download Only, the raw download exists (no WIM) -- check the download folder
+                    $drvWimCheck = Join-Path $global:TempDirectory "Packaged\$oem\$modelName\$osPkgLabel\DriverPackage.wim"
+                    if ($RunningMode -eq 'Download Only') {
+                        # Download Only skips WIM packaging -- success = downloaded file exists in destination
+                        $dlDestDir = Join-Path $StoragePath "$oem\$modelName"
+                        $dlFileExists = (Test-Path $dlDestDir) -and @(Get-ChildItem -Path $dlDestDir -File -ErrorAction SilentlyContinue).Count -gt 0
+                        if ($dlFileExists) { $driverPackageSuccessCount++; $packagesCreated++ }
+                    } elseif ((Test-Path $drvWimCheck) -or $script:driverPipelineSuccess) { $driverPackageSuccessCount++; $packagesCreated++ }
+                    $script:driverPipelineSuccess = $false
+                    } # end if (-not $skipDriverDownload)
+                } # end if (-not $modelBIOSOnly)
                 }
 
-                # Count driver package success -- check if the WIM was produced
-                # or if it was successfully consumed by the Intune/ConfigMgr pipeline
-                # For Download Only, the raw download exists (no WIM) -- check the download folder
-                $drvWimCheck = Join-Path $global:TempDirectory "Packaged\$oem\$modelName\$osPkgLabel\DriverPackage.wim"
-                if ($RunningMode -eq 'Download Only') {
-                    # Download Only skips WIM packaging -- success = downloaded file exists in destination
-                    $dlDestDir = Join-Path $StoragePath "$oem\$modelName"
-                    $dlFileExists = (Test-Path $dlDestDir) -and @(Get-ChildItem -Path $dlDestDir -File -ErrorAction SilentlyContinue).Count -gt 0
-                    if ($dlFileExists) { $driverPackageSuccessCount++; $packagesCreated++ }
-                } elseif ((Test-Path $drvWimCheck) -or $script:driverPipelineSuccess) { $driverPackageSuccessCount++; $packagesCreated++ }
-                $script:driverPipelineSuccess = $false
-                } # end if (-not $skipDriverDownload)
-            } # end if (-not $modelBIOSOnly)
-            }
-
-            # ── BIOS processing (when PackageType is 'BIOS' or 'All') ──────────────
-            if ($modelPackageType -in @('BIOS', 'All')) {
-                # Microsoft Surface BIOS updates are delivered via driver injection -- skip BIOS packaging
-                if ($oem -eq 'Microsoft') {
-                    Write-DATLogEntry -Value "[$currentIndex/$totalModels] SKIPPED -- Microsoft Surface BIOS updates are handled via driver injection, no separate BIOS package required" -Severity 1
-                }
-                # Skip BIOS if this OEM+Model was already processed in this session (BIOS is OS-independent)
-                elseif ($processedBiosModels.ContainsKey("$oem|$modelName")) {
-                    Write-DATLogEntry -Value "[$currentIndex/$totalModels] SKIPPED -- BIOS already processed for $oem $modelName in this build session (BIOS is OS-independent)" -Severity 1
+                # ── BIOS processing (when PackageType is 'BIOS' or 'All') ──────────────
+                if ($modelPackageType -in @('BIOS', 'All')) {
+                    # Microsoft Surface BIOS updates are delivered via driver injection -- skip BIOS packaging
+                    if ($oem -eq 'Microsoft') {
+                        Write-DATLogEntry -Value "[$currentIndex/$totalModels] SKIPPED -- Microsoft Surface BIOS updates are handled via driver injection, no separate BIOS package required" -Severity 1
+                    }
+                    # Skip BIOS if this OEM+Model was already processed in this session (BIOS is OS-independent)
+                    elseif ($processedBiosModels.ContainsKey("$oem|$modelName")) {
+                        Write-DATLogEntry -Value "[$currentIndex/$totalModels] SKIPPED -- BIOS already processed for $oem $modelName in this build session (BIOS is OS-independent)" -Severity 1
+                        Set-DATRegistryValue -Name "PackagePhase" -Value "BIOS" -Type String
+                        Set-DATRegistryValue -Name "RunningMessage" -Value "BIOS skipped (already processed): $oem $modelName" -Type String
+                        $biosPackageSuccessCount++
+                    } else {
                     Set-DATRegistryValue -Name "PackagePhase" -Value "BIOS" -Type String
-                    Set-DATRegistryValue -Name "RunningMessage" -Value "BIOS skipped (already processed): $oem $modelName" -Type String
-                    $biosPackageSuccessCount++
-                } else {
-                Set-DATRegistryValue -Name "PackagePhase" -Value "BIOS" -Type String
-                Write-DATLogEntry -Value "[$currentIndex/$totalModels] Starting BIOS processing for $oem $modelName" -Severity 1
-                Set-DATRegistryValue -Name "RunningMessage" -Value "[$currentIndex/$totalModels] BIOS: $oem $modelName" -Type String
-                Set-DATRegistryValue -Name "RunningMode" -Value "Download" -Type String
-
-                # Resolve the authoritative catalog BIOS version up front via a lightweight
-                # catalog lookup (no download). In scheduled/headless mode the pre-fetched
-                # $catalogBIOSVersion is frequently empty because the pre-fetch runs in a
-                # different context (wrong $global:TempDirectory / catalog state), which
-                # disabled the skip-if-current check and forced a full download + packaging of
-                # BIOS already current in ConfigMgr/Intune (#817). The BIOS catalog is a small
-                # cached JSON file and this is the exact match the download path uses, so doing
-                # it here makes skip-if-current reliable regardless of the pre-fetch outcome.
-                $biosCatalog = Get-DATBiosCatalog
-                $biosEntry = Find-DATBiosPackage -OEM $oem -Baseboards $baseboards -Catalog $biosCatalog
-                if ($biosEntry -and -not [string]::IsNullOrEmpty($biosEntry.Version) -and [string]::IsNullOrEmpty($catalogBIOSVersion)) {
-                    $catalogBIOSVersion = $biosEntry.Version
-                    Write-DATLogEntry -Value "[$currentIndex/$totalModels] Resolved catalog BIOS version v$catalogBIOSVersion for $oem $modelName from BIOS catalog" -Severity 1
-                }
-
-                # ── Pre-flight: skip BIOS if deployed version matches catalog version ──
-                $skipBios = $false
-                if ([string]::IsNullOrEmpty($catalogBIOSVersion)) {
-                    Write-DATLogEntry -Value "[$currentIndex/$totalModels] WARNING: No catalog BIOS version available for $oem $modelName -- skip-if-current check disabled" -Severity 2
-                } else {
-                    if ($RunningMode -eq 'Configuration Manager') {
-                        $cmBiosPkgName = "$biosUpdateNamePrefix - $oem $modelName"
-                        Write-DATLogEntry -Value "[$currentIndex/$totalModels] Checking for existing ConfigMgr BIOS package: $cmBiosPkgName (catalog v${catalogBIOSVersion})" -Severity 1
-                        if ($cmPkgVersionCache.Count -eq 0) {
-                            Write-DATLogEntry -Value "[$currentIndex/$totalModels] WARNING: ConfigMgr package cache is empty -- BIOS skip-if-current check disabled" -Severity 2
-                        } else {
-                            $existingCMBiosVer = $cmPkgVersionCache[$cmBiosPkgName]
-                            # Fallback: try with just the core model identifier for catalog naming changes
-                            if ([string]::IsNullOrEmpty($existingCMBiosVer) -and $coreModelId -ne $modelName) {
-                                $fallbackBiosPkgName = "$biosUpdateNamePrefix - $oem $coreModelId"
-                                $existingCMBiosVer = $cmPkgVersionCache[$fallbackBiosPkgName]
-                                if (-not [string]::IsNullOrEmpty($existingCMBiosVer)) {
-                                    Write-DATLogEntry -Value "[$currentIndex/$totalModels] Matched variant ConfigMgr BIOS package: $fallbackBiosPkgName (catalog model: $modelName)" -Severity 1
-                                    $cmBiosPkgName = $fallbackBiosPkgName
-                                }
-                            }
-                            if ([string]::IsNullOrEmpty($existingCMBiosVer)) {
-                                Write-DATLogEntry -Value "[$currentIndex/$totalModels] No existing ConfigMgr BIOS package found matching: $cmBiosPkgName -- will download" -Severity 1
-                            } elseif ($existingCMBiosVer -eq $catalogBIOSVersion -and -not $modelForceUpdate) {
-                                Write-DATLogEntry -Value "[$currentIndex/$totalModels] SKIPPED -- BIOS version is current ($existingCMBiosVer): $cmBiosPkgName" -Severity 1
-                                Set-DATRegistryValue -Name "RunningMessage" -Value "BIOS skipped (current v$existingCMBiosVer): $oem $modelName" -Type String
-                                $skipBios = $true
-                                $biosPackageSuccessCount++
-                            } elseif ($modelForceUpdate) {
-                                Write-DATLogEntry -Value "[$currentIndex/$totalModels] BIOS FORCE UPDATE -- bypassing version match (existing v$existingCMBiosVer, catalog v${catalogBIOSVersion}): $cmBiosPkgName" -Severity 1
-                            } else {
-                                Write-DATLogEntry -Value "[$currentIndex/$totalModels] BIOS UPDATE needed -- existing v$existingCMBiosVer, catalog v${catalogBIOSVersion}: $cmBiosPkgName" -Severity 1
-                            }
-                        }
-                    } elseif ($RunningMode -eq 'Intune') {
-                        $expectedBiosName = "$biosNamePrefix - $oem $modelName"
-                        Write-DATLogEntry -Value "[$currentIndex/$totalModels] Checking for existing Intune BIOS package: $expectedBiosName (catalog v${catalogBIOSVersion})" -Severity 1
-                        if ($cachedIntuneApps.Count -eq 0) {
-                            Write-DATLogEntry -Value "[$currentIndex/$totalModels] WARNING: Intune app cache is empty -- BIOS skip-if-current check disabled" -Severity 2
-                        } else {
-                            $existingBiosApp = $cachedIntuneApps | Where-Object {
-                                $_.displayName -eq $expectedBiosName
-                            } | Sort-Object -Property displayVersion -Descending | Select-Object -First 1
-                            # Fallback: try with just the core model identifier
-                            if (-not $existingBiosApp -and $coreModelId -ne $modelName) {
-                                $fallbackBiosName = "$biosNamePrefix - $oem $coreModelId"
-                                $existingBiosApp = $cachedIntuneApps | Where-Object {
-                                    $_.displayName -eq $fallbackBiosName
-                                } | Sort-Object -Property displayVersion -Descending | Select-Object -First 1
-                                if ($existingBiosApp) {
-                                    Write-DATLogEntry -Value "[$currentIndex/$totalModels] Matched variant Intune BIOS app: $fallbackBiosName (catalog model: $modelName)" -Severity 1
-                                    $expectedBiosName = $fallbackBiosName
-                                }
-                            }
-                            if (-not $existingBiosApp) {
-                                Write-DATLogEntry -Value "[$currentIndex/$totalModels] No existing Intune BIOS app found matching: $expectedBiosName -- will download" -Severity 1
-                            } elseif ($existingBiosApp.displayVersion -eq $catalogBIOSVersion -and -not $modelForceUpdate) {
-                                Write-DATLogEntry -Value "[$currentIndex/$totalModels] SKIPPED -- Intune BIOS version is current (v$($existingBiosApp.displayVersion)): $expectedBiosName (ID: $($existingBiosApp.id))" -Severity 1
-                                Set-DATRegistryValue -Name "RunningMessage" -Value "BIOS skipped (current v$($existingBiosApp.displayVersion)): $oem $modelName" -Type String
-                                $skipBios = $true
-                                $biosPackageSuccessCount++
-                            } elseif ($modelForceUpdate) {
-                                Write-DATLogEntry -Value "[$currentIndex/$totalModels] BIOS FORCE UPDATE -- bypassing version match (Intune v$($existingBiosApp.displayVersion), catalog v${catalogBIOSVersion}): $expectedBiosName" -Severity 1
-                            } else {
-                                Write-DATLogEntry -Value "[$currentIndex/$totalModels] BIOS UPDATE needed -- Intune v$($existingBiosApp.displayVersion), catalog v${catalogBIOSVersion}: $expectedBiosName" -Severity 1
-                            }
-                        }
-                    } else {
-                        # Download Only / WIM Package Only -- check if BIOS package already exists with matching version
-                        $existingBiosDir = Join-Path $PackagePath "$oem\$modelName\BIOS"
-                        $existingBiosVersionFile = Join-Path $existingBiosDir ".biosversion"
-                        if ((Test-Path $existingBiosDir) -and (Test-Path $existingBiosVersionFile)) {
-                            $existingBiosVer = (Get-Content $existingBiosVersionFile -Raw -ErrorAction SilentlyContinue).Trim()
-                            if ($existingBiosVer -eq $catalogBIOSVersion -and -not $modelForceUpdate) {
-                                Write-DATLogEntry -Value "[$currentIndex/$totalModels] SKIPPED -- BIOS package already exists with current version ($existingBiosVer): $existingBiosDir" -Severity 1
-                                Set-DATRegistryValue -Name "RunningMessage" -Value "BIOS skipped (exists v$existingBiosVer): $oem $modelName" -Type String
-                                $skipBios = $true
-                                $biosPackageSuccessCount++
-                            } else {
-                                Write-DATLogEntry -Value "[$currentIndex/$totalModels] BIOS UPDATE needed -- local v$existingBiosVer, catalog v${catalogBIOSVersion}: $oem $modelName" -Severity 1
-                            }
-                        }
-                    }
-                }
-
-                if ($skipBios) {
-                    # Already current -- skip all BIOS processing
-                } else {
-
-                # $biosCatalog / $biosEntry already resolved above (before the skip check)
-                if ($null -eq $biosEntry) {
-                    Write-DATLogEntry -Value "[Warning] - No BIOS update available for $oem $modelName -- skipping BIOS" -Severity 2
-                    $biosNoMatchCount++
-                    $thisBiosNoMatch = $true
-                    if ($modelPackageType -eq 'BIOS') {
-                        # Signal the UI via RunningMode -- tied to CurrentJob so no race conditions
-                        Set-DATRegistryValue -Name "RunningMode" -Value "BiosNoMatch" -Type String
-                    }
-                } else {
-                    $biosDownloadDir = Join-Path $StoragePath "$oem\$modelName\BIOS"
+                    Write-DATLogEntry -Value "[$currentIndex/$totalModels] Starting BIOS processing for $oem $modelName" -Severity 1
+                    Set-DATRegistryValue -Name "RunningMessage" -Value "[$currentIndex/$totalModels] BIOS: $oem $modelName" -Type String
                     Set-DATRegistryValue -Name "RunningMode" -Value "Download" -Type String
-                    $biosFilePath = @(Start-DATBiosDownload -BiosEntry $biosEntry -DownloadDestination $biosDownloadDir -OEM $oem)[-1]
 
-                    if ([string]::IsNullOrEmpty($biosFilePath)) {
-                        Write-DATLogEntry -Value "[Warning] - BIOS download failed for $oem $modelName -- skipping BIOS" -Severity 2
+                    # Resolve the authoritative catalog BIOS version up front via a lightweight
+                    # catalog lookup (no download). In scheduled/headless mode the pre-fetched
+                    # $catalogBIOSVersion is frequently empty because the pre-fetch runs in a
+                    # different context (wrong $global:TempDirectory / catalog state), which
+                    # disabled the skip-if-current check and forced a full download + packaging of
+                    # BIOS already current in ConfigMgr/Intune (#817). The BIOS catalog is a small
+                    # cached JSON file and this is the exact match the download path uses, so doing
+                    # it here makes skip-if-current reliable regardless of the pre-fetch outcome.
+                    $biosCatalog = Get-DATBiosCatalog
+                    $biosEntry = Find-DATBiosPackage -OEM $oem -Baseboards $baseboards -Catalog $biosCatalog
+                    if ($biosEntry -and -not [string]::IsNullOrEmpty($biosEntry.Version) -and [string]::IsNullOrEmpty($catalogBIOSVersion)) {
+                        $catalogBIOSVersion = $biosEntry.Version
+                        Write-DATLogEntry -Value "[$currentIndex/$totalModels] Resolved catalog BIOS version v$catalogBIOSVersion for $oem $modelName from BIOS catalog" -Severity 1
+                    }
+
+                    # ── Pre-flight: skip BIOS if deployed version matches catalog version ──
+                    $skipBios = $false
+                    if ([string]::IsNullOrEmpty($catalogBIOSVersion)) {
+                        Write-DATLogEntry -Value "[$currentIndex/$totalModels] WARNING: No catalog BIOS version available for $oem $modelName -- skip-if-current check disabled" -Severity 2
                     } else {
-                        # Package the BIOS exe (extract HP/Lenovo, direct for Dell)
-                        # ConfigMgr: stage files directly | Intune: compress into WIM
-                        Set-DATRegistryValue -Name "RunningMode" -Value "Extracting" -Type String
-                        $skipWim = ($RunningMode -eq 'Configuration Manager')
-                        $includeFlash64 = ($oem -eq 'Dell' -and $RunningMode -in @('Configuration Manager', 'WIM Package Only'))
-                        $biosPackagePath = @(Invoke-DATBiosPackaging -BiosFilePath $biosFilePath -OEM $oem `
-                            -Model $modelName -Version $biosEntry.Version -PackageDestination $PackagePath `
-                            -SkipWim:$skipWim -IncludeFlash64W:$includeFlash64)[-1]
-
-                        if ($biosPackagePath -and (Test-Path $biosPackagePath)) {
-                            # Intune: Create and upload BIOS Win32 app
-                            if ($RunningMode -eq 'Intune') {
-                                Write-DATLogEntry -Value "[$currentIndex/$totalModels] Starting Intune BIOS pipeline for $oem $modelName" -Severity 1
-                                Set-DATRegistryValue -Name "RunningMessage" -Value "Creating Intune BIOS package: $oem $modelName..." -Type String
-
-                                $intuneParams = @{
-                                    OEM                = $oem
-                                    Model              = $modelName
-                                    Baseboards         = $baseboards
-                                    OS                 = $osPkgLabel
-                                    Architecture       = $arch
-                                    WimFilePath        = $biosPackagePath
-                                    PackageDestination = $PackagePath
-                                    UpdateType         = 'BIOS'
-                                }
-                                if ($isPilotBuild) { $intuneParams['NamePrefix'] = $biosNamePrefix }
-                                if (-not [string]::IsNullOrEmpty($biosEntry.Version)) { $intuneParams['Version'] = "$($biosEntry.Version)" }
-                                if (-not [string]::IsNullOrEmpty($biosEntry.ReleaseDate)) { $intuneParams['ReleaseDate'] = $biosEntry.ReleaseDate }
-                                if ($DisableToast) { $intuneParams['DisableToast'] = $true }
-                                if ($DisableRestart) { $intuneParams['DisableRestart'] = $true }
-                                if ($AlarmMode) { $intuneParams['AlarmMode'] = $true }
-                                if ($ToastTimeoutAction -ne 'RemindMeLater') { $intuneParams['ToastTimeoutAction'] = $ToastTimeoutAction }
-                                if ($MaxDeferrals -gt 0) { $intuneParams['MaxDeferrals'] = $MaxDeferrals }
-                                if (-not [string]::IsNullOrEmpty($MaintenanceWindowsJson)) { $intuneParams['MaintenanceWindowsJson'] = $MaintenanceWindowsJson }
-                                if ($RestartDelaySeconds -ne 600) { $intuneParams['RestartDelaySeconds'] = $RestartDelaySeconds }
-                                if (-not [string]::IsNullOrEmpty($DebugBuildPath)) { $intuneParams['DebugBuildPath'] = $DebugBuildPath }
-                                if (-not [string]::IsNullOrEmpty($CustomBrandingPath)) { $intuneParams['CustomBrandingPath'] = $CustomBrandingPath }
-                                if (-not [string]::IsNullOrEmpty($HPPasswordBinPath)) { $intuneParams['HPPasswordBinPath'] = $HPPasswordBinPath }
-                                if (-not [string]::IsNullOrEmpty($CustomBIOSToastTitle)) { $intuneParams['CustomToastTitle'] = $CustomBIOSToastTitle }
-                                if (-not [string]::IsNullOrEmpty($CustomBIOSToastBody)) { $intuneParams['CustomToastBody'] = $CustomBIOSToastBody }
-                                if (-not [string]::IsNullOrEmpty($CustomBIOSToastGreeting)) { $intuneParams['CustomToastGreeting'] = $CustomBIOSToastGreeting }
-                                if (-not [string]::IsNullOrEmpty($CustomBIOSToastSubtitle)) { $intuneParams['CustomToastSubtitle'] = $CustomBIOSToastSubtitle }
-                                if (-not [string]::IsNullOrEmpty($CustomBIOSToastActionButton)) { $intuneParams['CustomToastActionButton'] = $CustomBIOSToastActionButton }
-                                if (-not [string]::IsNullOrEmpty($CustomBIOSToastDismissButton)) { $intuneParams['CustomToastDismissButton'] = $CustomBIOSToastDismissButton }
-                                if (-not [string]::IsNullOrEmpty($CustomBIOSSuccessTitle)) { $intuneParams['CustomBIOSSuccessTitle'] = $CustomBIOSSuccessTitle }
-                                if (-not [string]::IsNullOrEmpty($CustomBIOSSuccessBody)) { $intuneParams['CustomBIOSSuccessBody'] = $CustomBIOSSuccessBody }
-                                if (-not [string]::IsNullOrEmpty($CustomBIOSSuccessActionButton)) { $intuneParams['CustomBIOSSuccessActionButton'] = $CustomBIOSSuccessActionButton }
-                                if (-not [string]::IsNullOrEmpty($CustomBIOSSuccessDismissButton)) { $intuneParams['CustomBIOSSuccessDismissButton'] = $CustomBIOSSuccessDismissButton }
-                                if (-not [string]::IsNullOrEmpty($CustomBIOSIssuesTitle)) { $intuneParams['CustomBIOSIssuesTitle'] = $CustomBIOSIssuesTitle }
-                                if (-not [string]::IsNullOrEmpty($CustomBIOSIssuesBody)) { $intuneParams['CustomBIOSIssuesBody'] = $CustomBIOSIssuesBody }
-                                if (-not [string]::IsNullOrEmpty($CustomBIOSIssuesActionButton)) { $intuneParams['CustomBIOSIssuesActionButton'] = $CustomBIOSIssuesActionButton }
-                                if ($modelForceUpdate) { $intuneParams['ForceUpdate'] = $true }
-                                if ($CreateIntuneWinOnly) { $intuneParams['CreateIntuneWinOnly'] = $true }
-                                $biosIntuneResult = Invoke-DATIntunePackageCreation @intuneParams
-
-                                Write-DATLogEntry -Value "- $oem $modelName Intune BIOS upload completed" -Severity 1
-
-                                # Mark BIOS as processed for this OEM+Model and update cache
-                                if ($null -ne $biosIntuneResult -and -not [string]::IsNullOrEmpty($biosIntuneResult.AppId)) {
-                                    $processedBiosModels["$oem|$modelName"] = $biosIntuneResult.AppId
-                                    if (-not $biosIntuneResult.Skipped) {
-                                        $biosDisplayName = "$biosNamePrefix - $oem $modelName"
-                                        $biosCacheVersion = if (-not [string]::IsNullOrEmpty($biosEntry.Version)) { $biosEntry.Version } else { Get-Date -Format "ddMMyyyy" }
-                                        $cachedIntuneApps += [PSCustomObject]@{
-                                            id             = $biosIntuneResult.AppId
-                                            displayName    = $biosDisplayName
-                                            displayVersion = $biosCacheVersion
-                                        }
-                                        Write-DATLogEntry -Value "[Intune] Added BIOS package to session cache: $biosDisplayName (v$biosCacheVersion)" -Severity 1
+                        if ($RunningMode -eq 'Configuration Manager') {
+                            $cmBiosPkgName = "$biosUpdateNamePrefix - $oem $modelName"
+                            Write-DATLogEntry -Value "[$currentIndex/$totalModels] Checking for existing ConfigMgr BIOS package: $cmBiosPkgName (catalog v${catalogBIOSVersion})" -Severity 1
+                            if ($cmPkgVersionCache.Count -eq 0) {
+                                Write-DATLogEntry -Value "[$currentIndex/$totalModels] WARNING: ConfigMgr package cache is empty -- BIOS skip-if-current check disabled" -Severity 2
+                            } else {
+                                $existingCMBiosVer = $cmPkgVersionCache[$cmBiosPkgName]
+                                # Fallback: try with just the core model identifier for catalog naming changes
+                                if ([string]::IsNullOrEmpty($existingCMBiosVer) -and $coreModelId -ne $modelName) {
+                                    $fallbackBiosPkgName = "$biosUpdateNamePrefix - $oem $coreModelId"
+                                    $existingCMBiosVer = $cmPkgVersionCache[$fallbackBiosPkgName]
+                                    if (-not [string]::IsNullOrEmpty($existingCMBiosVer)) {
+                                        Write-DATLogEntry -Value "[$currentIndex/$totalModels] Matched variant ConfigMgr BIOS package: $fallbackBiosPkgName (catalog model: $modelName)" -Severity 1
+                                        $cmBiosPkgName = $fallbackBiosPkgName
                                     }
                                 }
-
-                                # Auto-deploy and auto-assignment-filter for BIOS packages
-                                if ($null -ne $biosIntuneResult -and -not [string]::IsNullOrEmpty($biosIntuneResult.AppId)) {
-                                    $deployReg = Get-ItemProperty -Path $RegPath -ErrorAction SilentlyContinue
-
-                                    # Deploy to target group (All Devices by default, or a custom Entra group override)
-                                    if ($null -ne $deployReg.DeployAllDevices -and $deployReg.DeployAllDevices -eq 1 -and
-                                        ($null -eq $deployReg.AutoAssignmentFilter -or $deployReg.AutoAssignmentFilter -ne 1)) {
-                                        try {
-                                            $targetGroupId = if (-not [string]::IsNullOrEmpty($deployReg.DeployTargetGroupId)) { $deployReg.DeployTargetGroupId } else { 'adadadad-808e-44e2-905a-0b7873a8a531' }
-                                            $targetGroupName = if (-not [string]::IsNullOrEmpty($deployReg.DeployTargetGroupName)) { $deployReg.DeployTargetGroupName } else { 'All Devices' }
-                                            Set-DATRegistryValue -Name "RunningMode" -Value "Deploying" -Type String
-                                            Set-DATRegistryValue -Name "RunningMessage" -Value "Deploying BIOS to ${targetGroupName}: $oem $modelName" -Type String
-                                            Set-DATIntuneAppAssignment -AppId $biosIntuneResult.AppId -GroupId $targetGroupId -Intent 'Required'
-                                            Write-DATLogEntry -Value "[Intune] Auto-deployed BIOS package to ${targetGroupName}: $oem $modelName" -Severity 1
-                                        } catch {
-                                            Write-DATLogEntry -Value "[Intune] Auto-deploy BIOS to target group failed: $($_.Exception.Message)" -Severity 2
-                                        }
-                                    }
-
-                                    # Auto-assignment filter
-                                    if ($null -ne $deployReg.AutoAssignmentFilter -and $deployReg.AutoAssignmentFilter -eq 1) {
-                                        try {
-                                            Set-DATRegistryValue -Name "RunningMode" -Value "AssignmentFilter" -Type String
-                                            Set-DATRegistryValue -Name "RunningMessage" -Value "Creating BIOS assignment filter: $oem $modelName" -Type String
-                                            $filterMode = if (-not [string]::IsNullOrEmpty($deployReg.AssignmentFilterMode)) { $deployReg.AssignmentFilterMode } else { 'Make' }
-                                            $filterParams = @{
-                                                AppId        = $biosIntuneResult.AppId
-                                                Manufacturer = $oem
-                                                FilterMode   = $filterMode
-                                            }
-                                            if ($filterMode -eq 'Model') { $filterParams['Model'] = $modelName }
-                                            if (-not [string]::IsNullOrEmpty($deployReg.DeployTargetGroupId)) { $filterParams['TargetGroupId'] = $deployReg.DeployTargetGroupId }
-                                            Invoke-DATAutoAssignmentFilter @filterParams
-                                            Write-DATLogEntry -Value "[Intune] Auto-assignment filter applied for BIOS package: $oem $modelName ($filterMode)" -Severity 1
-                                        } catch {
-                                            Write-DATLogEntry -Value "[Intune] Auto-assignment filter for BIOS failed: $($_.Exception.Message)" -Severity 2
-                                        }
-                                    }
-                                }
-
-                                # Clean up staging BIOS WIM now that it has been wrapped into .intunewin
-                                if ((Test-Path $biosPackagePath) -and $biosPackagePath -match '\.wim$') {
-                                    Remove-Item -Path $biosPackagePath -Force -ErrorAction SilentlyContinue
-                                    $biosWimParent = Split-Path $biosPackagePath -Parent
-                                    if ((Test-Path $biosWimParent) -and @(Get-ChildItem -Path $biosWimParent -Force -ErrorAction SilentlyContinue).Count -eq 0) {
-                                        Remove-Item -Path $biosWimParent -Recurse -Force -ErrorAction SilentlyContinue
-                                    }
-                                    Write-DATLogEntry -Value "[$oem] Staging BIOS WIM cleaned up after Intune upload" -Severity 1
-                                }
-
-                                # Telemetry: BIOS report with .intunewin hash
-                                try {
-                                    $biosIntuneWinDir = Join-Path $PackagePath "IntuneWin\$oem\$modelName\BIOS"
-                                    $biosIntuneWinFile = Get-ChildItem -Path $biosIntuneWinDir -Filter '*.intunewin' -ErrorAction SilentlyContinue | Select-Object -First 1
-                                    $biosHash = if ($biosIntuneWinFile) { Get-DATPackageHash -FilePath $biosIntuneWinFile.FullName } else { $null }
-                                    Send-DATBiosReport -Manufacturer $oem -Model $modelName `
-                                        -Platform 'Intune' -Status 'Success' `
-                                        -TargetBiosVersion $biosEntry.Version -PackageHash $biosHash
-                                } catch {
-                                    Write-DATLogEntry -Value "[Telemetry] BIOS report failed: $($_.Exception.Message)" -Severity 2
+                                if ([string]::IsNullOrEmpty($existingCMBiosVer)) {
+                                    Write-DATLogEntry -Value "[$currentIndex/$totalModels] No existing ConfigMgr BIOS package found matching: $cmBiosPkgName -- will download" -Severity 1
+                                } elseif ($existingCMBiosVer -eq $catalogBIOSVersion -and -not $modelForceUpdate) {
+                                    Write-DATLogEntry -Value "[$currentIndex/$totalModels] SKIPPED -- BIOS version is current ($existingCMBiosVer): $cmBiosPkgName" -Severity 1
+                                    Set-DATRegistryValue -Name "RunningMessage" -Value "BIOS skipped (current v$existingCMBiosVer): $oem $modelName" -Type String
+                                    $skipBios = $true
+                                    $biosPackageSuccessCount++
+                                } elseif ($modelForceUpdate) {
+                                    Write-DATLogEntry -Value "[$currentIndex/$totalModels] BIOS FORCE UPDATE -- bypassing version match (existing v$existingCMBiosVer, catalog v${catalogBIOSVersion}): $cmBiosPkgName" -Severity 1
+                                } else {
+                                    Write-DATLogEntry -Value "[$currentIndex/$totalModels] BIOS UPDATE needed -- existing v$existingCMBiosVer, catalog v${catalogBIOSVersion}: $cmBiosPkgName" -Severity 1
                                 }
                             }
-
-                            # ConfigMgr: Create BIOS package on site server
-                            if ($RunningMode -eq 'Configuration Manager') {
-                                if (-not [string]::IsNullOrEmpty($SiteServer) -and -not [string]::IsNullOrEmpty($SiteCode)) {
-                                    Write-DATLogEntry -Value "[$currentIndex/$totalModels] Starting ConfigMgr BIOS pipeline for $oem $modelName" -Severity 1
-                                    Set-DATRegistryValue -Name "RunningMessage" -Value "Creating ConfigMgr BIOS package: $oem $modelName..." -Type String
-
-                                    $biosVersion = $biosEntry.Version
-                                    $cmParams = @{
-                                        DriverPackage = $biosPackagePath
-                                        OEM           = $oem
-                                        Model         = $modelName
-                                        OS            = $osPkgLabel
-                                        Architecture  = $arch
-                                        Baseboards    = $baseboards
-                                        PackagePath   = $PackagePath
-                                        SiteServer    = $SiteServer
-                                        SiteCode      = $SiteCode
-                                        Version       = $biosVersion
-                                        PackageType   = 'BIOS'
-                                        NamePrefix    = $biosUpdateNamePrefix
-                                        Priority      = $DistributionPriority
+                        } elseif ($RunningMode -eq 'Intune') {
+                            $expectedBiosName = "$biosNamePrefix - $oem $modelName"
+                            Write-DATLogEntry -Value "[$currentIndex/$totalModels] Checking for existing Intune BIOS package: $expectedBiosName (catalog v${catalogBIOSVersion})" -Severity 1
+                            if ($cachedIntuneApps.Count -eq 0) {
+                                Write-DATLogEntry -Value "[$currentIndex/$totalModels] WARNING: Intune app cache is empty -- BIOS skip-if-current check disabled" -Severity 2
+                            } else {
+                                $existingBiosApp = $cachedIntuneApps | Where-Object {
+                                    $_.displayName -eq $expectedBiosName
+                                } | Sort-Object -Property displayVersion -Descending | Select-Object -First 1
+                                # Fallback: try with just the core model identifier
+                                if (-not $existingBiosApp -and $coreModelId -ne $modelName) {
+                                    $fallbackBiosName = "$biosNamePrefix - $oem $coreModelId"
+                                    $existingBiosApp = $cachedIntuneApps | Where-Object {
+                                        $_.displayName -eq $fallbackBiosName
+                                    } | Sort-Object -Property displayVersion -Descending | Select-Object -First 1
+                                    if ($existingBiosApp) {
+                                        Write-DATLogEntry -Value "[$currentIndex/$totalModels] Matched variant Intune BIOS app: $fallbackBiosName (catalog model: $modelName)" -Severity 1
+                                        $expectedBiosName = $fallbackBiosName
                                     }
-                                    if (-not [string]::IsNullOrEmpty($biosEntry.ReleaseDate)) {
-                                        $cmParams['ReleaseDate'] = $biosEntry.ReleaseDate
-                                    }
-                                    if ($DistributionPointGroups -and $DistributionPointGroups.Count -gt 0) {
-                                        $cmParams['DistributionPointGroups'] = $DistributionPointGroups
-                                    }
-                                    if ($DistributionPoints -and $DistributionPoints.Count -gt 0) {
-                                        $cmParams['DistributionPoints'] = $DistributionPoints
-                                    }
-                                    if ($modelForceUpdate) { $cmParams['ForceUpdate'] = $true }
-                                    if ($EnableBinaryDeltaReplication) { $cmParams['EnableBinaryDeltaReplication'] = $true }
-                                    if ($ConsoleFolderID -ge 0) { $cmParams['ConsoleFolderID'] = $ConsoleFolderID }
-                                    $cmResult = New-DATConfigMgrPkg @cmParams
+                                }
+                                if (-not $existingBiosApp) {
+                                    Write-DATLogEntry -Value "[$currentIndex/$totalModels] No existing Intune BIOS app found matching: $expectedBiosName -- will download" -Severity 1
+                                } elseif ($existingBiosApp.displayVersion -eq $catalogBIOSVersion -and -not $modelForceUpdate) {
+                                    Write-DATLogEntry -Value "[$currentIndex/$totalModels] SKIPPED -- Intune BIOS version is current (v$($existingBiosApp.displayVersion)): $expectedBiosName (ID: $($existingBiosApp.id))" -Severity 1
+                                    Set-DATRegistryValue -Name "RunningMessage" -Value "BIOS skipped (current v$($existingBiosApp.displayVersion)): $oem $modelName" -Type String
+                                    $skipBios = $true
+                                    $biosPackageSuccessCount++
+                                } elseif ($modelForceUpdate) {
+                                    Write-DATLogEntry -Value "[$currentIndex/$totalModels] BIOS FORCE UPDATE -- bypassing version match (Intune v$($existingBiosApp.displayVersion), catalog v${catalogBIOSVersion}): $expectedBiosName" -Severity 1
+                                } else {
+                                    Write-DATLogEntry -Value "[$currentIndex/$totalModels] BIOS UPDATE needed -- Intune v$($existingBiosApp.displayVersion), catalog v${catalogBIOSVersion}: $expectedBiosName" -Severity 1
+                                }
+                            }
+                        } else {
+                            # Download Only / WIM Package Only -- check if BIOS package already exists with matching version
+                            $existingBiosDir = Join-Path $PackagePath "$oem\$modelName\BIOS"
+                            $existingBiosVersionFile = Join-Path $existingBiosDir ".biosversion"
+                            if ((Test-Path $existingBiosDir) -and (Test-Path $existingBiosVersionFile)) {
+                                $existingBiosVer = (Get-Content $existingBiosVersionFile -Raw -ErrorAction SilentlyContinue).Trim()
+                                if ($existingBiosVer -eq $catalogBIOSVersion -and -not $modelForceUpdate) {
+                                    Write-DATLogEntry -Value "[$currentIndex/$totalModels] SKIPPED -- BIOS package already exists with current version ($existingBiosVer): $existingBiosDir" -Severity 1
+                                    Set-DATRegistryValue -Name "RunningMessage" -Value "BIOS skipped (exists v$existingBiosVer): $oem $modelName" -Type String
+                                    $skipBios = $true
+                                    $biosPackageSuccessCount++
+                                } else {
+                                    Write-DATLogEntry -Value "[$currentIndex/$totalModels] BIOS UPDATE needed -- local v$existingBiosVer, catalog v${catalogBIOSVersion}: $oem $modelName" -Severity 1
+                                }
+                            }
+                        }
+                    }
 
-                                    if ($cmResult) {
-                                        Write-DATLogEntry -Value "- $oem $modelName ConfigMgr BIOS package created" -Severity 1
+                    if ($skipBios) {
+                        # Already current -- skip all BIOS processing
+                    } else {
 
-                                        # Telemetry: BIOS report with staged package hash
-                                        # For ConfigMgr BIOS, $biosPackagePath is a directory (no WIM) --
-                                        # hash the first file inside it rather than the directory itself.
-                                        try {
-                                            $hashTarget = $biosPackagePath
-                                            if (Test-Path $biosPackagePath -PathType Container) {
-                                                $firstFile = Get-ChildItem -Path $biosPackagePath -File -ErrorAction SilentlyContinue | Select-Object -First 1
-                                                if ($firstFile) { $hashTarget = $firstFile.FullName }
+                    # $biosCatalog / $biosEntry already resolved above (before the skip check)
+                    if ($null -eq $biosEntry) {
+                        Write-DATLogEntry -Value "[Warning] - No BIOS update available for $oem $modelName -- skipping BIOS" -Severity 2
+                        $biosNoMatchCount++
+                        $thisBiosNoMatch = $true
+                        if ($modelPackageType -eq 'BIOS') {
+                            # Signal the UI via RunningMode -- tied to CurrentJob so no race conditions
+                            Set-DATRegistryValue -Name "RunningMode" -Value "BiosNoMatch" -Type String
+                        }
+                    } else {
+                        $biosDownloadDir = Join-Path $StoragePath "$oem\$modelName\BIOS"
+                        Set-DATRegistryValue -Name "RunningMode" -Value "Download" -Type String
+                        $biosFilePath = @(Start-DATBiosDownload -BiosEntry $biosEntry -DownloadDestination $biosDownloadDir -OEM $oem)[-1]
+
+                        if ([string]::IsNullOrEmpty($biosFilePath)) {
+                            Write-DATLogEntry -Value "[Warning] - BIOS download failed for $oem $modelName -- skipping BIOS" -Severity 2
+                        } else {
+                            # Package the BIOS exe (extract HP/Lenovo, direct for Dell)
+                            # ConfigMgr: stage files directly | Intune: compress into WIM
+                            Set-DATRegistryValue -Name "RunningMode" -Value "Extracting" -Type String
+                            $skipWim = ($RunningMode -eq 'Configuration Manager')
+                            $includeFlash64 = ($oem -eq 'Dell' -and $RunningMode -in @('Configuration Manager', 'WIM Package Only'))
+                            $biosPackagePath = @(Invoke-DATBiosPackaging -BiosFilePath $biosFilePath -OEM $oem `
+                                -Model $modelName -Version $biosEntry.Version -PackageDestination $PackagePath `
+                                -SkipWim:$skipWim -IncludeFlash64W:$includeFlash64)[-1]
+
+                            if ($biosPackagePath -and (Test-Path $biosPackagePath)) {
+                                # Intune: Create and upload BIOS Win32 app
+                                if ($RunningMode -eq 'Intune') {
+                                    Write-DATLogEntry -Value "[$currentIndex/$totalModels] Starting Intune BIOS pipeline for $oem $modelName" -Severity 1
+                                    Set-DATRegistryValue -Name "RunningMessage" -Value "Creating Intune BIOS package: $oem $modelName..." -Type String
+
+                                    $intuneParams = @{
+                                        OEM                = $oem
+                                        Model              = $modelName
+                                        Baseboards         = $baseboards
+                                        OS                 = $osPkgLabel
+                                        Architecture       = $arch
+                                        WimFilePath        = $biosPackagePath
+                                        PackageDestination = $PackagePath
+                                        UpdateType         = 'BIOS'
+                                    }
+                                    if ($isPilotBuild) { $intuneParams['NamePrefix'] = $biosNamePrefix }
+                                    if (-not [string]::IsNullOrEmpty($biosEntry.Version)) { $intuneParams['Version'] = "$($biosEntry.Version)" }
+                                    if (-not [string]::IsNullOrEmpty($biosEntry.ReleaseDate)) { $intuneParams['ReleaseDate'] = $biosEntry.ReleaseDate }
+                                    if ($DisableToast) { $intuneParams['DisableToast'] = $true }
+                                    if ($DisableRestart) { $intuneParams['DisableRestart'] = $true }
+                                    if ($AlarmMode) { $intuneParams['AlarmMode'] = $true }
+                                    if ($ToastTimeoutAction -ne 'RemindMeLater') { $intuneParams['ToastTimeoutAction'] = $ToastTimeoutAction }
+                                    if ($MaxDeferrals -gt 0) { $intuneParams['MaxDeferrals'] = $MaxDeferrals }
+                                    if (-not [string]::IsNullOrEmpty($MaintenanceWindowsJson)) { $intuneParams['MaintenanceWindowsJson'] = $MaintenanceWindowsJson }
+                                    if ($RestartDelaySeconds -ne 600) { $intuneParams['RestartDelaySeconds'] = $RestartDelaySeconds }
+                                    if (-not [string]::IsNullOrEmpty($DebugBuildPath)) { $intuneParams['DebugBuildPath'] = $DebugBuildPath }
+                                    if (-not [string]::IsNullOrEmpty($CustomBrandingPath)) { $intuneParams['CustomBrandingPath'] = $CustomBrandingPath }
+                                    if (-not [string]::IsNullOrEmpty($HPPasswordBinPath)) { $intuneParams['HPPasswordBinPath'] = $HPPasswordBinPath }
+                                    if (-not [string]::IsNullOrEmpty($CustomBIOSToastTitle)) { $intuneParams['CustomToastTitle'] = $CustomBIOSToastTitle }
+                                    if (-not [string]::IsNullOrEmpty($CustomBIOSToastBody)) { $intuneParams['CustomToastBody'] = $CustomBIOSToastBody }
+                                    if (-not [string]::IsNullOrEmpty($CustomBIOSToastGreeting)) { $intuneParams['CustomToastGreeting'] = $CustomBIOSToastGreeting }
+                                    if (-not [string]::IsNullOrEmpty($CustomBIOSToastSubtitle)) { $intuneParams['CustomToastSubtitle'] = $CustomBIOSToastSubtitle }
+                                    if (-not [string]::IsNullOrEmpty($CustomBIOSToastActionButton)) { $intuneParams['CustomToastActionButton'] = $CustomBIOSToastActionButton }
+                                    if (-not [string]::IsNullOrEmpty($CustomBIOSToastDismissButton)) { $intuneParams['CustomToastDismissButton'] = $CustomBIOSToastDismissButton }
+                                    if (-not [string]::IsNullOrEmpty($CustomBIOSSuccessTitle)) { $intuneParams['CustomBIOSSuccessTitle'] = $CustomBIOSSuccessTitle }
+                                    if (-not [string]::IsNullOrEmpty($CustomBIOSSuccessBody)) { $intuneParams['CustomBIOSSuccessBody'] = $CustomBIOSSuccessBody }
+                                    if (-not [string]::IsNullOrEmpty($CustomBIOSSuccessActionButton)) { $intuneParams['CustomBIOSSuccessActionButton'] = $CustomBIOSSuccessActionButton }
+                                    if (-not [string]::IsNullOrEmpty($CustomBIOSSuccessDismissButton)) { $intuneParams['CustomBIOSSuccessDismissButton'] = $CustomBIOSSuccessDismissButton }
+                                    if (-not [string]::IsNullOrEmpty($CustomBIOSIssuesTitle)) { $intuneParams['CustomBIOSIssuesTitle'] = $CustomBIOSIssuesTitle }
+                                    if (-not [string]::IsNullOrEmpty($CustomBIOSIssuesBody)) { $intuneParams['CustomBIOSIssuesBody'] = $CustomBIOSIssuesBody }
+                                    if (-not [string]::IsNullOrEmpty($CustomBIOSIssuesActionButton)) { $intuneParams['CustomBIOSIssuesActionButton'] = $CustomBIOSIssuesActionButton }
+                                    if ($modelForceUpdate) { $intuneParams['ForceUpdate'] = $true }
+                                    if ($CreateIntuneWinOnly) { $intuneParams['CreateIntuneWinOnly'] = $true }
+                                    $biosIntuneResult = Invoke-DATIntunePackageCreation @intuneParams
+
+                                    Write-DATLogEntry -Value "- $oem $modelName Intune BIOS upload completed" -Severity 1
+
+                                    # Mark BIOS as processed for this OEM+Model and update cache
+                                    if ($null -ne $biosIntuneResult -and -not [string]::IsNullOrEmpty($biosIntuneResult.AppId)) {
+                                        $processedBiosModels["$oem|$modelName"] = $biosIntuneResult.AppId
+                                        if (-not $biosIntuneResult.Skipped) {
+                                            $biosDisplayName = "$biosNamePrefix - $oem $modelName"
+                                            $biosCacheVersion = if (-not [string]::IsNullOrEmpty($biosEntry.Version)) { $biosEntry.Version } else { Get-Date -Format "ddMMyyyy" }
+                                            $cachedIntuneApps += [PSCustomObject]@{
+                                                id             = $biosIntuneResult.AppId
+                                                displayName    = $biosDisplayName
+                                                displayVersion = $biosCacheVersion
                                             }
-                                            $biosHash = Get-DATPackageHash -FilePath $hashTarget
-                                            Send-DATBiosReport -Manufacturer $oem -Model $modelName `
-                                                -Platform 'ConfigMgr' -Status 'Success' `
-                                                -TargetBiosVersion $biosVersion -PackageHash $biosHash
-                                        } catch {
-                                            Write-DATLogEntry -Value "[Telemetry] BIOS report failed: $($_.Exception.Message)" -Severity 2
+                                            Write-DATLogEntry -Value "[Intune] Added BIOS package to session cache: $biosDisplayName (v$biosCacheVersion)" -Severity 1
+                                        }
+                                    }
+
+                                    # Auto-deploy and auto-assignment-filter for BIOS packages
+                                    if ($null -ne $biosIntuneResult -and -not [string]::IsNullOrEmpty($biosIntuneResult.AppId)) {
+                                        $deployReg = Get-ItemProperty -Path $RegPath -ErrorAction SilentlyContinue
+
+                                        # Deploy to target group (All Devices by default, or a custom Entra group override)
+                                        if ($null -ne $deployReg.DeployAllDevices -and $deployReg.DeployAllDevices -eq 1 -and
+                                            ($null -eq $deployReg.AutoAssignmentFilter -or $deployReg.AutoAssignmentFilter -ne 1)) {
+                                            try {
+                                                $targetGroupId = if (-not [string]::IsNullOrEmpty($deployReg.DeployTargetGroupId)) { $deployReg.DeployTargetGroupId } else { 'adadadad-808e-44e2-905a-0b7873a8a531' }
+                                                $targetGroupName = if (-not [string]::IsNullOrEmpty($deployReg.DeployTargetGroupName)) { $deployReg.DeployTargetGroupName } else { 'All Devices' }
+                                                Set-DATRegistryValue -Name "RunningMode" -Value "Deploying" -Type String
+                                                Set-DATRegistryValue -Name "RunningMessage" -Value "Deploying BIOS to ${targetGroupName}: $oem $modelName" -Type String
+                                                Set-DATIntuneAppAssignment -AppId $biosIntuneResult.AppId -GroupId $targetGroupId -Intent 'Required'
+                                                Write-DATLogEntry -Value "[Intune] Auto-deployed BIOS package to ${targetGroupName}: $oem $modelName" -Severity 1
+                                            } catch {
+                                                Write-DATLogEntry -Value "[Intune] Auto-deploy BIOS to target group failed: $($_.Exception.Message)" -Severity 2
+                                            }
+                                        }
+
+                                        # Auto-assignment filter
+                                        if ($null -ne $deployReg.AutoAssignmentFilter -and $deployReg.AutoAssignmentFilter -eq 1) {
+                                            try {
+                                                Set-DATRegistryValue -Name "RunningMode" -Value "AssignmentFilter" -Type String
+                                                Set-DATRegistryValue -Name "RunningMessage" -Value "Creating BIOS assignment filter: $oem $modelName" -Type String
+                                                $filterMode = if (-not [string]::IsNullOrEmpty($deployReg.AssignmentFilterMode)) { $deployReg.AssignmentFilterMode } else { 'Make' }
+                                                $filterParams = @{
+                                                    AppId        = $biosIntuneResult.AppId
+                                                    Manufacturer = $oem
+                                                    FilterMode   = $filterMode
+                                                }
+                                                if ($filterMode -eq 'Model') { $filterParams['Model'] = $modelName }
+                                                if (-not [string]::IsNullOrEmpty($deployReg.DeployTargetGroupId)) { $filterParams['TargetGroupId'] = $deployReg.DeployTargetGroupId }
+                                                Invoke-DATAutoAssignmentFilter @filterParams
+                                                Write-DATLogEntry -Value "[Intune] Auto-assignment filter applied for BIOS package: $oem $modelName ($filterMode)" -Severity 1
+                                            } catch {
+                                                Write-DATLogEntry -Value "[Intune] Auto-assignment filter for BIOS failed: $($_.Exception.Message)" -Severity 2
+                                            }
+                                        }
+                                    }
+
+                                    # Clean up staging BIOS WIM now that it has been wrapped into .intunewin
+                                    if ((Test-Path $biosPackagePath) -and $biosPackagePath -match '\.wim$') {
+                                        Remove-Item -Path $biosPackagePath -Force -ErrorAction SilentlyContinue
+                                        $biosWimParent = Split-Path $biosPackagePath -Parent
+                                        if ((Test-Path $biosWimParent) -and @(Get-ChildItem -Path $biosWimParent -Force -ErrorAction SilentlyContinue).Count -eq 0) {
+                                            Remove-Item -Path $biosWimParent -Recurse -Force -ErrorAction SilentlyContinue
+                                        }
+                                        Write-DATLogEntry -Value "[$oem] Staging BIOS WIM cleaned up after Intune upload" -Severity 1
+                                    }
+
+                                    # Telemetry: BIOS report with .intunewin hash
+                                    try {
+                                        $biosIntuneWinDir = Join-Path $PackagePath "IntuneWin\$oem\$modelName\BIOS"
+                                        $biosIntuneWinFile = Get-ChildItem -Path $biosIntuneWinDir -Filter '*.intunewin' -ErrorAction SilentlyContinue | Select-Object -First 1
+                                        $biosHash = if ($biosIntuneWinFile) { Get-DATPackageHash -FilePath $biosIntuneWinFile.FullName } else { $null }
+                                        Send-DATBiosReport -Manufacturer $oem -Model $modelName `
+                                            -Platform 'Intune' -Status 'Success' `
+                                            -TargetBiosVersion $biosEntry.Version -PackageHash $biosHash
+                                    } catch {
+                                        Write-DATLogEntry -Value "[Telemetry] BIOS report failed: $($_.Exception.Message)" -Severity 2
+                                    }
+                                }
+
+                                # ConfigMgr: Create BIOS package on site server
+                                if ($RunningMode -eq 'Configuration Manager') {
+                                    if (-not [string]::IsNullOrEmpty($SiteServer) -and -not [string]::IsNullOrEmpty($SiteCode)) {
+                                        Write-DATLogEntry -Value "[$currentIndex/$totalModels] Starting ConfigMgr BIOS pipeline for $oem $modelName" -Severity 1
+                                        Set-DATRegistryValue -Name "RunningMessage" -Value "Creating ConfigMgr BIOS package: $oem $modelName..." -Type String
+
+                                        $biosVersion = $biosEntry.Version
+                                        $cmParams = @{
+                                            DriverPackage = $biosPackagePath
+                                            OEM           = $oem
+                                            Model         = $modelName
+                                            OS            = $osPkgLabel
+                                            Architecture  = $arch
+                                            Baseboards    = $baseboards
+                                            PackagePath   = $PackagePath
+                                            SiteServer    = $SiteServer
+                                            SiteCode      = $SiteCode
+                                            Version       = $biosVersion
+                                            PackageType   = 'BIOS'
+                                            NamePrefix    = $biosUpdateNamePrefix
+                                            Priority      = $DistributionPriority
+                                        }
+                                        if (-not [string]::IsNullOrEmpty($biosEntry.ReleaseDate)) {
+                                            $cmParams['ReleaseDate'] = $biosEntry.ReleaseDate
+                                        }
+                                        if ($DistributionPointGroups -and $DistributionPointGroups.Count -gt 0) {
+                                            $cmParams['DistributionPointGroups'] = $DistributionPointGroups
+                                        }
+                                        if ($DistributionPoints -and $DistributionPoints.Count -gt 0) {
+                                            $cmParams['DistributionPoints'] = $DistributionPoints
+                                        }
+                                        if ($modelForceUpdate) { $cmParams['ForceUpdate'] = $true }
+                                        if ($EnableBinaryDeltaReplication) { $cmParams['EnableBinaryDeltaReplication'] = $true }
+                                        if ($ConsoleFolderID -ge 0) { $cmParams['ConsoleFolderID'] = $ConsoleFolderID }
+                                        $cmResult = New-DATConfigMgrPkg @cmParams
+
+                                        if ($cmResult) {
+                                            Write-DATLogEntry -Value "- $oem $modelName ConfigMgr BIOS package created" -Severity 1
+
+                                            # Telemetry: BIOS report with staged package hash
+                                            # For ConfigMgr BIOS, $biosPackagePath is a directory (no WIM) --
+                                            # hash the first file inside it rather than the directory itself.
+                                            try {
+                                                $hashTarget = $biosPackagePath
+                                                if (Test-Path $biosPackagePath -PathType Container) {
+                                                    $firstFile = Get-ChildItem -Path $biosPackagePath -File -ErrorAction SilentlyContinue | Select-Object -First 1
+                                                    if ($firstFile) { $hashTarget = $firstFile.FullName }
+                                                }
+                                                $biosHash = Get-DATPackageHash -FilePath $hashTarget
+                                                Send-DATBiosReport -Manufacturer $oem -Model $modelName `
+                                                    -Platform 'ConfigMgr' -Status 'Success' `
+                                                    -TargetBiosVersion $biosVersion -PackageHash $biosHash
+                                            } catch {
+                                                Write-DATLogEntry -Value "[Telemetry] BIOS report failed: $($_.Exception.Message)" -Severity 2
+                                            }
+                                        } else {
+                                            Write-DATLogEntry -Value "[Warning] - $oem $modelName ConfigMgr BIOS package creation failed" -Severity 2
                                         }
                                     } else {
-                                        Write-DATLogEntry -Value "[Warning] - $oem $modelName ConfigMgr BIOS package creation failed" -Severity 2
+                                        Write-DATLogEntry -Value "[Warning] - ConfigMgr not connected -- BIOS package saved locally only" -Severity 2
                                     }
-                                } else {
-                                    Write-DATLogEntry -Value "[Warning] - ConfigMgr not connected -- BIOS package saved locally only" -Severity 2
                                 }
-                            }
 
-                            Write-DATLogEntry -Value "- $oem $modelName BIOS processing completed" -Severity 1
-                            $biosPackageSuccessCount++
-                            $packagesCreated++
-                            $processedBiosModels["$oem|$modelName"] = $true
+                                Write-DATLogEntry -Value "- $oem $modelName BIOS processing completed" -Severity 1
+                                $biosPackageSuccessCount++
+                                $packagesCreated++
+                                $processedBiosModels["$oem|$modelName"] = $true
 
-                            # Telemetry: BIOS report for Download Only mode
-                            if ($RunningMode -notin @('Intune', 'Configuration Manager')) {
-                                try {
-                                    $hashTarget = $biosPackagePath
-                                    if (Test-Path $biosPackagePath -PathType Container) {
-                                        $firstFile = Get-ChildItem -Path $biosPackagePath -File -ErrorAction SilentlyContinue | Select-Object -First 1
-                                        if ($firstFile) { $hashTarget = $firstFile.FullName }
+                                # Telemetry: BIOS report for Download Only mode
+                                if ($RunningMode -notin @('Intune', 'Configuration Manager')) {
+                                    try {
+                                        $hashTarget = $biosPackagePath
+                                        if (Test-Path $biosPackagePath -PathType Container) {
+                                            $firstFile = Get-ChildItem -Path $biosPackagePath -File -ErrorAction SilentlyContinue | Select-Object -First 1
+                                            if ($firstFile) { $hashTarget = $firstFile.FullName }
+                                        }
+                                        $biosHash = Get-DATPackageHash -FilePath $hashTarget
+                                        Send-DATBiosReport -Manufacturer $oem -Model $modelName `
+                                            -Platform $RunningMode -Status 'Success' `
+                                            -TargetBiosVersion $biosEntry.Version -PackageHash $biosHash
+                                    } catch {
+                                        Write-DATLogEntry -Value "[Telemetry] BIOS report failed: $($_.Exception.Message)" -Severity 2
                                     }
-                                    $biosHash = Get-DATPackageHash -FilePath $hashTarget
-                                    Send-DATBiosReport -Manufacturer $oem -Model $modelName `
-                                        -Platform $RunningMode -Status 'Success' `
-                                        -TargetBiosVersion $biosEntry.Version -PackageHash $biosHash
-                                } catch {
-                                    Write-DATLogEntry -Value "[Telemetry] BIOS report failed: $($_.Exception.Message)" -Severity 2
                                 }
+                            } else {
+                                Write-DATLogEntry -Value "[Warning] - BIOS packaging failed for $oem $modelName" -Severity 2
                             }
-                        } else {
-                            Write-DATLogEntry -Value "[Warning] - BIOS packaging failed for $oem $modelName" -Severity 2
                         }
                     }
+                    } # end else (not skipBios)
+                    } # end else (not Microsoft/already processed)
                 }
-                } # end else (not skipBios)
-                } # end else (not Microsoft/already processed)
+
+                $completedCount++
+                Write-DATLogEntry -Value "- $oem $modelName completed successfully" -Severity 1
+            } catch {
+                $modelFailReason = $_.Exception.Message
+                Write-DATLogEntry -Value "[Error] - $oem $modelName failed: $($_.Exception.Message)" -Severity 3
             }
 
-            $completedCount++
-            Write-DATLogEntry -Value "- $oem $modelName completed successfully" -Severity 1
-        } catch {
-            $modelFailReason = $_.Exception.Message
-            Write-DATLogEntry -Value "[Error] - $oem $modelName failed: $($_.Exception.Message)" -Severity 3
-        }
+            # Record per-package-type failures for the post-build "View Failures" report.
+            # A package type counts as failed when it was in scope for this build but its
+            # success counter did not advance for this model.
+            $modelIsBIOSOnly = [bool]$model.BIOSOnly
+            if ($modelPackageType -in @('Drivers', 'All') -and $driverPackageSuccessCount -le $drvSuccessBefore) {
+                $drvReason = if (-not [string]::IsNullOrEmpty($modelFailReason)) { $modelFailReason }
+                             elseif ($modelIsBIOSOnly) { 'No driver package available (BIOS-only model)' }
+                             else { 'Driver package was not created -- see log for details' }
+                $buildFailures.Add([pscustomobject]@{ OEM = $oem; Model = $modelName; PackageType = 'Drivers'; OS = "$os"; Reason = $drvReason })
+            }
+            if ($modelPackageType -in @('BIOS', 'All') -and $biosPackageSuccessCount -le $biosSuccessBefore) {
+                # Microsoft Surface BIOS ships via driver injection -- not a failure
+                if ($oem -ne 'Microsoft') {
+                    $biosReason = if ($thisBiosNoMatch) { 'No BIOS update found in catalog' }
+                                  elseif (-not [string]::IsNullOrEmpty($modelFailReason)) { $modelFailReason }
+                                  else { 'BIOS package was not created -- see log for details' }
+                    $buildFailures.Add([pscustomobject]@{ OEM = $oem; Model = $modelName; PackageType = 'BIOS'; OS = "$os"; Reason = $biosReason })
+                }
+            }
 
-        # Record per-package-type failures for the post-build "View Failures" report.
-        # A package type counts as failed when it was in scope for this build but its
-        # success counter did not advance for this model.
-        $modelIsBIOSOnly = [bool]$model.BIOSOnly
-        if ($modelPackageType -in @('Drivers', 'All') -and $driverPackageSuccessCount -le $drvSuccessBefore) {
-            $drvReason = if (-not [string]::IsNullOrEmpty($modelFailReason)) { $modelFailReason }
-                         elseif ($modelIsBIOSOnly) { 'No driver package available (BIOS-only model)' }
-                         else { 'Driver package was not created -- see log for details' }
-            $buildFailures.Add([pscustomobject]@{ OEM = $oem; Model = $modelName; PackageType = 'Drivers'; OS = "$os"; Reason = $drvReason })
-        }
-        if ($modelPackageType -in @('BIOS', 'All') -and $biosPackageSuccessCount -le $biosSuccessBefore) {
-            # Microsoft Surface BIOS ships via driver injection -- not a failure
-            if ($oem -ne 'Microsoft') {
-                $biosReason = if ($thisBiosNoMatch) { 'No BIOS update found in catalog' }
-                              elseif (-not [string]::IsNullOrEmpty($modelFailReason)) { $modelFailReason }
-                              else { 'BIOS package was not created -- see log for details' }
-                $buildFailures.Add([pscustomobject]@{ OEM = $oem; Model = $modelName; PackageType = 'BIOS'; OS = "$os"; Reason = $biosReason })
+            Set-DATRegistryValue -Name "CompletedJobs" -Value "$completedCount" -Type String
+            Set-DATRegistryValue -Name "CompletedDriverPackages" -Value "$driverPackageSuccessCount" -Type String
+            Set-DATRegistryValue -Name "CompletedBiosPackages" -Value "$biosPackageSuccessCount" -Type String
+            Set-DATRegistryValue -Name "FailedPackages" -Value "$($buildFailures.Count)" -Type String
+            Set-DATRegistryValue -Name "PackagesCreated" -Value "$packagesCreated" -Type String
+
+            # Persist the structured failure list live (per model), not just at the end of the build,
+            # so the progress modal can mark the exact failed rows in real time. Without this the modal
+            # relies on a CurrentJob/CompletedJobs heuristic that misses a failure when the failed model
+            # is immediately followed by a skipped/successful model in the same poll -- the row then
+            # shows green while the "Failed" tile shows a count, and the two disagree.
+            if ($buildFailures.Count -gt 0) {
+                try {
+                    $liveFailJson = ConvertTo-Json -InputObject @($buildFailures) -Depth 4 -Compress
+                    Set-DATRegistryValue -Name 'BuildFailures' -Value $liveFailJson -Type String
+                } catch { }
+            }
+
+            # Check for user abort between models -- do not continue processing or overwrite Aborted state
+            $interModelReg = Get-ItemProperty -Path $global:RegPath -ErrorAction SilentlyContinue
+            if ($interModelReg.RunningState -eq 'Aborted') {
+                Write-DATLogEntry -Value "--- Build aborted by user after model $currentIndex ---" -Severity 2
+                return
             }
         }
 
-        Set-DATRegistryValue -Name "CompletedJobs" -Value "$completedCount" -Type String
-        Set-DATRegistryValue -Name "CompletedDriverPackages" -Value "$driverPackageSuccessCount" -Type String
-        Set-DATRegistryValue -Name "CompletedBiosPackages" -Value "$biosPackageSuccessCount" -Type String
-        Set-DATRegistryValue -Name "FailedPackages" -Value "$($buildFailures.Count)" -Type String
-        Set-DATRegistryValue -Name "PackagesCreated" -Value "$packagesCreated" -Type String
-
-        # Persist the structured failure list live (per model), not just at the end of the build,
-        # so the progress modal can mark the exact failed rows in real time. Without this the modal
-        # relies on a CurrentJob/CompletedJobs heuristic that misses a failure when the failed model
-        # is immediately followed by a skipped/successful model in the same poll -- the row then
-        # shows green while the "Failed" tile shows a count, and the two disagree.
-        if ($buildFailures.Count -gt 0) {
-            try {
-                $liveFailJson = ConvertTo-Json -InputObject @($buildFailures) -Depth 4 -Compress
-                Set-DATRegistryValue -Name 'BuildFailures' -Value $liveFailJson -Type String
-            } catch { }
-        }
-
-        # Check for user abort between models -- do not continue processing or overwrite Aborted state
-        $interModelReg = Get-ItemProperty -Path $global:RegPath -ErrorAction SilentlyContinue
-        if ($interModelReg.RunningState -eq 'Aborted') {
-            Write-DATLogEntry -Value "--- Build aborted by user after model $currentIndex ---" -Severity 2
+        # Only write final state if the user has NOT aborted -- "Aborted" takes priority
+        $finalCheckReg = Get-ItemProperty -Path $global:RegPath -ErrorAction SilentlyContinue
+        if ($finalCheckReg.RunningState -eq 'Aborted') {
+            Write-DATLogEntry -Value "--- Model processing aborted by user ---" -Severity 2
             return
         }
-    }
 
-    # Only write final state if the user has NOT aborted -- "Aborted" takes priority
-    $finalCheckReg = Get-ItemProperty -Path $global:RegPath -ErrorAction SilentlyContinue
-    if ($finalCheckReg.RunningState -eq 'Aborted') {
-        Write-DATLogEntry -Value "--- Model processing aborted by user ---" -Severity 2
-        return
-    }
-
-    # Persist the structured failure list to the registry BEFORE the final state is written,
-    # so the UI sees it the moment it detects completion and can offer the "View Failures" view.
-    try {
-        if ($buildFailures.Count -gt 0) {
-            # Cap each reason to keep the serialized payload within registry string limits
-            foreach ($bf in $buildFailures) {
-                if ($bf.Reason -and $bf.Reason.Length -gt 300) { $bf.Reason = $bf.Reason.Substring(0, 297) + '...' }
+        # Persist the structured failure list to the registry BEFORE the final state is written,
+        # so the UI sees it the moment it detects completion and can offer the "View Failures" view.
+        try {
+            if ($buildFailures.Count -gt 0) {
+                # Cap each reason to keep the serialized payload within registry string limits
+                foreach ($bf in $buildFailures) {
+                    if ($bf.Reason -and $bf.Reason.Length -gt 300) { $bf.Reason = $bf.Reason.Substring(0, 297) + '...' }
+                }
+                $failJson = ConvertTo-Json -InputObject @($buildFailures) -Depth 4 -Compress
+                Set-DATRegistryValue -Name 'BuildFailures' -Value $failJson -Type String
+                Write-DATLogEntry -Value "--- Recorded $($buildFailures.Count) package failure(s) for the post-build report ---" -Severity 2
             }
-            $failJson = ConvertTo-Json -InputObject @($buildFailures) -Depth 4 -Compress
-            Set-DATRegistryValue -Name 'BuildFailures' -Value $failJson -Type String
-            Write-DATLogEntry -Value "--- Recorded $($buildFailures.Count) package failure(s) for the post-build report ---" -Severity 2
+        } catch {
+            Write-DATLogEntry -Value "[Warning] Failed to record build failures list: $($_.Exception.Message)" -Severity 2
         }
-    } catch {
-        Write-DATLogEntry -Value "[Warning] Failed to record build failures list: $($_.Exception.Message)" -Severity 2
-    }
 
-    if ($completedCount -eq $totalModels) {
-        if ($effectivePackageType -eq 'BIOS' -and $biosNoMatchCount -eq $totalModels) {
-            # Every model had no BIOS catalog match
-            Set-DATRegistryValue -Name "RunningMessage" -Value "No BIOS updates found for $totalModels model$(if ($totalModels -ne 1) { 's' })" -Type String
-            Set-DATRegistryValue -Name "RunningState" -Value "CompletedNoMatch" -Type String
-        } elseif ($biosNoMatchCount -gt 0 -and $effectivePackageType -eq 'BIOS') {
-            $matchedCount = $totalModels - $biosNoMatchCount
-            Set-DATRegistryValue -Name "RunningMessage" -Value "Completed: $matchedCount of $totalModels models processed, $biosNoMatchCount with no BIOS match" -Type String
-            Set-DATRegistryValue -Name "RunningState" -Value "Completed" -Type String
+        if ($completedCount -eq $totalModels) {
+            if ($effectivePackageType -eq 'BIOS' -and $biosNoMatchCount -eq $totalModels) {
+                # Every model had no BIOS catalog match
+                Set-DATRegistryValue -Name "RunningMessage" -Value "No BIOS updates found for $totalModels model$(if ($totalModels -ne 1) { 's' })" -Type String
+                Set-DATRegistryValue -Name "RunningState" -Value "CompletedNoMatch" -Type String
+            } elseif ($biosNoMatchCount -gt 0 -and $effectivePackageType -eq 'BIOS') {
+                $matchedCount = $totalModels - $biosNoMatchCount
+                Set-DATRegistryValue -Name "RunningMessage" -Value "Completed: $matchedCount of $totalModels models processed, $biosNoMatchCount with no BIOS match" -Type String
+                Set-DATRegistryValue -Name "RunningState" -Value "Completed" -Type String
+            } else {
+                Set-DATRegistryValue -Name "RunningMessage" -Value "Completed: $completedCount of $totalModels models processed successfully" -Type String
+                Set-DATRegistryValue -Name "RunningState" -Value "Completed" -Type String
+            }
         } else {
-            Set-DATRegistryValue -Name "RunningMessage" -Value "Completed: $completedCount of $totalModels models processed successfully" -Type String
-            Set-DATRegistryValue -Name "RunningState" -Value "Completed" -Type String
+            $failedCount = $totalModels - $completedCount
+            Set-DATRegistryValue -Name "RunningMessage" -Value "Completed with errors: $completedCount of $totalModels succeeded, $failedCount failed" -Type String
+            Set-DATRegistryValue -Name "RunningState" -Value "CompletedWithErrors" -Type String
         }
-    } else {
-        $failedCount = $totalModels - $completedCount
-        Set-DATRegistryValue -Name "RunningMessage" -Value "Completed with errors: $completedCount of $totalModels succeeded, $failedCount failed" -Type String
-        Set-DATRegistryValue -Name "RunningState" -Value "CompletedWithErrors" -Type String
-    }
-    Write-DATLogEntry -Value "--- Model processing complete: $completedCount/$totalModels succeeded ---" -Severity 1
+        Write-DATLogEntry -Value "--- Model processing complete: $completedCount/$totalModels succeeded ---" -Severity 1
 
     # Send Teams webhook notification if enabled
     if ($TeamsNotificationsEnabled -and -not [string]::IsNullOrEmpty($TeamsWebhookUrl)) {
