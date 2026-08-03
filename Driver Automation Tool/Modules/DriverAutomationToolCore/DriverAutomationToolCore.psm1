@@ -4711,12 +4711,40 @@ function Send-DATTeamsNotification {
         [Parameter(Mandatory)][int]$FailedCount,
         [string]$Platform = 'Download Only',
         [string]$PackageType = 'Drivers',
-        [array]$Models = @()
+        [array]$Models = @(),
+        [ValidateSet('Auto', 'Completed', 'CompletedWithErrors', 'Aborted', 'Failed')][string]$Outcome = 'Auto'
     )
 
-    $statusColor = if ($FailedCount -eq 0) { 'Good' } else { 'Attention' }
-    $statusIcon = if ($FailedCount -eq 0) { [char]0x2705 } else { [char]0x26A0 }
-    $statusText = if ($FailedCount -eq 0) { 'All packages built successfully' } else { "$FailedCount of $TotalModels failed" }
+    # 'Auto' derives the state from FailedCount as before, so existing callers are unaffected
+    $effectiveOutcome = $Outcome
+    if ($effectiveOutcome -eq 'Auto') {
+        $effectiveOutcome = if ($FailedCount -eq 0) { 'Completed' } else { 'CompletedWithErrors' }
+    }
+
+    # Amber for a build that finished imperfectly or was cancelled, red only for a hard
+    # failure. The status text names the state -- the counts live in the fact set below.
+    switch ($effectiveOutcome) {
+        'Completed' {
+            $statusColor = 'Good'
+            $statusIcon  = [char]0x2705
+            $statusText  = 'completed successfully'
+        }
+        'Failed' {
+            $statusColor = 'Attention'
+            $statusIcon  = [char]0x274C
+            $statusText  = 'failed - see log for details'
+        }
+        'Aborted' {
+            $statusColor = 'Warning'
+            $statusIcon  = [char]0x26A0
+            $statusText  = 'aborted by user'
+        }
+        default {
+            $statusColor = 'Warning'
+            $statusIcon  = [char]0x26A0
+            $statusText  = 'completed with errors'
+        }
+    }
     $hostname = $env:COMPUTERNAME
     $timestamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
 
@@ -4766,7 +4794,7 @@ function Send-DATTeamsNotification {
                                         },
                                         @{
                                             type     = 'TextBlock'
-                                            text     = "Build $statusIcon $statusText"
+                                            text     = "Build $statusText $statusIcon"
                                             spacing  = 'None'
                                             isSubtle = $true
                                         }
