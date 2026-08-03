@@ -41,6 +41,26 @@ try {
     exit 1
 }
 
+# The pre-flight exits below happen before Start-DATModelProcessing is called, so its
+# notification never runs. Nothing has been attempted yet, so every model is unreached
+# rather than failed. Wrapped so a webhook problem cannot change the exit code.
+function Send-DATHeadlessPreflightFailure {
+    param (
+        [Parameter(Mandatory)][string]$Reason
+    )
+    if (-not $config.TeamsNotificationsEnabled -or [string]::IsNullOrEmpty($config.TeamsWebhookUrl)) { return }
+    try {
+        $preflightModels = @($config.Models)
+        Send-DATTeamsNotification -WebhookUrl $config.TeamsWebhookUrl `
+            -TotalModels $preflightModels.Count -SuccessCount 0 -FailedCount 0 `
+            -NotProcessedCount $preflightModels.Count `
+            -Platform $config.Platform -PackageType $config.PackageType -Models $preflightModels -Outcome 'Failed'
+        Write-DATLogEntry -Value "[Teams] Pre-flight failure notification sent -- $Reason" -Severity 1
+    } catch {
+        Write-DATLogEntry -Value "[Teams] Failed to send pre-flight failure notification: $($_.Exception.Message)" -Severity 2
+    }
+}
+
 # Resolve paths (use config overrides if specified, otherwise default to script-relative)
 $packagePath  = if ($config.PackagePath) { $config.PackagePath } else { Join-Path $scriptRoot 'Packages' }
 $storagePath  = if ($config.TempPath)    { $config.TempPath }    else { Join-Path $scriptRoot 'Temp' }
@@ -104,6 +124,7 @@ $headlessModels = $config.Models
 if ($config.PackageType -eq 'BIOS') {
     $msModels = @($headlessModels | Where-Object { $_.OEM -eq 'Microsoft' })
     if ($msModels.Count -gt 0 -and $msModels.Count -eq @($headlessModels).Count) {
+        Send-DATHeadlessPreflightFailure -Reason 'All selected models are Microsoft -- BIOS packages not supported'
         Write-Error "[Headless] All selected models are Microsoft. BIOS packages are not supported for Microsoft Surface devices (firmware is delivered via driver updates). Use PackageType 'Drivers' or 'All'."
         exit 1
     }
@@ -243,6 +264,7 @@ switch ($config.Platform) {
             if ([string]::IsNullOrEmpty($tenantEnvironment)) { $tenantEnvironment = 'Commercial' }
 
             if ([string]::IsNullOrEmpty($tenantId) -or [string]::IsNullOrEmpty($appId) -or [string]::IsNullOrEmpty($appSecret)) {
+                Send-DATHeadlessPreflightFailure -Reason 'Intune credentials missing from BuildConfig and registry'
                 Write-Error "[Headless] Intune mode requires TenantId, AppId, and AppSecret in BuildConfig.json or saved in the UI registry."
                 exit 1
             }
@@ -250,6 +272,7 @@ switch ($config.Platform) {
             Write-Host "[Headless] Authenticating to Intune (environment: $tenantEnvironment, tenant: $tenantId, app: $appId)..."
             $authResult = Connect-DATIntuneGraphClientCredential -TenantId $tenantId -AppId $appId -ClientSecret $appSecret -TenantEnvironment $tenantEnvironment
             if (-not $authResult.Success) {
+                Send-DATHeadlessPreflightFailure -Reason "Intune authentication failed: $($authResult.Error)"
                 Write-Error "[Headless] Intune authentication failed: $($authResult.Error)"
                 exit 1
             }
