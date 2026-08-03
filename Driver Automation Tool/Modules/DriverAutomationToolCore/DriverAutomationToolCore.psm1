@@ -4712,7 +4712,8 @@ function Send-DATTeamsNotification {
         [string]$Platform = 'Download Only',
         [string]$PackageType = 'Drivers',
         [array]$Models = @(),
-        [ValidateSet('Auto', 'Completed', 'CompletedWithErrors', 'Aborted', 'Failed')][string]$Outcome = 'Auto'
+        [ValidateSet('Auto', 'Completed', 'CompletedWithErrors', 'Aborted', 'Failed')][string]$Outcome = 'Auto',
+        [int]$NotProcessedCount = 0
     )
 
     # 'Auto' derives the state from FailedCount as before, so existing callers are unaffected
@@ -4752,6 +4753,20 @@ function Send-DATTeamsNotification {
     }
     $hostname = $env:COMPUTERNAME
     $timestamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
+
+    # Models a stopped build never reached are not failures -- row omitted when zero
+    $summaryFacts = @(
+        @{ title = 'Platform';     value = $Platform },
+        @{ title = 'Package Type'; value = $PackageType },
+        @{ title = 'Total Models'; value = "$TotalModels" },
+        @{ title = 'Succeeded';    value = "$SuccessCount" },
+        @{ title = 'Failed';       value = "$FailedCount" }
+    )
+    if ($NotProcessedCount -gt 0) {
+        $summaryFacts += @{ title = 'Not Processed'; value = "$NotProcessedCount" }
+    }
+    $summaryFacts += @{ title = 'Host';          value = $hostname }
+    $summaryFacts += @{ title = $timestampLabel; value = $timestamp }
 
     # Build model list for the card
     $modelFacts = @()
@@ -4814,15 +4829,7 @@ function Send-DATTeamsNotification {
                             items     = @(
                                 @{
                                     type    = 'FactSet'
-                                    facts   = @(
-                                        @{ title = 'Platform';  value = $Platform },
-                                        @{ title = 'Package Type'; value = $PackageType },
-                                        @{ title = 'Total Models'; value = "$TotalModels" },
-                                        @{ title = 'Succeeded';   value = "$SuccessCount" },
-                                        @{ title = 'Failed';      value = "$FailedCount" },
-                                        @{ title = 'Host';        value = $hostname },
-                                        @{ title = $timestampLabel; value = $timestamp }
-                                    )
+                                    facts   = $summaryFacts
                                 }
                             )
                         },
@@ -4831,7 +4838,7 @@ function Send-DATTeamsNotification {
                             items     = @(
                                 @{
                                     type   = 'TextBlock'
-                                    text   = 'Processed Models'
+                                    text   = 'Selected Models'
                                     weight = 'Bolder'
                                     spacing = 'Medium'
                                 },
