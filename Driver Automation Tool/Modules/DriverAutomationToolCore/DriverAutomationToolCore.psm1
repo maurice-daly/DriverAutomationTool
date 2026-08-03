@@ -3618,6 +3618,13 @@ function Start-DATModelProcessing {
     $packagesCreated = 0
     $currentIndex = 0
 
+    # Sent from the finally below so every exit path notifies -- completion, the abort returns,
+    # and a terminating error. $buildOutcome defaults to 'Aborted' so an exit reaching neither
+    # the completion path nor the catch (the UI stopping the pipeline) reports the abort it is.
+    $script:TeamsBuildNotificationSent = $false
+    $buildOutcome = 'Aborted'
+
+    try {
         # Reset the per-build progress counters in the registry so the completion summary reflects
         # ONLY this build. The per-model writes below are bypassed when a model is skipped (its
         # package is already current), so without this reset the CompletedDriverPackages /
@@ -4687,17 +4694,29 @@ function Start-DATModelProcessing {
             Set-DATRegistryValue -Name "RunningState" -Value "CompletedWithErrors" -Type String
         }
         Write-DATLogEntry -Value "--- Model processing complete: $completedCount/$totalModels succeeded ---" -Severity 1
-
-    # Send Teams webhook notification if enabled
-    if ($TeamsNotificationsEnabled -and -not [string]::IsNullOrEmpty($TeamsWebhookUrl)) {
-        $failedCount = $totalModels - $completedCount
-        try {
-            Send-DATTeamsNotification -WebhookUrl $TeamsWebhookUrl `
-                -TotalModels $totalModels -SuccessCount $completedCount -FailedCount $failedCount `
-                -Platform $RunningMode -PackageType $PackageType -Models $modelList
-            Write-DATLogEntry -Value "[Teams] Build notification sent successfully" -Severity 1
-        } catch {
-            Write-DATLogEntry -Value "[Teams] Failed to send notification: $($_.Exception.Message)" -Severity 2
+        $buildOutcome = 'Auto'
+    } catch {
+        # A stopped pipeline is the operator aborting, not a crash -- it keeps 'Aborted'
+        $buildOutcome = if ($_.Exception -is [System.Management.Automation.PipelineStoppedException]) { 'Aborted' } else { 'Failed' }
+        throw
+    } finally {
+        # Sentinel is set BEFORE the send so a webhook that hangs or throws is not retried
+        if (-not $script:TeamsBuildNotificationSent -and
+            $TeamsNotificationsEnabled -and -not [string]::IsNullOrEmpty($TeamsWebhookUrl)) {
+            $script:TeamsBuildNotificationSent = $true
+            # Count against what was attempted -- unreached models are not failures
+            $attemptedCount    = [Math]::Min($currentIndex, $totalModels)
+            $failedCount       = [Math]::Max(0, $attemptedCount - $completedCount)
+            $notProcessedCount = [Math]::Max(0, $totalModels - $attemptedCount)
+            try {
+                Send-DATTeamsNotification -WebhookUrl $TeamsWebhookUrl `
+                    -TotalModels $totalModels -SuccessCount $completedCount -FailedCount $failedCount `
+                    -NotProcessedCount $notProcessedCount `
+                    -Platform $RunningMode -PackageType $PackageType -Models $modelList -Outcome $buildOutcome
+                Write-DATLogEntry -Value "[Teams] Build notification sent successfully" -Severity 1
+            } catch {
+                Write-DATLogEntry -Value "[Teams] Failed to send notification: $($_.Exception.Message)" -Severity 2
+            }
         }
     }
 }
