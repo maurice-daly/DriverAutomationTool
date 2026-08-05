@@ -934,7 +934,7 @@
                                    Foreground="{DynamicResource AccentColor}" VerticalAlignment="Center" Margin="0,0,8,0"/>
                         <TextBlock Text="Driver Automation Tool" FontSize="13" FontWeight="SemiBold"
                                    Foreground="{DynamicResource WindowForeground}" VerticalAlignment="Center"/>
-                        <TextBlock x:Name="txt_Version" Text=" Version 10.1.8" FontSize="11"
+                        <TextBlock x:Name="txt_Version" Text=" Version 10.1.9" FontSize="11"
                                    Foreground="{DynamicResource InputPlaceholder}" VerticalAlignment="Center" Margin="4,0"/>
                     </StackPanel>
 
@@ -3582,6 +3582,39 @@
                                         </Grid>
                                     </Border>
 
+                                </StackPanel>
+                            </Border>
+
+                            <!-- End-user Notifications -->
+                            <Border Style="{StaticResource CardPanel}" Margin="0,0,0,12">
+                                <StackPanel>
+                                    <TextBlock FontSize="14" FontWeight="SemiBold"
+                                               Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,4">
+                                        <Run Text="&#xE7E7;" FontFamily="Segoe MDL2 Assets" FontSize="14"/><Run Text="  Intune Management Extension Notifications"/>
+                                    </TextBlock>
+                                    <TextBlock Text="Controls the toast notifications shown by the Intune Management Extension (IME) when it installs the assigned driver and BIOS packages. This is applied to the app assignment. Set to 'Hide all' to suppress IME's own toasts (including its 'installation failed' toast on deferral) so only the Driver Automation Tool's own toast is shown to end users."
+                                               FontSize="12" Foreground="{DynamicResource InputPlaceholder}" Margin="0,0,0,12" TextWrapping="Wrap" LineHeight="18"/>
+
+                                    <TextBlock Text="IME Toast Notifications" FontSize="13" FontWeight="SemiBold"
+                                               Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,4"/>
+                                    <Grid Margin="0,0,0,4">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="260"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <ComboBox x:Name="cmb_IMENotifications" Grid.Column="0" Height="34">
+                                            <ComboBoxItem Content="Show all toast notifications" Tag="showAll" IsSelected="True"/>
+                                            <ComboBoxItem Content="Show reboot notifications only" Tag="showReboot"/>
+                                            <ComboBoxItem Content="Hide all toast notifications" Tag="hideAll"/>
+                                        </ComboBox>
+                                        <TextBlock x:Name="txt_IMENotificationsHint" Grid.Column="1" FontSize="11"
+                                                   Foreground="{DynamicResource InputPlaceholder}"
+                                                   VerticalAlignment="Center" Margin="12,0,0,0"
+                                                   Text="Default Intune behaviour"/>
+                                    </Grid>
+                                    <TextBlock Text="Note: this applies to newly created or re-assigned packages. Existing assignments keep their current setting until the package is rebuilt or re-deployed."
+                                               FontSize="11" FontStyle="Italic" Foreground="{DynamicResource InputPlaceholder}"
+                                               Margin="0,8,0,0" TextWrapping="Wrap" LineHeight="16"/>
                                 </StackPanel>
                             </Border>
 
@@ -6401,7 +6434,7 @@
                                     <StackPanel>
                                         <TextBlock Text="Driver Automation Tool" FontSize="22" FontWeight="Bold"
                                                    Foreground="{DynamicResource AccentColor}" Margin="0,0,0,4"/>
-                                        <TextBlock x:Name="txt_AboutVersion" Text="Version 10.1.8" FontSize="14"
+                                        <TextBlock x:Name="txt_AboutVersion" Text="Version 10.1.9" FontSize="14"
                                                    Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,16"/>
 
                                         <TextBlock TextWrapping="Wrap" FontSize="13"

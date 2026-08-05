@@ -3353,6 +3353,203 @@ function Show-DATBiosNamePromptModal {
     return $script:biosPromptResult
 }
 
+function Show-DATBugNoticeModal {
+    <#
+    .SYNOPSIS
+        Shows a one-time informational modal advising of Intune BIOS update bugs
+        that were corrected in build 10.1.9. Displayed only once per machine,
+        gated by the BugNoticeAcknowledged1019 registry value.
+    #>
+
+    # One-time gate -- do not show again once acknowledged
+    $ackValue = (Get-ItemProperty -Path $global:RegPath -Name 'BugNoticeAcknowledged1019' -ErrorAction SilentlyContinue).BugNoticeAcknowledged1019
+    if ($ackValue -eq 1) { return }
+
+    $theme = Get-DATTheme -ThemeName $script:CurrentTheme
+    $bgColor  = [System.Windows.Media.ColorConverter]::ConvertFromString($theme['CardBackground'])
+    $fgColor  = [System.Windows.Media.ColorConverter]::ConvertFromString($theme['WindowForeground'])
+    $dimColor = [System.Windows.Media.ColorConverter]::ConvertFromString($theme['InputPlaceholder'])
+    $accent   = [System.Windows.Media.ColorConverter]::ConvertFromString($theme['AccentColor'])
+
+    $dlg = [System.Windows.Window]::new()
+    $dlg.WindowStyle = 'None'
+    $dlg.AllowsTransparency = $true
+    $dlg.Background = [System.Windows.Media.Brushes]::Transparent
+    $dlg.Width = 560
+    $dlg.SizeToContent = 'Height'
+    $dlg.Topmost = $true
+    $dlg.ResizeMode = 'NoResize'
+    $dlg.ShowInTaskbar = $false
+    try {
+        $dlg.Owner = $Window
+        $dlg.WindowStartupLocation = 'CenterOwner'
+    } catch {
+        $dlg.WindowStartupLocation = 'CenterScreen'
+    }
+
+    $border = [System.Windows.Controls.Border]::new()
+    $border.Background = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.Color]::FromArgb(245, $bgColor.R, $bgColor.G, $bgColor.B))
+    $border.CornerRadius = [System.Windows.CornerRadius]::new(16)
+    $border.Padding = [System.Windows.Thickness]::new(28, 24, 28, 24)
+    $border.BorderBrush = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.ColorConverter]::ConvertFromString($theme['CardBorder']))
+    $border.BorderThickness = [System.Windows.Thickness]::new(1)
+    $shadow = [System.Windows.Media.Effects.DropShadowEffect]::new()
+    $shadow.BlurRadius = 30; $shadow.ShadowDepth = 0; $shadow.Opacity = 0.5
+    $shadow.Color = [System.Windows.Media.Colors]::Black
+    $border.Effect = $shadow
+
+    $panel = [System.Windows.Controls.StackPanel]::new()
+
+    # Yellow bug icon (EBE8 = Bug)
+    $iconText = [System.Windows.Controls.TextBlock]::new()
+    $iconText.Text = [string][char]0xEBE8
+    $iconText.FontFamily = [System.Windows.Media.FontFamily]::new('Segoe MDL2 Assets')
+    $iconText.FontSize = 34
+    $iconText.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.ColorConverter]::ConvertFromString($theme['StatusWarning']))
+    $iconText.HorizontalAlignment = 'Center'
+    $iconText.Margin = [System.Windows.Thickness]::new(0, 0, 0, 12)
+    $panel.Children.Add($iconText) | Out-Null
+
+    # Title
+    $titleText = [System.Windows.Controls.TextBlock]::new()
+    $titleText.Text = "Bug Notice"
+    $titleText.FontSize = 18
+    $titleText.FontWeight = [System.Windows.FontWeights]::Bold
+    $titleText.Foreground = [System.Windows.Media.SolidColorBrush]::new($fgColor)
+    $titleText.HorizontalAlignment = 'Center'
+    $titleText.Margin = [System.Windows.Thickness]::new(0, 0, 0, 14)
+    $panel.Children.Add($titleText) | Out-Null
+
+    # Description -- split into readable paragraphs
+    $descParagraphs = @(
+        "In versions prior to 10.1.9 when used with Microsoft Intune, bugs have been identified which could result in devices failing to report the current BIOS version to the requirement script, due to issues in the BIOS update process.",
+        "A separate issue has been identified if the user re-enables BitLocker protection prior to the required BIOS update restart.",
+        "These issues have been corrected in build 10.1.9, and it is suggested that you re-create BIOS packages created with versions prior to this for Microsoft Intune deployments.",
+        "Configuration Manager deployments are unaffected."
+    )
+    for ($i = 0; $i -lt $descParagraphs.Count; $i++) {
+        $descText = [System.Windows.Controls.TextBlock]::new()
+        $descText.Text = $descParagraphs[$i]
+        $descText.FontSize = 13
+        $descText.TextWrapping = [System.Windows.TextWrapping]::Wrap
+        $descText.Foreground = [System.Windows.Media.SolidColorBrush]::new($dimColor)
+        $descText.TextAlignment = [System.Windows.TextAlignment]::Left
+        $descText.LineHeight = 20
+        $bottomMargin = if ($i -eq ($descParagraphs.Count - 1)) { 16 } else { 12 }
+        $descText.Margin = [System.Windows.Thickness]::new(0, 0, 0, $bottomMargin)
+        $panel.Children.Add($descText) | Out-Null
+    }
+
+    # Remediation instructions -- how to clear the BIOS version markers to force a re-check
+    $infoBorder = [System.Windows.Controls.Border]::new()
+    $infoBorder.Background = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.Color]::FromArgb(30, $accent.R, $accent.G, $accent.B))
+    $infoBorder.CornerRadius = [System.Windows.CornerRadius]::new(8)
+    $infoBorder.Padding = [System.Windows.Thickness]::new(14, 12, 14, 12)
+    $infoBorder.Margin = [System.Windows.Thickness]::new(0, 0, 0, 24)
+
+    $infoStack = [System.Windows.Controls.StackPanel]::new()
+
+    $infoHeader = [System.Windows.Controls.TextBlock]::new()
+    $infoHeader.Text = "Force devices to re-check for their BIOS updates"
+    $infoHeader.FontSize = 13
+    $infoHeader.FontWeight = [System.Windows.FontWeights]::SemiBold
+    $infoHeader.Foreground = [System.Windows.Media.SolidColorBrush]::new($fgColor)
+    $infoHeader.Margin = [System.Windows.Thickness]::new(0, 0, 0, 6)
+    $infoStack.Children.Add($infoHeader) | Out-Null
+
+    $infoBody = [System.Windows.Controls.TextBlock]::new()
+    $infoBody.Text = "On each affected device, delete the BIOS version markers stored under the registry key below, then re-run the deployment. Clearing the recorded version causes the requirement script to re-evaluate the device as 'update required':"
+    $infoBody.FontSize = 12
+    $infoBody.TextWrapping = [System.Windows.TextWrapping]::Wrap
+    $infoBody.Foreground = [System.Windows.Media.SolidColorBrush]::new($dimColor)
+    $infoBody.LineHeight = 18
+    $infoBody.Margin = [System.Windows.Thickness]::new(0, 0, 0, 8)
+    $infoStack.Children.Add($infoBody) | Out-Null
+
+    # Registry path in a mono-style highlighted box
+    $pathBorder = [System.Windows.Controls.Border]::new()
+    $pathBorder.Background = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.ColorConverter]::ConvertFromString($theme['InputBackground']))
+    $pathBorder.CornerRadius = [System.Windows.CornerRadius]::new(4)
+    $pathBorder.Padding = [System.Windows.Thickness]::new(10, 6, 10, 6)
+    $pathBorder.Margin = [System.Windows.Thickness]::new(0, 0, 0, 8)
+    $pathText = [System.Windows.Controls.TextBlock]::new()
+    $pathText.Text = 'HKLM:\SOFTWARE\DriverAutomationTool\BIOS'
+    $pathText.FontFamily = [System.Windows.Media.FontFamily]::new('Consolas')
+    $pathText.FontSize = 12
+    $pathText.TextWrapping = [System.Windows.TextWrapping]::Wrap
+    $pathText.Foreground = [System.Windows.Media.SolidColorBrush]::new($fgColor)
+    $pathBorder.Child = $pathText
+    $infoStack.Children.Add($pathBorder) | Out-Null
+
+    $infoNote = [System.Windows.Controls.TextBlock]::new()
+    $infoNote.Text = "Deleting the whole key clears markers for every model. The bundled Remove-DATStaleBIOSMarkers.ps1 script (in the Scripts folder) can do this automatically in SYSTEM context, removing only markers recorded ahead of the installed firmware."
+    $infoNote.FontSize = 11
+    $infoNote.TextWrapping = [System.Windows.TextWrapping]::Wrap
+    $infoNote.Foreground = [System.Windows.Media.SolidColorBrush]::new($dimColor)
+    $infoNote.LineHeight = 16
+    $infoStack.Children.Add($infoNote) | Out-Null
+
+    $infoBorder.Child = $infoStack
+    $panel.Children.Add($infoBorder) | Out-Null
+
+    # Disclaimer
+    $disclaimerText = [System.Windows.Controls.TextBlock]::new()
+    $disclaimerText.Text = "Disclaimer: The bundled scripts are provided 'as is', without warranty of any kind and with no liability accepted. Use at your own risk and validate in a test environment first."
+    $disclaimerText.FontSize = 11
+    $disclaimerText.FontStyle = [System.Windows.FontStyles]::Italic
+    $disclaimerText.TextWrapping = [System.Windows.TextWrapping]::Wrap
+    $disclaimerText.Foreground = [System.Windows.Media.SolidColorBrush]::new($dimColor)
+    $disclaimerText.TextAlignment = [System.Windows.TextAlignment]::Center
+    $disclaimerText.LineHeight = 16
+    $disclaimerText.Margin = [System.Windows.Thickness]::new(0, 0, 0, 20)
+    $panel.Children.Add($disclaimerText) | Out-Null
+
+    # Acknowledge button (primary, centered)
+    $btnAck = [System.Windows.Controls.Button]::new()
+    $btnAck.Height = 38
+    $btnAck.MinWidth = 170
+    $btnAck.HorizontalAlignment = 'Center'
+    $btnAck.Cursor = [System.Windows.Input.Cursors]::Hand
+    $ackTemplate = [System.Windows.Markup.XamlReader]::Parse(@"
+<ControlTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" TargetType="Button">
+    <Border x:Name="bd" Background="$($theme['ButtonPrimary'])" CornerRadius="8" Padding="20,8">
+        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+    </Border>
+    <ControlTemplate.Triggers>
+        <Trigger Property="IsMouseOver" Value="True">
+            <Setter TargetName="bd" Property="Background" Value="$($theme['ButtonPrimaryHover'])"/>
+        </Trigger>
+    </ControlTemplate.Triggers>
+</ControlTemplate>
+"@)
+    $btnAck.Template = $ackTemplate
+    $btnAck.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.ColorConverter]::ConvertFromString($theme['ButtonPrimaryForeground']))
+    $btnAck.FontSize = 13
+    $btnAck.FontWeight = [System.Windows.FontWeights]::SemiBold
+    $ackContent = [System.Windows.Controls.TextBlock]::new()
+    $ackIconRun = [System.Windows.Documents.Run]::new([string][char]0xE73E)  # CheckMark
+    $ackIconRun.FontFamily = [System.Windows.Media.FontFamily]::new('Segoe MDL2 Assets')
+    $ackLabelRun = [System.Windows.Documents.Run]::new("  Acknowledge")
+    $ackContent.Inlines.Add($ackIconRun) | Out-Null
+    $ackContent.Inlines.Add($ackLabelRun) | Out-Null
+    $btnAck.Content = $ackContent
+    $btnAck.Add_Click({
+        Set-DATRegistryValue -Name 'BugNoticeAcknowledged1019' -Value 1 -Type DWord
+        $dlg.Close()
+    })
+    $panel.Children.Add($btnAck) | Out-Null
+
+    $border.Child = $panel
+    $dlg.Content = $border
+    $dlg.ShowDialog() | Out-Null
+}
+
 function Show-DATBiosNameRepairModal {
     <#
     .SYNOPSIS
@@ -17482,6 +17679,8 @@ if ($null -ne $cmb_Platform) {
 $chk_AutoAssignmentFilter = $Window.FindName('chk_AutoAssignmentFilter')
 $txt_AutoFilterState = $Window.FindName('txt_AutoFilterState')
 $cmb_FilterMode = $Window.FindName('cmb_FilterMode')
+$cmb_IMENotifications = $Window.FindName('cmb_IMENotifications')
+$txt_IMENotificationsHint = $Window.FindName('txt_IMENotificationsHint')
 $txt_FilterCount = $Window.FindName('txt_FilterCount')
 $txt_FilterRemaining = $Window.FindName('txt_FilterRemaining')
 $txt_FilterWarning = $Window.FindName('txt_FilterWarning')
@@ -17563,6 +17762,31 @@ $cmb_FilterMode.Add_SelectionChanged({
         Write-DATActivityLog "Assignment filter mode set to: $mode" -Level Info
     }
 })
+
+# IME toast notification behaviour (applied to Intune app assignments)
+function Update-DATIMENotificationsHint {
+    $sel = $cmb_IMENotifications.SelectedItem
+    $tag = if ($sel) { $sel.Tag } else { 'showAll' }
+    switch ($tag) {
+        'hideAll'    { $txt_IMENotificationsHint.Text = 'Only DAT toasts shown to users' }
+        'showReboot' { $txt_IMENotificationsHint.Text = 'Only reboot prompts shown' }
+        default      { $txt_IMENotificationsHint.Text = 'Default Intune behaviour' }
+    }
+}
+
+$cmb_IMENotifications.Add_SelectionChanged({
+    $selected = $cmb_IMENotifications.SelectedItem
+    if ($selected) {
+        $mode = $selected.Tag
+        Set-DATRegistryValue -Name "IMENotifications" -Value $mode -Type String
+        Update-DATIMENotificationsHint
+        Write-DATActivityLog "IME toast notifications set to: $mode" -Level Info
+    }
+})
+
+# Initial hint
+Update-DATIMENotificationsHint
+
 
 # Filter name template persistence and live preview
 $txt_FilterNameTemplate.Add_TextChanged({
@@ -19219,15 +19443,16 @@ function Invoke-DATIntuneAssignmentWithProgress {
     $script:AssignPS = [powershell]::Create()
     Add-DATCoreRunspaceBootstrap -PowerShell $script:AssignPS -CaptureIntuneAuthContext
     $script:AssignPS.AddScript({
-        param ($State, $AppList, $GroupId, $Intent, $FilterId, $FilterType)
+        param ($State, $AppList, $GroupId, $Intent, $FilterId, $FilterType, $IMENotifications)
+        $imeNotify = if ([string]::IsNullOrEmpty($IMENotifications)) { 'showAll' } else { $IMENotifications }
         foreach ($app in $AppList) {
             $entry = @{ AppId = $app.AppId; DisplayName = $app.DisplayName; Success = $false; Error = '' }
             try {
                 if (-not [string]::IsNullOrEmpty($FilterId)) {
                     $effectiveFilterType = if ([string]::IsNullOrEmpty($FilterType)) { 'include' } else { $FilterType }
-                    Set-DATIntuneAppAssignmentWithFilter -AppId $app.AppId -GroupId $GroupId -Intent $Intent -FilterId $FilterId -FilterType $effectiveFilterType
+                    Set-DATIntuneAppAssignmentWithFilter -AppId $app.AppId -GroupId $GroupId -Intent $Intent -FilterId $FilterId -FilterType $effectiveFilterType -IMENotifications $imeNotify
                 } else {
-                    Set-DATIntuneAppAssignment -AppId $app.AppId -GroupId $GroupId -Intent $Intent
+                    Set-DATIntuneAppAssignment -AppId $app.AppId -GroupId $GroupId -Intent $Intent -IMENotifications $imeNotify
                 }
                 $entry.Success = $true
             } catch {
@@ -19237,12 +19462,14 @@ function Invoke-DATIntuneAssignmentWithProgress {
         }
         $State.Status = 'Complete'
     })
+    $imeNotificationsPref = (Get-ItemProperty -Path $global:RegPath -Name 'IMENotifications' -ErrorAction SilentlyContinue).IMENotifications
     [void]$script:AssignPS.AddArgument($script:AssignState)
     [void]$script:AssignPS.AddArgument($appList)
     [void]$script:AssignPS.AddArgument($GroupResult.GroupId)
     [void]$script:AssignPS.AddArgument($Intent)
     [void]$script:AssignPS.AddArgument($GroupResult.FilterId)
     [void]$script:AssignPS.AddArgument($GroupResult.FilterType)
+    [void]$script:AssignPS.AddArgument($imeNotificationsPref)
     $script:AssignAsync = $script:AssignPS.BeginInvoke()
 
     # Poll timer to update icons as each assignment completes
@@ -23748,6 +23975,18 @@ try {
         }
         Update-DATFilterExample
 
+        # Restore IME toast notification behaviour
+        Write-Host "  IME Toasts    : " -NoNewline -ForegroundColor DarkGray
+        if (-not [string]::IsNullOrEmpty($savedConfig.IMENotifications)) {
+            foreach ($item in $cmb_IMENotifications.Items) {
+                if ($item.Tag -eq $savedConfig.IMENotifications) { $item.IsSelected = $true; break }
+            }
+            Write-Host $savedConfig.IMENotifications -ForegroundColor Cyan
+        } else {
+            Write-Host "showAll (default)" -ForegroundColor DarkYellow
+        }
+        Update-DATIMENotificationsHint
+
         # Restore Package Retention
         Write-Host "  Pkg Retention : " -NoNewline -ForegroundColor DarkGray
         if ($null -ne $savedConfig.PackageRetentionEnabled -and $savedConfig.PackageRetentionEnabled -eq 1) {
@@ -24528,7 +24767,7 @@ if (Test-Path $logoPath) {
 
 # Read version from module manifest
 $manifestPath = Join-Path $AppRoot "Modules\DriverAutomationToolCore\DriverAutomationToolCore.psd1"
-$script:versionString = "v10.1.8"
+$script:versionString = "v10.1.9"
 if (Test-Path $manifestPath) {
     $manifestData = Import-PowerShellDataFile $manifestPath
     $ver = [version]$manifestData.ModuleVersion
@@ -25505,6 +25744,13 @@ $Window.Add_ContentRendered({
         Set-DATActiveView -ViewName 'view_About' -NavButtonName 'nav_About'
         $txt_EulaWarning.Visibility = 'Visible'
         Write-DATActivityLog "EULA not accepted -- navigated to About page on startup" -Level Warn
+    }
+
+    # One-time Bug Notice modal (Intune BIOS update fixes in 10.1.9)
+    try {
+        Show-DATBugNoticeModal
+    } catch {
+        Write-DATActivityLog "Bug notice modal failed to display: $($_.Exception.Message)" -Level Warn
     }
 
     # Connectivity check on startup with progress overlay

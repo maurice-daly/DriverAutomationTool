@@ -111,6 +111,21 @@ function Set-DATInstallStatus {
 
         if ($Result -in @('Success','PendingReboot','AlreadyCurrent')) {
             Set-ItemProperty -Path $RegPath -Name 'LastSuccessUtc' -Value $nowUtc -Force
+            # Successful (or no-op) run -- clear any prior deferral/failure reason so custom
+            # reporting reflects the current healthy state rather than a stale cause.
+            Remove-ItemProperty -Path $RegPath -Name 'Reason' -Force -ErrorAction SilentlyContinue
+        } else {
+            # Deferral (RetryScheduled) or failure (Failed/NoContent) -- surface a single
+            # human-readable reason for reporting. Prefer the supplied message, falling back
+            # to the phase, then the raw result label.
+            $reasonText = if (-not [string]::IsNullOrEmpty($ErrorMessage)) {
+                $ErrorMessage
+            } elseif (-not [string]::IsNullOrEmpty($Phase)) {
+                "$Result ($Phase)"
+            } else {
+                $Result
+            }
+            Set-ItemProperty -Path $RegPath -Name 'Reason' -Value $reasonText -Force
         }
     } catch {
         Write-CMTraceLog "WARNING: Failed to write install status to registry -- $($_.Exception.Message)" -Severity 2
@@ -287,10 +302,12 @@ try {
     }
 
     $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+    # Defined before the toast gate so the deferral-reason logging inside the toast block can
+    # record status against the per-model key when a user snoozes the update.
+    $VersionRegPath = 'HKLM:\SOFTWARE\DriverAutomationTool\Drivers\{{OEM}}\{{Model}}'
 {{TOAST_BLOCK}}
     $WimFile = Join-Path $ScriptDir "DriverPackage.wim"
     $ExtractPath = Join-Path $env:ProgramData "DriverAutomationTool\Extract"
-    $VersionRegPath = 'HKLM:\SOFTWARE\DriverAutomationTool\Drivers\{{OEM}}\{{Model}}'
     $installPhase = 'Init'
     $driverToolExitCode = 0
 

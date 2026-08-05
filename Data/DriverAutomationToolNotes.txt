@@ -3,6 +3,19 @@ Release Notes
 IMPORTANT
 - DAT Downloads have been moved to GitHub - https://github.com/maurice-daly/DriverAutomationTool
 
+What's New & Fixed
+- Intune Deployment — New IME Toast Notifications control (Show all / Show reboot only / Hide all) applied to the app assignment. Lets you suppress the Intune Management Extension's own toasts — including its "installation failed" toast shown when a user defers — so only the Driver Automation Tool's toast reaches end users. Applies to newly created or re-assigned packages.
+- BIOS Management — Final deferral notice: when a user reaches the maximum number of deferrals, a Focus Assist / Do Not Disturb–bypassing informational toast now always tells them the BIOS update is being pre-staged and will apply on the next restart, with an audible alert. Closes the gap where forced updates could be staged silently.
+- BIOS Management — BitLocker protection is now re-verified and re-suspended immediately before the update restart. If protection was re-enabled between the flash and the reboot, the device would previously drop to the BitLocker recovery screen; this prevents that lockout.
+- BIOS Management — Cached BIOS binaries whose published catalog hash has drifted (the OEM silently re-released the file under the same URL/version) are now accepted when they carry a valid Authenticode signature from a trusted publisher, rather than re-downloading every run or hard-failing. Still fails closed when the signature is missing or the signer is untrusted.
+- Intune Packaging — Hardened content upload: each attempt starts a fresh content version (no partial blobs carried over), access-token expiry during long uploads is handled, and the committed content version is verified after publish. Content-less failed apps are removed so they aren't treated as existing/skippable or offered to devices.
+- Reporting & Diagnostics — Per-model applicability and deferral-reason logging is written to the registry, so custom reporting can see why a device is pending or not applicable (user deferral, on battery, awaiting reboot) without parsing IME logs. Reasons are cleared automatically on the next healthy run.
+- ConfigMgr Scripts — New multi-package BIOS download/apply script with Lenovo null-fallback handling, exact-token SKU matching, array normalisation, and robust CMTrace logging. The driver apply script gains a documented custom-manufacturer branch, executable output logging, and a graceful fallback when computer data can't be read.
+- Remediation Tooling — New maintenance script to clear stale BIOS version markers recorded ahead of the installed firmware, letting devices re-evaluate as "update required" and re-check for their BIOS updates. Includes a no-warranty "use at your own risk" disclaimer.
+- User Interface — Added a one-time Bug Notice modal advising that pre-10.1.9 Intune BIOS packages could mis-report the installed BIOS version or trigger a BitLocker prompt, with in-app guidance on clearing the registry markers to force devices to re-check.
+- User Interface — The "Packages Created" progress tile now updates live during long All-model builds (instead of appearing stuck on the previous model's count) and resets correctly on headless/scheduled runs.
+- Documentation — User guide updated to describe the new IME notification behaviour.
+
 Version 10.1.8
 What's New & Fixed
 - BIOS Management — BIOS requirement, detection and install now share one manufacturer-aware version comparison (Dell/HP/Surface/Acer compare by version, Lenovo by release date), so a device already on the latest BIOS is no longer wrongly flagged as "update required" when the firmware build date predates the catalogue publish date.

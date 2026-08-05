@@ -4,7 +4,7 @@
      Organization:  MSEndpointMgr / Patch My PC
      Filename:      DriverAutomationToolCore.psm1
      Purpose:       Core functions for Driver Automation Tool v2.0
-     Version:       10.1.8.0
+     Version:       10.1.9.0
     ===========================================================================
 #>
 
@@ -37,8 +37,8 @@ if ($PSVersionTable.PSVersion.Major -le 5) {
 
 #region Variables
 
-[version]$global:ScriptRelease = "10.1.8.0"
-$global:ScriptBuildDate = "24-07-2026"
+[version]$global:ScriptRelease = "10.1.9.0"
+$global:ScriptBuildDate = "31-07-2026"
 $global:ReleaseNotesURL = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/DriverAutomationToolNotes.txt"
 $OEMLinksURL = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/OEMLinks.xml"
 
@@ -2429,7 +2429,7 @@ function Get-DATConfigMgrKnownModels {
     .DESCRIPTION
         Connects to the ConfigMgr site server's SMS WMI namespace and queries hardware inventory
         classes (SMS_G_System_COMPUTER_SYSTEM, SMS_G_System_MS_SYSTEMINFORMATION, and
-        SMS_G_System_BASE_BOARD) to identify distinct device makes and models actively deployed
+        SMS_G_System_BASEBOARD) to identify distinct device makes and models actively deployed
         in the environment. Supports HP, Dell, Lenovo, Microsoft, and Acer.
 
         Baseboard matching uses Win32_BaseBoard.Product for HP/Dell/Lenovo/Acer (providing
@@ -2537,7 +2537,7 @@ function Get-DATConfigMgrKnownModels {
         try {
             if ($OnProgress) { & $OnProgress "Querying baseboard inventory..." }
             $bbResults = @(Invoke-DATRemoteQuery -CimSession $cimSession -ComputerName $SiteServer -Namespace $namespace `
-                -Query "SELECT ResourceID, Product FROM SMS_G_System_BASE_BOARD WHERE Product IS NOT NULL")
+                -Query "SELECT ResourceID, Product FROM SMS_G_System_BASEBOARD WHERE Product IS NOT NULL")
             foreach ($r in $bbResults) {
                 if (-not [string]::IsNullOrWhiteSpace($r.Product)) {
                     $baseboardMap[[string]$r.ResourceID] = $r.Product.Trim().ToUpper()
@@ -2547,19 +2547,21 @@ function Get-DATConfigMgrKnownModels {
                 $useBaseboardFallback = $true
                 Write-DATLogEntry -Value "[ConfigMgr Known Models] WARNING: Win32_BaseBoard class returned no results. Ensure the BaseBoard (Win32_BaseBoard) class is enabled in hardware inventory and clients have completed an inventory cycle. Falling back to legacy matching (Dell SystemSKUNumber, Lenovo machine type extraction)." -Severity 2
             } else {
-                Write-DATLogEntry -Value "[ConfigMgr Known Models] BASE_BOARD: $($baseboardMap.Count) entries" -Severity 1
+                Write-DATLogEntry -Value "[ConfigMgr Known Models] BASEBOARD: $($baseboardMap.Count) entries" -Severity 1
             }
         } catch {
             $useBaseboardFallback = $true
-            Write-DATLogEntry -Value "[ConfigMgr Known Models] BASE_BOARD query failed (class not collected): $($_.Exception.Message). Falling back to legacy matching." -Severity 2
+            Write-DATLogEntry -Value "[ConfigMgr Known Models] BASEBOARD query failed (class not collected): $($_.Exception.Message). Falling back to legacy matching." -Severity 2
         }
 
-        # Legacy fallback: Dell SystemSKUNumber (only used when BASE_BOARD is unavailable)
+        # Legacy fallback: Dell SystemSKUNumber (only used when BASEBOARD is unavailable)
         $dellSkuMap = @{}   # Model -> SystemSKUNumber
         if ($useBaseboardFallback) {
             try {
+                # Note: no WQL DISTINCT -- the SMS provider rejects it over WS-Management
+                # (WBEM_E_FAILED / 0x80041001). De-duplication happens in the hashtable below.
                 $dellSkuResults = @(Invoke-DATRemoteQuery -CimSession $cimSession -ComputerName $SiteServer -Namespace $namespace `
-                    -Query "SELECT DISTINCT Model, SystemSKUNumber FROM SMS_G_System_COMPUTER_SYSTEM WHERE Manufacturer = 'Dell Inc.' AND SystemSKUNumber IS NOT NULL")
+                    -Query "SELECT Model, SystemSKUNumber FROM SMS_G_System_COMPUTER_SYSTEM WHERE Manufacturer = 'Dell Inc.' AND SystemSKUNumber IS NOT NULL")
                 foreach ($r in $dellSkuResults) {
                     $sku = [string]$r.SystemSKUNumber
                     if (-not [string]::IsNullOrWhiteSpace($sku) -and -not [string]::IsNullOrWhiteSpace($r.Model)) {
@@ -2622,7 +2624,7 @@ function Get-DATConfigMgrKnownModels {
                         if (-not [string]::IsNullOrEmpty($friendlyName)) {
                             $model = $friendlyName.Trim()
                         }
-                        # Fallback: use extracted machine type as baseboard when BASE_BOARD unavailable
+                        # Fallback: use extracted machine type as baseboard when BASEBOARD unavailable
                         if ($useBaseboardFallback) {
                             $baseboard = $machineType.ToUpper()
                         }
@@ -3629,6 +3631,10 @@ function Start-DATModelProcessing {
     Set-DATRegistryValue -Name "CompletedJobs" -Value "0" -Type String
     Set-DATRegistryValue -Name "CompletedDriverPackages" -Value "0" -Type String
     Set-DATRegistryValue -Name "CompletedBiosPackages" -Value "0" -Type String
+    # PackagesCreated drives the "Packages Created" / "Downloads Required" tiles on the build
+    # progress modal. The UI clears it before starting a build, but headless/scheduled runs have
+    # no UI, so reset it here too or the tiles inherit the previous run's count.
+    Set-DATRegistryValue -Name "PackagesCreated" -Value "0" -Type String
 
     # Pre-fetch existing Intune Win32 apps once (avoids per-model Graph queries)
     $cachedIntuneApps = @()
@@ -3975,6 +3981,9 @@ function Start-DATModelProcessing {
                         if ($null -ne $intuneResult -and -not [string]::IsNullOrEmpty($intuneResult.AppId)) {
                             $deployReg = Get-ItemProperty -Path $RegPath -ErrorAction SilentlyContinue
 
+                            # IME toast notification behaviour applied to the assignment (showAll | showReboot | hideAll)
+                            $imeNotifications = if (-not [string]::IsNullOrEmpty($deployReg.IMENotifications)) { $deployReg.IMENotifications } else { 'showAll' }
+
                             # Deploy to target group (All Devices by default, or a custom Entra group override)
                             if ($null -ne $deployReg.DeployAllDevices -and $deployReg.DeployAllDevices -eq 1 -and
                                 ($null -eq $deployReg.AutoAssignmentFilter -or $deployReg.AutoAssignmentFilter -ne 1)) {
@@ -3983,7 +3992,7 @@ function Start-DATModelProcessing {
                                     $targetGroupName = if (-not [string]::IsNullOrEmpty($deployReg.DeployTargetGroupName)) { $deployReg.DeployTargetGroupName } else { 'All Devices' }
                                     Set-DATRegistryValue -Name "RunningMode" -Value "Deploying" -Type String
                                     Set-DATRegistryValue -Name "RunningMessage" -Value "Deploying to ${targetGroupName}: $oem $modelName" -Type String
-                                    Set-DATIntuneAppAssignment -AppId $intuneResult.AppId -GroupId $targetGroupId -Intent 'Required'
+                                    Set-DATIntuneAppAssignment -AppId $intuneResult.AppId -GroupId $targetGroupId -Intent 'Required' -IMENotifications $imeNotifications
                                     Write-DATLogEntry -Value "[Intune] Auto-deployed driver package to ${targetGroupName}: $oem $modelName" -Severity 1
                                 } catch {
                                     Write-DATLogEntry -Value "[Intune] Auto-deploy to target group failed: $($_.Exception.Message)" -Severity 2
@@ -4000,6 +4009,7 @@ function Start-DATModelProcessing {
                                         AppId        = $intuneResult.AppId
                                         Manufacturer = $oem
                                         FilterMode   = $filterMode
+                                        IMENotifications = $imeNotifications
                                     }
                                     if ($filterMode -eq 'Model') { $filterParams['Model'] = $modelName }
                                     if (-not [string]::IsNullOrEmpty($deployReg.DeployTargetGroupId)) { $filterParams['TargetGroupId'] = $deployReg.DeployTargetGroupId }
@@ -4221,6 +4231,12 @@ function Start-DATModelProcessing {
                     if ($dlFileExists) { $driverPackageSuccessCount++; $packagesCreated++ }
                 } elseif ((Test-Path $drvWimCheck) -or $script:driverPipelineSuccess) { $driverPackageSuccessCount++; $packagesCreated++ }
                 $script:driverPipelineSuccess = $false
+                # Flush the counter immediately rather than waiting for the end of the model
+                # iteration -- with 'All' builds the BIOS phase that follows can run for several
+                # minutes, during which the modal's "Packages Created" tile would otherwise sit
+                # on the previous model's value and look like it never incremented.
+                Set-DATRegistryValue -Name "PackagesCreated" -Value "$packagesCreated" -Type String
+                Set-DATRegistryValue -Name "CompletedDriverPackages" -Value "$driverPackageSuccessCount" -Type String
                 } # end if (-not $skipDriverDownload)
             } # end if (-not $modelBIOSOnly)
             }
@@ -4440,6 +4456,9 @@ function Start-DATModelProcessing {
                                 if ($null -ne $biosIntuneResult -and -not [string]::IsNullOrEmpty($biosIntuneResult.AppId)) {
                                     $deployReg = Get-ItemProperty -Path $RegPath -ErrorAction SilentlyContinue
 
+                                    # IME toast notification behaviour applied to the assignment (showAll | showReboot | hideAll)
+                                    $imeNotifications = if (-not [string]::IsNullOrEmpty($deployReg.IMENotifications)) { $deployReg.IMENotifications } else { 'showAll' }
+
                                     # Deploy to target group (All Devices by default, or a custom Entra group override)
                                     if ($null -ne $deployReg.DeployAllDevices -and $deployReg.DeployAllDevices -eq 1 -and
                                         ($null -eq $deployReg.AutoAssignmentFilter -or $deployReg.AutoAssignmentFilter -ne 1)) {
@@ -4448,7 +4467,7 @@ function Start-DATModelProcessing {
                                             $targetGroupName = if (-not [string]::IsNullOrEmpty($deployReg.DeployTargetGroupName)) { $deployReg.DeployTargetGroupName } else { 'All Devices' }
                                             Set-DATRegistryValue -Name "RunningMode" -Value "Deploying" -Type String
                                             Set-DATRegistryValue -Name "RunningMessage" -Value "Deploying BIOS to ${targetGroupName}: $oem $modelName" -Type String
-                                            Set-DATIntuneAppAssignment -AppId $biosIntuneResult.AppId -GroupId $targetGroupId -Intent 'Required'
+                                            Set-DATIntuneAppAssignment -AppId $biosIntuneResult.AppId -GroupId $targetGroupId -Intent 'Required' -IMENotifications $imeNotifications
                                             Write-DATLogEntry -Value "[Intune] Auto-deployed BIOS package to ${targetGroupName}: $oem $modelName" -Severity 1
                                         } catch {
                                             Write-DATLogEntry -Value "[Intune] Auto-deploy BIOS to target group failed: $($_.Exception.Message)" -Severity 2
@@ -4465,6 +4484,7 @@ function Start-DATModelProcessing {
                                                 AppId        = $biosIntuneResult.AppId
                                                 Manufacturer = $oem
                                                 FilterMode   = $filterMode
+                                                IMENotifications = $imeNotifications
                                             }
                                             if ($filterMode -eq 'Model') { $filterParams['Model'] = $modelName }
                                             if (-not [string]::IsNullOrEmpty($deployReg.DeployTargetGroupId)) { $filterParams['TargetGroupId'] = $deployReg.DeployTargetGroupId }
@@ -4566,6 +4586,9 @@ function Start-DATModelProcessing {
                             $biosPackageSuccessCount++
                             $packagesCreated++
                             $processedBiosModels["$oem|$modelName"] = $true
+                            # Flush live so the progress modal reflects the new package right away
+                            Set-DATRegistryValue -Name "PackagesCreated" -Value "$packagesCreated" -Type String
+                            Set-DATRegistryValue -Name "CompletedBiosPackages" -Value "$biosPackageSuccessCount" -Type String
 
                             # Telemetry: BIOS report for Download Only mode
                             if ($RunningMode -notin @('Intune', 'Configuration Manager')) {
@@ -8767,7 +8790,8 @@ function Set-DATIntuneAppAssignment {
     param (
         [Parameter(Mandatory)][string]$AppId,
         [Parameter(Mandatory)][string]$GroupId,
-        [Parameter(Mandatory)][ValidateSet('Available', 'Required')][string]$Intent
+        [Parameter(Mandatory)][ValidateSet('Available', 'Required')][string]$Intent,
+        [ValidateSet('showAll', 'showReboot', 'hideAll')][string]$IMENotifications = 'showAll'
     )
 
     $intentMap = @{
@@ -8802,7 +8826,7 @@ function Set-DATIntuneAppAssignment {
                 target        = $target
                 settings      = @{
                     "@odata.type"       = "#microsoft.graph.win32LobAppAssignmentSettings"
-                    notifications       = "showAll"
+                    notifications       = $IMENotifications
                     installTimeSettings = $null
                     restartSettings     = $null
                     deliveryOptimizationPriority = "notConfigured"
@@ -8970,7 +8994,8 @@ function Set-DATIntuneAppAssignmentWithFilter {
         [Parameter(Mandatory)][string]$GroupId,
         [Parameter(Mandatory)][ValidateSet('Available', 'Required')][string]$Intent,
         [Parameter(Mandatory)][string]$FilterId,
-        [ValidateSet('include', 'exclude')][string]$FilterType = 'include'
+        [ValidateSet('include', 'exclude')][string]$FilterType = 'include',
+        [ValidateSet('showAll', 'showReboot', 'hideAll')][string]$IMENotifications = 'showAll'
     )
 
     $intentMap = @{ 'Available' = 'available'; 'Required' = 'required' }
@@ -8999,7 +9024,7 @@ function Set-DATIntuneAppAssignmentWithFilter {
                 target        = $target
                 settings      = @{
                     "@odata.type"       = "#microsoft.graph.win32LobAppAssignmentSettings"
-                    notifications       = "showAll"
+                    notifications       = $IMENotifications
                     installTimeSettings = $null
                     restartSettings     = $null
                     deliveryOptimizationPriority = "notConfigured"
@@ -9035,7 +9060,8 @@ function Invoke-DATAutoAssignmentFilter {
         [Parameter(Mandatory)][string]$Manufacturer,
         [string]$Model,
         [Parameter(Mandatory)][ValidateSet('Make', 'Model')][string]$FilterMode,
-        [string]$TargetGroupId = 'adadadad-808e-44e2-905a-0b7873a8a531'
+        [string]$TargetGroupId = 'adadadad-808e-44e2-905a-0b7873a8a531',
+        [ValidateSet('showAll', 'showReboot', 'hideAll')][string]$IMENotifications = 'showAll'
     )
 
     # Check current filter count against limit
@@ -9096,7 +9122,7 @@ function Invoke-DATAutoAssignmentFilter {
     }
 
     # Assign to the target group (All Devices by default, or a custom Entra group) with the filter in include mode
-    Set-DATIntuneAppAssignmentWithFilter -AppId $AppId -GroupId $TargetGroupId -Intent 'Required' -FilterId $filterId -FilterType 'include'
+    Set-DATIntuneAppAssignmentWithFilter -AppId $AppId -GroupId $TargetGroupId -Intent 'Required' -FilterId $filterId -FilterType 'include' -IMENotifications $IMENotifications
     Write-DATLogEntry -Value "[Intune] App $AppId assigned to group $TargetGroupId with filter $filterName" -Severity 1
 }
 
@@ -9178,7 +9204,7 @@ function New-DATIntuneToastScript {
     [CmdletBinding()]
     param (
         [Parameter(Mandatory)][string]$OutputPath,
-        [ValidateSet('Drivers','BIOS','Success','BIOSSuccess','Issues','BIOSIssues')][string]$UpdateType = 'Drivers',
+        [ValidateSet('Drivers','BIOS','Success','BIOSSuccess','Issues','BIOSIssues','BIOSFinalNotice')][string]$UpdateType = 'Drivers',
         [string]$BrandingPath = '',
         [string]$CustomBrandingImagePath = '',
         [string]$CustomToastTitle = '',
@@ -9193,7 +9219,7 @@ function New-DATIntuneToastScript {
     )
 
     # Determine layout type and per-type content
-    $isStatusType = $UpdateType -in @('Success', 'BIOSSuccess', 'Issues', 'BIOSIssues')
+    $isStatusType = $UpdateType -in @('Success', 'BIOSSuccess', 'Issues', 'BIOSIssues', 'BIOSFinalNotice')
 
     switch ($UpdateType) {
         'BIOS' {
@@ -9237,6 +9263,16 @@ function New-DATIntuneToastScript {
             $heading        = if (-not [string]::IsNullOrEmpty($CustomToastTitle)) { $CustomToastTitle } else { 'BIOS Update Issues Detected' }
             $body           = if (-not [string]::IsNullOrEmpty($CustomToastBody))  { $CustomToastBody  } else { 'The BIOS firmware update encountered errors during installation. Please contact your IT department or check the device logs for details.' }
             $statusIcon     = '&#xE7BA;'   # Warning (Segoe MDL2 Assets)
+            $iconColor      = '#F59E0B'    # amber-500
+            $accentColor    = '#D97706'    # amber-600
+            $iconBackground = '#451a03'    # amber-950
+        }
+        'BIOSFinalNotice' {
+            # Final deferral notice -- shown (bypassing Focus Assist) when the maximum number
+            # of user deferrals has been reached and the BIOS update is now being pre-staged.
+            $heading        = if (-not [string]::IsNullOrEmpty($CustomToastTitle)) { $CustomToastTitle } else { 'Final Reminder - BIOS Update Pending' }
+            $body           = if (-not [string]::IsNullOrEmpty($CustomToastBody))  { $CustomToastBody  } else { 'You have reached the maximum number of allowed deferrals. This BIOS update is now being pre-staged and will be applied on your next restart. Please save your work. Do NOT power off the device during the update process.' }
+            $statusIcon     = '&#xEBE8;'   # Bug (Segoe MDL2 Assets)
             $iconColor      = '#F59E0B'    # amber-500
             $accentColor    = '#D97706'    # amber-600
             $iconBackground = '#451a03'    # amber-950
@@ -9398,7 +9434,7 @@ try {
     Write-ToastLog "[FocusAssist] SHQueryUserNotificationState returned: $focusState ($focusStateName)"
 
     if ($focusState -ne 5) {
-        if ($DATToastAlarmMode -eq 'True' -and $DATToastType -in @('Drivers','BIOS')) {
+        if ($DATToastAlarmMode -eq 'True' -and $DATToastType -in @('Drivers','BIOS','BIOSFinalNotice')) {
             # Critical / alarm mode -- override the user's DND preference for forced-update scenarios
             Write-ToastLog "[FocusAssist] Notifications blocked (state: $focusStateName) but alarm mode is enabled -- overriding DND and displaying toast" 'WARN'
         } else {
@@ -9519,6 +9555,21 @@ try {
     })
 
     $window.FindName('btnClose').Add_Click({ $window.Close() })
+
+    # Critical / alarm mode (e.g. final deferral notice) -- play an audible alert so the
+    # user notices the toast even when Focus Assist / Do Not Disturb has been overridden.
+    if ($DATToastAlarmMode -eq 'True') {
+        try {
+            $alarmWav = Join-Path $env:SystemRoot 'Media\Alarm01.wav'
+            if (Test-Path $alarmWav) {
+                (New-Object System.Media.SoundPlayer $alarmWav).Play()
+            } else {
+                [System.Media.SystemSounds]::Exclamation.Play()
+            }
+        } catch {
+            try { [System.Media.SystemSounds]::Exclamation.Play() } catch {}
+        }
+    }
 
     Write-ToastLog "Showing status toast dialog..."
     $window.ShowDialog() | Out-Null
@@ -9918,6 +9969,20 @@ function New-DATIntuneInstallScript {
 
     if ($forceInstall) {
         Write-CMTraceLog "Proceeding with forced BIOS installation (maximum deferrals reached)"
+        # Blended final notice: inform the interactive user -- bypassing Focus Assist / DND --
+        # that the BIOS update is now being pre-staged because the deferral limit was reached.
+        # This is informational only; the installation proceeds regardless of the response.
+        try {
+            $finalNoticeScript = Join-Path $ScriptDir "Show-StatusToast-BIOSFinalNotice.ps1"
+            if (Test-Path $finalNoticeScript) {
+                Write-CMTraceLog "Displaying final deferral notice (Focus Assist bypass) before pre-staging BIOS update"
+                Show-DATStatusToast -ToastScript $finalNoticeScript
+            } else {
+                Write-CMTraceLog "Final notice toast script not found at $finalNoticeScript -- proceeding without final notice" -Severity 2
+            }
+        } catch {
+            Write-CMTraceLog "Failed to display final deferral notice: $($_.Exception.Message) -- proceeding" -Severity 2
+        }
     } else {
         $snoozeUntil = (Get-ItemProperty -Path $snoozeRegPath -Name 'SnoozeUntil' -ErrorAction SilentlyContinue).SnoozeUntil
         if ($snoozeUntil) {
@@ -9925,6 +9990,9 @@ function New-DATIntuneInstallScript {
                 $snoozeTime = [datetime]::Parse($snoozeUntil)
                 if ((Get-Date) -lt $snoozeTime) {
                     Write-CMTraceLog "Snooze active until $snoozeUntil -- exiting with 1618 (another installation is pending)"
+                    # Record the deferral reason so custom reporting can see WHY the device is
+                    # still pending. Cleared automatically on the next successful/current run.
+                    Set-DATInstallStatus -RegPath $VersionRegPath -Result 'RetryScheduled' -Phase 'UserDeferral' -ScriptExitCode 1618 -ErrorMessage "User deferred BIOS update -- snoozed until $snoozeUntil"
                     # 1618 = ERROR_INSTALL_ALREADY_RUNNING -- a built-in Intune Win32 return
                     # code mapped to 'retry', so the deferred install is re-attempted later
                     # instead of being recorded as a successful (completed) install.
@@ -10101,6 +10169,10 @@ function New-DATIntuneInstallScript {
                                 } else {
                                     Write-CMTraceLog "User chose Remind Me Later -- rescheduled until $snoozeExpiry"
                                 }
+                                # Record the deferral reason so custom reporting can see WHY the
+                                # device is still pending. Cleared on the next successful run.
+                                $deferReason = if ($isAutoTimeout) { "Toast auto-closed (Remind Me Later) -- snoozed until $snoozeExpiry" } else { "User chose Remind Me Later -- snoozed until $snoozeExpiry" }
+                                Set-DATInstallStatus -RegPath $VersionRegPath -Result 'RetryScheduled' -Phase 'UserDeferral' -ScriptExitCode 1618 -ErrorMessage $deferReason
                                 # 1618 = ERROR_INSTALL_ALREADY_RUNNING -- signals Intune to retry
                                 # the deferred install later rather than record it as completed.
                                 exit 1618
@@ -10123,6 +10195,9 @@ function New-DATIntuneInstallScript {
                             $snoozeExpiry = (Get-Date).AddHours(4).ToString('o')
                             Set-ItemProperty -Path $snoozeRegPath -Name 'SnoozeUntil' -Value $snoozeExpiry -Force
                             Write-CMTraceLog "Toast process exited without result -- snoozed until $snoozeExpiry (Remind Me Later on no result)"
+                            # Record the deferral reason so custom reporting can see WHY the device
+                            # is still pending. Cleared automatically on the next successful run.
+                            Set-DATInstallStatus -RegPath $VersionRegPath -Result 'RetryScheduled' -Phase 'UserDeferral' -ScriptExitCode 1618 -ErrorMessage "Toast dismissed without response -- snoozed until $snoozeExpiry"
                             # 1618 = ERROR_INSTALL_ALREADY_RUNNING -- signals Intune to retry
                             # the deferred install later rather than record it as completed.
                             exit 1618
@@ -10421,6 +10496,7 @@ function New-DATIntuneRequirementScript {
     `$osCaption = (Get-CimInstance -ClassName Win32_OperatingSystem -ErrorAction Stop).Caption
     if (`$osCaption -notmatch "Windows $osNumber") {
         Write-Output "OS mismatch: got '`$osCaption', expected 'Windows $osNumber'"
+        Set-DATApplicability -Result 'NotApplicable' -Reason "OS mismatch: got '`$osCaption', expected 'Windows $osNumber'"
         exit 0
     }
 "@
@@ -10475,6 +10551,7 @@ function New-DATIntuneRequirementScript {
             }
             if (-not `$mwInWindow) {
                 Write-Output "Outside maintenance window (day=`$mwNowDay, time=`$(`$mwNow.ToString('hh\:mm')))"
+                Set-DATApplicability -Result 'NotApplicable' -Reason "Outside maintenance window (day=`$mwNowDay, time=`$(`$mwNow.ToString('hh\:mm')))"
                 exit 0
             }
         }
@@ -10499,6 +10576,7 @@ function New-DATIntuneRequirementScript {
             $datSnoozeTime = [datetime]::Parse($datSnoozeUntil)
             if ((Get-Date) -lt $datSnoozeTime) {
                 Write-Output "Deferred until $datSnoozeUntil (Remind Me Later active) -- not applicable"
+                Set-DATApplicability -Result 'NotApplicable' -Reason "Deferred until $datSnoozeUntil (Remind Me Later active)"
                 exit 0
             }
         } catch {
@@ -10528,6 +10606,7 @@ function New-DATIntuneRequirementScript {
         `$biosUpdateNeeded = Compare-BIOSVersion -AvailableBIOSVersion "$Version" -Manufacturer "$OEM" -AvailableReleaseDate "$releaseDate8"
         if (-not `$biosUpdateNeeded) {
             Write-Output "BIOS already current for $OEM $Model (v$Version) -- not required"
+            Set-DATApplicability -Result 'NotApplicable' -Reason "BIOS already current for $OEM $Model (v$Version) -- not required"
             exit 0
         }
     } catch {
@@ -10535,6 +10614,23 @@ function New-DATIntuneRequirementScript {
     }
 "@
     }
+
+    # Applicability decision logging -- records WHY a device is (or is not) applicable to the same
+    # per-model key used by the install/detection markers, so custom reporting can see the reason
+    # without parsing IME logs. Every write is stdout-silent, so it never interferes with the
+    # "Requirement met" string the rule compares against. Runs as SYSTEM (HKLM writable).
+    $applicabilityFunc = @"
+`$datReqRegPath = 'HKLM:\SOFTWARE\DriverAutomationTool\$regSubKey\$OEM\$Model'
+function Set-DATApplicability {
+    param([Parameter(Mandatory)][string]`$Result, [string]`$Reason = '')
+    try {
+        if (-not (Test-Path `$datReqRegPath)) { New-Item -Path `$datReqRegPath -Force | Out-Null }
+        Set-ItemProperty -Path `$datReqRegPath -Name 'ApplicabilityResult'     -Value `$Result -Force
+        Set-ItemProperty -Path `$datReqRegPath -Name 'ApplicabilityReason'     -Value `$Reason -Force
+        Set-ItemProperty -Path `$datReqRegPath -Name 'ApplicabilityCheckedUtc' -Value ((Get-Date).ToUniversalTime().ToString('o')) -Force
+    } catch { }
+}
+"@
 
     $scriptContent = @'
 <#
@@ -10550,6 +10646,7 @@ function New-DATIntuneRequirementScript {
     Output must contain a property that Intune can evaluate.
 #>
 %%BIOS_COMPARE_FUNCS%%
+%%APPLICABILITY_FUNC%%
 $RequirementMet = $false
 
 try {{
@@ -10571,6 +10668,7 @@ try {{
 
     if (-not $oemMatch) {{
         Write-Output "Manufacturer mismatch: got '$manufacturer', expected '$expectedOEM'"
+        Set-DATApplicability -Result 'NotApplicable' -Reason "Wrong manufacturer: got '$manufacturer', expected '$expectedOEM'"
         exit 0
     }}
 
@@ -10592,6 +10690,7 @@ try {{
 
     if (-not $skuMatch) {{
         Write-Output "SKU/Baseboard/Model mismatch: SKU='$systemSKU', Board='$baseboardProduct', Model='$systemModel', Expected=@('{4}')"
+        Set-DATApplicability -Result 'NotApplicable' -Reason "SKU/Board/Model mismatch: SKU='$systemSKU', Board='$baseboardProduct', Model='$systemModel'"
         exit 0
     }}
 
@@ -10602,12 +10701,15 @@ try {{
 }}
 catch {{
     Write-Output "Requirement check error: $($_.Exception.Message)"
+    Set-DATApplicability -Result 'NotApplicable' -Reason "Requirement check error: $($_.Exception.Message)"
     exit 0
 }}
 
 if ($RequirementMet) {{
+    Set-DATApplicability -Result 'Applicable' -Reason 'Requirement met -- device is applicable'
     Write-Output "Requirement met"
 }} else {{
+    Set-DATApplicability -Result 'NotApplicable' -Reason 'Requirement not met'
     Write-Output "Requirement not met"
 }}
 '@ -f $OEM, $Model, $OS, $Version, $bbValues, (Get-Date -Format "yyyy-MM-dd HH:mm:ss"), $osNumber, $UpdateType, $osCheckBlock, $regSubKey
@@ -10616,6 +10718,7 @@ if ($RequirementMet) {{
     $scriptContent = $scriptContent.Replace('%%DEFERRAL_SNOOZE%%', $deferralSnoozeBlock)
     $scriptContent = $scriptContent.Replace('%%BIOS_COMPARE_FUNCS%%', $biosCompareFuncs)
     $scriptContent = $scriptContent.Replace('%%BIOS_RECENCY%%', $biosRecencyBlock)
+    $scriptContent = $scriptContent.Replace('%%APPLICABILITY_FUNC%%', $applicabilityFunc)
 
     # UTF-8 WITHOUT BOM -- Intune requirement rule scripts must not carry a BOM, otherwise
     # the portal/IME treats it as literal content (surfaces as mojibake at the top of the script).
@@ -11039,6 +11142,11 @@ function Invoke-DATIntuneWin32AppUpload {
         5. Upload the encrypted file in chunks
         6. Commit the file
         7. Commit the content version
+
+        Steps 4-11 are retried as a unit (each retry starts a fresh content version) because a
+        transient Azure Storage or Graph failure part-way through leaves the app present but
+        without committed content -- unusable on any device. If every attempt fails the
+        half-created app is deleted so a later build does not treat it as an existing package.
     #>
     [CmdletBinding()]
     param (
@@ -11054,6 +11162,8 @@ function Invoke-DATIntuneWin32AppUpload {
         [string]$UninstallCommandLine = "powershell.exe -ExecutionPolicy Bypass -File Install-Drivers.ps1",
         [int]$ChunkSizeMB = 50,
         [int]$ParallelUploads = 2,
+        [ValidateRange(1, 10)]
+        [int]$MaxUploadAttempts = 3,
         [AllowEmptyString()]
         [string]$CustomIconPath = ''
     )
@@ -11151,6 +11261,27 @@ function Invoke-DATIntuneWin32AppUpload {
         $app = Invoke-DATGraphRequest -Uri "/deviceAppManagement/mobileApps" -Method POST -Body $appBody
         $appId = $app.id
         Write-DATLogEntry -Value "[Intune Upload] App created with ID: $appId" -Severity 1
+
+        # -- Content upload attempt loop (steps 4-11) --------------------------------------
+        # Every attempt starts a brand new content version, so a partially uploaded blob from a
+        # failed attempt is never mixed into a later one. The app itself is created only once.
+        $uploadAttempt = 0
+        $contentCommitted = $false
+        $lastUploadError = ''
+        $fileSize = 0
+        while (-not $contentCommitted -and $uploadAttempt -lt $MaxUploadAttempts) {
+        $uploadAttempt++
+        if ($uploadAttempt -gt 1) {
+            $backoffSec = [math]::Min(60, 15 * ($uploadAttempt - 1))
+            Write-DATLogEntry -Value "[Intune Upload] Attempt $uploadAttempt/$MaxUploadAttempts for $DisplayName -- waiting ${backoffSec}s before retry" -Severity 2
+            Set-DATRegistryValue -Name "RunningMessage" -Value "Upload failed -- retrying ($uploadAttempt/$MaxUploadAttempts): $DisplayName..." -Type String
+            Start-Sleep -Seconds $backoffSec
+            # A long failed attempt can outlive the access token lifetime
+            if (-not (Update-DATIntuneTokenIfNeeded)) {
+                Write-DATLogEntry -Value "[Intune Upload] Token refresh before retry failed -- continuing with the existing token" -Severity 2
+            }
+        }
+        try {
 
         # Step 4: Create content version
         Write-DATLogEntry -Value "[Intune Upload] Creating content version..." -Severity 1
@@ -11409,8 +11540,22 @@ function Invoke-DATIntuneWin32AppUpload {
         $blockListXml += '</BlockList>'
 
         $proxyParams = Get-DATWebRequestProxy
-        Invoke-RestMethod -Method PUT -Uri "$azureStorageUri&comp=blocklist" `
-            -Body $blockListXml -ContentType "application/xml" -ErrorAction Stop @proxyParams
+        $blockListRetries = 0
+        $blockListMaxRetries = 3
+        while ($true) {
+            try {
+                Invoke-RestMethod -Method PUT -Uri "$azureStorageUri&comp=blocklist" `
+                    -Body $blockListXml -ContentType "application/xml" -ErrorAction Stop @proxyParams
+                break
+            } catch {
+                $blockListRetries++
+                if ($blockListRetries -ge $blockListMaxRetries) {
+                    throw "Block list commit failed after $blockListMaxRetries retries: $($_.Exception.Message)"
+                }
+                Write-DATLogEntry -Value "[Intune Upload] Block list commit retry $blockListRetries/$blockListMaxRetries -- $($_.Exception.Message)" -Severity 2
+                Start-Sleep -Seconds ($blockListRetries * 5)
+            }
+        }
 
         Write-DATLogEntry -Value "[Intune Upload] Block list committed successfully." -Severity 1
 
@@ -11466,6 +11611,44 @@ function Invoke-DATIntuneWin32AppUpload {
         }
 
         Invoke-DATGraphRequest -Uri "/deviceAppManagement/mobileApps/$appId" -Method PATCH -Body $updateBody
+
+        # Step 12: Verify the service actually recorded the committed content version. A PATCH
+        # that reports success but does not stick leaves an app devices can never install, so
+        # treat a mismatch as a failed attempt and retry with a fresh content version.
+        $verified = $false
+        for ($verifyAttempt = 1; $verifyAttempt -le 3; $verifyAttempt++) {
+            Start-Sleep -Seconds 5
+            try {
+                $appState = Invoke-DATGraphRequest -Uri "/deviceAppManagement/mobileApps/$appId" -NoPagination
+                if ("$($appState.committedContentVersion)" -eq "$contentVersionId") { $verified = $true; break }
+                Write-DATLogEntry -Value "[Intune Upload] Verify $verifyAttempt/3: committedContentVersion is '$($appState.committedContentVersion)', expected '$contentVersionId'" -Severity 2
+            } catch {
+                Write-DATLogEntry -Value "[Intune Upload] Verify $verifyAttempt/3 failed: $($_.Exception.Message)" -Severity 2
+            }
+        }
+        if (-not $verified) {
+            throw "Upload verification failed -- app $appId did not report committed content version $contentVersionId"
+        }
+
+        $contentCommitted = $true
+        } catch {
+            $lastUploadError = $_.Exception.Message
+            Write-DATLogEntry -Value "[Intune Upload] Attempt $uploadAttempt/$MaxUploadAttempts failed for ${DisplayName}: $lastUploadError" -Severity 2
+        }
+        } # end content upload attempt loop
+
+        if (-not $contentCommitted) {
+            # Remove the content-less app so the failed package is not picked up as an existing
+            # (and therefore skippable) app on the next build, and is not offered to devices.
+            Write-DATLogEntry -Value "[Intune Upload] All $MaxUploadAttempts attempts failed for $DisplayName -- removing incomplete app $appId" -Severity 3
+            try {
+                Invoke-DATGraphRequest -Uri "/deviceAppManagement/mobileApps/$appId" -Method DELETE | Out-Null
+                Write-DATLogEntry -Value "[Intune Upload] Incomplete app $appId removed" -Severity 2
+            } catch {
+                Write-DATLogEntry -Value "[Intune Upload] Cleanup of incomplete app $appId failed: $($_.Exception.Message) -- remove it manually" -Severity 3
+            }
+            throw "Intune upload failed for $DisplayName after $MaxUploadAttempts attempts: $lastUploadError"
+        }
 
         $fileSizeMB = [math]::Round($fileSize / 1MB, 2)
         Write-DATLogEntry -Value "[Intune Upload] SUCCESS: $DisplayName uploaded ($fileSizeMB MB) - App ID: $appId" -Severity 1
@@ -11745,6 +11928,15 @@ function Invoke-DATIntunePackageCreation {
                 $biosACPowerParams['CustomToastBody']  = 'Your device needs to install a BIOS firmware update, but it must be connected to AC power first. Please plug in your charger - the update will continue automatically the next time it runs.'
                 New-DATIntuneToastScript -OutputPath $biosACPowerToastPath -UpdateType 'BIOSIssues' @biosACPowerParams
                 Write-DATLogEntry -Value "[Intune Pipeline] BIOS AC-power toast script created: $biosACPowerToastPath" -Severity 1 -UpdateUI
+
+                # Final deferral notice: shown (bypassing Focus Assist via alarm mode) on the
+                # forced-install path when the maximum number of deferrals has been reached, so
+                # the user is always informed that the BIOS update is now being pre-staged.
+                $biosFinalNoticeToastPath = Join-Path $stagingDir "Show-StatusToast-BIOSFinalNotice.ps1"
+                $biosFinalNoticeParams = @{} + $statusToastParams
+                $biosFinalNoticeParams['AlarmMode'] = $true
+                New-DATIntuneToastScript -OutputPath $biosFinalNoticeToastPath -UpdateType 'BIOSFinalNotice' @biosFinalNoticeParams
+                Write-DATLogEntry -Value "[Intune Pipeline] BIOS final-notice toast script created: $biosFinalNoticeToastPath" -Severity 1 -UpdateUI
             }
         }
 
@@ -11824,6 +12016,8 @@ function Invoke-DATIntunePackageCreation {
         $savedConfig = Get-ItemProperty -Path $global:RegPath -ErrorAction SilentlyContinue
         $uploadChunkSizeMB = if ($null -ne $savedConfig.IntuneChunkSizeMB -and $savedConfig.IntuneChunkSizeMB -gt 0) { [int]$savedConfig.IntuneChunkSizeMB } else { 6 }
         $uploadParallelCount = if ($null -ne $savedConfig.IntuneParallelUploads -and $savedConfig.IntuneParallelUploads -gt 0) { [int]$savedConfig.IntuneParallelUploads } else { 1 }
+        # Number of end-to-end content upload attempts before the package is declared failed.
+        $uploadMaxAttempts = if ($null -ne $savedConfig.IntuneUploadAttempts -and [int]$savedConfig.IntuneUploadAttempts -ge 1 -and [int]$savedConfig.IntuneUploadAttempts -le 10) { [int]$savedConfig.IntuneUploadAttempts } else { 3 }
 
         # Optional user-selected custom package icon (Intune Package Options)
         $customIconPath = if (-not [string]::IsNullOrEmpty($savedConfig.IntuneCustomIconPath) -and (Test-Path -LiteralPath $savedConfig.IntuneCustomIconPath)) { [string]$savedConfig.IntuneCustomIconPath } else { '' }
@@ -11842,6 +12036,7 @@ function Invoke-DATIntunePackageCreation {
             -UninstallCommandLine "powershell.exe -ExecutionPolicy Bypass -File $installScriptName" `
             -ChunkSizeMB $uploadChunkSizeMB `
             -ParallelUploads $uploadParallelCount `
+            -MaxUploadAttempts $uploadMaxAttempts `
             -CustomIconPath $customIconPath
 
         Write-DATLogEntry -Value "[Intune Pipeline] SUCCESS: $displayName uploaded to Intune (App ID: $($result.AppId))" -Severity 1 -UpdateUI
@@ -12625,6 +12820,12 @@ function Start-DATBiosDownload {
             if ($existingHash -eq $BiosEntry.FileHash) {
                 Write-DATLogEntry -Value "[BIOS] File already cached with valid hash: $destFile" -Severity 1
                 return $destFile
+            } elseif ($OEM -ne 'Acer' -and (Test-DATFileSignature -FilePath $destFile -Context $sigContext)) {
+                # The published catalog hash is stale (e.g. the OEM silently re-released the file
+                # under the same URL/version), but the cached binary carries a valid Authenticode
+                # signature from a trusted publisher -- accept it rather than re-downloading every run.
+                Write-DATLogEntry -Value "[BIOS] Cached file hash mismatch (catalog hash likely stale) but Authenticode signature is trusted -- accepting cached file. Expected: $($BiosEntry.FileHash), Got: $existingHash" -Severity 2
+                return $destFile
             } else {
                 Write-DATLogEntry -Value "[BIOS] Cached file hash mismatch -- re-downloading" -Severity 2
                 Remove-Item $destFile -Force -ErrorAction SilentlyContinue
@@ -12679,8 +12880,15 @@ function Start-DATBiosDownload {
         $downloadedHash = (Get-FileHash -Path $destFile -Algorithm $algo -ErrorAction SilentlyContinue).Hash
         if ($downloadedHash -eq $BiosEntry.FileHash) {
             Write-DATLogEntry -Value "[BIOS] Hash verified ($algo): $downloadedHash" -Severity 1
+        } elseif ($OEM -ne 'Acer' -and (Test-DATFileSignature -FilePath $destFile -Context $sigContext)) {
+            # Published catalog hash mismatch, but the binary carries a valid Authenticode signature
+            # from a trusted OEM publisher. This is the benign "OEM silently re-released the file under
+            # the same URL/version" case (the catalog hash has drifted). Accept via signature rather
+            # than hard-failing, which would block a legitimate BIOS package. Still fails closed below
+            # when the signature is absent or the signer is not on the trusted allow-list.
+            Write-DATLogEntry -Value "[BIOS] Hash mismatch (catalog hash likely stale) -- verified via trusted Authenticode signature instead. Expected: $($BiosEntry.FileHash), Got: $downloadedHash" -Severity 2
         } else {
-            Write-DATLogEntry -Value "[BIOS] Hash mismatch! Expected: $($BiosEntry.FileHash), Got: $downloadedHash" -Severity 3
+            Write-DATLogEntry -Value "[BIOS] Hash mismatch and no trusted signature! Expected: $($BiosEntry.FileHash), Got: $downloadedHash" -Severity 3
             Remove-Item $destFile -Force -ErrorAction SilentlyContinue
             return $null
         }
