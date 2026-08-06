@@ -7041,13 +7041,14 @@ function Close-DATBuildProgressModal {
 
 #region Navigation
 
-$allViews = @('view_ModelSelection', 'view_Packages', 'view_ConfigMgr', 'view_Distribution', 'view_IntuneSettings', 'view_IntuneOptions', 'view_ToastNotifications', 'view_IntunePackageMgmt', 'view_BIOSSecurity', 'view_MaintenanceWindow', 'view_CommonSettings', 'view_CustomDriverPack', 'view_Log', 'view_ModernMgmt', 'view_About')
+$allViews = @('view_ModelSelection', 'view_Packages', 'view_ConfigMgr', 'view_Distribution', 'view_XmlLogic', 'view_IntuneSettings', 'view_IntuneOptions', 'view_ToastNotifications', 'view_IntunePackageMgmt', 'view_BIOSSecurity', 'view_MaintenanceWindow', 'view_CommonSettings', 'view_CustomDriverPack', 'view_Log', 'view_ModernMgmt', 'view_About')
 $navMap = @{
     'nav_ModelSelection'       = 'view_ModelSelection'
     'nav_Packages'             = 'view_Packages'
     'nav_ConfigMgr'            = 'view_ConfigMgr'
     'nav_ConfigMgrEnvironment' = 'view_ConfigMgr'
     'nav_Distribution'         = 'view_Distribution'
+    'nav_LogicPackage'         = 'view_XmlLogic'
     'nav_IntuneSettings'       = 'view_IntuneSettings'
     'nav_IntuneAuth'           = 'view_IntuneSettings'
     'nav_IntuneOptions'        = 'view_IntuneOptions'
@@ -7063,7 +7064,7 @@ $navMap = @{
 }
 
 $allNavButtons = @('nav_ModelSelection', 'nav_ConfigMgr', 'nav_IntuneSettings', 'nav_CommonSettings', 'nav_CustomDriverPack', 'nav_Log', 'nav_ModernMgmt', 'nav_About')
-$subNavButtons = @('nav_Packages', 'nav_Distribution', 'nav_ConfigMgrEnvironment', 'nav_IntuneAuth', 'nav_IntuneOptions', 'nav_ToastNotifications', 'nav_IntunePackageMgmt', 'nav_BIOSSecurity', 'nav_MaintenanceWindow')
+$subNavButtons = @('nav_Packages', 'nav_Distribution', 'nav_ConfigMgrEnvironment', 'nav_LogicPackage', 'nav_IntuneAuth', 'nav_IntuneOptions', 'nav_ToastNotifications', 'nav_IntunePackageMgmt', 'nav_BIOSSecurity', 'nav_MaintenanceWindow')
 $configMgrSubPanel = $Window.FindName('panel_ConfigMgrSub')
 $intuneSubPanel = $Window.FindName('panel_IntuneSub')
 
@@ -7091,6 +7092,9 @@ function Set-DATActiveView {
     # Auto-load packages when navigating to Package Management
     if ($ViewName -eq 'view_Packages') {
         Invoke-DATPackageRefresh
+    }
+    elseif ($ViewName -eq 'view_XmlLogic') {
+        try { Invoke-DATRefreshXmlLogicPackageStatus } catch { }
     }
 
     # Update main nav button styles
@@ -7123,7 +7127,7 @@ function Set-DATActiveView {
 
     # Keep ConfigMgr parent highlighted when a sub-item is active
     $configMgrBtn = $Window.FindName('nav_ConfigMgr')
-    if ($NavButtonName -in @('nav_Packages', 'nav_Distribution', 'nav_ConfigMgrEnvironment') -or $NavButtonName -eq 'nav_ConfigMgr') {
+    if ($NavButtonName -in @('nav_Packages', 'nav_Distribution', 'nav_ConfigMgrEnvironment', 'nav_LogicPackage') -or $NavButtonName -eq 'nav_ConfigMgr') {
         $configMgrBtn.Style = $activeStyle
     }
 
@@ -10459,7 +10463,7 @@ $btn_Build.Add_Click({
     $script:BuildPS.Runspace = $script:BuildRunspace
     Add-DATCoreRunspaceBootstrap -PowerShell $script:BuildPS -IntuneAuthContext $intuneAuthContext -ModulePath $resolvedModulePath
     [void]$script:BuildPS.AddScript({
-        param($ScriptDir, $RegPath, $RunningMode, $SelectedModels, $StoragePath, $PackagePath, $DisableToast, $DisableRestart, $SiteServer, $SiteCode, $PackageType, $DPGroups, $DPs, $DistPriority, $EnableBDR, $DebugBuildPath, $CustomBrandingPath, $HPPasswordBinPath, $ToastTimeoutAction, $MaxDeferrals, $BIOSRestartDelayMinutes, $TeamsWebhookUrl, $TeamsNotificationsEnabled, $CustomToastTextsJson, $ConsoleFolderID, $MaintenanceWindowsJson, $AlarmMode, $CreateIntuneWinOnly)
+        param($ScriptDir, $RegPath, $RunningMode, $SelectedModels, $StoragePath, $PackagePath, $DisableToast, $DisableRestart, $SiteServer, $SiteCode, $PackageType, $DPGroups, $DPs, $DistPriority, $EnableBDR, $DebugBuildPath, $CustomBrandingPath, $HPPasswordBinPath, $ToastTimeoutAction, $MaxDeferrals, $BIOSRestartDelayMinutes, $TeamsWebhookUrl, $TeamsNotificationsEnabled, $CustomToastTextsJson, $ConsoleFolderID, $MaintenanceWindowsJson, $AlarmMode, $CreateIntuneWinOnly, $GenerateXmlLogicPackage, $ExtractDownloadOnlyContent)
         try {
             $procParams = @{
                 ScriptDirectory = $ScriptDir
@@ -10473,6 +10477,8 @@ $btn_Build.Add_Click({
             if ($DisableRestart) { $procParams['DisableRestart'] = $true }
             if ($AlarmMode) { $procParams['AlarmMode'] = $true }
             if ($CreateIntuneWinOnly) { $procParams['CreateIntuneWinOnly'] = $true }
+            if ($GenerateXmlLogicPackage) { $procParams['GenerateXmlLogicPackage'] = $true }
+            if (-not $ExtractDownloadOnlyContent) { $procParams['ExtractDownloadOnlyContent'] = $false }
             if ($ToastTimeoutAction -ne 'RemindMeLater') { $procParams['ToastTimeoutAction'] = $ToastTimeoutAction }
             if ($MaxDeferrals -gt 0) { $procParams['MaxDeferrals'] = $MaxDeferrals }
             if ($BIOSRestartDelayMinutes -gt 0 -and $BIOSRestartDelayMinutes -ne 10) { $procParams['RestartDelaySeconds'] = $BIOSRestartDelayMinutes * 60 }
@@ -10563,7 +10569,7 @@ $btn_Build.Add_Click({
     $customToastTextsJson = $null
     if ($selectedPlatform -eq 'Intune') {
         $toastTexts = @{}
-        foreach ($typeKey in @('Toast_Drivers', 'Toast_BIOS', 'Toast_Success', 'Toast_BIOSSuccess', 'Toast_Issues', 'Toast_BIOSIssues')) {
+        foreach ($typeKey in @('Toast_Drivers', 'Toast_BIOS', 'Toast_Success', 'Toast_BIOSSuccess', 'Toast_Issues', 'Toast_BIOSIssues', 'Toast_BIOSACPower')) {
             $tTitle    = (Get-ItemProperty -Path $global:RegPath -Name "${typeKey}_Title" -ErrorAction SilentlyContinue)."${typeKey}_Title"
             $tBody     = (Get-ItemProperty -Path $global:RegPath -Name "${typeKey}_Body" -ErrorAction SilentlyContinue)."${typeKey}_Body"
             $tGreeting = (Get-ItemProperty -Path $global:RegPath -Name "${typeKey}_Greeting" -ErrorAction SilentlyContinue)."${typeKey}_Greeting"
@@ -10599,11 +10605,27 @@ $btn_Build.Add_Click({
     }
     [void]$script:BuildPS.AddArgument($maintenanceWindowsJson)
 
+    # Auto-generate XML logic package after ConfigMgr builds when enabled in Package Options
+    $generateXmlLogicPackage = $false
+    if ($selectedPlatform -eq 'Configuration Manager') {
+        $xmlLogicEnabled = (Get-ItemProperty -Path $global:RegPath -Name 'XmlLogicCreatePackage' -ErrorAction SilentlyContinue).XmlLogicCreatePackage
+        $generateXmlLogicPackage = ($xmlLogicEnabled -eq 1)
+    }
+
     # Critical Notification / alarm mode (Intune only) -- last positional argument
     [void]$script:BuildPS.AddArgument($alarmMode)
 
     # Create IntuneWin Only (Intune only) -- build .intunewin without uploading to Intune
     [void]$script:BuildPS.AddArgument($createIntuneWinOnly)
+
+    # XML Logic Package auto-refresh (ConfigMgr only)
+    [void]$script:BuildPS.AddArgument($generateXmlLogicPackage)
+
+    # Download Only extraction behaviour (default: extract content after download)
+    $extractDownloadOnlyContent = $true
+    $dlExtractRegVal = (Get-ItemProperty -Path $global:RegPath -Name 'DownloadOnlyExtractContent' -ErrorAction SilentlyContinue).DownloadOnlyExtractContent
+    if ($null -ne $dlExtractRegVal -and $dlExtractRegVal -eq 0) { $extractDownloadOnlyContent = $false }
+    [void]$script:BuildPS.AddArgument($extractDownloadOnlyContent)
 
     $script:BuildAsyncResult = $script:BuildPS.BeginInvoke()
 
@@ -12545,13 +12567,103 @@ $chk_XmlLogicCreatePackage = $Window.FindName('chk_XmlLogicCreatePackage')
 $txt_XmlLogicCreatePackageState = $Window.FindName('txt_XmlLogicCreatePackageState')
 $btn_GenerateXmlLogicPackage = $Window.FindName('btn_GenerateXmlLogicPackage')
 $txt_XmlLogicStatus = $Window.FindName('txt_XmlLogicStatus')
+$txt_XmlLogicPackageName = $Window.FindName('txt_XmlLogicPackageName')
+$txt_XmlLogicPackageId = $Window.FindName('txt_XmlLogicPackageId')
+$grid_XmlLogicContents = $Window.FindName('grid_XmlLogicContents')
+$txt_XmlLogicContentsCount = $Window.FindName('txt_XmlLogicContentsCount')
+$txt_XmlLogicContentsEmpty = $Window.FindName('txt_XmlLogicContentsEmpty')
+
+function Update-DATXmlLogicContentsGrid {
+    # Populate the "XML Package Contents" table from the locally generated DriverPackages.xml.
+    # This reads the actual XML the package contains, so it works regardless of ConfigMgr state.
+    if ($null -eq $grid_XmlLogicContents) { return }
+
+    $rows = New-Object System.Collections.Generic.List[object]
+    $regConfig = Get-ItemProperty -Path $global:RegPath -ErrorAction SilentlyContinue
+    $pkgStoragePath = if ($regConfig -and -not [string]::IsNullOrEmpty($regConfig.PackageStoragePath)) { $regConfig.PackageStoragePath } else { $null }
+
+    if (-not [string]::IsNullOrEmpty($pkgStoragePath)) {
+        $xmlFile = Join-Path $pkgStoragePath 'DriverAutomationTool\XML Package\DriverPackages.xml'
+        if (Test-Path -Path $xmlFile) {
+            try {
+                [xml]$doc = Get-Content -Path $xmlFile -Raw -ErrorAction Stop
+                foreach ($pkg in @($doc.ArrayOfCMPackage.CMPackage)) {
+                    if ($null -eq $pkg) { continue }
+                    # Baseboards / supported platform IDs are embedded in the package description
+                    # as "(Models included: <id>,<id>) (Release Date:...)" for BIOS packages.
+                    # Capture only the board IDs -- stop at the closing paren so the release date
+                    # (and anything after it) is excluded from the Baseboard column.
+                    $baseboards = ''
+                    $desc = [string]$pkg.Description
+                    if ($desc -match '(?i)Models included:\s*([^)]+)') { $baseboards = $matches[1].Trim() }
+                    # Normalise the source date for display where possible
+                    $srcDate = [string]$pkg.SourceDate
+                    $parsedDate = [datetime]::MinValue
+                    if ([datetime]::TryParse($srcDate, [ref]$parsedDate)) { $srcDate = $parsedDate.ToString('yyyy-MM-dd HH:mm') }
+                    $rows.Add([PSCustomObject]@{
+                        Name         = [string]$pkg.Name
+                        PackageID    = [string]$pkg.PackageID
+                        Manufacturer = [string]$pkg.Manufacturer
+                        Baseboards   = $baseboards
+                        SourceDate   = $srcDate
+                    })
+                }
+            } catch {
+                Write-DATLogEntry -Value "[XML Logic] Failed to read package contents: $($_.Exception.Message)" -Severity 2
+            }
+        }
+    }
+
+    $grid_XmlLogicContents.ItemsSource = $rows
+    $grid_XmlLogicContents.Visibility = if ($rows.Count -gt 0) { 'Visible' } else { 'Collapsed' }
+    if ($null -ne $txt_XmlLogicContentsCount) {
+        $txt_XmlLogicContentsCount.Text = if ($rows.Count -gt 0) { "$($rows.Count) package(s)" } else { '' }
+    }
+    if ($null -ne $txt_XmlLogicContentsEmpty) {
+        $txt_XmlLogicContentsEmpty.Visibility = if ($rows.Count -gt 0) { 'Collapsed' } else { 'Visible' }
+    }
+}
+
+function Invoke-DATRefreshXmlLogicPackageStatus {
+    $defaultPkgName = 'Driver Automation Tool XML Package'
+    if ($null -eq $txt_XmlLogicPackageName -or $null -eq $txt_XmlLogicPackageId) { return }
+
+    # Load the local XML package contents table (independent of ConfigMgr connectivity).
+    Update-DATXmlLogicContentsGrid
+
+    # Show persisted values first so the view has useful context even before connection.
+    $savedXmlPkgName = (Get-ItemProperty -Path $global:RegPath -Name 'XmlLogicPackageName' -ErrorAction SilentlyContinue).XmlLogicPackageName
+    $savedXmlPkgId = (Get-ItemProperty -Path $global:RegPath -Name 'XmlLogicPackageID' -ErrorAction SilentlyContinue).XmlLogicPackageID
+    $txt_XmlLogicPackageName.Text = if (-not [string]::IsNullOrEmpty($savedXmlPkgName)) { $savedXmlPkgName } else { "$defaultPkgName (not detected)" }
+    $txt_XmlLogicPackageId.Text = if (-not [string]::IsNullOrEmpty($savedXmlPkgId)) { $savedXmlPkgId } else { '--' }
+
+    if ([string]::IsNullOrEmpty($global:SiteServer) -or [string]::IsNullOrEmpty($global:SiteCode)) { return }
+
+    try {
+        $smsNs = "root\SMS\Site_$($global:SiteCode)"
+        $xmlPkg = @(Invoke-DATRemoteQuery -CimSession $global:DATCimSession -ComputerName $global:SiteServer -Namespace $smsNs -Query "SELECT Name, PackageID FROM SMS_Package WHERE Name = 'Driver Automation Tool XML Package'") | Select-Object -First 1
+        if ($xmlPkg) {
+            $txt_XmlLogicPackageName.Text = [string]$xmlPkg.Name
+            $txt_XmlLogicPackageId.Text = [string]$xmlPkg.PackageID
+            Set-DATRegistryValue -Name 'XmlLogicPackageName' -Value ([string]$xmlPkg.Name) -Type String
+            Set-DATRegistryValue -Name 'XmlLogicPackageID' -Value ([string]$xmlPkg.PackageID) -Type String
+        } else {
+            $txt_XmlLogicPackageName.Text = "$defaultPkgName (not detected)"
+            $txt_XmlLogicPackageId.Text = '--'
+        }
+    } catch {
+        # Keep persisted values when live lookup fails.
+    }
+}
 
 if ($null -ne $chk_XmlLogicCreatePackage) {
     $chk_XmlLogicCreatePackage.Add_Checked({
         Set-DATRegistryValue -Name 'XmlLogicCreatePackage' -Value 1 -Type DWord
         if ($null -ne $txt_XmlLogicCreatePackageState) {
             $txt_XmlLogicCreatePackageState.Text = 'Create & distribute as package'
-            $txt_XmlLogicCreatePackageState.Foreground = $Window.FindResource('AccentColor')
+            # AccentTextColor is tuned for readable accent text on card backgrounds in both themes
+            # (base AccentColor is too dim as text on the dark card surface).
+            $txt_XmlLogicCreatePackageState.Foreground = $Window.FindResource('AccentTextColor')
         }
     })
     $chk_XmlLogicCreatePackage.Add_Unchecked({
@@ -12601,7 +12713,7 @@ if ($null -ne $btn_GenerateXmlLogicPackage) {
         $enableBDR = ($chk_BinaryDiffReplication.IsChecked -eq $true)
 
         $btn_GenerateXmlLogicPackage.IsEnabled = $false
-        $txt_XmlLogicStatus.Text = 'Generating XML Logic Package...'
+        $txt_XmlLogicStatus.Text = 'Generating XML Logic Package (Drivers + BIOS)...'
         $txt_XmlLogicStatus.Foreground = $Window.FindResource('InputPlaceholder')
 
         # Run generation in a background runspace to keep the UI responsive. State and timer
@@ -12622,6 +12734,7 @@ if ($null -ne $btn_GenerateXmlLogicPackage) {
                     SiteCode    = $SiteCode
                     PackagePath = $PackagePath
                     Priority    = $Priority
+                    PackageScope = 'All'
                 }
                 if ($CreatePkg) {
                     $params['CreatePackage'] = $true
@@ -12663,7 +12776,7 @@ if ($null -ne $btn_GenerateXmlLogicPackage) {
                     $r = $script:XmlLogicState.Result
                     switch ($r.Status) {
                         'NoPackages' {
-                            $txt_XmlLogicStatus.Text = 'No matching driver packages found in ConfigMgr.'
+                            $txt_XmlLogicStatus.Text = 'No matching driver or BIOS packages found in ConfigMgr.'
                             $txt_XmlLogicStatus.Foreground = $Window.FindResource('StatusWarning')
                         }
                         'Failed' {
@@ -12671,9 +12784,21 @@ if ($null -ne $btn_GenerateXmlLogicPackage) {
                             $txt_XmlLogicStatus.Foreground = $Window.FindResource('StatusError')
                         }
                         default {
+                            $scopeLabel = switch ($r.PackageScope) {
+                                'Drivers' { 'Drivers only' }
+                                'BIOS'    { 'BIOS only' }
+                                default   { 'Drivers + BIOS' }
+                            }
                             $pkgNote = if ($r.PackageID) { " | Package $($r.PackageID) ($($r.Status))" } else { '' }
-                            $txt_XmlLogicStatus.Text = "Done. $($r.PackageCount) package(s) written to DriverPackages.xml$pkgNote"
+                            $txt_XmlLogicStatus.Text = "Done. $($r.PackageCount) package(s) [$scopeLabel] written to DriverPackages.xml$pkgNote"
                             $txt_XmlLogicStatus.Foreground = $Window.FindResource('StatusSuccess')
+                            if ($r.PackageID) {
+                                if ($null -ne $txt_XmlLogicPackageName) { $txt_XmlLogicPackageName.Text = 'Driver Automation Tool XML Package' }
+                                if ($null -ne $txt_XmlLogicPackageId) { $txt_XmlLogicPackageId.Text = [string]$r.PackageID }
+                                Set-DATRegistryValue -Name 'XmlLogicPackageName' -Value 'Driver Automation Tool XML Package' -Type String
+                                Set-DATRegistryValue -Name 'XmlLogicPackageID' -Value ([string]$r.PackageID) -Type String
+                            }
+                            Invoke-DATRefreshXmlLogicPackageStatus
                         }
                     }
                 } else {
@@ -12685,6 +12810,8 @@ if ($null -ne $btn_GenerateXmlLogicPackage) {
         $script:XmlLogicTimer.Start()
     })
 }
+
+Invoke-DATRefreshXmlLogicPackageStatus
 
 # --- Source Folder Cleanup toggle ---
 $chk_DeleteSourceFolder = $Window.FindName('chk_DeleteSourceFolder')
@@ -15013,6 +15140,17 @@ $chk_CleanTempOnExit.Add_Unchecked({
     Write-DATActivityLog "Clean temp on exit disabled" -Level Info
 })
 
+# Download Only extraction behaviour toggle
+$chk_DownloadOnlyExtractContent = $Window.FindName('chk_DownloadOnlyExtractContent')
+$chk_DownloadOnlyExtractContent.Add_Checked({
+    Set-DATRegistryValue -Name "DownloadOnlyExtractContent" -Value 1 -Type DWord
+    Write-DATActivityLog "Download Only extraction enabled" -Level Info
+})
+$chk_DownloadOnlyExtractContent.Add_Unchecked({
+    Set-DATRegistryValue -Name "DownloadOnlyExtractContent" -Value 0 -Type DWord
+    Write-DATActivityLog "Download Only extraction disabled (download files only)" -Level Info
+})
+
 # Teams Notifications save handlers
 $chk_TeamsNotifications.Add_Checked({
     Set-DATRegistryValue -Name "TeamsNotificationsEnabled" -Value 1 -Type DWord
@@ -15211,6 +15349,7 @@ $btn_ScheduleSave.Add_Click({
     $schedTempPath = if ($regConfig -and -not [string]::IsNullOrEmpty($regConfig.TempStoragePath)) { $regConfig.TempStoragePath } else { '' }
     $schedPkgPath = if ($regConfig -and -not [string]::IsNullOrEmpty($regConfig.PackageStoragePath)) { $regConfig.PackageStoragePath } else { '' }
     $schedCleanTemp = -not ($regConfig -and $null -ne $regConfig.CleanTempOnExit -and $regConfig.CleanTempOnExit -eq 0)
+    $schedDownloadOnlyExtract = ($null -eq $chk_DownloadOnlyExtractContent -or $chk_DownloadOnlyExtractContent.IsChecked -ne $false)
 
     # ConfigMgr settings
     $schedCM = @{
@@ -15253,6 +15392,7 @@ $btn_ScheduleSave.Add_Click({
             -Intune $schedIntune `
             -MaintenanceWindowEnabled $schedMWEnabled -MaintenanceWindowMode $schedMWMode -MaintenanceWindows $schedMWindows `
             -CleanTempOnExit $schedCleanTemp `
+            -DownloadOnlyExtractContent $schedDownloadOnlyExtract `
             -CreateIntuneWinOnly $schedCreateWinOnly `
             -PackageRetentionEnabled $schedRetentionEnabled -PackageRetentionCount $schedRetentionCount `
             -DeleteSourceFolderOnRemoval $schedDeleteSourceFolder
@@ -15372,6 +15512,12 @@ $btn_PurgeDownloads.Add_Click({
         $items = Get-ChildItem -Path $tempPath -Force -ErrorAction SilentlyContinue
         $removedCount = 0
         foreach ($item in $items) {
+            # Preserve the Configuration Manager (Offline) export folder -- it is a deliverable,
+            # not transient download/extract content, and is cleared at the start of each offline run.
+            if ($item.PSIsContainer -and $item.Name -eq 'ConfigMgr Offline') {
+                Write-DATActivityLog "Skipped offline export folder (preserved): $($item.Name)" -Level Info
+                continue
+            }
             try {
                 # Security fix #11: handle reparse points (junctions/symlinks) without
                 # following them into their targets — delete the link itself only.
@@ -16248,7 +16394,7 @@ $btn_CustomBuild.Add_Click({
     [void]$script:CustomBuildPS.AddScript({
         param($Make, $Model, $BaseBoard, $Platform, $TempStorage, $PackageStorage, $RegPath,
               $OSLabel, $Architecture, $Version, $ScriptDir, $SiteServer, $SiteCode, $DisableToast, $TotalSteps,
-              $Method, $DriverFolderPath, $DPGroups, $DPs, $DistPriority, $DebugBuildPath, $CustomBrandingPath, $AlarmMode, $CreateIntuneWinOnly)
+              $Method, $DriverFolderPath, $DPGroups, $DPs, $DistPriority, $DebugBuildPath, $CustomBrandingPath, $MaintenanceWindowsJson, $AlarmMode, $CreateIntuneWinOnly)
 
         $global:ScriptDirectory = $ScriptDir
         $global:RegPath = $RegPath
@@ -16736,6 +16882,7 @@ $btn_CustomBuild.Add_Click({
                 }
                 if (-not [string]::IsNullOrEmpty($DebugBuildPath)) { $intuneCreateParams['DebugBuildPath'] = $DebugBuildPath }
                 if (-not [string]::IsNullOrEmpty($CustomBrandingPath)) { $intuneCreateParams['CustomBrandingPath'] = $CustomBrandingPath }
+                if (-not [string]::IsNullOrEmpty($MaintenanceWindowsJson)) { $intuneCreateParams['MaintenanceWindowsJson'] = $MaintenanceWindowsJson }
                 if ($AlarmMode) { $intuneCreateParams['AlarmMode'] = $true }
                 if ($CreateIntuneWinOnly) { $intuneCreateParams['CreateIntuneWinOnly'] = $true }
                 $packageResult = Invoke-DATIntunePackageCreation @intuneCreateParams
@@ -16848,6 +16995,18 @@ $btn_CustomBuild.Add_Click({
     [void]$script:CustomBuildPS.AddArgument($customDistPriority)
     [void]$script:CustomBuildPS.AddArgument($debugBuildPath)
     [void]$script:CustomBuildPS.AddArgument($script:CustomBrandingImagePath)
+
+    # Maintenance window schedule (Intune only) -- pass stored JSON when enabled
+    $maintenanceWindowsJson = $null
+    if ($platform -eq 'Intune') {
+        $mwEnabledVal = (Get-ItemProperty -Path $global:RegPath -Name 'MaintenanceWindowEnabled' -ErrorAction SilentlyContinue).MaintenanceWindowEnabled
+        if ($mwEnabledVal -eq 1) {
+            $mwJsonReg = (Get-ItemProperty -Path $global:RegPath -Name 'MaintenanceWindows' -ErrorAction SilentlyContinue).MaintenanceWindows
+            if (-not [string]::IsNullOrWhiteSpace($mwJsonReg)) { $maintenanceWindowsJson = $mwJsonReg }
+        }
+    }
+    [void]$script:CustomBuildPS.AddArgument($maintenanceWindowsJson)
+
     [void]$script:CustomBuildPS.AddArgument($alarmMode)
     [void]$script:CustomBuildPS.AddArgument($createIntuneWinOnly)
     $script:CustomBuildAsyncResult = $script:CustomBuildPS.BeginInvoke()
@@ -17508,16 +17667,46 @@ $cmb_BIOSTimeoutAction.Add_SelectionChanged({
 
 $chk_DeployAllDevices = $Window.FindName('chk_DeployAllDevices')
 $txt_DeployAllState = $Window.FindName('txt_DeployAllState')
+$txt_DeployWarning = $Window.FindName('txt_DeployWarning')
+
+# Reflects the TRUE deployment outcome, accounting for BOTH the Deploy toggle and the
+# Automatic Assignment Filter -- the filter path deploys independently of the Deploy toggle,
+# so turning off 'Deploy to All Devices' alone does not guarantee that nothing is deployed.
+function Update-DATDeployWarning {
+    if ($null -eq $txt_DeployWarning) { return }
+    $deployOn = $chk_DeployAllDevices.IsChecked -eq $true
+    $filterOn = ($null -ne $chk_AutoAssignmentFilter) -and ($chk_AutoAssignmentFilter.IsChecked -eq $true)
+    $targetName = (Get-ItemProperty -Path $global:RegPath -Name 'DeployTargetGroupName' -ErrorAction SilentlyContinue).DeployTargetGroupName
+    if ([string]::IsNullOrWhiteSpace($targetName)) { $targetName = 'All Devices' }
+
+    if ($deployOn -and $filterOn) {
+        $txt_DeployWarning.Foreground = $Window.FindResource('StatusWarning')
+        $txt_DeployWarning.Text = "Warning: Every driver and BIOS package built will be automatically deployed to matching devices via an assignment filter (target: '$targetName'). Devices install them automatically, and BIOS packages may trigger a restart -- with no further approval step."
+    } elseif ($deployOn) {
+        $txt_DeployWarning.Foreground = $Window.FindResource('StatusWarning')
+        $txt_DeployWarning.Text = "Warning: Every driver and BIOS package built will be automatically assigned as Required to '$targetName'. Matching devices download and install them automatically, and BIOS packages may trigger a restart -- with no further approval step."
+    } elseif ($filterOn) {
+        $txt_DeployWarning.Foreground = $Window.FindResource('InputPlaceholder')
+        $txt_DeployWarning.Text = "Packages will be created and uploaded to Intune but not assigned to any devices. The Automatic Assignment Filter below is inactive because 'Deploy to All Devices' is off -- turn deployment on to activate it."
+    } else {
+        $txt_DeployWarning.Foreground = $Window.FindResource('InputPlaceholder')
+        $txt_DeployWarning.Text = "Packages will be created and uploaded to Intune but not assigned to any devices. You must assign them manually in the Intune portal."
+    }
+    $txt_DeployWarning.Visibility = 'Visible'
+}
+
 $chk_DeployAllDevices.Add_Checked({
     Set-DATRegistryValue -Name "DeployAllDevices" -Value 1 -Type DWord
     $txt_DeployAllState.Text = 'On'
     $txt_DeployAllState.Foreground = $Window.FindResource('AccentColor')
+    Update-DATDeployWarning
     Write-DATActivityLog "Package Deployment: Deploy to All Devices enabled" -Level Info
 })
 $chk_DeployAllDevices.Add_Unchecked({
     Set-DATRegistryValue -Name "DeployAllDevices" -Value 0 -Type DWord
     $txt_DeployAllState.Text = 'Off'
     $txt_DeployAllState.Foreground = $Window.FindResource('InputPlaceholder')
+    Update-DATDeployWarning
     Write-DATActivityLog "Package Deployment: Deploy to All Devices disabled" -Level Info
 })
 
@@ -17731,14 +17920,19 @@ $chk_AutoAssignmentFilter.Add_Checked({
     Set-DATRegistryValue -Name "AutoAssignmentFilter" -Value 1 -Type DWord
     $txt_AutoFilterState.Text = 'On'
     $txt_AutoFilterState.Foreground = $Window.FindResource('AccentColor')
+    Update-DATDeployWarning
     Write-DATActivityLog "Assignment Filters: Auto-create enabled" -Level Info
 })
 $chk_AutoAssignmentFilter.Add_Unchecked({
     Set-DATRegistryValue -Name "AutoAssignmentFilter" -Value 0 -Type DWord
     $txt_AutoFilterState.Text = 'Off'
     $txt_AutoFilterState.Foreground = $Window.FindResource('InputPlaceholder')
+    Update-DATDeployWarning
     Write-DATActivityLog "Assignment Filters: Auto-create disabled" -Level Info
 })
+
+# Initialise the deployment warning to reflect the current toggle states on load
+Update-DATDeployWarning
 
 $cmb_FilterMode.Add_SelectionChanged({
     $selected = $cmb_FilterMode.SelectedItem
@@ -18583,6 +18777,7 @@ function Get-DATToastRegistryPrefix {
         'BIOS Prestaged'     { return 'Toast_BIOSSuccess' }
         'Driver Issues'      { return 'Toast_Issues' }
         'BIOS Issues'        { return 'Toast_BIOSIssues' }
+        'BIOS AC Power'      { return 'Toast_BIOSACPower' }
         default              { return 'Toast_Drivers' }
     }
 }
@@ -18595,6 +18790,7 @@ $script:ToastDefaults = @{
     'Toast_BIOSSuccess' = @{ Title = 'BIOS Firmware Prestaged'; Body = 'Your system has a pending BIOS update and will be restarted in {{MINUTES}} minute(s). Please save your work. Do NOT power off the device during the update process.'; Greeting = 'Hi'; Subtitle = 'Driver Automation Tool V10'; ActionButton = 'Close'; DismissButton = 'Restart Now' }
     'Toast_Issues'      = @{ Title = 'Driver Update Issues Detected'; Body = 'One or more driver updates encountered errors during installation. Please contact your IT department or check the device logs for details.'; Greeting = 'Hi'; Subtitle = 'Driver Automation Tool V10'; ActionButton = 'Close'; DismissButton = '' }
     'Toast_BIOSIssues'  = @{ Title = 'BIOS Update Issues Detected'; Body = 'The BIOS firmware update encountered errors during installation. Please contact your IT department or check the device logs for details.'; Greeting = 'Hi'; Subtitle = 'Driver Automation Tool V10'; ActionButton = 'Close'; DismissButton = '' }
+    'Toast_BIOSACPower' = @{ Title = 'BIOS Update Paused - Connect Power'; Body = 'Your device needs to install a BIOS firmware update, but it must be connected to AC power first. Please plug in your charger - the update will continue automatically the next time it runs.'; Greeting = 'Hi'; Subtitle = 'Driver Automation Tool V10'; ActionButton = 'Close'; DismissButton = '' }
 }
 
 # Suppress TextChanged events during programmatic loads
@@ -18806,6 +19002,20 @@ function Update-DATToastPreview {
             $txt_ToastStatusHeading.Text           = if (-not [string]::IsNullOrEmpty($customTitle)) { $customTitle } else { $defaults.Title }
             $txt_ToastStatusBody.Text              = if (-not [string]::IsNullOrEmpty($customBody)) { $customBody } else { $defaults.Body }
         }
+        'BIOS AC Power' {
+            $panel_ToastUpdateMockup.Visibility = 'Collapsed'
+            $panel_ToastStatusMockup.Visibility = 'Visible'
+            $accentAmber = [System.Windows.Media.SolidColorBrush]::new([System.Windows.Media.ColorConverter]::ConvertFromString('#D97706'))
+            $iconBg      = [System.Windows.Media.SolidColorBrush]::new([System.Windows.Media.ColorConverter]::ConvertFromString('#451a03'))
+            $iconFg      = [System.Windows.Media.SolidColorBrush]::new([System.Windows.Media.ColorConverter]::ConvertFromString('#F59E0B'))
+            $bd_ToastStatusOuter.BorderBrush      = $accentAmber
+            $bd_ToastStatusStrip.Background        = $accentAmber
+            $bd_ToastStatusIcon.Background         = $iconBg
+            $txt_ToastStatusIcon.Foreground        = $iconFg
+            $txt_ToastStatusIcon.Text              = [char]0xE83E   # BatteryCharging (connect power)
+            $txt_ToastStatusHeading.Text           = if (-not [string]::IsNullOrEmpty($customTitle)) { $customTitle } else { $defaults.Title }
+            $txt_ToastStatusBody.Text              = if (-not [string]::IsNullOrEmpty($customBody)) { $customBody } else { $defaults.Body }
+        }
         default {
             # Driver Update
             $panel_ToastUpdateMockup.Visibility = 'Visible'
@@ -18882,7 +19092,7 @@ $btn_ShowToastPreview.Add_Click({
     $restartMins = if (($txt_BIOSRestartDelay.Text -match '^\d+$')) { [int]$txt_BIOSRestartDelay.Text } else { 10 }
     $body = $body -replace '\{\{MINUTES\}\}', $restartMins
 
-    $isStatusType = $selectedType -in @('Successfully Updated', 'BIOS Prestaged', 'Driver Issues', 'BIOS Issues')
+    $isStatusType = $selectedType -in @('Successfully Updated', 'BIOS Prestaged', 'Driver Issues', 'BIOS Issues', 'BIOS AC Power')
 
     # Determine status type colors/icons
     $statusIcon = [char]0xE930; $iconColor = '#22C55E'; $accentColor = '#16A34A'; $iconBackground = '#052e16'
@@ -18890,6 +19100,7 @@ $btn_ShowToastPreview.Add_Click({
         'BIOS Prestaged'     { $statusIcon = [char]0xE835; $iconColor = '#3B82F6'; $accentColor = '#2563EB'; $iconBackground = '#172554' }
         'Driver Issues'      { $statusIcon = [char]0xE7BA; $iconColor = '#F59E0B'; $accentColor = '#D97706'; $iconBackground = '#451a03' }
         'BIOS Issues'        { $statusIcon = [char]0xE7BA; $iconColor = '#F59E0B'; $accentColor = '#D97706'; $iconBackground = '#451a03' }
+        'BIOS AC Power'      { $statusIcon = [char]0xE83E; $iconColor = '#F59E0B'; $accentColor = '#D97706'; $iconBackground = '#451a03' }
     }
 
     # Build the preview window
@@ -24226,6 +24437,17 @@ try {
             Write-Host "Enabled (Default)" -ForegroundColor Green
         }
 
+        # Restore Download Only extract content behaviour
+        Write-Host "  DL Extract    : " -NoNewline -ForegroundColor DarkGray
+        if ($null -ne $savedConfig.DownloadOnlyExtractContent -and $savedConfig.DownloadOnlyExtractContent -eq 0) {
+            $chk_DownloadOnlyExtractContent.IsChecked = $false
+            Write-Host "Disabled (download files only)" -ForegroundColor DarkYellow
+        } else {
+            # Default ON for new installs
+            $chk_DownloadOnlyExtractContent.IsChecked = $true
+            Write-Host "Enabled (download + extract)" -ForegroundColor Green
+        }
+
         # Restore Teams Notifications
         Write-Host "  Teams Notify  : " -NoNewline -ForegroundColor DarkGray
         if ($null -ne $savedConfig.TeamsNotificationsEnabled -and $savedConfig.TeamsNotificationsEnabled -eq 1) {
@@ -24767,7 +24989,7 @@ if (Test-Path $logoPath) {
 
 # Read version from module manifest
 $manifestPath = Join-Path $AppRoot "Modules\DriverAutomationToolCore\DriverAutomationToolCore.psd1"
-$script:versionString = "v10.1.9"
+$script:versionString = "v10.2.0"
 if (Test-Path $manifestPath) {
     $manifestData = Import-PowerShellDataFile $manifestPath
     $ver = [version]$manifestData.ModuleVersion
@@ -25712,6 +25934,11 @@ $Window.Add_Closing({
                 $shutdownWin.Dispatcher.Invoke([System.Windows.Threading.DispatcherPriority]::Render, [action]{})
 
                 foreach ($item in $tempItems) {
+                    # Preserve the Configuration Manager (Offline) export -- it is a deliverable.
+                    if ($item.PSIsContainer -and $item.Name -eq 'ConfigMgr Offline') {
+                        Write-DATLogEntry -Value "Cleanup: Preserved offline export folder - $($item.FullName)" -Severity 1
+                        continue
+                    }
                     try {
                         $itemName = $item.Name
                         $itemType = if ($item.PSIsContainer) { 'folder' } else { 'file' }

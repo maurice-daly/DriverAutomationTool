@@ -100,6 +100,9 @@ $script:Themes = @{
         # Accent
         AccentColor            = "#0B84F1"
         AccentColorLight       = "#6DB3F2"
+        # Accent colour tuned for readable text on dark card backgrounds (the base
+        # AccentColor is too dim as text on dark surfaces -- use the lighter blue).
+        AccentTextColor        = "#6DB3F2"
 
         # Modal / Pipeline
         PipelinePending        = "#4B5563"
@@ -201,6 +204,9 @@ $script:Themes = @{
         # Accent
         AccentColor            = "#0078D4"
         AccentColorLight       = "#6DB3F2"
+        # Accent colour tuned for readable text on light card backgrounds (the lighter
+        # accent blue is too faint on white -- keep the darker accent for text).
+        AccentTextColor        = "#0078D4"
 
         # Modal / Pipeline
         PipelinePending        = "#C8D1DC"

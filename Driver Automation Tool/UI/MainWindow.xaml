@@ -934,7 +934,7 @@
                                    Foreground="{DynamicResource AccentColor}" VerticalAlignment="Center" Margin="0,0,8,0"/>
                         <TextBlock Text="Driver Automation Tool" FontSize="13" FontWeight="SemiBold"
                                    Foreground="{DynamicResource WindowForeground}" VerticalAlignment="Center"/>
-                        <TextBlock x:Name="txt_Version" Text=" Version 10.1.9" FontSize="11"
+                        <TextBlock x:Name="txt_Version" Text=" Version 10.2.0" FontSize="11"
                                    Foreground="{DynamicResource InputPlaceholder}" VerticalAlignment="Center" Margin="4,0"/>
                     </StackPanel>
 
@@ -1027,6 +1027,10 @@
                                 <Button x:Name="nav_Distribution"
                                         Style="{StaticResource SubNavButton}">
                                     <TextBlock><Run Text="&#xE7B8;" FontFamily="Segoe MDL2 Assets"/><Run Text="  Package Options"/></TextBlock>
+                                </Button>
+                                <Button x:Name="nav_LogicPackage"
+                                        Style="{StaticResource SubNavButton}">
+                                    <TextBlock><Run Text="&#xE8A5;" FontFamily="Segoe MDL2 Assets"/><Run Text="  Logic Package"/></TextBlock>
                                 </Button>
                             </StackPanel>
                             <Button x:Name="nav_IntuneSettings"
@@ -1356,6 +1360,7 @@
                                     <ComboBox x:Name="cmb_Platform" Grid.Column="3" Grid.Row="1" Margin="8,0,8,0"
                                               VerticalAlignment="Top" Height="34">
                                         <ComboBoxItem Content="Configuration Manager" IsSelected="True"/>
+                                        <ComboBoxItem Content="Configuration Manager (Offline)"/>
                                         <ComboBoxItem Content="Intune"/>
                                         <ComboBoxItem Content="WIM Package Only"/>
                                         <ComboBoxItem Content="Download Only"/>
@@ -2577,7 +2582,7 @@
                                             <TextBlock DockPanel.Dock="Top" FontSize="12" Margin="0,0,0,12">
                                                 <Hyperlink x:Name="link_DPScheduling"
                                                            NavigateUri="https://learn.microsoft.com/en-us/intune/configmgr/core/servers/deploy/configure/install-and-configure-distribution-points#bkmk_config-sched"
-                                                           Foreground="{DynamicResource AccentColor}">Distribution Point Scheduling</Hyperlink>
+                                                           Foreground="{DynamicResource AccentTextColor}">Distribution Point Scheduling</Hyperlink>
                                             </TextBlock>
                                             <ComboBox x:Name="cmb_DistPriority" DockPanel.Dock="Bottom" Height="34" Width="Auto" MinWidth="110"
                                                       HorizontalAlignment="Left" VerticalAlignment="Bottom">
@@ -2598,7 +2603,7 @@
                                             <TextBlock DockPanel.Dock="Top" FontSize="12" Margin="0,0,0,12">
                                                 <Hyperlink x:Name="link_ContentManagement"
                                                            NavigateUri="https://learn.microsoft.com/en-us/intune/configmgr/core/plan-design/hierarchy/fundamental-concepts-for-content-management"
-                                                           Foreground="{DynamicResource AccentColor}">Content Management Concepts</Hyperlink>
+                                                           Foreground="{DynamicResource AccentTextColor}">Content Management Concepts</Hyperlink>
                                             </TextBlock>
                                             <Grid DockPanel.Dock="Bottom" VerticalAlignment="Bottom">
                                                 <Grid.ColumnDefinitions>
@@ -2718,7 +2723,24 @@
                                 </StackPanel>
                             </Border>
 
-                            <!-- XML Logic Package -->
+                            </StackPanel>
+                            </ScrollViewer>
+                        </Grid>
+
+                        <!-- View: Logic Package -->
+                        <Grid x:Name="view_XmlLogic" Visibility="Collapsed">
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="*"/>
+                            </Grid.RowDefinitions>
+
+                            <TextBlock Grid.Row="0" Style="{StaticResource SectionHeader}">
+                                <Run Text="&#xE8A5;" FontFamily="Segoe MDL2 Assets" FontSize="20"/><Run Text="  Logic Package"/>
+                            </TextBlock>
+
+                            <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                            <StackPanel>
+
                             <Border Style="{StaticResource CardPanel}" Margin="0,0,0,12">
                                 <StackPanel>
                                     <TextBlock FontSize="13" FontWeight="SemiBold"
@@ -2727,7 +2749,7 @@
                                     </TextBlock>
                                     <TextBlock TextWrapping="Wrap" FontSize="12"
                                                Foreground="{DynamicResource InputPlaceholder}" Margin="0,0,0,16" LineHeight="20">
-                                        Generates a DriverPackages.xml logic file describing all driver packages in Configuration Manager. Task sequences can use this file with Invoke-CMApplyDriverPackage.ps1 in -XMLPackage mode to match and download drivers without querying the AdminService. Optionally wrap the file in a "MSEndpointMgr XML Logic Package" content package and distribute it; if that package already exists, its content is replaced and redistributed.
+                                        Use this mode when you do not want to rely on ConfigMgr AdminService or a web service. DAT creates DriverPackages.xml with both driver and BIOS package metadata so task sequence scripts can perform local matching.
                                     </TextBlock>
 
                                     <Grid Margin="0,0,0,12">
@@ -2746,7 +2768,7 @@
                                                    VerticalAlignment="Center" Margin="0,0,16,0"/>
                                     </Grid>
 
-                                    <Grid>
+                                    <Grid Margin="0,0,0,10">
                                         <Grid.ColumnDefinitions>
                                             <ColumnDefinition Width="Auto"/>
                                             <ColumnDefinition Width="*"/>
@@ -2760,8 +2782,94 @@
                                                    VerticalAlignment="Center" TextWrapping="Wrap"
                                                    Margin="16,0,0,0"/>
                                     </Grid>
+
+                                    <Border Background="{DynamicResource InputBackground}" BorderBrush="{DynamicResource WindowBorder}" BorderThickness="1" CornerRadius="8" Padding="10,8" Margin="0,4,0,0">
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="130"/>
+                                                <ColumnDefinition Width="*"/>
+                                            </Grid.ColumnDefinitions>
+                                            <Grid.RowDefinitions>
+                                                <RowDefinition Height="Auto"/>
+                                                <RowDefinition Height="Auto"/>
+                                            </Grid.RowDefinitions>
+
+                                            <TextBlock Grid.Row="0" Grid.Column="0" Text="Package Name" FontSize="11"
+                                                       Foreground="{DynamicResource InputPlaceholder}" Margin="0,0,0,6"/>
+                                            <TextBlock x:Name="txt_XmlLogicPackageName" Grid.Row="0" Grid.Column="1" Text="Driver Automation Tool XML Package (not detected)"
+                                                       FontSize="12" Foreground="{DynamicResource WindowForeground}" TextWrapping="Wrap" Margin="0,0,0,6"/>
+
+                                            <TextBlock Grid.Row="1" Grid.Column="0" Text="Package ID" FontSize="11"
+                                                       Foreground="{DynamicResource InputPlaceholder}"/>
+                                            <TextBlock x:Name="txt_XmlLogicPackageId" Grid.Row="1" Grid.Column="1" Text="--"
+                                                       FontSize="12" Foreground="{DynamicResource WindowForeground}" TextWrapping="Wrap"/>
+                                        </Grid>
+                                    </Border>
                                 </StackPanel>
                             </Border>
+
+                            <!-- XML Package Contents -->
+                            <Border Style="{StaticResource CardPanel}" Margin="0,0,0,12">
+                                <StackPanel>
+                                    <Grid Margin="0,0,0,8">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Grid.Column="0" FontSize="13" FontWeight="SemiBold"
+                                                   Foreground="{DynamicResource WindowForeground}" VerticalAlignment="Center">
+                                            <Run Text="&#xE8A5;" FontFamily="Segoe MDL2 Assets" FontSize="13"/><Run Text="  XML Package Contents"/>
+                                        </TextBlock>
+                                        <TextBlock x:Name="txt_XmlLogicContentsCount" Grid.Column="1" Text=""
+                                                   FontSize="12" Foreground="{DynamicResource InputPlaceholder}" VerticalAlignment="Center"/>
+                                    </Grid>
+                                    <TextBlock TextWrapping="Wrap" FontSize="12"
+                                               Foreground="{DynamicResource InputPlaceholder}" Margin="0,0,0,10" LineHeight="18">
+                                        Entries currently written to DriverPackages.xml. Baseboards are the platform/board IDs a package targets (from the package "Models included" description).
+                                    </TextBlock>
+
+                                    <Border BorderBrush="{DynamicResource WindowBorder}" BorderThickness="1" CornerRadius="8">
+                                        <DataGrid x:Name="grid_XmlLogicContents" Style="{StaticResource ModernDataGrid}"
+                                                  MaxHeight="260" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto">
+                                            <DataGrid.Columns>
+                                                <DataGridTextColumn Header="Name" Width="*" Binding="{Binding Name}" IsReadOnly="True"/>
+                                                <DataGridTextColumn Header="Package ID" Width="95" Binding="{Binding PackageID}" IsReadOnly="True"/>
+                                                <DataGridTextColumn Header="Manufacturer" Width="110" Binding="{Binding Manufacturer}" IsReadOnly="True"/>
+                                                <DataGridTextColumn Header="Baseboards" Width="150" Binding="{Binding Baseboards}" IsReadOnly="True"/>
+                                                <DataGridTextColumn Header="Source Date" Width="130" Binding="{Binding SourceDate}" IsReadOnly="True"/>
+                                            </DataGrid.Columns>
+                                        </DataGrid>
+                                    </Border>
+
+                                    <TextBlock x:Name="txt_XmlLogicContentsEmpty"
+                                               Text="No XML package content found. Generate the XML Logic Package to populate this list."
+                                               FontSize="12" FontStyle="Italic" Foreground="{DynamicResource InputPlaceholder}"
+                                               TextWrapping="Wrap" Margin="0,8,0,0" Visibility="Collapsed"/>
+                                </StackPanel>
+                            </Border>
+
+                            <Border Style="{StaticResource CardPanel}" Margin="0,0,0,12">
+                                <StackPanel>
+                                    <TextBlock FontSize="13" FontWeight="SemiBold"
+                                               Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,8">
+                                        <Run Text="&#xE8FD;" FontFamily="Segoe MDL2 Assets" FontSize="13"/><Run Text="  Task Sequence Integration"/>
+                                    </TextBlock>
+                                    <TextBlock TextWrapping="Wrap" FontSize="12"
+                                               Foreground="{DynamicResource InputPlaceholder}" Margin="0,0,0,10" LineHeight="20">
+                                        Use the logic package as a local metadata source in Configuration Manager task sequences.
+                                    </TextBlock>
+
+                                    <TextBlock FontSize="12" Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,4" Text="1. Add a Download Package Content step for Driver Automation Tool XML Package and map it to task sequence variable MDMXMLPackage01." TextWrapping="Wrap"/>
+                                    <TextBlock FontSize="12" Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,4" Text="2. Run Invoke-CMApplyDriverPackage.ps1 with -XMLPackage &quot;$env:MDMXMLPackage01\DriverPackages.xml&quot; to select/apply the driver package without AdminService queries." TextWrapping="Wrap"/>
+                                    <TextBlock FontSize="12" Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,8" Text="3. Run Invoke-CMDownloadBIOSPackage.ps1 with -XMLPackage &quot;$env:MDMXMLPackage01\DriverPackages.xml&quot; to match/download BIOS content in XML mode." TextWrapping="Wrap"/>
+
+                                    <TextBlock TextWrapping="Wrap" FontSize="11"
+                                               Foreground="{DynamicResource InputPlaceholder}" LineHeight="18">
+                                        When auto-create is enabled, DAT regenerates DriverPackages.xml after ConfigMgr builds and updates the same XML logic package content so task sequences always consume current metadata.
+                                    </TextBlock>
+                                </StackPanel>
+                            </Border>
+
                             </StackPanel>
                             </ScrollViewer>
                         </Grid>
@@ -3525,6 +3633,10 @@
                                                    VerticalAlignment="Center"/>
                                     </Grid>
 
+                                    <TextBlock x:Name="txt_DeployWarning" FontSize="12" Margin="0,10,0,0"
+                                               Foreground="{DynamicResource StatusWarning}"
+                                               TextWrapping="Wrap" LineHeight="18" Visibility="Collapsed"/>
+
                                     <!-- Custom deployment target sub-section -->
                                     <Border Height="1" Background="{DynamicResource CardBorder}" Margin="0,16,0,16"/>
                                     <TextBlock Text="Custom deployment target (optional)" FontSize="13" FontWeight="SemiBold"
@@ -3971,6 +4083,7 @@
                                             <ComboBoxItem Content="Successfully Updated"/>
                                             <ComboBoxItem Content="Driver Issues"/>
                                             <ComboBoxItem Content="BIOS Issues"/>
+                                            <ComboBoxItem Content="BIOS AC Power"/>
                                         </ComboBox>
                                         <Button x:Name="btn_ShowToastPreview" Content="Show Preview" Height="30" Margin="12,0,0,0"
                                                 Padding="12,0" FontSize="11" VerticalAlignment="Center" Cursor="Hand"
@@ -4806,7 +4919,7 @@
                                             <TextBlock TextWrapping="Wrap" FontSize="12"
                                                        Foreground="{DynamicResource InputPlaceholder}" Margin="0,0,0,12" LineHeight="18">
                                                 BIOS passwords are encrypted using Windows Data Protection API (DPAPI) with machine-scope encryption. 
-                                                The encrypted password is stored in the registry at HKLM:\SOFTWARE\MSEndpointMgr\DriverAutomationTool\BIOS 
+                                                The encrypted password is stored in the registry at HKLM:\SOFTWARE\DriverAutomationTool\BIOS 
                                                 and can only be decrypted by the SYSTEM account on the same device. This ensures the password is never 
                                                 stored or transmitted in clear text.
                                             </TextBlock>
@@ -5273,6 +5386,37 @@
                                                                FontSize="11" Foreground="{DynamicResource InputPlaceholder}" TextWrapping="Wrap" Margin="0,2,0,0"/>
                                                 </StackPanel>
                                             </Grid>
+
+                                        </StackPanel>
+                                    </Border>
+
+                                    <!-- Download Only Options -->
+                                    <Border Style="{StaticResource CardPanel}" Margin="0,0,0,12">
+                                        <StackPanel>
+                                            <TextBlock FontSize="14" FontWeight="SemiBold"
+                                                       Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,6">
+                                                <Run Text="&#xE8B8;" FontFamily="Segoe MDL2 Assets" FontSize="14"/><Run Text="  Download Only Options"/>
+                                            </TextBlock>
+                                            <TextBlock TextWrapping="Wrap" FontSize="12" LineHeight="18"
+                                                       Foreground="{DynamicResource InputPlaceholder}" Margin="0,0,0,10">
+                                                Control how packages are handled when running in Download Only mode.
+                                            </TextBlock>
+
+                                            <Grid Margin="0,0,0,0">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="Auto"/>
+                                                    <ColumnDefinition Width="*"/>
+                                                </Grid.ColumnDefinitions>
+                                                <CheckBox x:Name="chk_DownloadOnlyExtractContent" Grid.Column="0"
+                                                          Style="{StaticResource ToggleSwitch}"
+                                                          IsChecked="True"/>
+                                                <StackPanel Grid.Column="1" VerticalAlignment="Center" Margin="8,0,0,0">
+                                                    <TextBlock Text="Extract content after download" FontSize="13"
+                                                               Foreground="{DynamicResource WindowForeground}"/>
+                                                    <TextBlock Text="When enabled (default), Download Only downloads and extracts package content. Turn off to download files without extraction."
+                                                               FontSize="11" Foreground="{DynamicResource InputPlaceholder}" TextWrapping="Wrap" Margin="0,2,0,0"/>
+                                                </StackPanel>
+                                            </Grid>
                                         </StackPanel>
                                     </Border>
 
@@ -5460,10 +5604,10 @@
                                                        Foreground="{DynamicResource InputPlaceholder}" Margin="0,0,0,4">
                                                 <Run Text="Download curl from "/><Hyperlink x:Name="link_CurlDownload"
                                                     NavigateUri="https://curl.se/download.html"
-                                                    Foreground="{DynamicResource AccentColor}">curl.se/download.html</Hyperlink><Run Text=" and place curl.exe in the "/>
+                                                    Foreground="{DynamicResource AccentTextColor}">curl.se/download.html</Hyperlink><Run Text=" and place curl.exe in the "/>
                                             </TextBlock>
                                             <TextBlock FontSize="12" FontFamily="Cascadia Code,Consolas,monospace"
-                                                       Foreground="{DynamicResource AccentColor}" Margin="0,0,0,10">
+                                                       Foreground="{DynamicResource AccentTextColor}" Margin="0,0,0,10">
                                                 <Run Text="Tools\"/><Run Text=" folder within the application directory."/>
                                             </TextBlock>
 
@@ -5554,9 +5698,9 @@
                                                        Foreground="{DynamicResource InputPlaceholder}" Margin="0,0,0,4">
                                                 <Run Text="Download wimlib from "/><Hyperlink x:Name="link_WimlibDownload"
                                                     NavigateUri="https://wimlib.net/"
-                                                    Foreground="{DynamicResource AccentColor}">wimlib.net</Hyperlink><Run Text=" and place wimlib-imagex.exe and its dependencies in the "/><Run Text="Tools\Wimlib\" FontFamily="Cascadia Code,Consolas,monospace"/><Run Text=" folder. Download 7-Zip from "/><Hyperlink x:Name="link_7ZipDownload"
+                                                    Foreground="{DynamicResource AccentTextColor}">wimlib.net</Hyperlink><Run Text=" and place wimlib-imagex.exe and its dependencies in the "/><Run Text="Tools\Wimlib\" FontFamily="Cascadia Code,Consolas,monospace"/><Run Text=" folder. Download 7-Zip from "/><Hyperlink x:Name="link_7ZipDownload"
                                                     NavigateUri="https://www.7-zip.org/"
-                                                    Foreground="{DynamicResource AccentColor}">7-zip.org</Hyperlink><Run Text=" and install normally."/>
+                                                    Foreground="{DynamicResource AccentTextColor}">7-zip.org</Hyperlink><Run Text=" and install normally."/>
                                             </TextBlock>
 
                                             <Border Background="{DynamicResource InputBackground}" CornerRadius="6" Padding="12,10" Margin="0,0,0,6">
@@ -6434,7 +6578,7 @@
                                     <StackPanel>
                                         <TextBlock Text="Driver Automation Tool" FontSize="22" FontWeight="Bold"
                                                    Foreground="{DynamicResource AccentColor}" Margin="0,0,0,4"/>
-                                        <TextBlock x:Name="txt_AboutVersion" Text="Version 10.1.9" FontSize="14"
+                                        <TextBlock x:Name="txt_AboutVersion" Text="Version 10.2.0" FontSize="14"
                                                    Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,16"/>
 
                                         <TextBlock TextWrapping="Wrap" FontSize="13"

@@ -3,6 +3,18 @@ Release Notes
 IMPORTANT
 - DAT Downloads have been moved to GitHub - https://github.com/maurice-daly/DriverAutomationTool
 
+Version 10.2.0
+What's New & Fixed
+- ConfigMgr (Offline) — New Configuration Manager (Offline) platform. Builds and stages driver/BIOS content plus a package manifest to a self-contained export folder on an isolated host, then a bundled Import-CMOfflinePackages.ps1 script lets an admin copy the content to its final destination and create the packages in Configuration Manager on the connected site — no direct site access required from the build machine. (#875)
+- XML Logic Package — Now has its own Logic Package menu under ConfigMgr Settings, showing the existing package name and ID with task-sequence integration guidance, plus a scrollable XML Package Contents table (Name, Package ID, Manufacturer, Baseboards, Source Date).
+- Download Only — Added a Download Only Options card with an Extract content after download toggle (on by default). Extracted content is staged to a durable \Extracted folder next to the download instead of being left in temp and cleaned away.
+- OEM Support — Acer driver packages that ship as a ZIP of nested .cab bundles are now expanded to loose .inf trees before WIM capture, so the package actually contains installable drivers. Guarded so well-formed inf+payload-cab packages are left intact. (#888)
+- BIOS Management — Acer BIOS downloads are no longer blocked by a stale catalog hash; a mismatch for Acer is accepted over the enforced HTTPS download instead of hard-failing. Non-Acer OEMs still fail closed on a mismatch with no trusted signature.
+- Teams Notifications — A build notification is now sent on every exit path — success, abort, and failure — with an accurate outcome, a "Not Processed" count, and a request timeout so an unreachable webhook can't stall a build. Headless pre-flight failures also notify. (#878)
+- UI / Theme Fixes — Added a dedicated accent-text colour so blue links and body text read clearly on dark backgrounds (Replication Priority hyperlinks; curl/wimlib/7-Zip links and paths on Common Settings).
+- Documentation — Setup guide and user docs updated for the offline platform, XML logic package, and Download Only options; corrected registry path references across the docs.
+
+Version 10.1.9
 What's New & Fixed
 - Intune Deployment — New IME Toast Notifications control (Show all / Show reboot only / Hide all) applied to the app assignment. Lets you suppress the Intune Management Extension's own toasts — including its "installation failed" toast shown when a user defers — so only the Driver Automation Tool's toast reaches end users. Applies to newly created or re-assigned packages.
 - BIOS Management — Final deferral notice: when a user reaches the maximum number of deferrals, a Focus Assist / Do Not Disturb–bypassing informational toast now always tells them the BIOS update is being pre-staged and will apply on the next restart, with an audible alert. Closes the gap where forced updates could be staged silently.

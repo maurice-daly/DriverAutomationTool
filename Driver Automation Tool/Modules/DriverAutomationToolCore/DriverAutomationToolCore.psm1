@@ -4,7 +4,7 @@
      Organization:  MSEndpointMgr / Patch My PC
      Filename:      DriverAutomationToolCore.psm1
      Purpose:       Core functions for Driver Automation Tool v2.0
-     Version:       10.1.9.0
+     Version:       10.2.0.0
     ===========================================================================
 #>
 
@@ -37,8 +37,8 @@ if ($PSVersionTable.PSVersion.Major -le 5) {
 
 #region Variables
 
-[version]$global:ScriptRelease = "10.1.9.0"
-$global:ScriptBuildDate = "31-07-2026"
+[version]$global:ScriptRelease = "10.2.0.0"
+$global:ScriptBuildDate = "06-08-2026"
 $global:ReleaseNotesURL = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/DriverAutomationToolNotes.txt"
 $OEMLinksURL = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/OEMLinks.xml"
 
@@ -1516,7 +1516,8 @@ function Invoke-DATDriverFilePackaging {
         [ValidateSet('Configuration Manager', 'Intune', 'WIM Package Only', 'Download Only')]
         [string]$Platform,
         [string[]]$SupplementalFilePaths = @(),
-        [string]$CustomDriverPath
+        [string]$CustomDriverPath,
+        [string]$DownloadOnlyExtractDestination
     )
 
     # Always use the temp directory for extraction and WIM creation, then copy the
@@ -1694,6 +1695,56 @@ function Invoke-DATDriverFilePackaging {
         Write-DATLogEntry -Value "[$OEM] Driver folder now contains $suppExtractedCount files after supplemental extraction" -Severity 1
     }
 
+    # Expand nested cabinet files left behind after extraction (Issue #888).
+    # Some Acer packages ship a ZIP that contains raw .cab driver bundles; the ZIP
+    # is unpacked but the inner CABs are not, so the WIM ends up with no loose .inf
+    # files and Install-Drivers.ps1 finds nothing to install.
+    # Only expand a CAB when its own folder has no sibling .inf -- a driver .inf that
+    # references a payload .cab must keep that CAB intact, so this guard preserves
+    # well-formed packages while still unpacking standalone bundle CABs. The loop
+    # handles CABs nested inside CABs (bounded to prevent runaway recursion).
+    # Scoped to Acer, the only OEM known to ship this ZIP-of-CABs layout.
+    if ($OEM -eq 'Acer') {
+        $expandPassLimit = 6
+        for ($expandPass = 0; $expandPass -lt $expandPassLimit; $expandPass++) {
+            $bundleCabs = @(
+                Get-ChildItem -Path $DriverFolder -Filter '*.cab' -Recurse -File -ErrorAction SilentlyContinue |
+                    Where-Object {
+                        -not (Get-ChildItem -Path $_.DirectoryName -Filter '*.inf' -File -ErrorAction SilentlyContinue)
+                    }
+            )
+            if ($bundleCabs.Count -eq 0) { break }
+
+            Write-DATLogEntry -Value "[$OEM] Expanding $($bundleCabs.Count) nested cabinet bundle(s) before WIM capture" -Severity 1
+            Set-DATRegistryValue -Name "RunningMessage" -Value "Expanding nested driver cabinets for $OEM $Model..." -Type String
+
+            $expandedThisPass = $false
+            foreach ($cab in $bundleCabs) {
+                $cabBaseName = [System.IO.Path]::GetFileNameWithoutExtension($cab.Name)
+                $cabDest = Join-Path $cab.DirectoryName $cabBaseName
+                $suffix = 1
+                while (Test-Path $cabDest) {
+                    $cabDest = Join-Path $cab.DirectoryName ("{0}_{1}" -f $cabBaseName, $suffix)
+                    $suffix++
+                }
+                try {
+                    New-Item -Path $cabDest -ItemType Directory -Force -ErrorAction Stop | Out-Null
+                    $ExpandProc = Start-Process -FilePath "$env:SystemRoot\System32\expand.exe" -ArgumentList "`"$($cab.FullName)`" -F:* `"$cabDest`"" -WindowStyle Hidden -PassThru -Wait
+                    if ($ExpandProc.ExitCode -eq 0) {
+                        Remove-Item -Path $cab.FullName -Force -ErrorAction SilentlyContinue
+                        $expandedThisPass = $true
+                    } else {
+                        Write-DATLogEntry -Value "[Warning] - Nested cabinet expansion failed (exit $($ExpandProc.ExitCode)) for $($cab.Name)" -Severity 2
+                        Remove-Item -Path $cabDest -Recurse -Force -ErrorAction SilentlyContinue
+                    }
+                } catch {
+                    Write-DATLogEntry -Value "[Warning] - Nested cabinet expansion error for $($cab.Name): $($_.Exception.Message)" -Severity 2
+                }
+            }
+            if (-not $expandedThisPass) { break }
+        }
+    }
+
     $extractedFiles = (Get-ChildItem -Path $DriverFolder -Recurse -File -ErrorAction SilentlyContinue).Count
     Write-DATLogEntry -Value "[$OEM] Extraction complete: $extractedFiles files extracted to $DriverFolder" -Severity 1
     Set-DATRegistryValue -Name "RunningMessage" -Value "Extraction complete ($extractedFiles files) - $OEM $Model" -Type String
@@ -1714,6 +1765,33 @@ function Invoke-DATDriverFilePackaging {
         $customInfCount = @(Get-ChildItem -Path $customDriverDest -Filter '*.inf' -Recurse -File -ErrorAction SilentlyContinue).Count
         $customFileCount = @(Get-ChildItem -Path $customDriverDest -Recurse -File -ErrorAction SilentlyContinue).Count
         Write-DATLogEntry -Value "[$OEM] Custom drivers injected: $customFileCount files ($customInfCount .inf files)" -Severity 1
+    }
+
+    # Download Only with extraction enabled -- stage the expanded content next to the
+    # downloaded file so the admin can access the extracted drivers, then clean up temp.
+    # No WIM is created in this mode.
+    if ($Platform -eq 'Download Only') {
+        if (-not [string]::IsNullOrEmpty($DownloadOnlyExtractDestination)) {
+            $extractStageDir = Join-Path $DownloadOnlyExtractDestination 'Extracted'
+            if (Test-Path $extractStageDir) { Remove-Item -Path $extractStageDir -Recurse -Force -ErrorAction SilentlyContinue }
+            New-Item -Path $extractStageDir -ItemType Directory -Force | Out-Null
+            try {
+                Copy-Item -Path (Join-Path $DriverFolder '*') -Destination $extractStageDir -Recurse -Force -ErrorAction Stop
+            } catch {
+                Write-DATLogEntry -Value "[Warning] - Failed to stage extracted Download Only content: $($_.Exception.Message)" -Severity 2
+            }
+            $stagedCount = @(Get-ChildItem -Path $extractStageDir -Recurse -File -ErrorAction SilentlyContinue).Count
+            Set-DATRegistryValue -Name "RunningMessage" -Value "Extraction complete ($stagedCount files) - $OEM $Model" -Type String
+            Write-DATLogEntry -Value "[$OEM] Download Only extraction staged: $extractStageDir ($stagedCount files)" -Severity 1 -UpdateUI
+        } else {
+            Write-DATLogEntry -Value "[$OEM] Download Only extraction requested but no destination provided -- extracted content left in temp: $DriverFolder" -Severity 2
+        }
+        # Clean up the temp working directory (extracted files were copied to the destination above)
+        if (-not [string]::IsNullOrEmpty($DownloadOnlyExtractDestination)) {
+            Remove-Item -Path $localWorkDir -Recurse -Force -ErrorAction SilentlyContinue
+            Write-DATLogEntry -Value "[$OEM] Temp working directory cleaned up: $localWorkDir" -Severity 1
+        }
+        return
     }
 
     # Create WIM package for ConfigMgr/Intune modes
@@ -3156,7 +3234,7 @@ function New-DATXmlLogicPackage {
         download driver packages without querying the AdminService.
 
         When -CreatePackage is specified, the generated XML is wrapped in a standard
-        ConfigMgr package named "MSEndpointMgr XML Logic Package". If that package
+        ConfigMgr package named "Driver Automation Tool XML Package". If that package
         already exists, its content (the XML file) is replaced in place and the package
         is redistributed to its distribution points; otherwise a new package is created,
         placed in the "Driver Packages" console folder and distributed.
@@ -3168,9 +3246,14 @@ function New-DATXmlLogicPackage {
         The ConfigMgr site code.
     .PARAMETER PackagePath
         The root path where the XML Logic Package folder is written. The XML is placed in
-        "<PackagePath>\MSEndpointMgr\XML Logic Package\DriverPackages.xml".
+        "<PackagePath>\DriverAutomationTool\XML Package\DriverPackages.xml".
     .PARAMETER Filter
-        Name filter used to select the source driver packages. Defaults to 'Drivers'.
+        Optional name filter used to narrow selected packages.
+    .PARAMETER PackageScope
+        Controls which package types are exported to the XML catalog:
+        - Drivers: Driver packages only
+        - BIOS: BIOS packages only
+        - All: Drivers and BIOS packages
     .PARAMETER CreatePackage
         Wrap the generated XML in a ConfigMgr package and distribute it. When the package
         already exists, its content is replaced and redistributed.
@@ -3192,7 +3275,8 @@ function New-DATXmlLogicPackage {
         [Parameter(Mandatory = $true)][string]$SiteServer,
         [Parameter(Mandatory = $true)][string]$SiteCode,
         [Parameter(Mandatory = $true)][string]$PackagePath,
-        [string]$Filter = 'Drivers',
+        [AllowEmptyString()][string]$Filter = '',
+        [ValidateSet('Drivers','BIOS','All')][string]$PackageScope = 'Drivers',
         [switch]$CreatePackage,
         [string[]]$DistributionPointGroups,
         [string[]]$DistributionPoints,
@@ -3212,7 +3296,7 @@ function New-DATXmlLogicPackage {
 
     try {
         $smsNamespace = "root\SMS\Site_$SiteCode"
-        & $emit "======== MSEndpointMgr XML Logic Package ========" 1
+        & $emit "======== Driver Automation Tool XML Package ========" 1
 
         $priorityValue = switch ($Priority) {
             'High'  { 1 }
@@ -3224,20 +3308,52 @@ function New-DATXmlLogicPackage {
         $cimSess = New-DATCimSession -ComputerName $SiteServer
 
         # --- Stage 1: Enumerate DAT-created driver packages ---
-        & $emit "XML Logic Package: Querying ConfigMgr for driver packages matching '$Filter'" 1
-        $escapedFilter = $Filter -replace "'", "''"
-        $pkgQuery = "SELECT Name, PackageID, Description, Manufacturer, Version, SourceDate FROM SMS_Package WHERE Name LIKE '%$escapedFilter %-%' OR Name LIKE 'Driver Fallback%'"
-        $sourcePackages = @(Invoke-DATRemoteQuery -CimSession $cimSess -ComputerName $SiteServer -Namespace $smsNamespace -Query $pkgQuery |
-            Where-Object { $_.Name -notmatch 'Retired' -and $_.Name -notmatch 'Legacy' })
+        $scopeLabel = switch ($PackageScope) {
+            'Drivers' { 'driver packages' }
+            'BIOS'    { 'BIOS packages' }
+            default   { 'driver + BIOS packages' }
+        }
+        & $emit "XML Logic Package: Querying ConfigMgr for $scopeLabel" 1
 
-        & $emit "XML Logic Package: Retrieved $($sourcePackages.Count) driver package(s) for XML export" 1
+        # Query candidate packages by naming pattern first to keep the provider query constrained,
+        # then apply strict local filtering for scope and retired/legacy exclusion.
+        $scopeWhere = switch ($PackageScope) {
+            'Drivers' { "(Name LIKE '%Drivers %-%' OR Name LIKE 'Driver Fallback%')" }
+            'BIOS'    { "(Name LIKE '%BIOS%-%')" }
+            default   { "(Name LIKE '%Drivers %-%' OR Name LIKE 'Driver Fallback%' OR Name LIKE '%BIOS%-%')" }
+        }
+        $pkgQuery = "SELECT Name, PackageID, Description, Manufacturer, Version, SourceDate FROM SMS_Package WHERE $scopeWhere"
+        $candidatePackages = @(Invoke-DATRemoteQuery -CimSession $cimSess -ComputerName $SiteServer -Namespace $smsNamespace -Query $pkgQuery)
+
+        $sourcePackages = @($candidatePackages | Where-Object {
+            $name = [string]$_.Name
+            if ([string]::IsNullOrEmpty($name)) { return $false }
+            if ($name -match 'Retired' -or $name -match 'Legacy') { return $false }
+
+            $isDriverPkg = ($name -match '(?i)^Drivers?(?:\s+Pilot)?\s*-') -or ($name -match '(?i)^Driver\s+Fallback')
+            $isBiosPkg = ($name -match '(?i)^BIOS(?:\s+Update)?(?:\s+Pilot)?\s*-')
+
+            $scopeMatch = switch ($PackageScope) {
+                'Drivers' { $isDriverPkg }
+                'BIOS'    { $isBiosPkg }
+                default   { $isDriverPkg -or $isBiosPkg }
+            }
+            if (-not $scopeMatch) { return $false }
+
+            if (-not [string]::IsNullOrEmpty($Filter)) {
+                return $name -match [regex]::Escape($Filter)
+            }
+            return $true
+        })
+
+        & $emit "XML Logic Package: Retrieved $($sourcePackages.Count) package(s) for XML export" 1
         if ($sourcePackages.Count -eq 0) {
-            & $emit "XML Logic Package: No matching driver packages found -- nothing to export" 2
-            return [PSCustomObject]@{ XmlPath = $null; PackageCount = 0; PackageID = $null; Status = 'NoPackages' }
+            & $emit "XML Logic Package: No matching packages found -- nothing to export" 2
+            return [PSCustomObject]@{ XmlPath = $null; PackageCount = 0; PackageID = $null; Status = 'NoPackages'; PackageScope = $PackageScope }
         }
 
         # --- Stage 2: Write the XML logic file ---
-        $logicPackagePath = Join-Path -Path $PackagePath -ChildPath 'MSEndpointMgr\XML Logic Package'
+        $logicPackagePath = Join-Path -Path $PackagePath -ChildPath 'DriverAutomationTool\XML Package'
         if (-not (Test-Path -Path $logicPackagePath)) {
             & $emit "XML Logic Package: Creating package folder $logicPackagePath" 1
             New-Item -Path $logicPackagePath -ItemType Directory -Force | Out-Null
@@ -3250,11 +3366,11 @@ function New-DATXmlLogicPackage {
             $xmlWriter.Indentation = 1
             $xmlWriter.IndentChar = "`t"
             $xmlWriter.WriteStartDocument()
-            $xmlWriter.WriteComment('Created with the MSEndpointMgr Driver Automation Tool - DO NOT DELETE')
+            $xmlWriter.WriteComment('Created with the Driver Automation Tool - DO NOT DELETE')
             $xmlWriter.WriteStartElement('ArrayOfCMPackage')
             $xmlWriter.WriteAttributeString('xmlns:xsd', 'http://www.w3.org/2001/XMLSchema')
             $xmlWriter.WriteAttributeString('xmlns:xsi', 'http://www.w3.org/2001/XMLSchema-Instance')
-            $xmlWriter.WriteAttributeString('xmlns', 'http://www.msendpointmgr.com')
+            $xmlWriter.WriteAttributeString('xmlns', 'https://www.driverautomationtool.com')
 
             foreach ($pkg in ($sourcePackages | Sort-Object -Property Name)) {
                 # SourceDate may arrive as a DMTF string (Get-WmiObject) or DateTime (CIM); normalise to string
@@ -3279,13 +3395,13 @@ function New-DATXmlLogicPackage {
         } finally {
             $xmlWriter.Close()
         }
-        & $emit "XML Logic Package: Wrote $($sourcePackages.Count) package entries to $logicFilePath" 1
+        & $emit "XML Logic Package: Wrote $($sourcePackages.Count) package entries ($scopeLabel) to $logicFilePath" 1
 
-        $result = [PSCustomObject]@{ XmlPath = $logicFilePath; PackageCount = $sourcePackages.Count; PackageID = $null; Status = 'XmlCreated' }
+        $result = [PSCustomObject]@{ XmlPath = $logicFilePath; PackageCount = $sourcePackages.Count; PackageID = $null; Status = 'XmlCreated'; PackageScope = $PackageScope }
 
         # --- Stage 3: Optionally wrap and distribute as a ConfigMgr package ---
         if ($CreatePackage) {
-            $xmlPackageName = 'MSEndpointMgr XML Logic Package'
+            $xmlPackageName = 'Driver Automation Tool XML Package'
             $xmlPackageVersion = Get-Date -Format 'yyyyMMdd'
 
             # Convert the local folder path to a UNC admin-share path for the package source
@@ -3335,7 +3451,7 @@ function New-DATXmlLogicPackage {
                 $newPkg = ([WmiClass]"\\$SiteServer\$($smsNamespace):SMS_Package").CreateInstance()
                 $newPkg.Name = $xmlPackageName
                 $newPkg.PkgSourcePath = $pkgSourcePath
-                $newPkg.Manufacturer = 'MSEndpointMgr'
+                $newPkg.Manufacturer = 'Maurice Daly'
                 $newPkg.Description = 'Package containing XML formatted package information for modern driver management'
                 $newPkg.Version = $xmlPackageVersion
                 $newPkg.PkgSourceFlag = 2  # Direct source path
@@ -3368,6 +3484,11 @@ function New-DATXmlLogicPackage {
                 } catch {
                     & $emit "[Warning] - Failed to move logic package to folder: $($_.Exception.Message)" 2
                 }
+            }
+
+            if ((-not $DistributionPointGroups -or $DistributionPointGroups.Count -eq 0) -and
+                (-not $DistributionPoints -or $DistributionPoints.Count -eq 0)) {
+                & $emit "[Warning] - XML Logic Package: No distribution targets selected (DP groups/DPs). Package content was created/updated but not distributed." 2
             }
 
             # Distribute / redistribute to selected DP groups
@@ -3417,7 +3538,7 @@ function New-DATXmlLogicPackage {
             $result.Status = if ($existing) { 'PackageUpdated' } else { 'PackageCreated' }
         }
 
-        & $emit "XML Logic Package: Process complete" 1
+    & $emit "XML Logic Package: Process complete (Scope: $PackageScope, Status: $($result.Status))" 1
         return $result
     } catch {
         Write-DATLogEntry -Value "[Error] - XML Logic Package generation failed: $($_.Exception.Message)" -Severity 3
@@ -3425,7 +3546,7 @@ function New-DATXmlLogicPackage {
         if ($null -ne $ProgressQueue) {
             try { $ProgressQueue.Enqueue([PSCustomObject]@{ Status = 'Failed'; Message = $_.Exception.Message }) } catch { }
         }
-        return [PSCustomObject]@{ XmlPath = $null; PackageCount = 0; PackageID = $null; Status = 'Failed'; Error = $_.Exception.Message }
+        return [PSCustomObject]@{ XmlPath = $null; PackageCount = 0; PackageID = $null; Status = 'Failed'; Error = $_.Exception.Message; PackageScope = $PackageScope }
     }
 }
 
@@ -3490,6 +3611,160 @@ function Install-DATDriverPackage {
     # Full driver installation logic ported from original
 }
 
+function Initialize-DATOfflineStaging {
+    <#
+    .SYNOPSIS
+        Prepares the "ConfigMgr Offline" staging folder in the temp directory.
+    .DESCRIPTION
+        Creates <TempDirectory>\ConfigMgr Offline and clears any content left by a
+        previous offline run. The folder deliberately lives under the temp directory
+        but is excluded from Purge / CleanTempOnExit so the export survives the run.
+    #>
+    [CmdletBinding()]
+    param ()
+    $offlineRoot = Join-Path -Path $global:TempDirectory -ChildPath 'ConfigMgr Offline'
+    if (Test-Path -Path $offlineRoot) {
+        Get-ChildItem -Path $offlineRoot -Force -ErrorAction SilentlyContinue |
+            Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+    } else {
+        New-Item -Path $offlineRoot -ItemType Directory -Force | Out-Null
+    }
+    Write-DATLogEntry -Value "[Offline] Staging folder ready (cleared): $offlineRoot" -Severity 1
+    return $offlineRoot
+}
+
+function Export-DATConfigMgrOfflinePackage {
+    <#
+    .SYNOPSIS
+        Copies a built driver WIM / BIOS payload into the offline staging folder and
+        returns a manifest entry describing the package for later import.
+    .DESCRIPTION
+        Mirrors the naming, description and MIF metadata that New-DATConfigMgrPkg would
+        stamp on the SMS_Package, so the standalone import script can recreate the
+        package on an air-gapped ConfigMgr environment. Only intrinsic package metadata
+        is recorded -- distribution, replication priority and console-folder placement
+        are admin decisions made at import time.
+    #>
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory)][string]$OfflineRoot,
+        [Parameter(Mandatory)][string]$SourcePath,
+        [Parameter(Mandatory)][string]$OEM,
+        [Parameter(Mandatory)][string]$Model,
+        [Parameter(Mandatory)][AllowEmptyString()][string]$OS,
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Architecture,
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Baseboards,
+        [Parameter(Mandatory)][string]$Version,
+        [ValidateSet('Drivers','BIOS')][string]$PackageType = 'Drivers',
+        [string]$NamePrefix,
+        [string]$ReleaseDate
+    )
+
+    # Mirror New-DATConfigMgrPkg naming + description so an imported package is identical
+    $packagePrefix = if (-not [string]::IsNullOrEmpty($NamePrefix)) { $NamePrefix }
+                     elseif ($PackageType -eq 'BIOS') { 'BIOS Update' }
+                     else { 'Drivers' }
+    $pkgName = if ($PackageType -eq 'BIOS') { "$packagePrefix - $OEM $Model" }
+               else { "$packagePrefix - $OEM $Model - $OS $Architecture" }
+    $releaseDateFormatted = ''
+    if ($PackageType -eq 'BIOS' -and -not [string]::IsNullOrEmpty($ReleaseDate)) {
+        $releaseDateFormatted = try { ([datetime]$ReleaseDate).ToString('yyyyMMdd') } catch { $ReleaseDate }
+    }
+    $pkgDescription = if ($PackageType -eq 'BIOS' -and -not [string]::IsNullOrEmpty($releaseDateFormatted)) {
+        "(Models included:$Baseboards) (Release Date:$releaseDateFormatted)"
+    } else {
+        "Models included: $Baseboards"
+    }
+    $mifVersion = if ($PackageType -eq 'BIOS') { '' } else { "$OS $Architecture" }
+
+    $safeOEM   = ConvertTo-DATSafePathSegment -Segment $OEM
+    $safeModel = ConvertTo-DATSafePathSegment -Segment $Model
+    $safeOS    = ConvertTo-DATSafePathSegment -Segment $OS
+    $safeArch  = ConvertTo-DATSafePathSegment -Segment $Architecture
+    $safeVer   = ConvertTo-DATSafePathSegment -Segment $Version
+
+    if ($PackageType -eq 'BIOS') {
+        $relDir = Join-Path 'BIOS' (Join-Path $safeOEM (Join-Path $safeModel $safeVer))
+    } else {
+        $relDir = Join-Path 'Drivers' (Join-Path $safeOEM (Join-Path $safeModel (Join-Path "$safeOS $safeArch" $safeVer)))
+    }
+    $destDir = Join-Path $OfflineRoot $relDir
+    if (Test-Path $destDir) { Remove-Item -Path $destDir -Recurse -Force -ErrorAction SilentlyContinue }
+    New-Item -Path $destDir -ItemType Directory -Force | Out-Null
+
+    if (Test-Path -Path $SourcePath -PathType Leaf) {
+        Copy-Item -Path $SourcePath -Destination $destDir -Force
+        $sourceType = 'wim'
+        $sourceRel  = Join-Path $relDir (Split-Path $SourcePath -Leaf)
+    } else {
+        Copy-Item -Path (Join-Path $SourcePath '*') -Destination $destDir -Recurse -Force
+        $sourceType = 'directory'
+        $sourceRel  = $relDir
+    }
+
+    Write-DATLogEntry -Value "[Offline] Staged $PackageType package '$pkgName' -> $sourceRel" -Severity 1
+
+    return [PSCustomObject][ordered]@{
+        packageType        = $PackageType
+        name               = $pkgName
+        namePrefix         = $packagePrefix
+        manufacturer       = $OEM
+        model              = $Model
+        os                 = $OS
+        architecture       = $Architecture
+        baseboards         = $Baseboards
+        version            = $Version
+        description        = $pkgDescription
+        releaseDate        = $releaseDateFormatted
+        mifName            = $Model
+        mifVersion         = $mifVersion
+        sourceType         = $sourceType
+        sourceRelativePath = $sourceRel
+    }
+}
+
+function Write-DATOfflineManifestAndScript {
+    <#
+    .SYNOPSIS
+        Writes DATOfflinePackages.json and copies the standalone import script into the
+        offline staging folder.
+    #>
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory)][string]$OfflineRoot,
+        [Parameter(Mandatory)]$Packages
+    )
+    $pkgArray = @($Packages)
+    $manifest = [ordered]@{
+        schema       = 'DAT ConfigMgr Offline package manifest v1'
+        generatedBy  = "Driver Automation Tool $($global:ScriptRelease)"
+        generatedUtc = (Get-Date).ToUniversalTime().ToString('o')
+        packageCount = $pkgArray.Count
+        packages     = $pkgArray
+    }
+    $manifestPath = Join-Path -Path $OfflineRoot -ChildPath 'DATOfflinePackages.json'
+    $manifest | ConvertTo-Json -Depth 6 | Set-Content -Path $manifestPath -Encoding UTF8 -Force
+    Write-DATLogEntry -Value "[Offline] Manifest written: $manifestPath ($($pkgArray.Count) package(s))" -Severity 1
+
+    # Copy the standalone import script alongside the content so the admin can run the "final
+    # mile" (copy content to its destination + create the packages) on the offline site. The
+    # canonical template lives in the module Templates folder (which ships with the app);
+    # $global:ScriptDirectory\Scripts is only a dev-checkout fallback.
+    $templateCandidates = @(
+        (Join-Path -Path $PSScriptRoot -ChildPath 'Templates\Import-CMOfflinePackages.ps1'),
+        (Join-Path -Path $global:ScriptDirectory -ChildPath 'Modules\DriverAutomationToolCore\Templates\Import-CMOfflinePackages.ps1'),
+        (Join-Path -Path $global:ScriptDirectory -ChildPath 'Scripts\Import-CMOfflinePackages.ps1')
+    )
+    $templateSrc = $templateCandidates | Where-Object { Test-Path -Path $_ } | Select-Object -First 1
+    if ($templateSrc) {
+        Copy-Item -Path $templateSrc -Destination (Join-Path -Path $OfflineRoot -ChildPath 'Import-CMOfflinePackages.ps1') -Force
+        Write-DATLogEntry -Value "[Offline] Import script copied to staging folder (from $templateSrc)" -Severity 1
+    } else {
+        Write-DATLogEntry -Value "[Warning] [Offline] Import script template not found. Searched: $($templateCandidates -join '; ')" -Severity 2
+    }
+    return $manifestPath
+}
+
 function Start-DATModelProcessing {
     [CmdletBinding()]
     param (
@@ -3525,7 +3800,9 @@ function Start-DATModelProcessing {
         [string]$CustomToastTextsJson,
         [string]$MaintenanceWindowsJson,
         [switch]$AlarmMode,
-        [switch]$CreateIntuneWinOnly
+        [switch]$CreateIntuneWinOnly,
+        [switch]$GenerateXmlLogicPackage,
+        [bool]$ExtractDownloadOnlyContent = $true
     )
     $global:ScriptDirectory = $ScriptDirectory
     $global:LogDirectory = Join-Path $ScriptDirectory "Logs"
@@ -3567,6 +3844,9 @@ function Start-DATModelProcessing {
     $CustomBIOSIssuesTitle = if ($customToastTexts.ContainsKey('Toast_BIOSIssues')) { $customToastTexts['Toast_BIOSIssues'].Title } else { '' }
     $CustomBIOSIssuesBody  = if ($customToastTexts.ContainsKey('Toast_BIOSIssues')) { $customToastTexts['Toast_BIOSIssues'].Body } else { '' }
     $CustomBIOSIssuesActionButton = if ($customToastTexts.ContainsKey('Toast_BIOSIssues')) { $customToastTexts['Toast_BIOSIssues'].ActionButton } else { '' }
+    $CustomBIOSACPowerTitle = if ($customToastTexts.ContainsKey('Toast_BIOSACPower')) { $customToastTexts['Toast_BIOSACPower'].Title } else { '' }
+    $CustomBIOSACPowerBody  = if ($customToastTexts.ContainsKey('Toast_BIOSACPower')) { $customToastTexts['Toast_BIOSACPower'].Body } else { '' }
+    $CustomBIOSACPowerActionButton = if ($customToastTexts.ContainsKey('Toast_BIOSACPower')) { $customToastTexts['Toast_BIOSACPower'].ActionButton } else { '' }
 
     # Use user-configured paths if provided, otherwise default to ScriptDirectory sub-folders
     if ([string]::IsNullOrEmpty($StoragePath)) { $StoragePath = Join-Path $ScriptDirectory "Downloads" }
@@ -3574,6 +3854,16 @@ function Start-DATModelProcessing {
 
     foreach ($dir in @($global:LogDirectory, $global:TempDirectory, $global:ToolsDirectory)) {
         if (-not (Test-Path $dir)) { New-Item -Path $dir -ItemType Directory -Force | Out-Null }
+    }
+
+    # Configuration Manager (Offline): build all content locally and export it (plus a
+    # manifest and standalone import script) to a staging folder instead of creating
+    # packages on a live site. Requires no ConfigMgr connection.
+    $isOfflineCM = ($RunningMode -eq 'Configuration Manager (Offline)')
+    $offlineRoot = $null
+    $offlinePackages = [System.Collections.Generic.List[object]]::new()
+    if ($isOfflineCM) {
+        $offlineRoot = Initialize-DATOfflineStaging
     }
 
     # Set Intune auth context if provided (for background runspace)
@@ -3620,6 +3910,13 @@ function Start-DATModelProcessing {
     $packagesCreated = 0
     $currentIndex = 0
 
+    # Sent from the finally below so every exit path notifies -- completion, the abort returns,
+    # and a terminating error. $buildOutcome defaults to 'Aborted' so an exit reaching neither
+    # the completion path nor the catch (the UI stopping the pipeline) reports the abort it is.
+    $script:TeamsBuildNotificationSent = $false
+    $buildOutcome = 'Aborted'
+
+    try {
     # Reset the per-build progress counters in the registry so the completion summary reflects
     # ONLY this build. The per-model writes below are bypassed when a model is skipped (its
     # package is already current), so without this reset the CompletedDriverPackages /
@@ -3857,9 +4154,9 @@ function Start-DATModelProcessing {
                             $driverPackageSuccessCount++
                         }
                     } else {
-                        # WIM Package Only: check if WIM already exists from today
+                        # WIM Package Only: check if WIM already exists from today (offline always rebuilds)
                         $existingWimPath = Join-Path $global:TempDirectory "Packaged\$oem\$modelName\$osPkgLabel\DriverPackage.wim"
-                        if ((Test-Path $existingWimPath) -and (Get-Item $existingWimPath).LastWriteTime.Date -eq (Get-Date).Date -and -not $modelForceUpdate) {
+                        if ((Test-Path $existingWimPath) -and (Get-Item $existingWimPath).LastWriteTime.Date -eq (Get-Date).Date -and -not $modelForceUpdate -and $RunningMode -ne 'Configuration Manager (Offline)') {
                             Write-DATLogEntry -Value "[$currentIndex/$totalModels] SKIPPED download -- driver WIM already created today: $existingWimPath" -Severity 1
                             Set-DATRegistryValue -Name "RunningMessage" -Value "Skipped (exists): $oem $modelName" -Type String
                             $skipDriverDownload = $true
@@ -3900,7 +4197,8 @@ function Start-DATModelProcessing {
                     -CatalogVersion $catalogDriverVersion `
                     -ForceRebuild:$modelForceUpdate `
                     -ExistingPackageIds $existingRemoteIds `
-                    -VerifyRemoteExistence:$verifyRemote
+                    -VerifyRemoteExistence:$verifyRemote `
+                    -ExtractDownloadOnlyContent $ExtractDownloadOnlyContent
 
                 if ($global:DATSoftPaqBuildSkipped) {
                     Write-DATLogEntry -Value "[$currentIndex/$totalModels] $oem $modelName -- driver package unchanged (SoftPaq list identical); existing package retained" -Severity 1
@@ -3999,8 +4297,11 @@ function Start-DATModelProcessing {
                                 }
                             }
 
-                            # Auto-assignment filter
-                            if ($null -ne $deployReg.AutoAssignmentFilter -and $deployReg.AutoAssignmentFilter -eq 1) {
+                            # Auto-assignment filter -- gated by the Deploy toggle. Deployment only
+                            # occurs when 'Deploy to All Devices' is enabled; without it no assignment
+                            # (filtered or otherwise) is created.
+                            if ($null -ne $deployReg.DeployAllDevices -and $deployReg.DeployAllDevices -eq 1 -and
+                                $null -ne $deployReg.AutoAssignmentFilter -and $deployReg.AutoAssignmentFilter -eq 1) {
                                 try {
                                     Set-DATRegistryValue -Name "RunningMode" -Value "AssignmentFilter" -Type String
                                     Set-DATRegistryValue -Name "RunningMessage" -Value "Creating assignment filter: $oem $modelName" -Type String
@@ -4160,6 +4461,34 @@ function Start-DATModelProcessing {
                         if (-not $global:DATSoftPaqBuildSkipped) {
                             Write-DATLogEntry -Value "[Warning] - Driver package content not found for ConfigMgr: $stagedDriverDir" -Severity 2
                         }
+                    }
+                }
+
+                # Configuration Manager (Offline): export the staged WIM/expanded content to the
+                # offline folder and record a manifest entry for later import (no live site).
+                if ($isOfflineCM) {
+                    $offlineWim = Join-Path $global:TempDirectory "Packaged\$oem\$modelName\$osPkgLabel\DriverPackage.wim"
+                    $offlineDir = Join-Path $global:TempDirectory "Packaged\$oem\$modelName\$osPkgLabel"
+                    $offlineDriverSrc = if (Test-Path $offlineWim) {
+                        $offlineWim
+                    } elseif ((Test-Path $offlineDir) -and @(Get-ChildItem -Path $offlineDir -Force -ErrorAction SilentlyContinue).Count -gt 0) {
+                        $offlineDir
+                    } else { $null }
+                    if ($offlineDriverSrc) {
+                        $offlineVersion = if (-not [string]::IsNullOrEmpty($catalogVersion)) { "$catalogVersion" } elseif (-not [string]::IsNullOrEmpty($catalogDriverVersion)) { "$catalogDriverVersion" } else { Get-Date -Format 'ddMMyyyy' }
+                        try {
+                            $offlineEntry = Export-DATConfigMgrOfflinePackage -OfflineRoot $offlineRoot -SourcePath $offlineDriverSrc `
+                                -OEM $oem -Model $modelName -OS $osPkgLabel -Architecture $arch -Baseboards $baseboards `
+                                -Version $offlineVersion -PackageType 'Drivers' -NamePrefix $driverNamePrefix
+                            $offlinePackages.Add($offlineEntry)
+                            $script:driverPipelineSuccess = $true
+                        } catch {
+                            Write-DATLogEntry -Value "[Warning] [Offline] Driver export failed for $oem ${modelName}: $($_.Exception.Message)" -Severity 2
+                        }
+                        # Clean the temp staging now the content has been copied to the offline folder
+                        Remove-Item -Path $offlineDir -Recurse -Force -ErrorAction SilentlyContinue
+                    } else {
+                        Write-DATLogEntry -Value "[Warning] [Offline] Driver content not found for $oem ${modelName}: $offlineDir" -Severity 2
                     }
                 }
 
@@ -4383,8 +4712,8 @@ function Start-DATModelProcessing {
                         # Package the BIOS exe (extract HP/Lenovo, direct for Dell)
                         # ConfigMgr: stage files directly | Intune: compress into WIM
                         Set-DATRegistryValue -Name "RunningMode" -Value "Extracting" -Type String
-                        $skipWim = ($RunningMode -eq 'Configuration Manager')
-                        $includeFlash64 = ($oem -eq 'Dell' -and $RunningMode -in @('Configuration Manager', 'WIM Package Only'))
+                        $skipWim = ($RunningMode -in @('Configuration Manager', 'Configuration Manager (Offline)'))
+                        $includeFlash64 = ($oem -eq 'Dell' -and $RunningMode -in @('Configuration Manager', 'WIM Package Only', 'Configuration Manager (Offline)'))
                         $biosPackagePath = @(Invoke-DATBiosPackaging -BiosFilePath $biosFilePath -OEM $oem `
                             -Model $modelName -Version $biosEntry.Version -PackageDestination $PackagePath `
                             -SkipWim:$skipWim -IncludeFlash64W:$includeFlash64)[-1]
@@ -4431,6 +4760,9 @@ function Start-DATModelProcessing {
                                 if (-not [string]::IsNullOrEmpty($CustomBIOSIssuesTitle)) { $intuneParams['CustomBIOSIssuesTitle'] = $CustomBIOSIssuesTitle }
                                 if (-not [string]::IsNullOrEmpty($CustomBIOSIssuesBody)) { $intuneParams['CustomBIOSIssuesBody'] = $CustomBIOSIssuesBody }
                                 if (-not [string]::IsNullOrEmpty($CustomBIOSIssuesActionButton)) { $intuneParams['CustomBIOSIssuesActionButton'] = $CustomBIOSIssuesActionButton }
+                                if (-not [string]::IsNullOrEmpty($CustomBIOSACPowerTitle)) { $intuneParams['CustomBIOSACPowerTitle'] = $CustomBIOSACPowerTitle }
+                                if (-not [string]::IsNullOrEmpty($CustomBIOSACPowerBody)) { $intuneParams['CustomBIOSACPowerBody'] = $CustomBIOSACPowerBody }
+                                if (-not [string]::IsNullOrEmpty($CustomBIOSACPowerActionButton)) { $intuneParams['CustomBIOSACPowerActionButton'] = $CustomBIOSACPowerActionButton }
                                 if ($modelForceUpdate) { $intuneParams['ForceUpdate'] = $true }
                                 if ($CreateIntuneWinOnly) { $intuneParams['CreateIntuneWinOnly'] = $true }
                                 $biosIntuneResult = Invoke-DATIntunePackageCreation @intuneParams
@@ -4474,8 +4806,11 @@ function Start-DATModelProcessing {
                                         }
                                     }
 
-                                    # Auto-assignment filter
-                                    if ($null -ne $deployReg.AutoAssignmentFilter -and $deployReg.AutoAssignmentFilter -eq 1) {
+                                    # Auto-assignment filter -- gated by the Deploy toggle. Deployment only
+                                    # occurs when 'Deploy to All Devices' is enabled; without it no assignment
+                                    # (filtered or otherwise) is created.
+                                    if ($null -ne $deployReg.DeployAllDevices -and $deployReg.DeployAllDevices -eq 1 -and
+                                        $null -ne $deployReg.AutoAssignmentFilter -and $deployReg.AutoAssignmentFilter -eq 1) {
                                         try {
                                             Set-DATRegistryValue -Name "RunningMode" -Value "AssignmentFilter" -Type String
                                             Set-DATRegistryValue -Name "RunningMessage" -Value "Creating BIOS assignment filter: $oem $modelName" -Type String
@@ -4579,6 +4914,18 @@ function Start-DATModelProcessing {
                                     }
                                 } else {
                                     Write-DATLogEntry -Value "[Warning] - ConfigMgr not connected -- BIOS package saved locally only" -Severity 2
+                                }
+                            }
+
+                            # ConfigMgr (Offline): export the staged BIOS payload to the offline folder
+                            if ($isOfflineCM) {
+                                try {
+                                    $offlineBiosEntry = Export-DATConfigMgrOfflinePackage -OfflineRoot $offlineRoot -SourcePath $biosPackagePath `
+                                        -OEM $oem -Model $modelName -OS $osPkgLabel -Architecture $arch -Baseboards $baseboards `
+                                        -Version $biosEntry.Version -PackageType 'BIOS' -NamePrefix $biosUpdateNamePrefix -ReleaseDate $biosEntry.ReleaseDate
+                                    $offlinePackages.Add($offlineBiosEntry)
+                                } catch {
+                                    Write-DATLogEntry -Value "[Warning] [Offline] BIOS export failed for $oem ${modelName}: $($_.Exception.Message)" -Severity 2
                                 }
                             }
 
@@ -4709,18 +5056,77 @@ function Start-DATModelProcessing {
         Set-DATRegistryValue -Name "RunningMessage" -Value "Completed with errors: $completedCount of $totalModels succeeded, $failedCount failed" -Type String
         Set-DATRegistryValue -Name "RunningState" -Value "CompletedWithErrors" -Type String
     }
-    Write-DATLogEntry -Value "--- Model processing complete: $completedCount/$totalModels succeeded ---" -Severity 1
 
-    # Send Teams webhook notification if enabled
-    if ($TeamsNotificationsEnabled -and -not [string]::IsNullOrEmpty($TeamsWebhookUrl)) {
-        $failedCount = $totalModels - $completedCount
-        try {
-            Send-DATTeamsNotification -WebhookUrl $TeamsWebhookUrl `
-                -TotalModels $totalModels -SuccessCount $completedCount -FailedCount $failedCount `
-                -Platform $RunningMode -PackageType $PackageType -Models $modelList
-            Write-DATLogEntry -Value "[Teams] Build notification sent successfully" -Severity 1
-        } catch {
-            Write-DATLogEntry -Value "[Teams] Failed to send notification: $($_.Exception.Message)" -Severity 2
+    # Configuration Manager (Offline): write the manifest and copy the import script once all
+    # models have been processed. The staging folder is deliberately retained for the admin.
+    if ($isOfflineCM) {
+        if ($offlinePackages.Count -gt 0) {
+            try {
+                $offlineManifestPath = Write-DATOfflineManifestAndScript -OfflineRoot $offlineRoot -Packages $offlinePackages
+                Write-DATLogEntry -Value "[Offline] Export complete -- $($offlinePackages.Count) package(s) staged at $offlineRoot (manifest: $offlineManifestPath)" -Severity 1 -UpdateUI
+                Set-DATRegistryValue -Name 'RunningMessage' -Value "Offline export complete -- $($offlinePackages.Count) package(s) at $offlineRoot" -Type String
+            } catch {
+                Write-DATLogEntry -Value "[Error] [Offline] Failed to write manifest/import script: $($_.Exception.Message)" -Severity 3
+            }
+        } else {
+            Write-DATLogEntry -Value "[Offline] No packages were produced -- nothing to export" -Severity 2
+        }
+    }
+
+    # Optional ConfigMgr XML logic package refresh. This is used when operators enable
+    # "Logic Package" generation and want the catalog refreshed after each build run.
+    if ($GenerateXmlLogicPackage -and $RunningMode -eq 'Configuration Manager') {
+        if (-not [string]::IsNullOrEmpty($SiteServer) -and -not [string]::IsNullOrEmpty($SiteCode) -and -not [string]::IsNullOrEmpty($PackagePath)) {
+            try {
+                Write-DATLogEntry -Value "[XML Logic] Auto-refresh enabled -- generating XML logic package from ConfigMgr packages" -Severity 1
+                $xmlLogicParams = @{
+                    SiteServer   = $SiteServer
+                    SiteCode     = $SiteCode
+                    PackagePath  = $PackagePath
+                    PackageScope = 'All'
+                    CreatePackage = $true
+                }
+                if ($DistributionPointGroups -and $DistributionPointGroups.Count -gt 0) { $xmlLogicParams['DistributionPointGroups'] = $DistributionPointGroups }
+                if ($DistributionPoints -and $DistributionPoints.Count -gt 0) { $xmlLogicParams['DistributionPoints'] = $DistributionPoints }
+                if (-not [string]::IsNullOrEmpty($DistributionPriority)) { $xmlLogicParams['Priority'] = $DistributionPriority }
+                if ($EnableBinaryDeltaReplication) { $xmlLogicParams['EnableBinaryDeltaReplication'] = $true }
+
+                $xmlResult = New-DATXmlLogicPackage @xmlLogicParams
+                Write-DATLogEntry -Value "[XML Logic] Auto-refresh complete -- status '$($xmlResult.Status)', packageCount $($xmlResult.PackageCount)$(if ($xmlResult.PackageID) { ", package $($xmlResult.PackageID)" })" -Severity 1
+            } catch {
+                Write-DATLogEntry -Value "[Warning] [XML Logic] Auto-refresh failed: $($_.Exception.Message)" -Severity 2
+            }
+        } else {
+            Write-DATLogEntry -Value "[Warning] [XML Logic] Auto-refresh skipped -- SiteServer/SiteCode/PackagePath not set" -Severity 2
+        }
+    }
+
+    Write-DATLogEntry -Value "--- Model processing complete: $completedCount/$totalModels succeeded ---" -Severity 1
+    $buildOutcome = 'Auto'
+    } catch {
+        # A stopped pipeline is the operator aborting, not a crash -- it keeps 'Aborted'.
+        $buildOutcome = if ($_.Exception -is [System.Management.Automation.PipelineStoppedException]) { 'Aborted' } else { 'Failed' }
+        throw
+    } finally {
+        # Send the Teams notification on every exit path -- completion, abort return, or a
+        # terminating error. Sentinel is set BEFORE the send so a webhook that hangs or throws
+        # is not retried, and a webhook failure never changes the build's own outcome.
+        if (-not $script:TeamsBuildNotificationSent -and
+            $TeamsNotificationsEnabled -and -not [string]::IsNullOrEmpty($TeamsWebhookUrl)) {
+            $script:TeamsBuildNotificationSent = $true
+            # Count against what was attempted -- unreached models are not failures.
+            $attemptedCount    = [Math]::Min($currentIndex, $totalModels)
+            $failedCount       = [Math]::Max(0, $attemptedCount - $completedCount)
+            $notProcessedCount = [Math]::Max(0, $totalModels - $attemptedCount)
+            try {
+                Send-DATTeamsNotification -WebhookUrl $TeamsWebhookUrl `
+                    -TotalModels $totalModels -SuccessCount $completedCount -FailedCount $failedCount `
+                    -NotProcessedCount $notProcessedCount `
+                    -Platform $RunningMode -PackageType $PackageType -Models $modelList -Outcome $buildOutcome
+                Write-DATLogEntry -Value "[Teams] Build notification sent successfully" -Severity 1
+            } catch {
+                Write-DATLogEntry -Value "[Teams] Failed to send notification: $($_.Exception.Message)" -Severity 2
+            }
         }
     }
 }
@@ -4734,14 +5140,62 @@ function Send-DATTeamsNotification {
         [Parameter(Mandatory)][int]$FailedCount,
         [string]$Platform = 'Download Only',
         [string]$PackageType = 'Drivers',
-        [array]$Models = @()
+        [array]$Models = @(),
+        [ValidateSet('Auto', 'Completed', 'CompletedWithErrors', 'Aborted', 'Failed')][string]$Outcome = 'Auto',
+        [int]$NotProcessedCount = 0
     )
 
-    $statusColor = if ($FailedCount -eq 0) { 'Good' } else { 'Attention' }
-    $statusIcon = if ($FailedCount -eq 0) { [char]0x2705 } else { [char]0x26A0 }
-    $statusText = if ($FailedCount -eq 0) { 'All packages built successfully' } else { "$FailedCount of $TotalModels failed" }
+    # 'Auto' derives the state from FailedCount as before, so existing callers are unaffected.
+    $effectiveOutcome = $Outcome
+    if ($effectiveOutcome -eq 'Auto') {
+        $effectiveOutcome = if ($FailedCount -eq 0) { 'Completed' } else { 'CompletedWithErrors' }
+    }
+
+    # Amber for a build that finished imperfectly or was cancelled, red only for a hard
+    # failure. The status text names the state -- the counts live in the fact set below.
+    # "at" keeps the crash and abort timestamps distinct from the Failed count above them.
+    switch ($effectiveOutcome) {
+        'Completed' {
+            $statusColor    = 'Good'
+            $statusIcon     = [char]0x2705
+            $statusText     = 'completed successfully'
+            $timestampLabel = 'Completed'
+        }
+        'Failed' {
+            $statusColor    = 'Attention'
+            $statusIcon     = [char]0x274C
+            $statusText     = 'failed - see log for details'
+            $timestampLabel = 'Failed at'
+        }
+        'Aborted' {
+            $statusColor    = 'Warning'
+            $statusIcon     = [char]0x26A0
+            $statusText     = 'aborted by user'
+            $timestampLabel = 'Aborted at'
+        }
+        default {
+            $statusColor    = 'Warning'
+            $statusIcon     = [char]0x26A0
+            $statusText     = 'completed with errors'
+            $timestampLabel = 'Completed'
+        }
+    }
     $hostname = $env:COMPUTERNAME
     $timestamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
+
+    # Models a stopped build never reached are not failures -- row omitted when zero.
+    $summaryFacts = @(
+        @{ title = 'Platform';     value = $Platform },
+        @{ title = 'Package Type'; value = $PackageType },
+        @{ title = 'Total Models'; value = "$TotalModels" },
+        @{ title = 'Succeeded';    value = "$SuccessCount" },
+        @{ title = 'Failed';       value = "$FailedCount" }
+    )
+    if ($NotProcessedCount -gt 0) {
+        $summaryFacts += @{ title = 'Not Processed'; value = "$NotProcessedCount" }
+    }
+    $summaryFacts += @{ title = 'Host';          value = $hostname }
+    $summaryFacts += @{ title = $timestampLabel; value = $timestamp }
 
     # Build model list for the card
     $modelFacts = @()
@@ -4789,7 +5243,7 @@ function Send-DATTeamsNotification {
                                         },
                                         @{
                                             type     = 'TextBlock'
-                                            text     = "Build $statusIcon $statusText"
+                                            text     = "Build $statusText $statusIcon"
                                             spacing  = 'None'
                                             isSubtle = $true
                                         }
@@ -4804,15 +5258,7 @@ function Send-DATTeamsNotification {
                             items     = @(
                                 @{
                                     type    = 'FactSet'
-                                    facts   = @(
-                                        @{ title = 'Platform';  value = $Platform },
-                                        @{ title = 'Package Type'; value = $PackageType },
-                                        @{ title = 'Total Models'; value = "$TotalModels" },
-                                        @{ title = 'Succeeded';   value = "$SuccessCount" },
-                                        @{ title = 'Failed';      value = "$FailedCount" },
-                                        @{ title = 'Host';        value = $hostname },
-                                        @{ title = 'Completed';   value = $timestamp }
-                                    )
+                                    facts   = $summaryFacts
                                 }
                             )
                         },
@@ -4821,7 +5267,7 @@ function Send-DATTeamsNotification {
                             items     = @(
                                 @{
                                     type   = 'TextBlock'
-                                    text   = 'Processed Models'
+                                    text   = 'Selected Models'
                                     weight = 'Bolder'
                                     spacing = 'Medium'
                                 },
@@ -4839,8 +5285,9 @@ function Send-DATTeamsNotification {
 
     $jsonPayload = $card | ConvertTo-Json -Depth 20 -Compress
     $utf8 = [System.Text.Encoding]::UTF8
+    # Runs on the build's critical path -- an unreachable webhook must not stall the run.
     Invoke-RestMethod -Uri $WebhookUrl -Method Post -Body ($utf8.GetBytes($jsonPayload)) `
-        -ContentType 'application/json; charset=utf-8' -ErrorAction Stop | Out-Null
+        -ContentType 'application/json; charset=utf-8' -TimeoutSec 30 -ErrorAction Stop | Out-Null
     Write-DATLogEntry -Value "[Teams] Notification posted to webhook" -Severity 1
 }
 
@@ -4869,6 +5316,7 @@ function Export-DATBuildConfig {
         [array]$MaintenanceWindows,
         [bool]$CleanTempOnExit = $true,
         [bool]$CreateIntuneWinOnly = $false,
+        [bool]$DownloadOnlyExtractContent = $true,
         [bool]$PackageRetentionEnabled = $false,
         [int]$PackageRetentionCount = 0,
         [bool]$DeleteSourceFolderOnRemoval = $false
@@ -4904,6 +5352,7 @@ function Export-DATBuildConfig {
         MaxDeferrals               = $MaxDeferrals
         BIOSRestartDelayMinutes    = $BIOSRestartDelayMinutes
         CreateIntuneWinOnly        = $CreateIntuneWinOnly
+        DownloadOnlyExtractContent = $DownloadOnlyExtractContent
         TeamsWebhookUrl            = if ($TeamsWebhookUrl) { $TeamsWebhookUrl } else { '' }
         TeamsNotificationsEnabled  = $TeamsNotificationsEnabled
         Intune                     = if ($Intune) { $Intune } else { [ordered]@{ TenantEnvironment = 'Commercial'; TenantId = ''; AppId = ''; AppSecret = '' } }
@@ -4985,7 +5434,7 @@ function Import-DATBuildConfig {
     }
 
     [PSCustomObject]@{
-        Platform                  = if ($config.Platform -in @('ConfigMgr', 'Configuration Manager')) { 'Configuration Manager' } elseif ($config.Platform) { $config.Platform } else { 'Download Only' }
+        Platform                  = if ($config.Platform -in @('ConfigMgr (Offline)', 'Configuration Manager (Offline)')) { 'Configuration Manager (Offline)' } elseif ($config.Platform -in @('ConfigMgr', 'Configuration Manager')) { 'Configuration Manager' } elseif ($config.Platform) { $config.Platform } else { 'Download Only' }
         OS                        = $config.OS
         Architecture              = $config.Architecture
         PackageType               = if ($config.PackageType) { $config.PackageType } else { 'Drivers' }
@@ -4997,6 +5446,7 @@ function Import-DATBuildConfig {
         MaxDeferrals              = if ($config.MaxDeferrals) { [int]$config.MaxDeferrals } else { 0 }
         BIOSRestartDelayMinutes   = if ($config.BIOSRestartDelayMinutes) { [int]$config.BIOSRestartDelayMinutes } else { 3 }
         CreateIntuneWinOnly       = [bool]$config.CreateIntuneWinOnly
+        DownloadOnlyExtractContent = if ($null -ne $config.DownloadOnlyExtractContent) { [bool]$config.DownloadOnlyExtractContent } else { $true }
         TeamsWebhookUrl           = $config.TeamsWebhookUrl
         TeamsNotificationsEnabled = [bool]$config.TeamsNotificationsEnabled
         WimEngine                 = if ($config.WimEngine) { $config.WimEngine } else { $null }
@@ -5418,7 +5868,8 @@ function Invoke-DATOEMDownloadModule {
         [string]$CatalogVersion,
         [switch]$ForceRebuild,
         [string[]]$ExistingPackageIds = @(),
-        [switch]$VerifyRemoteExistence
+        [switch]$VerifyRemoteExistence,
+        [bool]$ExtractDownloadOnlyContent = $true
     )
 
     [Net.ServicePointManager]::SecurityProtocol = (
@@ -6215,9 +6666,11 @@ New-HPDriverPack -Platform "$PlatformID" -Os "$HPOS" -OSVer "$WindowsBuild" -For
             # HP now flows into common packaging like other OEMs.
             # Create a sentinel file so Invoke-DATDriverFilePackaging can find the staging dir.
             # We bypass the common download+extract and call packaging directly.
-            if ($RunningMode -ne "Download Only") {
+            if ($RunningMode -ne "Download Only" -or $ExtractDownloadOnlyContent) {
                 $packageDest = if (-not [string]::IsNullOrEmpty($PackageDestination)) { $PackageDestination } else { $DownloadDestination }
-                $packagingPlatform = if ($RunningMode -eq 'WIM Package Only') { 'WIM Package Only' } else { $RunningMode }
+                $packagingPlatform = if ($RunningMode -eq 'WIM Package Only') { 'WIM Package Only' }
+                                     elseif ($RunningMode -eq 'Configuration Manager (Offline)') { 'Configuration Manager' }
+                                     else { $RunningMode }
 
                 # Invoke-DATDriverFilePackaging expects a single file to extract.
                 # For HP, the drivers are already extracted to $HPStagingDir.
@@ -6229,7 +6682,7 @@ New-HPDriverPack -Platform "$PlatformID" -Os "$HPOS" -OSVer "$WindowsBuild" -For
 
                 $null = Invoke-DATDriverFilePackaging -FilePath $HPStagingDir -OEM $OEM -Model $Model `
                     -OS "$WindowsVersion $WindowsBuild" -Destination $packageDest -Platform $packagingPlatform `
-                    -CustomDriverPath $CustomDriverPath
+                    -CustomDriverPath $CustomDriverPath -DownloadOnlyExtractDestination $DownloadDestination
             }
 
             Set-DATRegistryValue -Name "RunningMode" -Value "Download Completed" -Type String
@@ -6593,11 +7046,15 @@ New-HPDriverPack -Platform "$PlatformID" -Os "$HPOS" -OSVer "$WindowsBuild" -For
         }
     }
 
-    # Extract and package (unless Download Only mode)
-    if ($RunningMode -ne "Download Only") {
+    # Extract and package. Download Only can opt in/out of extraction via
+    # ExtractDownloadOnlyContent (default: true for new installs).
+    if ($RunningMode -ne "Download Only" -or $ExtractDownloadOnlyContent) {
         $packageDest = if (-not [string]::IsNullOrEmpty($PackageDestination)) { $PackageDestination } else { $DownloadDestination }
-        # WIM Package Only uses the same packaging pipeline as ConfigMgr/Intune
-        $packagingPlatform = if ($RunningMode -eq 'WIM Package Only') { 'WIM Package Only' } else { $RunningMode }
+        # WIM Package Only uses the same packaging pipeline as ConfigMgr/Intune. ConfigMgr
+        # (Offline) builds identical content to online ConfigMgr, then exports it locally.
+        $packagingPlatform = if ($RunningMode -eq 'WIM Package Only') { 'WIM Package Only' }
+                             elseif ($RunningMode -eq 'Configuration Manager (Offline)') { 'Configuration Manager' }
+                             else { $RunningMode }
         # Dell does not use build-specific driver packages -- omit build from path
         $packagingOS = if ($OEM -eq 'Dell') { $WindowsVersion } else { "$WindowsVersion $WindowsBuild" }
         $packagingParams = @{
@@ -6607,6 +7064,9 @@ New-HPDriverPack -Platform "$PlatformID" -Os "$HPOS" -OSVer "$WindowsBuild" -For
             OS           = $packagingOS
             Destination  = $packageDest
             Platform     = $packagingPlatform
+        }
+        if ($RunningMode -eq 'Download Only') {
+            $packagingParams['DownloadOnlyExtractDestination'] = $DownloadDestination
         }
         if ($supplementalFiles.Count -gt 0) {
             $packagingParams['SupplementalFilePaths'] = $supplementalFiles
@@ -11723,6 +12183,9 @@ function Invoke-DATIntunePackageCreation {
         [string]$CustomBIOSSuccessActionButton,
         [string]$CustomBIOSSuccessDismissButton,
         [string]$CustomBIOSIssuesActionButton,
+        [string]$CustomBIOSACPowerTitle,
+        [string]$CustomBIOSACPowerBody,
+        [string]$CustomBIOSACPowerActionButton,
         [string]$MaintenanceWindowsJson = '',
         [switch]$AlarmMode,
         [switch]$CreateIntuneWinOnly
@@ -11924,8 +12387,9 @@ function Invoke-DATIntunePackageCreation {
                 # carries an actionable, self-remediable message (connect AC power).
                 $biosACPowerToastPath = Join-Path $stagingDir "Show-StatusToast-BIOSACPower.ps1"
                 $biosACPowerParams = @{} + $statusToastParams
-                $biosACPowerParams['CustomToastTitle'] = 'BIOS Update Paused - Connect Power'
-                $biosACPowerParams['CustomToastBody']  = 'Your device needs to install a BIOS firmware update, but it must be connected to AC power first. Please plug in your charger - the update will continue automatically the next time it runs.'
+                $biosACPowerParams['CustomToastTitle'] = if (-not [string]::IsNullOrEmpty($CustomBIOSACPowerTitle)) { $CustomBIOSACPowerTitle } else { 'BIOS Update Paused - Connect Power' }
+                $biosACPowerParams['CustomToastBody']  = if (-not [string]::IsNullOrEmpty($CustomBIOSACPowerBody)) { $CustomBIOSACPowerBody } else { 'Your device needs to install a BIOS firmware update, but it must be connected to AC power first. Please plug in your charger - the update will continue automatically the next time it runs.' }
+                if (-not [string]::IsNullOrEmpty($CustomBIOSACPowerActionButton)) { $biosACPowerParams['CustomActionButton'] = $CustomBIOSACPowerActionButton }
                 New-DATIntuneToastScript -OutputPath $biosACPowerToastPath -UpdateType 'BIOSIssues' @biosACPowerParams
                 Write-DATLogEntry -Value "[Intune Pipeline] BIOS AC-power toast script created: $biosACPowerToastPath" -Severity 1 -UpdateUI
 
@@ -12887,6 +13351,13 @@ function Start-DATBiosDownload {
             # than hard-failing, which would block a legitimate BIOS package. Still fails closed below
             # when the signature is absent or the signer is not on the trusted allow-list.
             Write-DATLogEntry -Value "[BIOS] Hash mismatch (catalog hash likely stale) -- verified via trusted Authenticode signature instead. Expected: $($BiosEntry.FileHash), Got: $downloadedHash" -Severity 2
+        } elseif ($OEM -eq 'Acer') {
+            # Acer re-releases BIOS updates under the same version/URL, so the DAT API catalog hash
+            # drifts out of date, and Acer's Authenticode signers are inconsistent and cannot be
+            # allow-listed. A catalog-hash mismatch here is therefore expected and non-actionable --
+            # hard-failing would block every affected Acer BIOS. Accept the file (integrity for Acer
+            # BIOS rests on the enforced HTTPS download), matching the null-hash Acer path below.
+            Write-DATLogEntry -Value "[BIOS] Acer catalog hash mismatch (catalog hash unreliable for Acer) -- accepting HTTPS-downloaded file. Expected: $($BiosEntry.FileHash), Got: $downloadedHash" -Severity 2
         } else {
             Write-DATLogEntry -Value "[BIOS] Hash mismatch and no trusted signature! Expected: $($BiosEntry.FileHash), Got: $downloadedHash" -Severity 3
             Remove-Item $destFile -Force -ErrorAction SilentlyContinue
