@@ -208,8 +208,13 @@ $processingParams = @{
 }
 if ($config.DisableToast) { $processingParams['DisableToast'] = $true }
 if ($config.DisableRestart) { $processingParams['DisableRestart'] = $true }
-if ($config.AlarmMode) { $processingParams['AlarmMode'] = $true }
+if ($config.AlarmMode) {
+    $processingParams['AlarmMode'] = $true
+    # Audible alarm sound defaults ON when critical notification is enabled, unless AlarmSound is explicitly set to false
+    if ($null -eq $config.AlarmSound -or $config.AlarmSound) { $processingParams['AlarmSound'] = $true }
+}
 if ($config.CreateIntuneWinOnly) { $processingParams['CreateIntuneWinOnly'] = $true }
+if ($config.ShowBrandingBannerAllToasts) { $processingParams['ShowBrandingBannerAllToasts'] = $true }
 if ($null -ne $config.DownloadOnlyExtractContent -and -not $config.DownloadOnlyExtractContent) { $processingParams['ExtractDownloadOnlyContent'] = $false }
 if ($config.ToastTimeoutAction -ne 'RemindMeLater') { $processingParams['ToastTimeoutAction'] = $config.ToastTimeoutAction }
 if ($config.MaxDeferrals -gt 0) { $processingParams['MaxDeferrals'] = $config.MaxDeferrals }

@@ -3,6 +3,14 @@ Release Notes
 IMPORTANT
 - DAT Downloads have been moved to GitHub - https://github.com/maurice-daly/DriverAutomationTool
 
+Version 10.2.1
+What's New & Fixed
+- BIOS Management — Fixed the automatic restart after a BIOS update being silently skipped on unattended/Intune devices. The Focus Assist / Do Not Disturb check no longer treats "no interactive user" (the normal state when running as SYSTEM) as a reason to hold back the reboot, so staged BIOS updates now apply as intended while still deferring for users who are genuinely busy or presenting. (#893)
+- OEM Support — Reworked HP SoftPaq driver extraction to use HP's current /s /e /f switches so files land in the build folder instead of the default SWSetup location, which previously left the folder empty and failed the build. Older SoftPaqs are handled automatically by retrying the legacy switches, with the 7-Zip fallback retained, and success is now judged by the files actually produced rather than the installer's exit code. (#892)
+- Toast Notifications — Added a Critical Notification (Alarm Mode) option that displays the update prompt even when Focus Assist / Do Not Disturb is active, with an optional audible alarm sound, for forced-reboot or security-critical updates.
+- Toast Notifications — Clarified the BIOS "firmware prestaged" message so users know they can restart immediately (or any time before the countdown ends) to speed up the update, alongside the existing warning not to power off during the process.
+- Telemetry & Reporting — Added an optional environment profile so administrators can record an approximate device-count range and their primary management platform (Intune, Configuration Manager, Co-Managed, or Standalone). The values are offered during first-run consent and editable in Common Settings, remain optional, and are only included with the end-of-session summary when telemetry is enabled.
+
 Version 10.2.0
 What's New & Fixed
 - ConfigMgr (Offline) — New Configuration Manager (Offline) platform. Builds and stages driver/BIOS content plus a package manifest to a self-contained export folder on an isolated host, then a bundled Import-CMOfflinePackages.ps1 script lets an admin copy the content to its final destination and create the packages in Configuration Manager on the connected site — no direct site access required from the build machine. (#875)

@@ -4,7 +4,7 @@
      Organization:  MSEndpointMgr / Patch My PC
      Filename:      DriverAutomationToolCore.psm1
      Purpose:       Core functions for Driver Automation Tool v2.0
-     Version:       10.2.0.0
+     Version:       10.2.1.0
     ===========================================================================
 #>
 
@@ -37,7 +37,7 @@ if ($PSVersionTable.PSVersion.Major -le 5) {
 
 #region Variables
 
-[version]$global:ScriptRelease = "10.2.0.0"
+[version]$global:ScriptRelease = "10.2.1.0"
 $global:ScriptBuildDate = "06-08-2026"
 $global:ReleaseNotesURL = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/DriverAutomationToolNotes.txt"
 $OEMLinksURL = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/OEMLinks.xml"
@@ -1563,15 +1563,43 @@ function Invoke-DATDriverFilePackaging {
                             Write-DATLogEntry -Value "[Error] - Lenovo elevated extraction failed: $($_.Exception.Message)" -Severity 3
                             $exitCode = -1
                         }
+                    } elseif ($OEM -eq 'HP') {
+                        # HP SoftPaqs redefined /e as a boolean "extract only" flag and use
+                        # /f <path> for the target folder; the legacy /e="<path>" form is ignored
+                        # by current SoftPaqs, so content lands in the default C:\SWSetup\sp#####
+                        # location and the build folder is left empty (issue #892). Older SoftPaqs,
+                        # however, may predate /f -- so try the modern switches first and, if nothing
+                        # lands in the build folder, retry with the legacy switches before the 7-Zip
+                        # fallback. HP SoftPaqs return a non-zero exit (e.g. 1168) even on a
+                        # successful silent extract, so success is judged by files produced.
+                        $hpSwitchSets = @(
+                            @{ Label = 'modern (/s /e /f)'; Args = "/s /e /f `"$DriverFolder`"" }
+                            @{ Label = 'legacy (/s /e=)';   Args = "/s /e=`"$DriverFolder`"" }
+                        )
+                        $exitCode = $null
+                        foreach ($hpSwitch in $hpSwitchSets) {
+                            Write-DATLogEntry -Value "[$OEM] Extracting with $($hpSwitch.Label): $($hpSwitch.Args)" -Severity 1
+                            try {
+                                $exitCode = Invoke-DATExecutable -FilePath $FilePath -Arguments $hpSwitch.Args
+                            } catch {
+                                Write-DATLogEntry -Value "[Warning] - HP extraction attempt using $($hpSwitch.Label) threw: $($_.Exception.Message)" -Severity 2
+                            }
+                            if (@(Get-ChildItem -Path $DriverFolder -Recurse -File -ErrorAction SilentlyContinue).Count -gt 0) {
+                                break
+                            }
+                            Write-DATLogEntry -Value "[Warning] - HP extraction using $($hpSwitch.Label) produced no files in the build folder -- trying next method" -Severity 2
+                        }
                     } else {
                         $exeArgs = "/s /e=`"$DriverFolder`""
                         Write-DATLogEntry -Value "[$OEM] Extracting with: $exeArgs" -Severity 1
                         $exitCode = Invoke-DATExecutable -FilePath $FilePath -Arguments $exeArgs
                     }
-                    # Check if extraction produced files
+                    # Check if extraction produced files. Self-extractors (HP in particular) can
+                    # report a non-zero exit code while still extracting correctly, so the presence
+                    # of extracted files -- not the exit code -- is the authoritative success signal.
                     $extractedFiles = @(Get-ChildItem -Path $DriverFolder -Recurse -File -ErrorAction SilentlyContinue)
-                    if (($exitCode -ne 0 -and $null -ne $exitCode) -or $extractedFiles.Count -eq 0) {
-                        Write-DATLogEntry -Value "[Warning] - EXE extraction returned exit code $exitCode for $FilePath (files: $($extractedFiles.Count)) -- attempting 7-Zip fallback" -Severity 2
+                    if ($extractedFiles.Count -eq 0) {
+                        Write-DATLogEntry -Value "[Warning] - EXE extraction produced no files for $FilePath (exit code $exitCode) -- attempting 7-Zip fallback" -Severity 2
                         # Attempt 7-Zip fallback for Dell self-extracting archives
                         $7zFallback = $null
                         foreach ($candidate in @(
@@ -1644,14 +1672,44 @@ function Invoke-DATDriverFilePackaging {
             "*.exe" {
                 if ($OEM -eq 'Lenovo') {
                     $suppArgs = "/VERYSILENT /DIR=`"$DriverFolder`" /SP- /SUPPRESSMSGBOXES /NORESTART"
+                    Write-DATLogEntry -Value "[$OEM] Extracting supplemental with: $suppArgs" -Severity 1
+                    $preCount = @(Get-ChildItem -Path $DriverFolder -Recurse -File -ErrorAction SilentlyContinue).Count
+                    $exitCode = Invoke-DATExecutable -FilePath $suppFile -Arguments $suppArgs
+                    $postCount = @(Get-ChildItem -Path $DriverFolder -Recurse -File -ErrorAction SilentlyContinue).Count
+                } elseif ($OEM -eq 'HP') {
+                    # HP SoftPaqs require /s /e /f <path>; the legacy /e="<path>" form is ignored
+                    # by current SoftPaqs and extracts to C:\SWSetup instead (issue #892). Try the
+                    # modern switches first, then fall back to the legacy switches for older
+                    # SoftPaqs that predate /f, before the 7-Zip fallback below. Success is judged
+                    # by new files appearing, not the exit code (HP returns non-zero even on success).
+                    $preCount = @(Get-ChildItem -Path $DriverFolder -Recurse -File -ErrorAction SilentlyContinue).Count
+                    $hpSuppSwitchSets = @(
+                        @{ Label = 'modern (/s /e /f)'; Args = "/s /e /f `"$DriverFolder`"" }
+                        @{ Label = 'legacy (/s /e=)';   Args = "/s /e=`"$DriverFolder`"" }
+                    )
+                    $exitCode = $null
+                    $postCount = $preCount
+                    foreach ($hpSuppSwitch in $hpSuppSwitchSets) {
+                        Write-DATLogEntry -Value "[$OEM] Extracting supplemental with $($hpSuppSwitch.Label): $($hpSuppSwitch.Args)" -Severity 1
+                        try {
+                            $exitCode = Invoke-DATExecutable -FilePath $suppFile -Arguments $hpSuppSwitch.Args
+                        } catch {
+                            Write-DATLogEntry -Value "[Warning] - HP supplemental extraction using $($hpSuppSwitch.Label) threw: $($_.Exception.Message)" -Severity 2
+                        }
+                        $postCount = @(Get-ChildItem -Path $DriverFolder -Recurse -File -ErrorAction SilentlyContinue).Count
+                        if ($postCount -gt $preCount) { break }
+                        Write-DATLogEntry -Value "[Warning] - HP supplemental extraction using $($hpSuppSwitch.Label) produced no new files -- trying next method" -Severity 2
+                    }
                 } else {
                     $suppArgs = "/s /e=`"$DriverFolder`""
+                    Write-DATLogEntry -Value "[$OEM] Extracting supplemental with: $suppArgs" -Severity 1
+                    $preCount = @(Get-ChildItem -Path $DriverFolder -Recurse -File -ErrorAction SilentlyContinue).Count
+                    $exitCode = Invoke-DATExecutable -FilePath $suppFile -Arguments $suppArgs
+                    $postCount = @(Get-ChildItem -Path $DriverFolder -Recurse -File -ErrorAction SilentlyContinue).Count
                 }
-                Write-DATLogEntry -Value "[$OEM] Extracting supplemental with: $suppArgs" -Severity 1
-                $preCount = @(Get-ChildItem -Path $DriverFolder -Recurse -File -ErrorAction SilentlyContinue).Count
-                $exitCode = Invoke-DATExecutable -FilePath $suppFile -Arguments $suppArgs
-                $postCount = @(Get-ChildItem -Path $DriverFolder -Recurse -File -ErrorAction SilentlyContinue).Count
-                if (($exitCode -ne 0 -and $null -ne $exitCode) -or ($postCount -le $preCount)) {
+                # Success is judged by new files appearing (HP SoftPaqs can return a non-zero exit
+                # code even on a successful silent extract), not by the exit code alone.
+                if ($postCount -le $preCount) {
                     Write-DATLogEntry -Value "[Warning] - Supplemental EXE extraction returned exit code $exitCode for $suppFile (new files: $($postCount - $preCount)) -- attempting 7-Zip fallback" -Severity 2
                     $7zFallback = $null
                     foreach ($candidate in @(
@@ -1745,13 +1803,50 @@ function Invoke-DATDriverFilePackaging {
         }
     }
 
-    $extractedFiles = (Get-ChildItem -Path $DriverFolder -Recurse -File -ErrorAction SilentlyContinue).Count
+    # Enumerate extracted files with the \\?\ extended-length prefix so files buried in
+    # long paths are counted accurately and MAX_PATH overflows can be detected. A plain
+    # Get-ChildItem -Recurse silently drops paths over 260 characters on PowerShell 5.1,
+    # which hides the very files that DISM/wimlib later skip during WIM capture.
+    $extractedFiles = 0
+    $longPathFiles = New-Object System.Collections.Generic.List[string]
+    try {
+        $extendedRoot = '\\?\' + $DriverFolder
+        foreach ($p in [System.IO.Directory]::EnumerateFiles($extendedRoot, '*', [System.IO.SearchOption]::AllDirectories)) {
+            $extractedFiles++
+            $realPath = $p -replace '^\\\\\?\\', ''
+            if ($realPath.Length -ge 260) { $longPathFiles.Add($realPath) }
+        }
+    } catch {
+        Write-DATLogEntry -Value "[$OEM] Extended-length enumeration failed, falling back to standard scan: $($_.Exception.Message)" -Severity 2
+        $extractedFiles = @(Get-ChildItem -Path $DriverFolder -Recurse -File -ErrorAction SilentlyContinue).Count
+    }
     Write-DATLogEntry -Value "[$OEM] Extraction complete: $extractedFiles files extracted to $DriverFolder" -Severity 1
     Set-DATRegistryValue -Name "RunningMessage" -Value "Extraction complete ($extractedFiles files) - $OEM $Model" -Type String
 
     if ($extractedFiles -eq 0) {
         $errorMsg = "Extraction produced 0 files for $OEM $Model. The driver pack may be corrupt or the extraction failed silently. Source: $FilePath"
         Write-DATLogEntry -Value "[Error] - $errorMsg" -Severity 3 -UpdateUI
+        throw $errorMsg
+    }
+
+    # MAX_PATH validation -- files whose full path exceeds the Windows 260-character limit
+    # are silently omitted by DISM /Capture-Image and wimlib during WIM creation, producing
+    # a near-empty WIM. Acer packs are especially prone because each nested cabinet is
+    # expanded into a sub-folder named after itself, deepening the tree on every pass. Fail
+    # loudly with the offending paths instead of shipping an incomplete driver package.
+    if ($longPathFiles.Count -gt 0) {
+        Write-DATLogEntry -Value "[Error] - $($longPathFiles.Count) extracted file(s) exceed the 260-character Windows path limit for $OEM $Model. DISM and wimlib silently omit these files, producing an incomplete (near-empty) WIM. Source: $FilePath" -Severity 3 -UpdateUI
+        $sampleMax = [math]::Min(5, $longPathFiles.Count)
+        for ($i = 0; $i -lt $sampleMax; $i++) {
+            $lp = $longPathFiles[$i]
+            Write-DATLogEntry -Value "[$OEM] Long path ($($lp.Length) chars): $lp" -Severity 2
+        }
+        if ($longPathFiles.Count -gt $sampleMax) {
+            Write-DATLogEntry -Value "[$OEM] ... and $($longPathFiles.Count - $sampleMax) more file(s) over the path limit" -Severity 2
+        }
+        $errorMsg = "Extracted driver files for $OEM $Model exceed the 260-character path limit ($($longPathFiles.Count) file(s)). The WIM cannot be built reliably. Shorten the Temp / Package storage path or enable Win32 long paths (LongPathsEnabled), then rebuild."
+        Set-DATRegistryValue -Name "RunningState" -Value "Error" -Type String
+        Set-DATRegistryValue -Name "RunningMessage" -Value "$errorMsg" -Type String
         throw $errorMsg
     }
 
@@ -3800,9 +3895,11 @@ function Start-DATModelProcessing {
         [string]$CustomToastTextsJson,
         [string]$MaintenanceWindowsJson,
         [switch]$AlarmMode,
+        [switch]$AlarmSound,
         [switch]$CreateIntuneWinOnly,
         [switch]$GenerateXmlLogicPackage,
-        [bool]$ExtractDownloadOnlyContent = $true
+        [bool]$ExtractDownloadOnlyContent = $true,
+        [bool]$ShowBrandingBannerAllToasts = $false
     )
     $global:ScriptDirectory = $ScriptDirectory
     $global:LogDirectory = Join-Path $ScriptDirectory "Logs"
@@ -3847,6 +3944,9 @@ function Start-DATModelProcessing {
     $CustomBIOSACPowerTitle = if ($customToastTexts.ContainsKey('Toast_BIOSACPower')) { $customToastTexts['Toast_BIOSACPower'].Title } else { '' }
     $CustomBIOSACPowerBody  = if ($customToastTexts.ContainsKey('Toast_BIOSACPower')) { $customToastTexts['Toast_BIOSACPower'].Body } else { '' }
     $CustomBIOSACPowerActionButton = if ($customToastTexts.ContainsKey('Toast_BIOSACPower')) { $customToastTexts['Toast_BIOSACPower'].ActionButton } else { '' }
+    $CustomBIOSFinalNoticeTitle = if ($customToastTexts.ContainsKey('Toast_BIOSFinalNotice')) { $customToastTexts['Toast_BIOSFinalNotice'].Title } else { '' }
+    $CustomBIOSFinalNoticeBody  = if ($customToastTexts.ContainsKey('Toast_BIOSFinalNotice')) { $customToastTexts['Toast_BIOSFinalNotice'].Body } else { '' }
+    $CustomBIOSFinalNoticeActionButton = if ($customToastTexts.ContainsKey('Toast_BIOSFinalNotice')) { $customToastTexts['Toast_BIOSFinalNotice'].ActionButton } else { '' }
 
     # Use user-configured paths if provided, otherwise default to ScriptDirectory sub-folders
     if ([string]::IsNullOrEmpty($StoragePath)) { $StoragePath = Join-Path $ScriptDirectory "Downloads" }
@@ -4232,6 +4332,7 @@ function Start-DATModelProcessing {
                         if ($DisableToast) { $intuneParams['DisableToast'] = $true }
                         if ($DisableRestart) { $intuneParams['DisableRestart'] = $true }
                         if ($AlarmMode) { $intuneParams['AlarmMode'] = $true }
+                        if ($AlarmSound) { $intuneParams['AlarmSound'] = $true }
                         if ($ToastTimeoutAction -ne 'RemindMeLater') { $intuneParams['ToastTimeoutAction'] = $ToastTimeoutAction }
                         if ($MaxDeferrals -gt 0) { $intuneParams['MaxDeferrals'] = $MaxDeferrals }
                         if (-not [string]::IsNullOrEmpty($MaintenanceWindowsJson)) { $intuneParams['MaintenanceWindowsJson'] = $MaintenanceWindowsJson }
@@ -4250,6 +4351,7 @@ function Start-DATModelProcessing {
                         if (-not [string]::IsNullOrEmpty($CustomIssuesTitle)) { $intuneParams['CustomIssuesTitle'] = $CustomIssuesTitle }
                         if (-not [string]::IsNullOrEmpty($CustomIssuesBody)) { $intuneParams['CustomIssuesBody'] = $CustomIssuesBody }
                         if (-not [string]::IsNullOrEmpty($CustomIssuesActionButton)) { $intuneParams['CustomIssuesActionButton'] = $CustomIssuesActionButton }
+                        if ($ShowBrandingBannerAllToasts) { $intuneParams['ShowBrandingBannerAllToasts'] = $true }
                         if ($modelForceUpdate) { $intuneParams['ForceUpdate'] = $true }
                         if ($CreateIntuneWinOnly) { $intuneParams['CreateIntuneWinOnly'] = $true }
                         $intuneResult = Invoke-DATIntunePackageCreation @intuneParams
@@ -4740,6 +4842,7 @@ function Start-DATModelProcessing {
                                 if ($DisableToast) { $intuneParams['DisableToast'] = $true }
                                 if ($DisableRestart) { $intuneParams['DisableRestart'] = $true }
                                 if ($AlarmMode) { $intuneParams['AlarmMode'] = $true }
+                                if ($AlarmSound) { $intuneParams['AlarmSound'] = $true }
                                 if ($ToastTimeoutAction -ne 'RemindMeLater') { $intuneParams['ToastTimeoutAction'] = $ToastTimeoutAction }
                                 if ($MaxDeferrals -gt 0) { $intuneParams['MaxDeferrals'] = $MaxDeferrals }
                                 if (-not [string]::IsNullOrEmpty($MaintenanceWindowsJson)) { $intuneParams['MaintenanceWindowsJson'] = $MaintenanceWindowsJson }
@@ -4763,6 +4866,10 @@ function Start-DATModelProcessing {
                                 if (-not [string]::IsNullOrEmpty($CustomBIOSACPowerTitle)) { $intuneParams['CustomBIOSACPowerTitle'] = $CustomBIOSACPowerTitle }
                                 if (-not [string]::IsNullOrEmpty($CustomBIOSACPowerBody)) { $intuneParams['CustomBIOSACPowerBody'] = $CustomBIOSACPowerBody }
                                 if (-not [string]::IsNullOrEmpty($CustomBIOSACPowerActionButton)) { $intuneParams['CustomBIOSACPowerActionButton'] = $CustomBIOSACPowerActionButton }
+                                if (-not [string]::IsNullOrEmpty($CustomBIOSFinalNoticeTitle)) { $intuneParams['CustomBIOSFinalNoticeTitle'] = $CustomBIOSFinalNoticeTitle }
+                                if (-not [string]::IsNullOrEmpty($CustomBIOSFinalNoticeBody)) { $intuneParams['CustomBIOSFinalNoticeBody'] = $CustomBIOSFinalNoticeBody }
+                                if (-not [string]::IsNullOrEmpty($CustomBIOSFinalNoticeActionButton)) { $intuneParams['CustomBIOSFinalNoticeActionButton'] = $CustomBIOSFinalNoticeActionButton }
+                                if ($ShowBrandingBannerAllToasts) { $intuneParams['ShowBrandingBannerAllToasts'] = $true }
                                 if ($modelForceUpdate) { $intuneParams['ForceUpdate'] = $true }
                                 if ($CreateIntuneWinOnly) { $intuneParams['CreateIntuneWinOnly'] = $true }
                                 $biosIntuneResult = Invoke-DATIntunePackageCreation @intuneParams
@@ -5316,6 +5423,7 @@ function Export-DATBuildConfig {
         [array]$MaintenanceWindows,
         [bool]$CleanTempOnExit = $true,
         [bool]$CreateIntuneWinOnly = $false,
+        [bool]$ShowBrandingBannerAllToasts = $false,
         [bool]$DownloadOnlyExtractContent = $true,
         [bool]$PackageRetentionEnabled = $false,
         [int]$PackageRetentionCount = 0,
@@ -5352,6 +5460,7 @@ function Export-DATBuildConfig {
         MaxDeferrals               = $MaxDeferrals
         BIOSRestartDelayMinutes    = $BIOSRestartDelayMinutes
         CreateIntuneWinOnly        = $CreateIntuneWinOnly
+        ShowBrandingBannerAllToasts = $ShowBrandingBannerAllToasts
         DownloadOnlyExtractContent = $DownloadOnlyExtractContent
         TeamsWebhookUrl            = if ($TeamsWebhookUrl) { $TeamsWebhookUrl } else { '' }
         TeamsNotificationsEnabled  = $TeamsNotificationsEnabled
@@ -5446,6 +5555,7 @@ function Import-DATBuildConfig {
         MaxDeferrals              = if ($config.MaxDeferrals) { [int]$config.MaxDeferrals } else { 0 }
         BIOSRestartDelayMinutes   = if ($config.BIOSRestartDelayMinutes) { [int]$config.BIOSRestartDelayMinutes } else { 3 }
         CreateIntuneWinOnly       = [bool]$config.CreateIntuneWinOnly
+        ShowBrandingBannerAllToasts = [bool]$config.ShowBrandingBannerAllToasts
         DownloadOnlyExtractContent = if ($null -ne $config.DownloadOnlyExtractContent) { [bool]$config.DownloadOnlyExtractContent } else { $true }
         TeamsWebhookUrl           = $config.TeamsWebhookUrl
         TeamsNotificationsEnabled = [bool]$config.TeamsNotificationsEnabled
@@ -5488,17 +5598,78 @@ function Register-DATScheduledBuild {
         -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$headlessScript`" -ConfigPath `"$ConfigPath`"" `
         -WorkingDirectory $ScriptDirectory
 
-    $triggerParams = @{ At = $Time }
-    switch ($Frequency) {
-        'Once'    { $trigger = New-ScheduledTaskTrigger -Once @triggerParams }
-        'Daily'   { $trigger = New-ScheduledTaskTrigger -Daily @triggerParams }
-        'Weekly'  { $trigger = New-ScheduledTaskTrigger -Weekly -DaysOfWeek $DayOfWeek @triggerParams }
-        'Monthly' { $trigger = New-ScheduledTaskTrigger -Daily @triggerParams }
-    }
-
     $taskSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
         -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Hours 4) -MultipleInstances IgnoreNew
     $taskPrincipal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
+
+    # Monthly has no New-ScheduledTaskTrigger switch and the MSFT_TaskMonthlyTrigger CIM class
+    # shape varies between Windows builds, so register the monthly task from a full Task Scheduler
+    # XML definition instead -- this is deterministic and version-independent. Day is clamped to
+    # 1-28 so the run fires in every month (including February).
+    if ($Frequency -eq 'Monthly') {
+        $safeDayOfMonth = [Math]::Min([Math]::Max($DayOfMonth, 1), 28)
+        $startBoundary  = ([datetime]::Today).Add([timespan]::Parse($Time)).ToString('yyyy-MM-ddTHH:mm:ss')
+        $cmdEsc = [System.Security.SecurityElement]::Escape($ps64)
+        $argEsc = [System.Security.SecurityElement]::Escape("-NoProfile -ExecutionPolicy Bypass -File `"$headlessScript`" -ConfigPath `"$ConfigPath`"")
+        $wdEsc  = [System.Security.SecurityElement]::Escape($ScriptDirectory)
+        $allMonths = '<January/><February/><March/><April/><May/><June/><July/><August/><September/><October/><November/><December/>'
+        $taskXml = @"
+<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>Driver Automation Tool scheduled package build</Description>
+  </RegistrationInfo>
+  <Triggers>
+    <CalendarTrigger>
+      <StartBoundary>$startBoundary</StartBoundary>
+      <Enabled>true</Enabled>
+      <ScheduleByMonth>
+        <DaysOfMonth><Day>$safeDayOfMonth</Day></DaysOfMonth>
+        <Months>$allMonths</Months>
+      </ScheduleByMonth>
+    </CalendarTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <UserId>S-1-5-18</UserId>
+      <RunLevel>HighestAvailable</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <ExecutionTimeLimit>PT4H</ExecutionTimeLimit>
+    <Enabled>true</Enabled>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>$cmdEsc</Command>
+      <Arguments>$argEsc</Arguments>
+      <WorkingDirectory>$wdEsc</WorkingDirectory>
+    </Exec>
+  </Actions>
+</Task>
+"@
+        Unregister-ScheduledTask -TaskPath $taskFolder -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
+        Register-ScheduledTask -TaskName $taskName -TaskPath $taskFolder -Xml $taskXml -User 'SYSTEM' -Force | Out-Null
+        Write-DATLogEntry -Value "[Schedule] Registered scheduled build: Monthly on day $safeDayOfMonth at $Time" -Severity 1
+
+        return [PSCustomObject]@{
+            TaskPath  = "$taskFolder\$taskName"
+            Frequency = $Frequency
+            Time      = $Time
+            Config    = $ConfigPath
+        }
+    }
+
+    $triggerParams = @{ At = $Time }
+    switch ($Frequency) {
+        'Once'   { $trigger = New-ScheduledTaskTrigger -Once @triggerParams }
+        'Daily'  { $trigger = New-ScheduledTaskTrigger -Daily @triggerParams }
+        'Weekly' { $trigger = New-ScheduledTaskTrigger -Weekly -DaysOfWeek $DayOfWeek @triggerParams }
+    }
 
     Unregister-ScheduledTask -TaskPath $taskFolder -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
     Register-ScheduledTask -TaskPath $taskFolder -TaskName $taskName -Action $taskAction `
@@ -9675,7 +9846,9 @@ function New-DATIntuneToastScript {
         [string]$CustomDismissButton = '',
         [int]$RestartDelayMinutes = 10,
         [switch]$DisableRestart,
-        [switch]$AlarmMode
+        [switch]$AlarmMode,
+        [switch]$AlarmSound,
+        [switch]$ShowBrandingBanner
     )
 
     # Determine layout type and per-type content
@@ -9696,7 +9869,7 @@ function New-DATIntuneToastScript {
                 $body       = if (-not [string]::IsNullOrEmpty($CustomToastBody))  { $CustomToastBody  } else { 'Your system has a pending BIOS update that will be applied upon your next restart. Please restart your device at your earliest convenience. Do NOT power off the device during the update process.' }
             } else {
                 $heading    = if (-not [string]::IsNullOrEmpty($CustomToastTitle)) { $CustomToastTitle } else { 'BIOS Firmware Prestaged' }
-                $body       = if (-not [string]::IsNullOrEmpty($CustomToastBody))  { $CustomToastBody  } else { "Your system has a pending BIOS update and will be restarted in $RestartDelayMinutes minute(s). Please save your work. Do NOT power off the device during the update process." }
+                $body       = if (-not [string]::IsNullOrEmpty($CustomToastBody))  { $CustomToastBody  } else { "Your system has a pending BIOS update and will be restarted in $RestartDelayMinutes minute(s), alternatively you can restart your device now or before this time to speed up the process. Please DO NOT power off the device during the update process." }
             }
             $statusIcon     = '&#xE835;'   # FirmwareUpdate (Segoe MDL2 Assets)
             $iconColor      = '#3B82F6'    # blue-500
@@ -9732,7 +9905,7 @@ function New-DATIntuneToastScript {
             # of user deferrals has been reached and the BIOS update is now being pre-staged.
             $heading        = if (-not [string]::IsNullOrEmpty($CustomToastTitle)) { $CustomToastTitle } else { 'Final Reminder - BIOS Update Pending' }
             $body           = if (-not [string]::IsNullOrEmpty($CustomToastBody))  { $CustomToastBody  } else { 'You have reached the maximum number of allowed deferrals. This BIOS update is now being pre-staged and will be applied on your next restart. Please save your work. Do NOT power off the device during the update process.' }
-            $statusIcon     = '&#xEBE8;'   # Bug (Segoe MDL2 Assets)
+            $statusIcon     = '&#xE7BA;'   # Warning (Segoe MDL2 Assets)
             $iconColor      = '#F59E0B'    # amber-500
             $accentColor    = '#D97706'    # amber-600
             $iconBackground = '#451a03'    # amber-950
@@ -9782,6 +9955,7 @@ function New-DATIntuneToastScript {
 `$DATToastBuildTime = '$buildTimestamp'
 `$DATToastType      = '$UpdateType'
 `$DATToastAlarmMode = '$([bool]$AlarmMode)'
+`$DATToastAlarmSound = '$([bool]$AlarmSound)'
 `$greetingPrefix    = '$($greetingPrefix -replace "'","''")'
 
 # --- Toast Debug Logging ---
@@ -9935,6 +10109,59 @@ try {
         Left="-9999" Top="-9999">
     <Border CornerRadius="12" Background="#0F172A" Margin="10"
 '@
+        # Optional hero banner on status toasts when branding-on-all-notifications is enabled.
+        # When active, the branding logo is decoded to disk and an extra top grid row hosts it.
+        $statusImageDropBlock = ''
+        $statusBannerRowDef   = ''
+        $statusBannerMarkup   = ''
+        $statusBodyRow        = 1
+        $statusButtonRow      = 2
+        # Accent strip is shown only when there is no hero banner; the banner replaces it.
+        $statusStripRowDef    = "                <RowDefinition Height=`"4`"/>`n"
+        $statusStripMarkup    = "            <!-- Accent strip -->`n            <Border Grid.Row=`"0`" CornerRadius=`"11,11,0,0`" Background=`"$accentColor`"/>`n"
+        if ($ShowBrandingBanner) {
+            $bannerLogoPath = $null
+            if (-not [string]::IsNullOrEmpty($CustomBrandingImagePath) -and (Test-Path $CustomBrandingImagePath)) {
+                $bannerLogoPath = $CustomBrandingImagePath
+            } else {
+                if ([string]::IsNullOrEmpty($BrandingPath)) {
+                    $BrandingPath = if ($global:ScriptDirectory) { Join-Path $global:ScriptDirectory 'Branding' } else { Join-Path $PSScriptRoot '..\..\Branding' }
+                }
+                $defaultBannerLogo = Join-Path $BrandingPath 'DATLogo_Wide.png'
+                if (Test-Path $defaultBannerLogo) { $bannerLogoPath = $defaultBannerLogo }
+            }
+            $bannerLogoBase64 = if ($bannerLogoPath -and (Test-Path $bannerLogoPath)) { [Convert]::ToBase64String([System.IO.File]::ReadAllBytes($bannerLogoPath)) } else { '' }
+            if (-not [string]::IsNullOrEmpty($bannerLogoBase64)) {
+                $statusImageDropBlock = @"
+`$logoBase64 = '$bannerLogoBase64'
+try {
+    if (-not [string]::IsNullOrEmpty(`$logoBase64)) {
+        `$imgBytes = [Convert]::FromBase64String(`$logoBase64)
+        `$imgDir = Join-Path `$env:ProgramData "DriverAutomationTool"
+        if (-not (Test-Path `$imgDir)) { New-Item -Path `$imgDir -ItemType Directory -Force | Out-Null }
+        `$imgPath = Join-Path `$imgDir "DATLogo_Wide.png"
+        [System.IO.File]::WriteAllBytes(`$imgPath, `$imgBytes)
+        Write-ToastLog "Status toast branding logo written to `$imgPath"
+    }
+} catch {
+    Write-ToastLog "WARNING: Failed to write status toast branding logo -- `$(`$_.Exception.Message)" 'WARN'
+}
+"@
+                $statusBannerRowDef = "                <RowDefinition Height=`"100`"/>`n"
+                $statusBannerMarkup = @"
+            <!-- Hero Banner -->
+            <Border Grid.Row="0" CornerRadius="11,11,0,0" ClipToBounds="True">
+                <Border.Background>
+                    <ImageBrush ImageSource="`$env:ProgramData\DriverAutomationTool\DATLogo_Wide.png" Stretch="UniformToFill"/>
+                </Border.Background>
+            </Border>
+
+"@
+                # Hero banner replaces the accent strip -- suppress the coloured bar entirely.
+                $statusStripRowDef = ''
+                $statusStripMarkup = ''
+            }
+        }
         $statusXamlDynamic = @"
             BorderBrush="$accentColor" BorderThickness="1">
         <Border.Effect>
@@ -9942,14 +10169,11 @@ try {
         </Border.Effect>
         <Grid>
             <Grid.RowDefinitions>
-                <RowDefinition Height="4"/>
-                <RowDefinition Height="Auto"/>
+$statusBannerRowDef$statusStripRowDef                <RowDefinition Height="Auto"/>
                 <RowDefinition Height="Auto"/>
             </Grid.RowDefinitions>
-            <!-- Accent strip -->
-            <Border Grid.Row="0" CornerRadius="11,11,0,0" Background="$accentColor"/>
-            <!-- Icon + text -->
-            <StackPanel Grid.Row="1" HorizontalAlignment="Center" Margin="24,28,24,16">
+$statusBannerMarkup$statusStripMarkup            <!-- Icon + text -->
+            <StackPanel Grid.Row="$statusBodyRow" HorizontalAlignment="Center" Margin="24,28,24,16">
                 <Border Width="68" Height="68" CornerRadius="34" Background="$iconBackground"
                         HorizontalAlignment="Center" Margin="0,0,0,16">
                     <TextBlock Text="$statusIcon" FontFamily="Segoe MDL2 Assets" FontSize="34"
@@ -9966,7 +10190,7 @@ try {
 "@
         $statusCloseButton = @"
             <!-- Close Button -->
-            <Grid Grid.Row="2" Margin="24,0,24,20">
+            <Grid Grid.Row="$statusButtonRow" Margin="24,0,24,20">
                 <Button x:Name="btnClose" Content="$actionButtonText"
                         Height="40" Width="160" FontSize="14" FontWeight="SemiBold"
                         HorizontalAlignment="Center"
@@ -10018,7 +10242,8 @@ try {
 
     # Critical / alarm mode (e.g. final deferral notice) -- play an audible alert so the
     # user notices the toast even when Focus Assist / Do Not Disturb has been overridden.
-    if ($DATToastAlarmMode -eq 'True') {
+    # The sound is opt-in via the Critical Notification "Play audible alarm sound" sub-toggle.
+    if ($DATToastAlarmSound -eq 'True') {
         try {
             $alarmWav = Join-Path $env:SystemRoot 'Media\Alarm01.wav'
             if (Test-Path $alarmWav) {
@@ -10048,7 +10273,7 @@ try { Stop-Transcript } catch {}
         # Inject the closing here-string terminator for the generated script's XAML block.
         # $statusCloseButton is an expandable here-string, so it cannot carry the terminator
         # itself; emit it here on its own line so the generated here-string is properly closed.
-        $fullScript = $scriptContent + "`n" + $statusXamlTop + $statusXamlDynamic + $statusCloseButton + "`n`"@`n" + $statusEventBlock
+        $fullScript = $scriptContent + "`n" + $statusImageDropBlock + "`n" + $statusXamlTop + $statusXamlDynamic + $statusCloseButton + "`n`"@`n" + $statusEventBlock
 
     } else {
         # ── Update toast (Drivers / BIOS) ────────────────────────────────────────
@@ -10254,6 +10479,13 @@ try {
         Write-ToastLog "Display name lookup failed: $($_.Exception.Message)" 'WARN'
         'User'
     }
+    # Final safety net: split joined CamelCase names (e.g. WMI FullName / Entra profile "BryanDam"
+    # -> "Bryan Dam") for any resolution path that did not already separate first/last name.
+    if (-not [string]::IsNullOrWhiteSpace($displayName) -and $displayName -notmatch '\s' -and $displayName -cmatch '[a-z][A-Z]') {
+        $splitDisplayName = $displayName -creplace '([a-z])([A-Z])', '$1 $2'
+        Write-ToastLog "Normalized joined display name '$displayName' -> '$splitDisplayName'"
+        $displayName = $splitDisplayName
+    }
     Write-ToastLog "Greeting user as: $displayName"
 
     $window.FindName('txtGreeting').Text = "$greetingPrefix $displayName"
@@ -10306,7 +10538,7 @@ try {
     Write-ToastLog "Auto-close timer started ($autoCloseSeconds seconds)"
 
     # Critical / alarm mode -- play an audible alert so the user notices a forced update prompt
-    if ($DATToastAlarmMode -eq 'True') {
+    if ($DATToastAlarmSound -eq 'True') {
         try {
             Write-ToastLog "[AlarmMode] Playing alarm alert sound for critical notification"
             $alarmWav = Join-Path $env:SystemRoot 'Media\Alarm01.wav'
@@ -12186,9 +12418,14 @@ function Invoke-DATIntunePackageCreation {
         [string]$CustomBIOSACPowerTitle,
         [string]$CustomBIOSACPowerBody,
         [string]$CustomBIOSACPowerActionButton,
+        [string]$CustomBIOSFinalNoticeTitle,
+        [string]$CustomBIOSFinalNoticeBody,
+        [string]$CustomBIOSFinalNoticeActionButton,
         [string]$MaintenanceWindowsJson = '',
         [switch]$AlarmMode,
-        [switch]$CreateIntuneWinOnly
+        [switch]$AlarmSound,
+        [switch]$CreateIntuneWinOnly,
+        [switch]$ShowBrandingBannerAllToasts
     )
     if (-not [string]::IsNullOrEmpty($IntuneAuthToken)) {
         $script:IntuneAuthToken = $IntuneAuthToken
@@ -12331,6 +12568,7 @@ function Invoke-DATIntunePackageCreation {
             if (-not [string]::IsNullOrEmpty($CustomToastActionButton))  { $toastParams['CustomActionButton']  = $CustomToastActionButton  }
             if (-not [string]::IsNullOrEmpty($CustomToastDismissButton)) { $toastParams['CustomDismissButton'] = $CustomToastDismissButton }
             if ($AlarmMode) { $toastParams['AlarmMode'] = $true }
+            if ($AlarmSound) { $toastParams['AlarmSound'] = $true }
             New-DATIntuneToastScript @toastParams
             Write-DATLogEntry -Value "[Intune Pipeline] Toast script created: $toastScriptPath" -Severity 1 -UpdateUI
 
@@ -12339,6 +12577,7 @@ function Invoke-DATIntunePackageCreation {
                 BrandingPath = Join-Path $global:ScriptDirectory 'Branding'
             }
             if (-not [string]::IsNullOrEmpty($CustomBrandingPath)) { $statusToastParams['CustomBrandingImagePath'] = $CustomBrandingPath }
+            if ($ShowBrandingBannerAllToasts) { $statusToastParams['ShowBrandingBanner'] = $true }
             if ($UpdateType -eq 'BIOS' -and $RestartDelaySeconds -gt 0) {
                 $statusToastParams['RestartDelayMinutes'] = [math]::Round($RestartDelaySeconds / 60, 0)
             }
@@ -12399,6 +12638,10 @@ function Invoke-DATIntunePackageCreation {
                 $biosFinalNoticeToastPath = Join-Path $stagingDir "Show-StatusToast-BIOSFinalNotice.ps1"
                 $biosFinalNoticeParams = @{} + $statusToastParams
                 $biosFinalNoticeParams['AlarmMode'] = $true
+                if ($AlarmSound) { $biosFinalNoticeParams['AlarmSound'] = $true }
+                if (-not [string]::IsNullOrEmpty($CustomBIOSFinalNoticeTitle)) { $biosFinalNoticeParams['CustomToastTitle'] = $CustomBIOSFinalNoticeTitle }
+                if (-not [string]::IsNullOrEmpty($CustomBIOSFinalNoticeBody))  { $biosFinalNoticeParams['CustomToastBody']  = $CustomBIOSFinalNoticeBody }
+                if (-not [string]::IsNullOrEmpty($CustomBIOSFinalNoticeActionButton)) { $biosFinalNoticeParams['CustomActionButton'] = $CustomBIOSFinalNoticeActionButton }
                 New-DATIntuneToastScript -OutputPath $biosFinalNoticeToastPath -UpdateType 'BIOSFinalNotice' @biosFinalNoticeParams
                 Write-DATLogEntry -Value "[Intune Pipeline] BIOS final-notice toast script created: $biosFinalNoticeToastPath" -Severity 1 -UpdateUI
             }
@@ -13943,6 +14186,41 @@ function Get-DATTelemetryId {
     return (Get-ItemProperty -Path $global:RegPath -Name 'TelemetryGuid' -ErrorAction SilentlyContinue).TelemetryGuid
 }
 
+function Get-DATEnvironmentProfile {
+    <#
+    .SYNOPSIS
+        Returns the optional estate profile (device-count bucket and management
+        platform) from the registry. Values may be empty strings when unset.
+    #>
+    [CmdletBinding()]
+    [OutputType([hashtable])]
+    param ()
+
+    $range    = (Get-ItemProperty -Path $global:RegPath -Name 'DeviceCountRange'   -ErrorAction SilentlyContinue).DeviceCountRange
+    $platform = (Get-ItemProperty -Path $global:RegPath -Name 'ManagementPlatform' -ErrorAction SilentlyContinue).ManagementPlatform
+
+    return @{
+        DeviceCountRange   = if ([string]::IsNullOrWhiteSpace($range))    { '' } else { [string]$range }
+        ManagementPlatform = if ([string]::IsNullOrWhiteSpace($platform)) { '' } else { [string]$platform }
+    }
+}
+
+function Set-DATEnvironmentProfile {
+    <#
+    .SYNOPSIS
+        Persists the optional estate profile to the registry. Empty values clear
+        the corresponding setting.
+    #>
+    [CmdletBinding()]
+    param (
+        [AllowEmptyString()][string]$DeviceCountRange   = '',
+        [AllowEmptyString()][string]$ManagementPlatform = ''
+    )
+
+    Set-DATRegistryValue -Name 'DeviceCountRange'   -Value $DeviceCountRange   -Type String
+    Set-DATRegistryValue -Name 'ManagementPlatform' -Value $ManagementPlatform -Type String
+}
+
 function Send-DATTelemetry {
     <#
     .SYNOPSIS
@@ -14467,6 +14745,11 @@ function Send-DATSummaryReport {
         executionMode         = if (-not [string]::IsNullOrEmpty($ExecutionMode)) { $ExecutionMode } else { $global:ExecutionMode }
     }
     if ($TotalDownloadSize -gt 0) { $body['totalDownloadSize'] = $TotalDownloadSize }
+
+    # Optional estate profile -- attached only when the user has provided values
+    $envProfile = Get-DATEnvironmentProfile
+    if (-not [string]::IsNullOrWhiteSpace($envProfile.DeviceCountRange))   { $body['deviceCountRange']   = $envProfile.DeviceCountRange }
+    if (-not [string]::IsNullOrWhiteSpace($envProfile.ManagementPlatform)) { $body['managementPlatform'] = $envProfile.ManagementPlatform }
 
     Send-DATTelemetry -Endpoint $config.endpoints.summary -Body $body
 }

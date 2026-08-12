@@ -983,9 +983,19 @@ try {
             }
 
             # -- Focus Assist / DND Check Before Restart --
-            # If the user has Focus Assist (Do Not Disturb) active, we must NOT restart
-            # the device regardless of deferral count. The BIOS update is already prestaged
-            # and will apply on the next natural reboot.
+            # If a user is actively working with Focus Assist (Do Not Disturb) engaged, we must
+            # NOT restart the device regardless of deferral count. The BIOS update is already
+            # prestaged and will apply on the next natural reboot.
+            #
+            # IMPORTANT: this script normally runs as SYSTEM in session 0 (Intune Win32 app
+            # default, and required for BIOS flashing). In that context there is no interactive
+            # desktop to query, so SHQueryUserNotificationState returns QUNS_NOT_PRESENT (1).
+            # That is NOT a Do-Not-Disturb condition -- it means no user is present, which is the
+            # SAFEST time to reboot. Only the genuine "user is present but busy" states
+            # (QUNS_BUSY, full-screen D3D, presentation mode, quiet time, running app) should
+            # suppress the restart. Treating state 1 as blocking (the previous behaviour) caused
+            # the automatic reboot to be silently skipped on virtually every unattended/SYSTEM
+            # run, leaving the BIOS prestaged but never applied.
             $focusAssistBlocking = $false
             try {
                 $focusAssistCSharp = 'using System; using System.Runtime.InteropServices; public class DATFocusAssistRestart { [DllImport("shell32.dll")] public static extern int SHQueryUserNotificationState(out int state); }'
@@ -999,9 +1009,14 @@ try {
                 }
                 $focusStateName = if ($focusStateNames.ContainsKey($focusState)) { $focusStateNames[$focusState] } else { "Unknown ($focusState)" }
                 Write-CMTraceLog "[FocusAssist] SHQueryUserNotificationState returned: $focusState ($focusStateName)"
-                if ($focusState -ne 5) {
+                # Only these states represent an interactive user we should not interrupt.
+                # QUNS_NOT_PRESENT (1) and QUNS_ACCEPTS_NOTIFICATIONS (5) both permit the restart.
+                $focusBlockingStates = @(2, 3, 4, 6, 7)
+                if ($focusState -in $focusBlockingStates) {
                     $focusAssistBlocking = $true
-                    Write-CMTraceLog "[FocusAssist] Focus Assist / DND is active -- suppressing automatic restart to avoid interrupting the user" -Severity 2
+                    Write-CMTraceLog "[FocusAssist] Focus Assist / DND is active ($focusStateName) -- suppressing automatic restart to avoid interrupting the user" -Severity 2
+                } else {
+                    Write-CMTraceLog "[FocusAssist] State $focusStateName does not block restart -- proceeding with automatic restart"
                 }
             } catch {
                 Write-CMTraceLog "[FocusAssist] Check failed: $($_.Exception.Message) -- proceeding with restart" -Severity 2

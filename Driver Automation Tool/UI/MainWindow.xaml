@@ -934,7 +934,7 @@
                                    Foreground="{DynamicResource AccentColor}" VerticalAlignment="Center" Margin="0,0,8,0"/>
                         <TextBlock Text="Driver Automation Tool" FontSize="13" FontWeight="SemiBold"
                                    Foreground="{DynamicResource WindowForeground}" VerticalAlignment="Center"/>
-                        <TextBlock x:Name="txt_Version" Text=" Version 10.2.0" FontSize="11"
+                        <TextBlock x:Name="txt_Version" Text=" Version 10.2.1" FontSize="11"
                                    Foreground="{DynamicResource InputPlaceholder}" VerticalAlignment="Center" Margin="4,0"/>
                     </StackPanel>
 
@@ -4084,6 +4084,7 @@
                                             <ComboBoxItem Content="Driver Issues"/>
                                             <ComboBoxItem Content="BIOS Issues"/>
                                             <ComboBoxItem Content="BIOS AC Power"/>
+                                            <ComboBoxItem Content="BIOS Deferral Expired"/>
                                         </ComboBox>
                                         <Button x:Name="btn_ShowToastPreview" Content="Show Preview" Height="30" Margin="12,0,0,0"
                                                 Padding="12,0" FontSize="11" VerticalAlignment="Center" Cursor="Hand"
@@ -4179,12 +4180,20 @@
                                             <Border x:Name="bd_ToastStatusOuter" CornerRadius="12" BorderThickness="1">
                                                 <Grid>
                                                     <Grid.RowDefinitions>
-                                                        <RowDefinition Height="4"/>
+                                                        <RowDefinition Height="Auto"/>
+                                                        <RowDefinition x:Name="row_ToastStatusStrip" Height="4"/>
                                                         <RowDefinition Height="Auto"/>
                                                         <RowDefinition Height="Auto"/>
                                                     </Grid.RowDefinitions>
-                                                    <Border x:Name="bd_ToastStatusStrip" Grid.Row="0" CornerRadius="11,11,0,0"/>
-                                                    <StackPanel Grid.Row="1" HorizontalAlignment="Center" Margin="24,24,24,12">
+                                                    <!-- Hero Banner (shown when 'branding on all notifications' is enabled) -->
+                                                    <Border x:Name="bd_ToastStatusBanner" Grid.Row="0" Height="90" CornerRadius="11,11,0,0"
+                                                            ClipToBounds="True" Visibility="Collapsed">
+                                                        <Border.Background>
+                                                            <ImageBrush x:Name="img_ToastStatusBanner" Stretch="UniformToFill"/>
+                                                        </Border.Background>
+                                                    </Border>
+                                                    <Border x:Name="bd_ToastStatusStrip" Grid.Row="1" CornerRadius="11,11,0,0"/>
+                                                    <StackPanel Grid.Row="2" HorizontalAlignment="Center" Margin="24,24,24,12">
                                                         <Border x:Name="bd_ToastStatusIcon" Width="60" Height="60" CornerRadius="30"
                                                                 HorizontalAlignment="Center" Margin="0,0,0,14">
                                                             <TextBlock x:Name="txt_ToastStatusIcon"
@@ -4200,7 +4209,7 @@
                                                                    HorizontalAlignment="Center" TextAlignment="Center"
                                                                    LineHeight="18" MaxWidth="300"/>
                                                     </StackPanel>
-                                                    <Grid Grid.Row="2" Margin="24,0,24,16">
+                                                    <Grid Grid.Row="3" Margin="24,0,24,16">
                                                         <Grid.ColumnDefinitions>
                                                             <ColumnDefinition Width="*"/>
                                                             <ColumnDefinition x:Name="col_ToastRestartGap" Width="0"/>
@@ -4344,6 +4353,15 @@
                                                 <TextBlock x:Name="txt_BrandingValidationText" FontSize="11"
                                                            VerticalAlignment="Center" TextWrapping="Wrap"/>
                                             </StackPanel>
+
+                                            <Border Height="1" Background="{DynamicResource CardBorder}" Margin="0,12,0,12"/>
+
+                                            <CheckBox x:Name="chk_ToastBrandingAllNotifications" Content="Show branding banner on all notifications"
+                                                      Style="{StaticResource ToggleSwitch}"
+                                                      Foreground="{DynamicResource WindowForeground}"
+                                                      FontSize="13" Margin="0,0,0,4"/>
+                                            <TextBlock Text="By default the banner appears only on the driver / BIOS update prompt. Enable this to also display it on the success, issues and final-reminder notifications."
+                                                       FontSize="11" Foreground="{DynamicResource InputPlaceholder}" TextWrapping="Wrap" LineHeight="16"/>
                                         </StackPanel>
                                     </Border>
 
@@ -4366,8 +4384,18 @@
                                                       Style="{StaticResource ToggleSwitch}"
                                                       Foreground="{DynamicResource WindowForeground}"
                                                       FontSize="13" Margin="0,0,0,4"/>
-                                            <TextBlock Text="Displays the update prompt even when Focus Assist / Do Not Disturb is active, and plays an audible alarm sound when the prompt appears. Use for forced-reboot or security-critical updates."
-                                                       FontSize="11" Foreground="{DynamicResource InputPlaceholder}" TextWrapping="Wrap" Margin="0,0,0,12" LineHeight="16"/>
+                                            <TextBlock Text="Displays the update prompt even when Focus Assist / Do Not Disturb is active. Use for forced-reboot or security-critical updates."
+                                                       FontSize="11" Foreground="{DynamicResource InputPlaceholder}" TextWrapping="Wrap" Margin="0,0,0,8" LineHeight="16"/>
+
+                                            <!-- Audible alarm sound (indented); only shown when Critical Notification is enabled -->
+                                            <StackPanel x:Name="panel_CriticalNotificationSound" Margin="24,0,0,12" Visibility="Collapsed">
+                                                <CheckBox x:Name="chk_CriticalNotificationSound" Content="Play audible alarm sound"
+                                                          Style="{StaticResource ToggleSwitch}"
+                                                          Foreground="{DynamicResource WindowForeground}"
+                                                          FontSize="13" Margin="0,0,0,4" IsChecked="True"/>
+                                                <TextBlock Text="Plays an audible alarm sound when the critical prompt appears so the user notices it immediately."
+                                                           FontSize="11" Foreground="{DynamicResource InputPlaceholder}" TextWrapping="Wrap" LineHeight="16"/>
+                                            </StackPanel>
 
                                             <!-- On timeout action -->
                                             <Grid Margin="0,0,0,10">
@@ -5892,6 +5920,39 @@
                                                       Content="Opt-in for anonymous telemetry"
                                                       IsChecked="False"/>
 
+                                            <!-- Optional environment profile: device count + management platform -->
+                                            <Border Background="{DynamicResource InputBackground}"
+                                                    BorderBrush="{DynamicResource InputBorder}"
+                                                    BorderThickness="1" CornerRadius="6"
+                                                    Padding="12,10" Margin="0,12,0,0">
+                                                <StackPanel>
+                                                    <TextBlock FontSize="11" FontWeight="SemiBold"
+                                                               Foreground="{DynamicResource InputPlaceholder}" Margin="0,0,0,4">
+                                                        <Run Text="&#xEB51;" FontFamily="Segoe MDL2 Assets"/><Run Text="  Environment Profile (optional)"/>
+                                                    </TextBlock>
+                                                    <TextBlock Text="Help us understand the size and management model of environments using the tool. No device names or exact counts are collected. Values are only sent when telemetry is enabled."
+                                                               FontSize="11" TextWrapping="Wrap"
+                                                               Foreground="{DynamicResource InputPlaceholder}" Margin="0,0,0,10"/>
+                                                    <Grid>
+                                                        <Grid.ColumnDefinitions>
+                                                            <ColumnDefinition Width="*"/>
+                                                            <ColumnDefinition Width="12"/>
+                                                            <ColumnDefinition Width="*"/>
+                                                        </Grid.ColumnDefinitions>
+                                                        <StackPanel Grid.Column="0">
+                                                            <TextBlock Text="Approximate device count" FontSize="11"
+                                                                       Foreground="{DynamicResource InputPlaceholder}" Margin="0,0,0,4"/>
+                                                            <ComboBox x:Name="cmb_DeviceCountRange" Height="32"/>
+                                                        </StackPanel>
+                                                        <StackPanel Grid.Column="2">
+                                                            <TextBlock Text="Primary management platform" FontSize="11"
+                                                                       Foreground="{DynamicResource InputPlaceholder}" Margin="0,0,0,4"/>
+                                                            <ComboBox x:Name="cmb_ManagementPlatform" Height="32"/>
+                                                        </StackPanel>
+                                                    </Grid>
+                                                </StackPanel>
+                                            </Border>
+
                                             <!-- GUID panel: shown when opted in -->
                                             <Border x:Name="panel_TelemetryGuid" Visibility="Collapsed"
                                                     Background="{DynamicResource InputBackground}"
@@ -6578,7 +6639,7 @@
                                     <StackPanel>
                                         <TextBlock Text="Driver Automation Tool" FontSize="22" FontWeight="Bold"
                                                    Foreground="{DynamicResource AccentColor}" Margin="0,0,0,4"/>
-                                        <TextBlock x:Name="txt_AboutVersion" Text="Version 10.2.0" FontSize="14"
+                                        <TextBlock x:Name="txt_AboutVersion" Text="Version 10.2.1" FontSize="14"
                                                    Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,16"/>
 
                                         <TextBlock TextWrapping="Wrap" FontSize="13"
@@ -6872,6 +6933,7 @@ BY USING THIS TOOL, YOU ACKNOWLEDGE AND AGREE THAT:
                             <ComboBoxItem Content="Once Off"/>
                             <ComboBoxItem Content="Daily" IsSelected="True"/>
                             <ComboBoxItem Content="Weekly"/>
+                            <ComboBoxItem Content="Monthly"/>
                         </ComboBox>
 
                         <!-- Day of Week (visible for Weekly) -->
@@ -6888,6 +6950,14 @@ BY USING THIS TOOL, YOU ACKNOWLEDGE AND AGREE THAT:
                                 <ComboBoxItem Content="Saturday"/>
                                 <ComboBoxItem Content="Sunday"/>
                             </ComboBox>
+                        </StackPanel>
+
+                        <!-- Day of Month (visible for Monthly) -->
+                        <StackPanel x:Name="panel_ScheduleDayOfMonth" Visibility="Collapsed">
+                            <TextBlock Text="Day of Month (1-28)" FontSize="12" FontWeight="SemiBold"
+                                       Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,6"/>
+                            <ComboBox x:Name="cmb_ScheduleDayOfMonth"
+                                      Height="36" Margin="0,0,0,12"/>
                         </StackPanel>
 
                         <!-- Time -->
