@@ -26370,6 +26370,17 @@ $Window.Add_ContentRendered({
                 if ($consentConfirmed) {
                     Set-DATRegistryValue -Name "EnvProfilePromptShown" -Value 1 -Type DWord
                     Write-DATActivityLog "Telemetry/environment-profile consent modal confirmed (one-time forced prompt)" -Level Info
+                    # The Common Settings dropdowns were pre-selected from the registry during
+                    # window setup, before this modal ran. Re-sync them from the values the modal
+                    # just saved so they no longer show defaults until a relaunch (and so a later
+                    # SelectionChanged does not overwrite the freshly saved profile with defaults).
+                    if ($null -ne $cmb_DeviceCountRange -and $null -ne $cmb_ManagementPlatform) {
+                        $envProfilePostModal = Get-DATEnvironmentProfile
+                        $rangeSelPost = $cmb_DeviceCountRange.Items | Where-Object { [string]$_.Tag -eq $envProfilePostModal.DeviceCountRange } | Select-Object -First 1
+                        if ($null -ne $rangeSelPost) { $cmb_DeviceCountRange.SelectedItem = $rangeSelPost }
+                        $platSelPost = $cmb_ManagementPlatform.Items | Where-Object { [string]$_.Tag -eq $envProfilePostModal.ManagementPlatform } | Select-Object -First 1
+                        if ($null -ne $platSelPost) { $cmb_ManagementPlatform.SelectedItem = $platSelPost }
+                    }
                 } else {
                     Write-DATActivityLog "Telemetry/environment-profile consent modal dismissed without a choice -- will re-prompt next launch" -Level Warn
                 }
