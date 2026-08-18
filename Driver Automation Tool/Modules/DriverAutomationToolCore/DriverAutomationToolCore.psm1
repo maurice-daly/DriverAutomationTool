@@ -4,7 +4,7 @@
      Organization:  MSEndpointMgr / Patch My PC
      Filename:      DriverAutomationToolCore.psm1
      Purpose:       Core functions for Driver Automation Tool v2.0
-     Version:       10.2.1.0
+     Version:       10.2.2.0
     ===========================================================================
 #>
 
@@ -37,9 +37,10 @@ if ($PSVersionTable.PSVersion.Major -le 5) {
 
 #region Variables
 
-[version]$global:ScriptRelease = "10.2.1.0"
+[version]$global:ScriptRelease = "10.2.2.0"
 $global:ScriptBuildDate = "06-08-2026"
 $global:ReleaseNotesURL = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/DriverAutomationToolNotes.txt"
+$global:DATConfigUrl = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/refs/heads/master/Data/DATAPIConfig.json"
 $OEMLinksURL = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/OEMLinks.xml"
 
 # Path variables
@@ -212,15 +213,17 @@ function Test-DATProxyConnection {
     .SYNOPSIS
         Tests connectivity through the configured proxy by hitting a known endpoint.
     .OUTPUTS
-        Hashtable with Success (bool) and Message (string).
+        Hashtable with Success (bool), Message (string), Url (string) and HttpStatus (int).
     #>
+    $testUrl = 'https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/DriverAutomationToolRev.txt'
     $proxyParams = Get-DATWebRequestProxy
     try {
-        $null = Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/DriverAutomationToolRev.txt' `
+        $null = Invoke-WebRequest -Uri $testUrl `
             -UseBasicParsing -TimeoutSec 15 @proxyParams -ErrorAction Stop
-        return @{ Success = $true; Message = "Connection successful" }
+        return @{ Success = $true; Message = "Connection successful"; Url = $testUrl; HttpStatus = 0 }
     } catch {
-        return @{ Success = $false; Message = $_.Exception.Message }
+        $status = 0; try { if ($_.Exception.Response) { $status = [int]$_.Exception.Response.StatusCode } } catch { }
+        return @{ Success = $false; Message = $_.Exception.Message; Url = $testUrl; HttpStatus = $status }
     }
 }
 
@@ -1506,6 +1509,23 @@ function Invoke-DATExecutable {
     return $Invocation.ExitCode
 }
 
+function Test-DATLongPathsEnabled {
+    <#
+    .SYNOPSIS
+        Returns $true when the Windows long path (>260 char) policy is enabled via
+        HKLM\SYSTEM\CurrentControlSet\Control\FileSystem\LongPathsEnabled.
+    #>
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param ()
+    try {
+        $v = (Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' -Name 'LongPathsEnabled' -ErrorAction Stop).LongPathsEnabled
+        return ([int]$v -eq 1)
+    } catch {
+        return $false
+    }
+}
+
 function Invoke-DATDriverFilePackaging {
     param (
         [string]$FilePath,
@@ -1537,6 +1557,16 @@ function Invoke-DATDriverFilePackaging {
     Set-DATRegistryValue -Name "RunningMessage" -Value "Extracting $OEM $Model drivers..." -Type String
     Set-DATRegistryValue -Name "RunningMode" -Value "Extracting" -Type String
     Write-DATLogEntry -Value "[$OEM] Extracting $Model drivers to $DriverFolder" -Severity 1
+
+    # Proactive long-path advisory: once the full extraction root is known, warn if it is long
+    # (>120 chars) while Windows long path support is not enabled. Deep driver folders below this
+    # root can then push individual files past the 260-char MAX_PATH limit and be silently omitted
+    # from the WIM. This records the exact extraction path length and the disabled policy state so
+    # a later incomplete-WIM failure can be traced back to the path the user chose.
+    $extractPathLen = $DriverFolder.Length
+    if ($extractPathLen -gt 120 -and -not (Test-DATLongPathsEnabled)) {
+        Write-DATLogEntry -Value "[$OEM] [Warning] - Full extraction path is $extractPathLen characters ('$DriverFolder') and Windows long path support (LongPathsEnabled) is not enabled. Deeply nested driver files may exceed the 260-character MAX_PATH limit and be omitted from the package. Use a shorter Temporary Storage Path or enable LongPathsEnabled." -Severity 2 -UpdateUI
+    }
 
     if (Test-Path -Path $DriverFolder) {
         if (Test-Path -Path $FilePath -PathType Container) {
@@ -1990,7 +2020,12 @@ function Invoke-DATDriverFilePackaging {
             # Determine WIM engine preference early so we can skip DISM-specific cleanup for wimlib
             $wimEngine = (Get-ItemProperty -Path $global:RegPath -Name 'WimEngine' -ErrorAction SilentlyContinue).WimEngine
             if ([string]::IsNullOrEmpty($wimEngine) -or $wimEngine -notin @('dism','wimlib','7zip')) {
-                $wimEngine = 'dism'
+                # No explicit choice: prefer the bundled wimlib engine when present. wimlib is
+                # self-contained (no dismhost worker, no DISM provider DLLs) and avoids the
+                # "DISM hangs at init right after the banner" failures seen on some machines.
+                # Fall back to DISM only when wimlib is not bundled.
+                $bundledWimlib = Join-Path $global:ToolsDirectory 'Wimlib\wimlib-imagex.exe'
+                $wimEngine = if (Test-Path $bundledWimlib) { 'wimlib' } else { 'dism' }
             }
 
             # Validate wimlib availability -- fall back to DISM if not found
@@ -2274,32 +2309,90 @@ function Invoke-DATDriverFilePackaging {
                 Set-DATRegistryValue -Name "RunningProcess" -Type String -Value "dism"
                 Set-DATRegistryValue -Name "RunningProcessID" -Type String -Value "$($dismProcess.Id)"
 
-                # Wait for completion -- poll so the abort signal can be detected
+                # Wait for completion. Poll every 2s so we can: (a) honour a user abort; (b) detect
+                # the known "DISM finished the WIM but the process never exits" hang; (c) detect an
+                # initialisation hang (DISM prints its banner then stalls without ever spawning a
+                # dismhost worker -- observed on some builds, previously wedged the build forever);
+                # and (d) detect a general mid-capture stall. The completion/stall detection MUST live
+                # inside this loop -- the loop only exits when the wrapper process exits, so any check
+                # placed after it is unreachable while DISM is still hung.
+                $killDismTree = {
+                    param($proc)
+                    if ($null -eq $proc) { return }
+                    # taskkill /T kills the whole tree (cmd -> dism.exe -> dismhost.exe) without
+                    # touching unrelated DISM instances on the machine.
+                    try { & "$env:SystemRoot\System32\taskkill.exe" '/PID' "$($proc.Id)" '/T' '/F' 2>&1 | Out-Null } catch { }
+                    try { if (-not $proc.HasExited) { $proc.Kill() } } catch { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue }
+                    Get-Process -Name 'dismhost' -ErrorAction SilentlyContinue | ForEach-Object {
+                        try { $_.Kill() } catch { Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue }
+                    }
+                }
+
+                $dismStart             = Get-Date
+                $dismStartupTimeoutSec = 180   # no output + no dismhost worker within this -> init hang
+                $dismStallTimeoutSec   = 600   # no new output for this long once work began -> stall
+                $bannerLen   = if (Test-Path $dismStdoutFile) { try { (Get-Item $dismStdoutFile -ErrorAction Stop).Length } catch { 0 } } else { 0 }
+                $lastLen     = -1
+                $lastProgressAt = Get-Date
+                $sawProgress = $false
+                $dismCompletedButHung = $false
+                $dismHung    = $false
+
                 while (-not $dismProcess.HasExited) {
                     Start-Sleep -Seconds 2
-                    # Check for user abort
+
+                    # (a) User abort
                     $abortCheck = Get-ItemProperty -Path $global:RegPath -Name 'RunningState' -ErrorAction SilentlyContinue
                     if ($abortCheck.RunningState -eq 'Aborted') {
                         Write-DATLogEntry -Value "[$OEM] DISM aborted by user -- killing dism.exe" -Severity 2
-                        try { $dismProcess.Kill() } catch { Stop-Process -Id $dismProcess.Id -Force -ErrorAction SilentlyContinue }
-                        # Also kill dismhost.exe worker
-                        Get-Process -Name 'dismhost' -ErrorAction SilentlyContinue | ForEach-Object {
-                            try { $_.Kill() } catch { Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue }
-                        }
+                        & $killDismTree $dismProcess
+                        break
+                    }
+
+                    $curLen = 0
+                    $stdoutSoFar = ''
+                    if (Test-Path $dismStdoutFile) {
+                        try { $curLen = (Get-Item $dismStdoutFile -ErrorAction Stop).Length } catch { $curLen = 0 }
+                        $stdoutSoFar = Get-Content $dismStdoutFile -Raw -ErrorAction SilentlyContinue
+                    }
+                    $dismHostRunning = [bool](Get-Process -Name 'dismhost' -ErrorAction SilentlyContinue)
+
+                    # (b) DISM reported success but is not exiting -- force-kill, treat as success.
+                    if ($stdoutSoFar -match 'The operation completed successfully') {
+                        Write-DATLogEntry -Value "[$OEM] DISM reported success but the process has not exited -- force-killing" -Severity 2
+                        $dismCompletedButHung = $true
+                        & $killDismTree $dismProcess
+                        break
+                    }
+
+                    # Progress accounting: output growth beyond the banner, or a live dismhost worker,
+                    # means DISM is actually working.
+                    if ($curLen -gt $bannerLen -or $dismHostRunning) { $sawProgress = $true }
+                    if ($curLen -gt $lastLen) { $lastLen = $curLen; $lastProgressAt = Get-Date }
+
+                    # (c) Initialisation hang: banner only, no output growth and no worker.
+                    if (-not $sawProgress -and ((Get-Date) - $dismStart).TotalSeconds -ge $dismStartupTimeoutSec) {
+                        Write-DATLogEntry -Value "[$OEM] DISM produced no output and spawned no worker within $([int]$dismStartupTimeoutSec)s -- treating as a hung initialisation and killing dism.exe" -Severity 3
+                        $dismHung = $true
+                        & $killDismTree $dismProcess
+                        break
+                    }
+
+                    # (d) Stall after work began: no new output for the stall timeout.
+                    if ($sawProgress -and ((Get-Date) - $lastProgressAt).TotalSeconds -ge $dismStallTimeoutSec) {
+                        Write-DATLogEntry -Value "[$OEM] DISM produced no new output for $([int]$dismStallTimeoutSec)s -- treating as hung and killing dism.exe" -Severity 3
+                        $dismHung = $true
+                        & $killDismTree $dismProcess
                         break
                     }
                 }
 
-                $effectiveExitCode = if ($dismProcess.HasExited) { $dismProcess.ExitCode } else { 1 }
-
-                # DISM can hang after completing -- detect via stdout and force-kill
-                if (-not $dismProcess.HasExited) {
-                    $stdoutCheck = if (Test-Path $dismStdoutFile) { Get-Content $dismStdoutFile -Raw -ErrorAction SilentlyContinue } else { '' }
-                    if ($stdoutCheck -match 'The operation completed successfully') {
-                        Write-DATLogEntry -Value "[$OEM] DISM completed but process hung -- force-killing" -Severity 2
-                        try { $dismProcess.Kill() } catch { Stop-Process -Id $dismProcess.Id -Force -ErrorAction SilentlyContinue }
-                        $effectiveExitCode = 0
-                    }
+                if ($dismCompletedButHung) {
+                    $effectiveExitCode = 0
+                } elseif ($dismHung) {
+                    $effectiveExitCode = 1460   # ERROR_TIMEOUT -- surfaces as a clear, distinct failure
+                } else {
+                    $effectiveExitCode = if ($dismProcess.HasExited) { $dismProcess.ExitCode } else { 1 }
                 }
 
                 # Wait for dismhost.exe to release file locks
@@ -3892,6 +3985,8 @@ function Start-DATModelProcessing {
         [string]$HPPasswordBinPath,
         [string]$TeamsWebhookUrl,
         [switch]$TeamsNotificationsEnabled,
+        [AllowEmptyString()]
+        [string]$TeamsCustomText = '',
         [string]$CustomToastTextsJson,
         [string]$MaintenanceWindowsJson,
         [switch]$AlarmMode,
@@ -4078,6 +4173,13 @@ function Start-DATModelProcessing {
     $buildFailures = [System.Collections.Generic.List[object]]::new()
     Remove-ItemProperty -Path $global:RegPath -Name 'BuildFailures' -ErrorAction SilentlyContinue
 
+    # Collect per-package-type skips (already at the current version) so the progress modal can render
+    # them distinctly (grey "skipped") instead of as green builds, and so "Packages Created" reads
+    # true. Cleared at the start of every run.
+    $buildSkipped = [System.Collections.Generic.List[object]]::new()
+    Remove-ItemProperty -Path $global:RegPath -Name 'BuildSkippedCurrent' -ErrorAction SilentlyContinue
+    Set-DATRegistryValue -Name "SkippedPackages" -Value "0" -Type String
+
     foreach ($model in $modelList) {
         $currentIndex++
         $oem = $model.OEM
@@ -4195,6 +4297,9 @@ function Start-DATModelProcessing {
                             $skipDriverDownload = $true
                             $script:driverPipelineSuccess = $true
                             $driverPackageSuccessCount++
+                            $buildSkipped.Add([pscustomobject]@{ OEM = $oem; Model = $modelName; PackageType = 'Drivers'; OS = "$os"; Reason = "Current (v$existingCMVersion)" })
+                            Set-DATRegistryValue -Name "BuildSkippedCurrent" -Value ($buildSkipped | ConvertTo-Json -Compress -Depth 3) -Type String
+                            Set-DATRegistryValue -Name "SkippedPackages" -Value "$($buildSkipped.Count)" -Type String
                         } elseif ($modelForceUpdate) {
                             Write-DATLogEntry -Value "[$currentIndex/$totalModels] FORCE UPDATE -- bypassing version match (existing v$existingCMVersion, catalog v${catalogDriverVersion}): $cmDriverPkgName" -Severity 1
                         } else {
@@ -4232,6 +4337,9 @@ function Start-DATModelProcessing {
                             $skipDriverDownload = $true
                             $script:driverPipelineSuccess = $true
                             $driverPackageSuccessCount++
+                            $buildSkipped.Add([pscustomobject]@{ OEM = $oem; Model = $modelName; PackageType = 'Drivers'; OS = "$os"; Reason = "Current (v$($existingIntuneApp.displayVersion))" })
+                            Set-DATRegistryValue -Name "BuildSkippedCurrent" -Value ($buildSkipped | ConvertTo-Json -Compress -Depth 3) -Type String
+                            Set-DATRegistryValue -Name "SkippedPackages" -Value "$($buildSkipped.Count)" -Type String
                         } elseif ($modelForceUpdate) {
                             Write-DATLogEntry -Value "[$currentIndex/$totalModels] FORCE UPDATE -- bypassing version match (Intune v$($existingIntuneApp.displayVersion), catalog v${catalogDriverVersion}): $expectedDisplayName" -Severity 1
                         } else {
@@ -4414,7 +4522,10 @@ function Start-DATModelProcessing {
                                         FilterMode   = $filterMode
                                         IMENotifications = $imeNotifications
                                     }
-                                    if ($filterMode -eq 'Model') { $filterParams['Model'] = $modelName }
+                                    if ($filterMode -eq 'Model') {
+                                        $filterParams['Model'] = $modelName
+                                        if (-not [string]::IsNullOrEmpty($baseboards)) { $filterParams['Baseboards'] = $baseboards }
+                                    }
                                     if (-not [string]::IsNullOrEmpty($deployReg.DeployTargetGroupId)) { $filterParams['TargetGroupId'] = $deployReg.DeployTargetGroupId }
                                     Invoke-DATAutoAssignmentFilter @filterParams
                                     Write-DATLogEntry -Value "[Intune] Auto-assignment filter applied for driver package: $oem $modelName ($filterMode)" -Severity 1
@@ -4733,6 +4844,9 @@ function Start-DATModelProcessing {
                                 Set-DATRegistryValue -Name "RunningMessage" -Value "BIOS skipped (current v$existingCMBiosVer): $oem $modelName" -Type String
                                 $skipBios = $true
                                 $biosPackageSuccessCount++
+                                $buildSkipped.Add([pscustomobject]@{ OEM = $oem; Model = $modelName; PackageType = 'BIOS'; OS = "$os"; Reason = "Current (v$existingCMBiosVer)" })
+                                Set-DATRegistryValue -Name "BuildSkippedCurrent" -Value ($buildSkipped | ConvertTo-Json -Compress -Depth 3) -Type String
+                                Set-DATRegistryValue -Name "SkippedPackages" -Value "$($buildSkipped.Count)" -Type String
                             } elseif ($modelForceUpdate) {
                                 Write-DATLogEntry -Value "[$currentIndex/$totalModels] BIOS FORCE UPDATE -- bypassing version match (existing v$existingCMBiosVer, catalog v${catalogBIOSVersion}): $cmBiosPkgName" -Severity 1
                             } else {
@@ -4766,6 +4880,9 @@ function Start-DATModelProcessing {
                                 Set-DATRegistryValue -Name "RunningMessage" -Value "BIOS skipped (current v$($existingBiosApp.displayVersion)): $oem $modelName" -Type String
                                 $skipBios = $true
                                 $biosPackageSuccessCount++
+                                $buildSkipped.Add([pscustomobject]@{ OEM = $oem; Model = $modelName; PackageType = 'BIOS'; OS = "$os"; Reason = "Current (v$($existingBiosApp.displayVersion))" })
+                                Set-DATRegistryValue -Name "BuildSkippedCurrent" -Value ($buildSkipped | ConvertTo-Json -Compress -Depth 3) -Type String
+                                Set-DATRegistryValue -Name "SkippedPackages" -Value "$($buildSkipped.Count)" -Type String
                             } elseif ($modelForceUpdate) {
                                 Write-DATLogEntry -Value "[$currentIndex/$totalModels] BIOS FORCE UPDATE -- bypassing version match (Intune v$($existingBiosApp.displayVersion), catalog v${catalogBIOSVersion}): $expectedBiosName" -Severity 1
                             } else {
@@ -4783,6 +4900,9 @@ function Start-DATModelProcessing {
                                 Set-DATRegistryValue -Name "RunningMessage" -Value "BIOS skipped (exists v$existingBiosVer): $oem $modelName" -Type String
                                 $skipBios = $true
                                 $biosPackageSuccessCount++
+                                $buildSkipped.Add([pscustomobject]@{ OEM = $oem; Model = $modelName; PackageType = 'BIOS'; OS = "$os"; Reason = "Current (v$existingBiosVer)" })
+                                Set-DATRegistryValue -Name "BuildSkippedCurrent" -Value ($buildSkipped | ConvertTo-Json -Compress -Depth 3) -Type String
+                                Set-DATRegistryValue -Name "SkippedPackages" -Value "$($buildSkipped.Count)" -Type String
                             } else {
                                 Write-DATLogEntry -Value "[$currentIndex/$totalModels] BIOS UPDATE needed -- local v$existingBiosVer, catalog v${catalogBIOSVersion}: $oem $modelName" -Severity 1
                             }
@@ -4928,7 +5048,10 @@ function Start-DATModelProcessing {
                                                 FilterMode   = $filterMode
                                                 IMENotifications = $imeNotifications
                                             }
-                                            if ($filterMode -eq 'Model') { $filterParams['Model'] = $modelName }
+                                            if ($filterMode -eq 'Model') {
+                                                $filterParams['Model'] = $modelName
+                                                if (-not [string]::IsNullOrEmpty($baseboards)) { $filterParams['Baseboards'] = $baseboards }
+                                            }
                                             if (-not [string]::IsNullOrEmpty($deployReg.DeployTargetGroupId)) { $filterParams['TargetGroupId'] = $deployReg.DeployTargetGroupId }
                                             Invoke-DATAutoAssignmentFilter @filterParams
                                             Write-DATLogEntry -Value "[Intune] Auto-assignment filter applied for BIOS package: $oem $modelName ($filterMode)" -Severity 1
@@ -5225,10 +5348,44 @@ function Start-DATModelProcessing {
             $attemptedCount    = [Math]::Min($currentIndex, $totalModels)
             $failedCount       = [Math]::Max(0, $attemptedCount - $completedCount)
             $notProcessedCount = [Math]::Max(0, $totalModels - $attemptedCount)
+
+            # Derive an accurate per-model outcome from the unambiguous skipped/failed lists so the
+            # card distinguishes genuinely UPDATED models from ones SKIPPED because already current
+            # (a check-only run previously read as "everything updated" -- issue #842). A model that
+            # produced at least one package (not in the skipped/failed sets, and reached) is Updated.
+            $skippedKeys = @{}
+            foreach ($s in $buildSkipped)  { if ($s.OEM -and $s.Model) { $skippedKeys["$($s.OEM)|$($s.Model)"] = $true } }
+            $failedKeys  = @{}
+            foreach ($f in $buildFailures) { if ($f.OEM -and $f.Model) { $failedKeys["$($f.OEM)|$($f.Model)"]  = $true } }
+
+            $modelStatuses = @()
+            $updatedCount = 0; $skippedModelCount = 0
+            for ($mi = 0; $mi -lt $modelList.Count; $mi++) {
+                $mEntry = $modelList[$mi]
+                $mOem   = $mEntry.OEM
+                $mName  = if ($mEntry.Model) { $mEntry.Model } else { 'Unknown' }
+                $mKey   = "$mOem|$mName"
+                if ($mi -ge $attemptedCount) {
+                    $status = 'Not Processed'
+                } elseif ($failedKeys.ContainsKey($mKey) -and -not $skippedKeys.ContainsKey($mKey)) {
+                    $status = 'Failed'
+                } elseif ($skippedKeys.ContainsKey($mKey) -and -not $failedKeys.ContainsKey($mKey)) {
+                    $status = 'Skipped (up to date)'; $skippedModelCount++
+                } elseif ($failedKeys.ContainsKey($mKey) -and $skippedKeys.ContainsKey($mKey)) {
+                    # Mixed result across package types (e.g. drivers failed, BIOS current).
+                    $status = 'Partial'; $updatedCount++
+                } else {
+                    $status = 'Updated'; $updatedCount++
+                }
+                $modelStatuses += @{ OEM = $mOem; Model = $mName; Status = $status }
+            }
+
             try {
                 Send-DATTeamsNotification -WebhookUrl $TeamsWebhookUrl `
                     -TotalModels $totalModels -SuccessCount $completedCount -FailedCount $failedCount `
                     -NotProcessedCount $notProcessedCount `
+                    -UpdatedCount $updatedCount -SkippedCount $skippedModelCount -ModelStatuses $modelStatuses `
+                    -CustomText $TeamsCustomText `
                     -Platform $RunningMode -PackageType $PackageType -Models $modelList -Outcome $buildOutcome
                 Write-DATLogEntry -Value "[Teams] Build notification sent successfully" -Severity 1
             } catch {
@@ -5249,7 +5406,20 @@ function Send-DATTeamsNotification {
         [string]$PackageType = 'Drivers',
         [array]$Models = @(),
         [ValidateSet('Auto', 'Completed', 'CompletedWithErrors', 'Aborted', 'Failed')][string]$Outcome = 'Auto',
-        [int]$NotProcessedCount = 0
+        [int]$NotProcessedCount = 0,
+        # Optional per-tenant headline shown at the top of the card (e.g. customer/tenant name),
+        # so multiple tenants posting to one channel can be told apart. Empty = no headline.
+        [AllowEmptyString()]
+        [string]$CustomText = '',
+        # Count of models skipped because their package was already current. Shown as a distinct
+        # fact so a check-only run is not misread as having updated everything.
+        [int]$SkippedCount = 0,
+        # Count of models genuinely updated (packages created). -1 keeps the legacy 'Succeeded'
+        # fact (SuccessCount) for existing callers that don't supply this.
+        [int]$UpdatedCount = -1,
+        # Optional array of @{ OEM; Model; Status } (Status: Updated/Skipped/Failed/Not Processed).
+        # When supplied the model list shows each outcome instead of a flat selected-models list.
+        [array]$ModelStatuses = @()
     )
 
     # 'Auto' derives the state from FailedCount as before, so existing callers are unaffected.
@@ -5294,21 +5464,39 @@ function Send-DATTeamsNotification {
     $summaryFacts = @(
         @{ title = 'Platform';     value = $Platform },
         @{ title = 'Package Type'; value = $PackageType },
-        @{ title = 'Total Models'; value = "$TotalModels" },
-        @{ title = 'Succeeded';    value = "$SuccessCount" },
-        @{ title = 'Failed';       value = "$FailedCount" }
+        @{ title = 'Total Models'; value = "$TotalModels" }
     )
+    if ($UpdatedCount -ge 0) {
+        # Accurate breakdown: genuinely updated vs skipped-because-current.
+        $summaryFacts += @{ title = 'Updated'; value = "$UpdatedCount" }
+        if ($SkippedCount -gt 0) { $summaryFacts += @{ title = 'Skipped (up to date)'; value = "$SkippedCount" } }
+    } else {
+        # Legacy callers: keep the original 'Succeeded' fact.
+        $summaryFacts += @{ title = 'Succeeded'; value = "$SuccessCount" }
+    }
+    $summaryFacts += @{ title = 'Failed'; value = "$FailedCount" }
     if ($NotProcessedCount -gt 0) {
         $summaryFacts += @{ title = 'Not Processed'; value = "$NotProcessedCount" }
     }
     $summaryFacts += @{ title = 'Host';          value = $hostname }
     $summaryFacts += @{ title = $timestampLabel; value = $timestamp }
 
-    # Build model list for the card
+    # Build model list for the card. When per-model statuses are supplied, show each model's
+    # outcome (Updated / Skipped / Failed / Not Processed) so a run that only checked models is
+    # not misread as having updated them; otherwise fall back to the flat selected-models list.
+    $modelSectionTitle = if ($ModelStatuses.Count -gt 0) { 'Model Results' } else { 'Selected Models' }
     $modelFacts = @()
-    foreach ($m in $Models) {
-        $modelName = if ($m.Model) { $m.Model } else { "$($m.OEM) Unknown" }
-        $modelFacts += @{ title = $m.OEM; value = $modelName }
+    if ($ModelStatuses.Count -gt 0) {
+        foreach ($ms in $ModelStatuses) {
+            $msModel  = if ($ms.Model) { $ms.Model } else { "$($ms.OEM) Unknown" }
+            $msStatus = if ($ms.Status) { $ms.Status } else { 'Processed' }
+            $modelFacts += @{ title = $ms.OEM; value = "$msModel -- $msStatus" }
+        }
+    } else {
+        foreach ($m in $Models) {
+            $modelName = if ($m.Model) { $m.Model } else { "$($m.OEM) Unknown" }
+            $modelFacts += @{ title = $m.OEM; value = $modelName }
+        }
     }
     if ($modelFacts.Count -eq 0) { $modelFacts += @{ title = 'Models'; value = 'None specified' } }
 
@@ -5374,7 +5562,7 @@ function Send-DATTeamsNotification {
                             items     = @(
                                 @{
                                     type   = 'TextBlock'
-                                    text   = 'Selected Models'
+                                    text   = $modelSectionTitle
                                     weight = 'Bolder'
                                     spacing = 'Medium'
                                 },
@@ -5388,6 +5576,22 @@ function Send-DATTeamsNotification {
                 }
             }
         )
+    }
+
+    # Prepend the optional per-tenant headline just under the DAT title row.
+    if (-not [string]::IsNullOrWhiteSpace($CustomText)) {
+        $headlineBlock = @{
+            type   = 'TextBlock'
+            text   = $CustomText
+            wrap   = $true
+            weight = 'Bolder'
+            size   = 'Large'
+            color  = 'Accent'
+            spacing = 'Small'
+        }
+        $bodyList = [System.Collections.ArrayList]@($card.attachments[0].content.body)
+        $bodyList.Insert(1, $headlineBlock)
+        $card.attachments[0].content.body = $bodyList.ToArray()
     }
 
     $jsonPayload = $card | ConvertTo-Json -Depth 20 -Compress
@@ -5416,6 +5620,7 @@ function Export-DATBuildConfig {
         [int]$BIOSRestartDelayMinutes = 3,
         [string]$TeamsWebhookUrl,
         [bool]$TeamsNotificationsEnabled = $false,
+        [string]$TeamsCustomText = '',
         [hashtable]$Intune,
         [hashtable]$ConfigMgr,
         [bool]$MaintenanceWindowEnabled = $false,
@@ -5464,6 +5669,7 @@ function Export-DATBuildConfig {
         DownloadOnlyExtractContent = $DownloadOnlyExtractContent
         TeamsWebhookUrl            = if ($TeamsWebhookUrl) { $TeamsWebhookUrl } else { '' }
         TeamsNotificationsEnabled  = $TeamsNotificationsEnabled
+        TeamsCustomText            = if ($TeamsCustomText) { $TeamsCustomText } else { '' }
         Intune                     = if ($Intune) { $Intune } else { [ordered]@{ TenantEnvironment = 'Commercial'; TenantId = ''; AppId = ''; AppSecret = '' } }
         ConfigMgr                  = if ($ConfigMgr) { $ConfigMgr } else { [ordered]@{ SiteServer = ''; SiteCode = ''; DistributionPointGroups = @(); DistributionPriority = 'Normal' } }
         MaintenanceWindowEnabled   = $MaintenanceWindowEnabled
@@ -7262,6 +7468,11 @@ $script:GraphScopes = @(
     "DeviceManagementApps.ReadWrite.All"
     "DeviceManagementManagedDevices.Read.All"
     "GroupMember.Read.All"
+    "DeviceManagementRBAC.Read.All"
+    # Required for the Assignment Filters feature (Query/Create/Update filters). Requested on
+    # interactive sign-in so delegated tokens can read and manage filters; app-registration auth
+    # grants it via .default (admin-consented in Entra).
+    "DeviceManagementConfiguration.ReadWrite.All"
 )
 $script:GraphEnvironmentDefinitions = [ordered]@{
     Commercial = [ordered]@{
@@ -8002,6 +8213,11 @@ function Test-DATIntunePermissions {
     # action in Package Management). It is ALWAYS checked so it is never invisible in the
     # logs or UI, but a missing/denied result does NOT fail the overall permission check.
     $permChecks += @{ Name = "DeviceManagementConfiguration.ReadWrite.All"; TestUri = "$graphBaseUrl/deviceManagement/assignmentFilters?`$top=1"; Description = "Create and manage assignment filters (optional)"; Optional = $true }
+
+    # DeviceManagementRBAC.Read.All is OPTIONAL -- it is only needed to enumerate RBAC scope
+    # tags for the Intune Package Options dropdown. A missing/denied result does NOT fail the
+    # overall permission check; the scope-tag list simply stays limited to the Default tag.
+    $permChecks += @{ Name = "DeviceManagementRBAC.Read.All"; TestUri = "$graphBaseUrl/deviceManagement/roleScopeTags?`$top=1"; Description = "Read RBAC scope tags for package assignment (optional)"; Optional = $true }
 
     $results = @()
     $allGranted = $true
@@ -9470,6 +9686,52 @@ function Set-DATIntuneAppAssignment {
     return Invoke-DATGraphRequest -Uri "/deviceAppManagement/mobileApps/$AppId/assign" -Method POST -Body $body
 }
 
+function Set-DATIntuneAppScopeTags {
+    <#
+    .SYNOPSIS
+        Applies RBAC scope tag id(s) to an existing Intune Win32 app via PATCH.
+    .DESCRIPTION
+        Scope tags are normally set when the app is created. Packages created before the RBAC
+        scope tag feature existed (or before a tag was selected) carry only the Default tag (0).
+        This function brings such an existing app in line with the configured tag(s). It is
+        idempotent -- the app is only patched when its current tags differ from the requested
+        set -- so it is safe to call on every build/assign of an already-existing package.
+    #>
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory)][string]$AppId,
+        [string[]]$RoleScopeTagIds = @("0")
+    )
+
+    if (-not (Test-DATIntuneAuth)) { throw "Intune authentication required." }
+
+    $tags = @($RoleScopeTagIds | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | ForEach-Object { $_.Trim() })
+    if ($tags.Count -eq 0) { $tags = @("0") }
+
+    # Read the app's current tags so the PATCH is skipped when nothing would change.
+    $currentTags = @()
+    try {
+        $current = Invoke-DATGraphRequest -Uri "/deviceAppManagement/mobileApps/$($AppId)?`$select=id,roleScopeTagIds" -NoPagination
+        if ($current -and $current.roleScopeTagIds) { $currentTags = @($current.roleScopeTagIds | ForEach-Object { [string]$_ }) }
+    } catch {
+        Write-DATLogEntry -Value "[Intune] Could not read current scope tags for app $AppId ($($_.Exception.Message)) -- will patch anyway" -Severity 2
+    }
+
+    $sortedCurrent = @($currentTags | Sort-Object)
+    $sortedWanted  = @($tags | Sort-Object)
+    if ($sortedCurrent.Count -eq $sortedWanted.Count -and -not (Compare-Object $sortedCurrent $sortedWanted)) {
+        Write-DATLogEntry -Value "[Intune] App $AppId already carries scope tag id(s): $($tags -join ', ')" -Severity 1
+        return
+    }
+
+    $body = @{
+        "@odata.type"   = "#microsoft.graph.win32LobApp"
+        roleScopeTagIds = @($tags)
+    }
+    Invoke-DATGraphRequest -Uri "/deviceAppManagement/mobileApps/$AppId" -Method PATCH -Body $body | Out-Null
+    Write-DATLogEntry -Value "[Intune] Updated app $AppId scope tag id(s) to: $($tags -join ', ')" -Severity 1
+}
+
 #region Assignment Filter Functions
 
 function Get-DATIntuneAssignmentFilters {
@@ -9484,11 +9746,46 @@ function Get-DATIntuneAssignmentFilters {
         throw "Intune authentication required to query assignment filters."
     }
 
-    $filters = Invoke-DATGraphRequest -Uri "/deviceManagement/assignmentFilters?`$select=id,displayName,platform,rule,createdDateTime" -NoPagination
+    try {
+        $filters = Invoke-DATGraphRequest -Uri "/deviceManagement/assignmentFilters?`$select=id,displayName,platform,rule,createdDateTime" -NoPagination
+    } catch {
+        $status = 0
+        try { if ($_.Exception.Response) { $status = [int]$_.Exception.Response.StatusCode } } catch { }
+        if ($status -eq 403 -or "$($_.Exception.Message)" -match '403|[Ff]orbidden|Authorization_RequestDenied|insufficient') {
+            throw "Cannot read assignment filters -- missing the 'DeviceManagementConfiguration.ReadWrite.All' Graph permission (HTTP 403). Interactive sign-in: disconnect and reconnect to Intune to consent to the newly requested permission. App Registration: grant and admin-consent 'DeviceManagementConfiguration.ReadWrite.All' in Entra ID. Your Intune RBAC role must also allow reading assignment filters."
+        }
+        throw
+    }
     if ($null -eq $filters) { return @() }
     if ($filters -is [array]) { return $filters }
     return @($filters)
 }
+
+function Get-DATIntuneRoleScopeTags {
+    <#
+    .SYNOPSIS
+        Retrieves all Intune RBAC scope tags from Graph API.
+    .DESCRIPTION
+        Returns the tenant's RBAC scope tags (id + displayName), sorted so the built-in
+        Default tag (id 0) appears first. Used to populate the scope-tag dropdown in the
+        Intune Package Options settings. Requires the DeviceManagementRBAC.Read.All
+        delegated permission; tenants that have not consented to it will receive a 403,
+        which the caller should treat as "only the Default tag is available".
+    #>
+    [CmdletBinding()]
+    param ()
+
+    if (-not (Test-DATIntuneAuth)) {
+        throw "Intune authentication required to query RBAC scope tags."
+    }
+
+    $tags = Invoke-DATGraphRequest -Uri "/deviceManagement/roleScopeTags?`$select=id,displayName"
+    if ($null -eq $tags) { return @() }
+    $tags = @($tags)
+    # Sort numerically by id so the Default tag (0) is first; ids are strings in Graph.
+    return @($tags | Sort-Object -Property @{ Expression = { [int]$_.id } })
+}
+
 
 function Get-DATIntuneAssignmentFilterCount {
     <#
@@ -9507,6 +9804,57 @@ function Get-DATIntuneAssignmentFilterCount {
     }
 }
 
+function Get-DATAssignmentFilterRule {
+    <#
+    .SYNOPSIS
+        Builds the OData rule string for an Intune assignment filter.
+    .DESCRIPTION
+        Centralises rule construction so filter creation and dedup lookup always
+        produce an identical rule.
+
+        Lenovo devices report the 4-character machine type (e.g. 21H1) in
+        device.model -- not the friendly marketing name that appears in the DAT
+        package/model name (e.g. "ThinkPad L14 Gen 4 Type 21H1 21H2"). A rule that
+        matches device.model against the full model name therefore never matches a
+        real device. When baseboard/machine-type values are available they are used
+        to build an OR of -contains clauses against device.model. Not every Lenovo
+        model publishes machine types, so the friendly model name is used as a
+        fallback when no baseboard values exist.
+    .PARAMETER Manufacturer
+        The device manufacturer to match (e.g. Dell, HP, Lenovo).
+    .PARAMETER Model
+        Optional. The device model to match. If omitted, matches all devices from the manufacturer.
+    .PARAMETER Baseboards
+        Optional. Comma/space-separated baseboard (machine type) values. Only used
+        for Lenovo model-scoped rules.
+    #>
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory)][string]$Manufacturer,
+        [string]$Model,
+        [string]$Baseboards
+    )
+
+    if ([string]::IsNullOrEmpty($Model)) {
+        return "(device.manufacturer -contains `"$Manufacturer`")"
+    }
+
+    # Lenovo: prefer baseboard/machine-type matching when values are available.
+    if ($Manufacturer -like 'Lenovo*' -and -not [string]::IsNullOrEmpty($Baseboards)) {
+        $types = $Baseboards -split '[,\s]+' |
+            ForEach-Object { $_.Trim() } |
+            Where-Object { -not [string]::IsNullOrEmpty($_) } |
+            Select-Object -Unique
+        if (@($types).Count -gt 0) {
+            $clauses = @($types | ForEach-Object { "(device.model -contains `"$_`")" })
+            $modelClause = '(' + ($clauses -join ' or ') + ')'
+            return "(device.manufacturer -startsWith `"$Manufacturer`") and $modelClause"
+        }
+    }
+
+    return "(device.manufacturer -contains `"$Manufacturer`") and (device.model -contains `"$Model`")"
+}
+
 function New-DATIntuneAssignmentFilter {
     <#
     .SYNOPSIS
@@ -9517,12 +9865,16 @@ function New-DATIntuneAssignmentFilter {
         The device manufacturer to match (e.g. Dell, HP, Lenovo).
     .PARAMETER Model
         Optional. The device model to match. If omitted, matches all devices from the manufacturer.
+    .PARAMETER Baseboards
+        Optional. Comma/space-separated baseboard (machine type) values used to build
+        a Lenovo model-scoped rule.
     #>
     [CmdletBinding()]
     param (
         [Parameter(Mandatory)][string]$FilterName,
         [Parameter(Mandatory)][string]$Manufacturer,
-        [string]$Model
+        [string]$Model,
+        [string]$Baseboards
     )
 
     if (-not (Test-DATIntuneAuth)) {
@@ -9536,12 +9888,8 @@ function New-DATIntuneAssignmentFilter {
         Write-DATLogEntry -Value "[Intune] Stripped manufacturer prefix from model: '$originalModel' -> '$Model'" -Severity 1
     }
 
-    # Build the OData filter rule
-    if (-not [string]::IsNullOrEmpty($Model)) {
-        $rule = "(device.manufacturer -contains `"$Manufacturer`") and (device.model -contains `"$Model`")"
-    } else {
-        $rule = "(device.manufacturer -contains `"$Manufacturer`")"
-    }
+    # Build the OData filter rule (Lenovo uses baseboard/machine-type matching)
+    $rule = Get-DATAssignmentFilterRule -Manufacturer $Manufacturer -Model $Model -Baseboards $Baseboards
 
     $body = @{
         displayName = $FilterName
@@ -9569,7 +9917,8 @@ function Find-DATIntuneAssignmentFilter {
     param (
         [Parameter(Mandatory)][string]$Manufacturer,
         [string]$Model,
-        [string]$FilterName
+        [string]$FilterName,
+        [string]$Baseboards
     )
 
     $filters = Get-DATIntuneAssignmentFilters
@@ -9579,11 +9928,7 @@ function Find-DATIntuneAssignmentFilter {
         $Model = $Model.Substring($Manufacturer.Length).TrimStart()
     }
 
-    if (-not [string]::IsNullOrEmpty($Model)) {
-        $targetRule = "(device.manufacturer -contains `"$Manufacturer`") and (device.model -contains `"$Model`")"
-    } else {
-        $targetRule = "(device.manufacturer -contains `"$Manufacturer`")"
-    }
+    $targetRule = Get-DATAssignmentFilterRule -Manufacturer $Manufacturer -Model $Model -Baseboards $Baseboards
 
     # Normalize a rule string for tolerant comparison: collapse all whitespace runs
     # to a single space, trim, and lower-case. Graph reformats the stored rule which
@@ -9692,6 +10037,7 @@ function Invoke-DATAutoAssignmentFilter {
         [string]$Model,
         [Parameter(Mandatory)][ValidateSet('Make', 'Model')][string]$FilterMode,
         [string]$TargetGroupId = 'adadadad-808e-44e2-905a-0b7873a8a531',
+        [string]$Baseboards,
         [ValidateSet('showAll', 'showReboot', 'hideAll')][string]$IMENotifications = 'showAll'
     )
 
@@ -9721,7 +10067,7 @@ function Invoke-DATAutoAssignmentFilter {
     # a driver package and a BIOS package are built for the same model in one run.
     if ($FilterMode -eq 'Model' -and -not [string]::IsNullOrEmpty($Model)) {
         $filterName = $nameTemplate -replace '%MAKE%', $Manufacturer -replace '%MODEL%', $Model
-        $existingFilter = Find-DATIntuneAssignmentFilter -Manufacturer $Manufacturer -Model $Model -FilterName $filterName
+        $existingFilter = Find-DATIntuneAssignmentFilter -Manufacturer $Manufacturer -Model $Model -FilterName $filterName -Baseboards $Baseboards
     } else {
         $filterName = ($nameTemplate -replace '%MAKE%', $Manufacturer -replace '%MODEL%', '').Trim()
         $existingFilter = Find-DATIntuneAssignmentFilter -Manufacturer $Manufacturer -FilterName $filterName
@@ -9738,7 +10084,7 @@ function Invoke-DATAutoAssignmentFilter {
         }
 
         if ($FilterMode -eq 'Model' -and -not [string]::IsNullOrEmpty($Model)) {
-            $newFilter = New-DATIntuneAssignmentFilter -FilterName $filterName -Manufacturer $Manufacturer -Model $Model
+            $newFilter = New-DATIntuneAssignmentFilter -FilterName $filterName -Manufacturer $Manufacturer -Model $Model -Baseboards $Baseboards
         } else {
             $newFilter = New-DATIntuneAssignmentFilter -FilterName $filterName -Manufacturer $Manufacturer
         }
@@ -11173,6 +11519,12 @@ function New-DATIntuneRequirementScript {
     # Parse OS version (Windows 10/11)
     $osNumber = if ($OS -match 'Windows\s+(\d+)') { $Matches[1] } else { "11" }
 
+    # Feature-update token (e.g. 24H2) parsed from the OS string. Dell driver packs are major-OS
+    # only (one pack per major OS); every other OEM ships build-specific packs and must gate on
+    # the exact feature update the pack was built for. Never emitted for BIOS (OS-agnostic).
+    $featureUpdate = if ($OS -match '\d{2}H\d') { $Matches[0] } else { '' }
+    $emitFeatureUpdateCheck = ($UpdateType -ne 'BIOS') -and ($OEM -notmatch 'Dell') -and (-not [string]::IsNullOrWhiteSpace($featureUpdate))
+
     # Build the baseboard values array - split on commas and trim
     $bbValues = ($Baseboards -split '[,;]' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' }) -join "','"
 
@@ -11189,6 +11541,28 @@ function New-DATIntuneRequirementScript {
     if (`$osCaption -notmatch "Windows $osNumber") {
         Write-Output "OS mismatch: got '`$osCaption', expected 'Windows $osNumber'"
         Set-DATApplicability -Result 'NotApplicable' -Reason "OS mismatch: got '`$osCaption', expected 'Windows $osNumber'"
+        exit 0
+    }
+"@
+    }
+
+    # Check 3.5 (non-Dell drivers only): the device's feature update must match the build the pack
+    # was created for. Prefer DisplayVersion (authoritative on modern builds); fall back to a
+    # CurrentBuildNumber map for older/edge builds where DisplayVersion is absent.
+    if ($emitFeatureUpdateCheck) {
+        $osCheckBlock += @"
+
+    # Check 3.5: Feature-update must match -- $OEM driver packs are build-specific (expected $featureUpdate)
+    `$cvKey = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion' -ErrorAction Stop
+    `$deviceFeatureUpdate = `$cvKey.DisplayVersion
+    if ([string]::IsNullOrWhiteSpace(`$deviceFeatureUpdate)) {
+        `$fuMap = @{ '19044'='21H2'; '19045'='22H2'; '22000'='21H2'; '22621'='22H2'; '22631'='23H2'; '26100'='24H2'; '26200'='25H2' }
+        `$deviceFeatureUpdate = `$fuMap["`$(`$cvKey.CurrentBuildNumber)"]
+        if (-not `$deviceFeatureUpdate) { `$deviceFeatureUpdate = "Build`$(`$cvKey.CurrentBuildNumber)" }
+    }
+    if (`$deviceFeatureUpdate -ne "$featureUpdate") {
+        Write-Output "Feature-update mismatch: got '`$deviceFeatureUpdate', expected '$featureUpdate'"
+        Set-DATApplicability -Result 'NotApplicable' -Reason "Feature-update mismatch: got '`$deviceFeatureUpdate', expected '$featureUpdate'"
         exit 0
     }
 "@
@@ -11442,6 +11816,9 @@ function New-DATIntuneDetectionScript {
     )
 
     $osNumber = if ($OS -match 'Windows\s+(\d+)') { $Matches[1] } else { "11" }
+    # Feature-update token (e.g. 24H2). Dell packs are major-OS only; other OEMs gate on the build.
+    $featureUpdate = if ($OS -match '\d{2}H\d') { $Matches[0] } else { '' }
+    $emitFeatureUpdateCheck = ($UpdateType -ne 'BIOS') -and ($OEM -notmatch 'Dell') -and (-not [string]::IsNullOrWhiteSpace($featureUpdate))
     $bbValues = ($Baseboards -split '[,;]' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' }) -join "','"
 
     # Determine registry sub-key and whether to include OS check
@@ -11456,6 +11833,24 @@ function New-DATIntuneDetectionScript {
     # Check 3: OS version match
     `$osCaption = (Get-CimInstance -ClassName Win32_OperatingSystem -ErrorAction Stop).Caption
     if (`$osCaption -notmatch "Windows $osNumber") { exit 0 }
+"@
+    }
+
+    # Check 3.5 (non-Dell drivers only): a device on the wrong feature update reports NOT detected,
+    # mirroring the requirement rule so a build-specific pack is never seen as installed on the
+    # wrong build. Prefer DisplayVersion; fall back to a CurrentBuildNumber map.
+    if ($emitFeatureUpdateCheck) {
+        $osCheckBlock += @"
+
+    # Check 3.5: Feature-update must match -- $OEM driver packs are build-specific (expected $featureUpdate)
+    `$cvKey = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion' -ErrorAction Stop
+    `$deviceFeatureUpdate = `$cvKey.DisplayVersion
+    if ([string]::IsNullOrWhiteSpace(`$deviceFeatureUpdate)) {
+        `$fuMap = @{ '19044'='21H2'; '19045'='22H2'; '22000'='21H2'; '22621'='22H2'; '22631'='23H2'; '26100'='24H2'; '26200'='25H2' }
+        `$deviceFeatureUpdate = `$fuMap["`$(`$cvKey.CurrentBuildNumber)"]
+        if (-not `$deviceFeatureUpdate) { `$deviceFeatureUpdate = "Build`$(`$cvKey.CurrentBuildNumber)" }
+    }
+    if (`$deviceFeatureUpdate -ne "$featureUpdate") { exit 0 }
 "@
     }
 
@@ -11823,6 +12218,241 @@ function ConvertTo-DATNoBomScriptBase64 {
     return [Convert]::ToBase64String($bytes)
 }
 
+function Get-DATAzCopyExecutable {
+    <#
+    .SYNOPSIS
+        Resolves the path to a validated azcopy.exe, downloading the latest AzCopy v10 build
+        into <AppRoot>\Tools\AzCopy on first use.
+
+    .DESCRIPTION
+        AzCopy is used as an optional, higher-throughput upload engine for Intune Win32 app
+        content. This function caches the executable under Tools\AzCopy so it is downloaded
+        only once. The binary is fail-closed validated with Test-DATFileSignature (must be
+        Authenticode signed by Microsoft) before it is ever executed -- a cached copy that
+        fails validation is re-downloaded.
+
+    .OUTPUTS
+        [string] full path to a validated azcopy.exe.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param (
+        [switch]$ForceDownload
+    )
+
+    $appRoot  = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+    $toolsDir = Join-Path $appRoot 'Tools\AzCopy'
+    $azCopyExe = Join-Path $toolsDir 'azcopy.exe'
+
+    if (-not $ForceDownload -and (Test-Path -LiteralPath $azCopyExe)) {
+        if (Test-DATFileSignature -FilePath $azCopyExe -AllowedPublishers 'Microsoft Corporation', 'Microsoft*' -Context 'AzCopy') {
+            return $azCopyExe
+        }
+        Write-DATLogEntry -Value "[AzCopy] Cached azcopy.exe failed signature validation -- re-downloading." -Severity 2
+    }
+
+    if (-not (Test-Path -LiteralPath $toolsDir)) {
+        New-Item -Path $toolsDir -ItemType Directory -Force | Out-Null
+    }
+
+    $downloadUrl = 'https://aka.ms/downloadazcopy-v10-windows'
+    $suffix      = [guid]::NewGuid().ToString('N').Substring(0, 8)
+    $zipPath     = Join-Path $toolsDir "azcopy_download_$suffix.zip"
+    $extractDir  = Join-Path $toolsDir "extract_$suffix"
+
+    Write-DATLogEntry -Value "[AzCopy] Downloading latest AzCopy v10 (Windows) from $downloadUrl ..." -Severity 1
+    Set-DATRegistryValue -Name "RunningMessage" -Value "Downloading AzCopy upload engine..." -Type String
+    try {
+        $proxyParams = Get-DATWebRequestProxy
+        if ($proxyParams -isnot [hashtable]) { $proxyParams = @{} }
+        Invoke-WebRequest -Uri $downloadUrl -OutFile $zipPath -UseBasicParsing -ErrorAction Stop @proxyParams
+
+        Expand-Archive -Path $zipPath -DestinationPath $extractDir -Force -ErrorAction Stop
+        $found = Get-ChildItem -Path $extractDir -Filter 'azcopy.exe' -Recurse -File | Select-Object -First 1
+        if (-not $found) { throw "azcopy.exe was not found inside the downloaded archive." }
+
+        # Fail closed: validate the signature BEFORE the binary is trusted or copied into place.
+        if (-not (Test-DATFileSignature -FilePath $found.FullName -AllowedPublishers 'Microsoft Corporation', 'Microsoft*' -Context 'AzCopy')) {
+            throw "Downloaded azcopy.exe is not Authenticode signed by Microsoft -- refusing to use it."
+        }
+
+        Copy-Item -LiteralPath $found.FullName -Destination $azCopyExe -Force
+        Write-DATLogEntry -Value "[AzCopy] AzCopy ready at $azCopyExe" -Severity 1
+        return $azCopyExe
+    }
+    finally {
+        if (Test-Path -LiteralPath $zipPath)    { Remove-Item -LiteralPath $zipPath -Force -ErrorAction SilentlyContinue }
+        if (Test-Path -LiteralPath $extractDir) { Remove-Item -LiteralPath $extractDir -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+}
+
+function ConvertFrom-DATAzCopyProgressLine {
+    <#
+    .SYNOPSIS
+        Parses a single line from an AzCopy --output-type=json stream and returns the
+        percent-complete value it carries (if any), so a hidden AzCopy upload can drive the
+        tool's progress UI in real time.
+    .OUTPUTS
+        [int] 0-100 when the line contains progress, otherwise $null.
+    #>
+    [CmdletBinding()]
+    param (
+        [AllowEmptyString()]
+        [AllowNull()]
+        [string]$Line
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Line)) { return $null }
+    try { $obj = $Line | ConvertFrom-Json -ErrorAction Stop } catch { return $null }
+    if ($obj.MessageType -ne 'Progress' -and $obj.MessageType -ne 'EndOfJob') { return $null }
+
+    $content = $obj.MessageContent
+    if ($content -isnot [string] -or -not $content.TrimStart().StartsWith('{')) { return $null }
+    try { $inner = $content | ConvertFrom-Json -ErrorAction Stop } catch { return $null }
+    if ($null -eq $inner.PercentComplete) { return $null }
+
+    $pct = [double]$inner.PercentComplete
+    if ($pct -lt 0) { $pct = 0 }
+    if ($pct -gt 100) { $pct = 100 }
+    return [int][math]::Round($pct)
+}
+
+function Invoke-DATAzCopyBlobUpload {
+    <#
+    .SYNOPSIS
+        Uploads an encrypted .intunewin content blob to the Intune-provided Azure Storage SAS
+        URI using azcopy.exe. AzCopy stages the blocks and commits the block list itself, so the
+        caller proceeds straight to the Graph 'commit' with encryption info afterwards.
+
+    .DESCRIPTION
+        AUTHENTICATION: no credential is passed to AzCopy. The SAS token embedded in the
+        AzureStorageUri query string is the write credential for that single blob. To keep that
+        token out of any visible surface, the process runs hidden by default (the URI never
+        appears in a console window) and the URI is never written to the DAT log. When -ShowWindow
+        is supplied the upload runs in a visible AzCopy console instead (progress is shown by
+        AzCopy itself); note the SAS token is then visible in that window's command line.
+
+    .OUTPUTS
+        Hashtable: Success (bool), Error (string), ThroughputMBps (double).
+    #>
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory)][string]$EncryptedFilePath,
+        [Parameter(Mandatory)][string]$AzureStorageUri,
+        [Parameter(Mandatory)][long]$EncryptedFileSize,
+        [string]$DisplayName = 'package',
+        [switch]$ShowWindow
+    )
+
+    try {
+        $azCopy = Get-DATAzCopyExecutable
+    } catch {
+        return @{ Success = $false; Error = "AzCopy unavailable: $($_.Exception.Message)"; ThroughputMBps = 0 }
+    }
+
+    # Map the tool's proxy configuration onto the env vars AzCopy honours (HTTPS_PROXY/HTTP_PROXY).
+    $proxyParams = Get-DATWebRequestProxy
+    $priorHttpsProxy = $env:HTTPS_PROXY
+    $priorHttpProxy  = $env:HTTP_PROXY
+    $setProxyEnv = $false
+    if ($proxyParams -is [hashtable] -and $proxyParams.ContainsKey('Proxy') -and -not [string]::IsNullOrWhiteSpace($proxyParams.Proxy)) {
+        $env:HTTPS_PROXY = $proxyParams.Proxy
+        $env:HTTP_PROXY  = $proxyParams.Proxy
+        $setProxyEnv = $true
+    }
+
+    $totalMB = [math]::Round($EncryptedFileSize / 1MB, 2)
+    Set-DATRegistryValue -Name "RunningMode" -Value "Uploading" -Type String
+    Set-DATRegistryValue -Name "DownloadSize" -Value "$totalMB MB" -Type String
+    Set-DATRegistryValue -Name "DownloadBytes" -Value "$EncryptedFileSize" -Type String
+    Set-DATRegistryValue -Name "BytesTransferred" -Value "0" -Type String
+    Set-DATRegistryValue -Name "DownloadSpeed" -Value "---" -Type String
+
+    # Build a single, properly quoted argument string. The child process parses it with
+    # CommandLineToArgvW, which keeps a double-quoted token as ONE argument -- so the SAS query
+    # string in the URI (with its '&', '%' and '=' characters) is preserved byte-for-byte. This
+    # is the reliable cross-engine approach: Start-Process -ArgumentList can mangle pre-quoted
+    # array elements on Windows PowerShell 5.1, corrupting the SAS signature and causing 403s.
+    $outputType = if ($ShowWindow) { 'text' } else { 'json' }
+    $argString = 'copy "{0}" "{1}" --from-to=LocalBlob --overwrite=true --output-type={2} --log-level=ERROR' -f $EncryptedFilePath, $AzureStorageUri, $outputType
+
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $azCopy
+    $psi.Arguments = $argString
+
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    $stdErr = ''
+    $recent = $null
+    try {
+        if ($ShowWindow) {
+            # Visible console: the user watches AzCopy's own text progress in its own window.
+            Set-DATRegistryValue -Name "RunningMessage" -Value "Uploading $DisplayName via AzCopy (see AzCopy window)..." -Type String
+            $psi.UseShellExecute = $true
+            $psi.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Normal
+            $proc = [System.Diagnostics.Process]::Start($psi)
+            $proc.WaitForExit()
+            $exit = $proc.ExitCode
+        } else {
+            # Hidden: read AzCopy's JSON stream directly and translate progress into the tool UI.
+            Set-DATRegistryValue -Name "RunningMessage" -Value "Uploading $DisplayName via AzCopy..." -Type String
+            $psi.UseShellExecute = $false
+            $psi.CreateNoWindow = $true
+            $psi.RedirectStandardOutput = $true
+            $psi.RedirectStandardError = $true
+            $proc = [System.Diagnostics.Process]::Start($psi)
+
+            $lastPct = -1
+            $recent = New-Object System.Collections.Generic.Queue[string]
+            while ($null -ne ($line = $proc.StandardOutput.ReadLine())) {
+                if (-not [string]::IsNullOrWhiteSpace($line)) {
+                    $recent.Enqueue($line)
+                    while ($recent.Count -gt 12) { [void]$recent.Dequeue() }
+                }
+                $prog = ConvertFrom-DATAzCopyProgressLine -Line $line
+                if ($null -ne $prog -and $prog -ge 0 -and $prog -ne $lastPct) {
+                    $lastPct = $prog
+                    $uploadedBytes = [long]($EncryptedFileSize * ($prog / 100.0))
+                    $uploadedMB = [math]::Round($uploadedBytes / 1MB, 2)
+                    $elapsed = $sw.Elapsed.TotalSeconds
+                    $speedMBps = if ($elapsed -gt 0) { [math]::Round(($uploadedBytes / 1MB) / $elapsed, 2) } else { 0 }
+                    Set-DATRegistryValue -Name "RunningMessage" -Value "Uploading $DisplayName via AzCopy... $prog% -- $uploadedMB / $totalMB MB" -Type String
+                    Set-DATRegistryValue -Name "BytesTransferred" -Value "$uploadedBytes" -Type String
+                    Set-DATRegistryValue -Name "DownloadSpeed" -Value "$speedMBps MB/s" -Type String
+                }
+            }
+            $stdErr = $proc.StandardError.ReadToEnd()
+            $proc.WaitForExit()
+            $exit = $proc.ExitCode
+        }
+        $sw.Stop()
+
+        if ($exit -ne 0) {
+            $detail = ''
+            if (-not [string]::IsNullOrWhiteSpace($stdErr)) {
+                $detail = $stdErr.Trim()
+            } elseif ($null -ne $recent -and $recent.Count -gt 0) {
+                $detail = ($recent.ToArray() -join ' ')
+            }
+            if ($detail.Length -gt 600) { $detail = $detail.Substring(0, 600) }
+            return @{ Success = $false; Error = ("AzCopy exited with code $exit. $detail").Trim(); ThroughputMBps = 0 }
+        }
+
+        $mbps = if ($sw.Elapsed.TotalSeconds -gt 0) { [math]::Round(($EncryptedFileSize / 1MB) / $sw.Elapsed.TotalSeconds, 2) } else { 0 }
+        Set-DATRegistryValue -Name "BytesTransferred" -Value "$EncryptedFileSize" -Type String
+        return @{ Success = $true; Error = ''; ThroughputMBps = $mbps }
+    }
+    catch {
+        if ($sw.IsRunning) { $sw.Stop() }
+        return @{ Success = $false; Error = $_.Exception.Message; ThroughputMBps = 0 }
+    }
+    finally {
+        if ($setProxyEnv) {
+            $env:HTTPS_PROXY = $priorHttpsProxy
+            $env:HTTP_PROXY  = $priorHttpProxy
+        }
+    }
+}
+
 function Invoke-DATIntuneWin32AppUpload {
     <#
     .SYNOPSIS
@@ -11856,8 +12486,14 @@ function Invoke-DATIntuneWin32AppUpload {
         [int]$ParallelUploads = 2,
         [ValidateRange(1, 10)]
         [int]$MaxUploadAttempts = 3,
+        # Optional: upload content with AzCopy (self-tuning, higher throughput) instead of the
+        # built-in chunked uploader. AzCopy commits the block list itself, so steps 7-8 are skipped.
+        [switch]$UseAzCopy,
+        # Optional: run AzCopy in a visible console window instead of hidden. Only meaningful with -UseAzCopy.
+        [switch]$AzCopyShowWindow,
         [AllowEmptyString()]
-        [string]$CustomIconPath = ''
+        [string]$CustomIconPath = '',
+        [string[]]$RoleScopeTagIds = @("0")
     )
 
     if (-not (Test-DATIntuneAuth)) { throw "Intune authentication required." }
@@ -11899,6 +12535,13 @@ function Invoke-DATIntuneWin32AppUpload {
             Write-DATLogEntry -Value "[Intune Upload] Application icon not found at $iconPath -- package will use default icon" -Severity 2
         }
 
+        # Normalise the RBAC scope tags. Graph requires a non-empty array of string ids; an
+        # empty/omitted value defaults to the built-in Default tag (0). Tenants that enforce
+        # RBAC scope tags reject app creation entirely when the field is missing.
+        $scopeTagIds = @($RoleScopeTagIds | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | ForEach-Object { $_.Trim() })
+        if ($scopeTagIds.Count -eq 0) { $scopeTagIds = @("0") }
+        Write-DATLogEntry -Value "[Intune Upload] Using RBAC scope tag id(s): $($scopeTagIds -join ', ')" -Severity 1
+
         $appBody = @{
             "@odata.type"                            = "#microsoft.graph.win32LobApp"
             displayName                              = $DisplayName
@@ -11914,6 +12557,7 @@ function Invoke-DATIntuneWin32AppUpload {
             uninstallCommandLine                     = $UninstallCommandLine
             applicableArchitectures                  = "x64"
             minimumOperatingSystem                    = (ConvertTo-DATIntuneMinimumOS -OS $OS)
+            roleScopeTagIds                          = @($scopeTagIds)
             installExperience                        = @{
                 "@odata.type"         = "#microsoft.graph.win32LobAppInstallExperience"
                 runAsAccount          = "system"
@@ -11955,8 +12599,10 @@ function Invoke-DATIntuneWin32AppUpload {
         Write-DATLogEntry -Value "[Intune Upload] App created with ID: $appId" -Severity 1
 
         # -- Content upload attempt loop (steps 4-11) --------------------------------------
-        # Every attempt starts a brand new content version, so a partially uploaded blob from a
-        # failed attempt is never mixed into a later one. The app itself is created only once.
+        # Each attempt runs against a FRESH app. The current Intune API rejects creating a second
+        # content version while the first is still uncommitted ("content cannot be updated before
+        # the first content version is committed"), so a failed attempt cannot simply add a new
+        # content version to the same app -- the failed app is deleted and recreated before retry.
         $uploadAttempt = 0
         $contentCommitted = $false
         $lastUploadError = ''
@@ -11971,6 +12617,27 @@ function Invoke-DATIntuneWin32AppUpload {
             # A long failed attempt can outlive the access token lifetime
             if (-not (Update-DATIntuneTokenIfNeeded)) {
                 Write-DATLogEntry -Value "[Intune Upload] Token refresh before retry failed -- continuing with the existing token" -Severity 2
+            }
+            # The current Intune API rejects a second uncommitted content version on the same app
+            # ("content cannot be updated before the first content version is committed"). The failed
+            # attempt left an uncommitted content version behind, so delete that app and recreate it
+            # from the same body -- each retry then starts cleanly at content version 1.
+            if ($appId) {
+                try {
+                    Invoke-DATGraphRequest -Uri "/deviceAppManagement/mobileApps/$appId" -Method DELETE | Out-Null
+                    Write-DATLogEntry -Value "[Intune Upload] Removed failed app $appId before retry" -Severity 2
+                } catch {
+                    Write-DATLogEntry -Value "[Intune Upload] Could not remove failed app $appId before retry: $($_.Exception.Message)" -Severity 2
+                }
+                $appId = $null
+            }
+            try {
+                $app = Invoke-DATGraphRequest -Uri "/deviceAppManagement/mobileApps" -Method POST -Body $appBody
+                $appId = $app.id
+                Write-DATLogEntry -Value "[Intune Upload] Recreated Win32 app for retry -- new ID: $appId" -Severity 2
+            } catch {
+                Write-DATLogEntry -Value "[Intune Upload] Failed to recreate app for retry: $($_.Exception.Message)" -Severity 3
+                throw
             }
         }
         try {
@@ -12023,13 +12690,26 @@ function Invoke-DATIntuneWin32AppUpload {
             throw "Timed out waiting for Azure Storage URI after $maxWait seconds"
         }
 
-        Write-DATLogEntry -Value "[Intune Upload] Azure Storage URI obtained. Starting chunked upload..." -Severity 1
+        Write-DATLogEntry -Value "[Intune Upload] Azure Storage URI obtained. Starting upload..." -Severity 1
         Set-DATRegistryValue -Name "RunningMode" -Value "Uploading" -Type String
         Set-DATRegistryValue -Name "RunningMessage" -Value "Uploading $DisplayName to Intune..." -Type String
         Set-DATRegistryValue -Name "DownloadSize" -Value "$([math]::Round($encInfo.EncryptedFileSize / 1MB, 2)) MB" -Type String
         Set-DATRegistryValue -Name "DownloadBytes" -Value "$($encInfo.EncryptedFileSize)" -Type String
         Set-DATRegistryValue -Name "BytesTransferred" -Value "0" -Type String
         Set-DATRegistryValue -Name "DownloadSpeed" -Value "---" -Type String
+
+        if ($UseAzCopy) {
+            # AzCopy path: a single 'azcopy copy' stages the blocks AND commits the block list
+            # itself, so we skip the manual chunk upload (step 7), URI renewal (7b) and block-list
+            # commit (step 8) and proceed straight to the encryption-info commit (step 9).
+            # Authentication is carried entirely by the SAS token in $azureStorageUri -- no
+            # credential is handed to AzCopy, and the URI is never logged.
+            Write-DATLogEntry -Value "[Intune Upload] Uploading encrypted content via AzCopy (block list committed by AzCopy)..." -Severity 1
+            $azResult = Invoke-DATAzCopyBlobUpload -EncryptedFilePath $encInfo.EncryptedFilePath -AzureStorageUri $azureStorageUri -EncryptedFileSize $encInfo.EncryptedFileSize -DisplayName $DisplayName -ShowWindow:$AzCopyShowWindow
+            if (-not $azResult.Success) { throw "AzCopy upload failed: $($azResult.Error)" }
+            $fileSize = $encInfo.EncryptedFileSize
+            Write-DATLogEntry -Value "[Intune Upload] AzCopy upload complete ($($azResult.ThroughputMBps) MB/s)." -Severity 1
+        } else {
 
         # Step 7: Upload file in chunks with optional parallelism
         $chunkSize = $ChunkSizeMB * 1024 * 1024
@@ -12039,7 +12719,12 @@ function Invoke-DATIntuneWin32AppUpload {
         $blockIds = [System.Collections.ArrayList]::new()
         $uploadStartTime = Get-Date
 
-        Write-DATLogEntry -Value "[Intune Upload] File size: $([math]::Round($fileSize/1MB, 2)) MB, chunk size: $ChunkSizeMB MB, chunks: $totalChunks, parallel: $ParallelUploads" -Severity 1
+        # Per-chunk network timeout so a stalled connection fails fast and retries instead of wedging
+        # the whole upload for hours (an untimed PUT can hang indefinitely). Scaled to chunk size with
+        # a floor, tolerating slow-but-alive links while catching true stalls.
+        $chunkTimeoutSec = [Math]::Max(120, [int]($ChunkSizeMB * 6))
+
+        Write-DATLogEntry -Value "[Intune Upload] File size: $([math]::Round($fileSize/1MB, 2)) MB, chunk size: $ChunkSizeMB MB, chunks: $totalChunks, parallel: $ParallelUploads, per-chunk timeout: ${chunkTimeoutSec}s" -Severity 1
 
         # Pre-generate all block IDs in order (required for block list commit)
         for ($i = 0; $i -lt $totalChunks; $i++) {
@@ -12059,18 +12744,27 @@ function Invoke-DATIntuneWin32AppUpload {
                     $blockUrl = "$azureStorageUri&comp=block&blockid=$([System.Uri]::EscapeDataString($blockIds[$chunk]))"
 
                     $proxyParams = Get-DATWebRequestProxy
-                    $retries = 0; $maxRetries = 3
+                    $retries = 0; $maxRetries = 5
                     while ($retries -lt $maxRetries) {
                         try {
                             Invoke-RestMethod -Method PUT -Uri $blockUrl -Body $buffer `
                                 -Headers @{ "x-ms-blob-type" = "BlockBlob" } `
-                                -ContentType "application/octet-stream" -ErrorAction Stop @proxyParams
+                                -ContentType "application/octet-stream" -TimeoutSec $chunkTimeoutSec -ErrorAction Stop @proxyParams
                             break
                         } catch {
                             $retries++
-                            if ($retries -ge $maxRetries) { throw "Chunk $($chunk + 1)/$totalChunks upload failed after $maxRetries retries: $($_.Exception.Message)" }
-                            Start-Sleep -Seconds ($retries * 5)
-                            Write-DATLogEntry -Value "[Intune Upload] Chunk $($chunk + 1) retry $retries..." -Severity 2
+                            $thr = Get-DATHttpThrottleInfo -ErrorRecord $_
+                            if ($retries -ge $maxRetries) {
+                                if ($thr.IsThrottle) { Write-DATLogEntry -Value "[Intune Upload] THROTTLED by Azure Storage (HTTP $($thr.Status)$(if ($thr.Code) { " $($thr.Code)" })) -- chunk $($chunk + 1)/$totalChunks failed after $maxRetries retries. Reduce Parallel Uploads and/or Chunk Size." -Severity 3 }
+                                throw "Chunk $($chunk + 1)/$totalChunks upload failed after $maxRetries retries: $($_.Exception.Message)"
+                            }
+                            $wait = [Math]::Max([int]$thr.RetryAfter, ($retries * 5))
+                            if ($thr.IsThrottle) {
+                                Write-DATLogEntry -Value "[Intune Upload] THROTTLED by Azure Storage (HTTP $($thr.Status)$(if ($thr.Code) { " $($thr.Code)" })) on chunk $($chunk + 1)/$totalChunks -- backing off ${wait}s (retry $retries/$maxRetries). Consider lowering Parallel Uploads/Chunk Size." -Severity 2
+                            } else {
+                                Write-DATLogEntry -Value "[Intune Upload] Chunk $($chunk + 1) retry $retries (waiting ${wait}s): $($_.Exception.Message)" -Severity 2
+                            }
+                            Start-Sleep -Seconds $wait
                         }
                     }
 
@@ -12098,7 +12792,7 @@ function Invoke-DATIntuneWin32AppUpload {
         } else {
             # Parallel upload using runspaces -- each thread reads its own chunk from disk
             # to avoid loading the entire file into memory (which can hang on large packages)
-            Write-DATLogEntry -Value "[Intune Upload] Using $ParallelUploads parallel threads" -Severity 1
+            Write-DATLogEntry -Value "[Intune Upload] Using up to $ParallelUploads parallel threads (auto-reduces on Azure throttling)" -Severity 1
 
             # Resolve proxy settings in main thread -- runspaces don't have module functions
             $parallelProxyParams = Get-DATWebRequestProxy
@@ -12108,7 +12802,10 @@ function Invoke-DATIntuneWin32AppUpload {
             $pool.Open()
 
             $uploadScript = {
-                param ($BlockUrl, $FilePath, $Offset, $Length, $MaxRetries, $ProxyParams)
+                param ($BlockUrl, $FilePath, $Offset, $Length, $MaxRetries, $ProxyParams, $TimeoutSec)
+                # Throttle stats are returned to the caller for logging (runspaces have no module
+                # functions, so the throttle classification is inlined below).
+                $throttleCount = 0; $lastStatus = 0; $lastCode = ''
                 try {
                     $fs = [System.IO.File]::Open($FilePath, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::Read)
                     try {
@@ -12132,47 +12829,125 @@ function Invoke-DATIntuneWin32AppUpload {
                         try {
                             Invoke-RestMethod -Method PUT -Uri $BlockUrl -Body $buffer `
                                 -Headers @{ "x-ms-blob-type" = "BlockBlob" } `
-                                -ContentType "application/octet-stream" -ErrorAction Stop @ProxyParams
-                            return @{ Success = $true }
+                                -ContentType "application/octet-stream" -TimeoutSec $TimeoutSec -ErrorAction Stop @ProxyParams
+                            return @{ Success = $true; ThrottleCount = $throttleCount; LastStatus = $lastStatus; LastCode = $lastCode }
                         } catch {
                             $retries++
-                            if ($retries -ge $MaxRetries) {
-                                return @{ Success = $false; Error = $_.Exception.Message }
+                            # Classify Azure Storage throttling (HTTP 429/503, or ServerBusy / TooManyRequests /
+                            # OperationTimedOut) and honour Retry-After. Engine-safe for PS 5.1 and PS 7.
+                            $st = 0; $cd = ''; $ra = 0
+                            try {
+                                $r = $_.Exception.Response
+                                if ($null -ne $r) {
+                                    $st = [int]$r.StatusCode
+                                    try {
+                                        $hh = $r.Headers
+                                        if ($null -ne $hh) {
+                                            $ras = $null; try { $ras = $hh['Retry-After'] } catch { $ras = $null }
+                                            if ([string]::IsNullOrEmpty($ras)) {
+                                                try { if ($hh.RetryAfter -and $hh.RetryAfter.Delta) { $ra = [int]$hh.RetryAfter.Delta.TotalSeconds } } catch { }
+                                            } else {
+                                                $tt = 0; if ([int]::TryParse("$ras", [ref]$tt)) { $ra = $tt }
+                                            }
+                                        }
+                                    } catch { }
+                                }
+                            } catch { $st = 0 }
+                            try { if ($_.ErrorDetails -and $_.ErrorDetails.Message -match '<Code>([^<]+)</Code>') { $cd = $Matches[1] } } catch { }
+                            # A stalled/timed-out chunk (usually no HTTP status) is treated like throttling so
+                            # the caller eases off the cap -- 8-way pressure on a single blob can stall.
+                            $isTimeout = ((($_.Exception -is [System.Net.WebException]) -and ($_.Exception.Status -eq [System.Net.WebExceptionStatus]::Timeout)) -or ($_.Exception.Message -match 'timed out|timeout|was canceled|was cancelled'))
+                            $isThrottle = ($st -eq 429 -or $st -eq 503 -or $cd -eq 'ServerBusy' -or $cd -eq 'TooManyRequests' -or $cd -eq 'OperationTimedOut')
+                            if ($isThrottle -or $isTimeout) {
+                                $throttleCount++
+                                $lastStatus = $st
+                                $lastCode = if ($isTimeout -and -not $isThrottle) { 'Timeout' } else { $cd }
                             }
-                            Start-Sleep -Seconds ($retries * 5)
+                            if ($retries -ge $MaxRetries) {
+                                return @{ Success = $false; Error = $_.Exception.Message; ThrottleCount = $throttleCount; LastStatus = $lastStatus; LastCode = $lastCode }
+                            }
+                            $wait = if ($isThrottle -or $isTimeout) { [Math]::Max($ra, ($retries * 5)) } else { $retries * 5 }
+                            Start-Sleep -Seconds $wait
                         }
                     }
                 } catch {
-                    return @{ Success = $false; Error = $_.Exception.Message }
+                    return @{ Success = $false; Error = $_.Exception.Message; ThrottleCount = $throttleCount; LastStatus = $lastStatus; LastCode = $lastCode }
                 }
             }
 
-            $jobs = [System.Collections.ArrayList]::new()
-            for ($chunk = 0; $chunk -lt $totalChunks; $chunk++) {
-                $blockUrl = "$azureStorageUri&comp=block&blockid=$([System.Uri]::EscapeDataString($blockIds[$chunk]))"
-                $offset = [long]$chunk * [long]$chunkSize
-                $length = [int]([math]::Min([long]$chunkSize, [long]($fileSize - $offset)))
-                $ps = [powershell]::Create()
-                $ps.RunspacePool = $pool
-                [void]$ps.AddScript($uploadScript)
-                [void]$ps.AddArgument($blockUrl)
-                [void]$ps.AddArgument($encryptedFilePath)
-                [void]$ps.AddArgument($offset)
-                [void]$ps.AddArgument($length)
-                [void]$ps.AddArgument(3)
-                [void]$ps.AddArgument($parallelProxyParams)
-                $async = $ps.BeginInvoke()
-                [void]$jobs.Add(@{ PS = $ps; Async = $async; Chunk = $chunk })
+            # Adaptive concurrency: feed chunks into the pool up to a LIVE cap that starts at the
+            # configured parallelism (further capped by any session ceiling a previously throttled
+            # package set) and HALVES whenever a chunk reports Azure Storage throttling. Chunks may
+            # complete out of order -- the ordered block list at commit reassembles them, so
+            # completion order is irrelevant. Chunk SIZE is intentionally left unchanged: smaller
+            # chunks raise the request rate and can make rate-based throttling worse.
+            $effectiveParallel = $ParallelUploads
+            if ($null -ne $script:DATUploadParallelCeiling -and $script:DATUploadParallelCeiling -gt 0 -and $script:DATUploadParallelCeiling -lt $effectiveParallel) {
+                $effectiveParallel = [int]$script:DATUploadParallelCeiling
+                Write-DATLogEntry -Value "[Intune Upload] Starting at reduced parallelism ($effectiveParallel) -- an earlier upload in this run was throttled." -Severity 2
             }
+            $currentCap = $effectiveParallel
 
+            $inFlight = [System.Collections.ArrayList]::new()
+            $nextChunk = 0
             $completedCount = 0
-            foreach ($job in $jobs) {
-                $result = $job.PS.EndInvoke($job.Async)
-                $job.PS.Dispose()
-                if (-not $result.Success) {
-                    $pool.Dispose()
-                    throw "Chunk $($job.Chunk + 1)/$totalChunks upload failed: $($result.Error)"
+            $throttleTotal = 0; $throttleAnnounced = $false; $throttleLastStatus = 0; $throttleLastCode = ''
+
+            while ($nextChunk -lt $totalChunks -or $inFlight.Count -gt 0) {
+                # Fill the pipeline up to the current cap
+                while ($nextChunk -lt $totalChunks -and $inFlight.Count -lt $currentCap) {
+                    $blockUrl = "$azureStorageUri&comp=block&blockid=$([System.Uri]::EscapeDataString($blockIds[$nextChunk]))"
+                    $offset = [long]$nextChunk * [long]$chunkSize
+                    $length = [int]([math]::Min([long]$chunkSize, [long]($fileSize - $offset)))
+                    $ps = [powershell]::Create()
+                    $ps.RunspacePool = $pool
+                    [void]$ps.AddScript($uploadScript)
+                    [void]$ps.AddArgument($blockUrl)
+                    [void]$ps.AddArgument($encryptedFilePath)
+                    [void]$ps.AddArgument($offset)
+                    [void]$ps.AddArgument($length)
+                    [void]$ps.AddArgument(5)
+                    [void]$ps.AddArgument($parallelProxyParams)
+                    [void]$ps.AddArgument($chunkTimeoutSec)
+                    $async = $ps.BeginInvoke()
+                    [void]$inFlight.Add(@{ PS = $ps; Async = $async; Chunk = $nextChunk })
+                    $nextChunk++
                 }
+
+                # Wait for at least one in-flight chunk to complete
+                $done = $null
+                while ($null -eq $done) {
+                    foreach ($j in $inFlight) { if ($j.Async.IsCompleted) { $done = $j; break } }
+                    if ($null -eq $done) { Start-Sleep -Milliseconds 50 }
+                }
+
+                $result = $done.PS.EndInvoke($done.Async)
+                $done.PS.Dispose()
+                [void]$inFlight.Remove($done)
+
+                if (([int]$result.ThrottleCount) -gt 0) {
+                    $throttleTotal += [int]$result.ThrottleCount
+                    $throttleLastStatus = $result.LastStatus; $throttleLastCode = $result.LastCode
+                    if (-not $throttleAnnounced) {
+                        $throttleAnnounced = $true
+                        $thrWhat = if ([int]$result.LastStatus -gt 0) { "throttled by Azure Storage (HTTP $($result.LastStatus)$(if ($result.LastCode) { " $($result.LastCode)" }))" } else { "stalled/timed-out chunk$(if ($result.LastCode) { " ($($result.LastCode))" })" }
+                        Write-DATLogEntry -Value "[Intune Upload] Upload $thrWhat -- backing off and auto-reducing parallel uploads." -Severity 2
+                    }
+                    # Ease off: halve the live cap (floor 1) and lower the session ceiling so later
+                    # packages in this run start gentler.
+                    if ($currentCap -gt 1) {
+                        $currentCap = [Math]::Max(1, [int][Math]::Floor($currentCap / 2))
+                        $script:DATUploadParallelCeiling = $currentCap
+                        Write-DATLogEntry -Value "[Intune Upload] Auto-reduced parallel uploads to $currentCap after throttling." -Severity 2
+                    }
+                }
+
+                if (-not $result.Success) {
+                    foreach ($j in $inFlight) { try { $j.PS.Stop() } catch { }; try { $j.PS.Dispose() } catch { } }
+                    $pool.Dispose()
+                    throw "Chunk $($done.Chunk + 1)/$totalChunks upload failed: $($result.Error)"
+                }
+
                 $completedCount++
                 $pct = [math]::Round(($completedCount / $totalChunks) * 100, 0)
                 $uploadedBytes = [math]::Min([long]($completedCount * $chunkSize), $fileSize)
@@ -12194,6 +12969,9 @@ function Invoke-DATIntuneWin32AppUpload {
             }
 
             $pool.Dispose()
+            if ($throttleTotal -gt 0) {
+                Write-DATLogEntry -Value "[Intune Upload] Azure Storage throttling summary: $throttleTotal backoff event(s); parallel uploads auto-tuned to $currentCap. Consider setting Parallel Uploads to $currentCap (and/or a smaller Chunk Size) in Package Options." -Severity 2
+            }
         }
 
         # Step 7b: Renew the Azure Storage URI before committing (SAS token may have expired during long uploads)
@@ -12250,6 +13028,7 @@ function Invoke-DATIntuneWin32AppUpload {
         }
 
         Write-DATLogEntry -Value "[Intune Upload] Block list committed successfully." -Severity 1
+        } # end built-in chunked-upload branch (-UseAzCopy skips steps 7-8)
 
         # Step 9: Commit the file with encryption info
         Write-DATLogEntry -Value "[Intune Upload] Committing file with encryption info..." -Severity 1
@@ -12484,6 +13263,18 @@ function Invoke-DATIntunePackageCreation {
             if ($matchingApp -and -not $ForceUpdate) {
                 $appId = $matchingApp.id
                 if ($appId -is [array]) { $appId = $appId[0] }
+                # Bring an already-existing package in line with the configured RBAC scope tag.
+                # Packages created before the feature (or before a tag was chosen) keep the
+                # Default tag otherwise, since the create payload is skipped on a version match.
+                try {
+                    $cfg = Get-ItemProperty -Path $global:RegPath -ErrorAction SilentlyContinue
+                    if ($cfg.IntuneScopeTagsEnabled -eq 1 -and -not [string]::IsNullOrWhiteSpace($cfg.IntuneScopeTagIds)) {
+                        $cfgTags = @(([string]$cfg.IntuneScopeTagIds).Split(',') | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+                        if ($cfgTags.Count -gt 0) { Set-DATIntuneAppScopeTags -AppId $appId -RoleScopeTagIds $cfgTags }
+                    }
+                } catch {
+                    Write-DATLogEntry -Value "[Intune Pipeline] Could not apply scope tag to existing app '$displayName' ($($_.Exception.Message))" -Severity 2
+                }
                 Write-DATLogEntry -Value "[Intune Pipeline] SKIPPED: '$displayName' version $version already exists in Intune (App ID: $appId)" -Severity 1 -UpdateUI
                 Set-DATRegistryValue -Name "RunningMessage" -Value "Skipped (exists): $OEM $Model" -Type String
                 return @{ AppId = $appId; Skipped = $true }
@@ -12726,10 +13517,24 @@ function Invoke-DATIntunePackageCreation {
         # Number of end-to-end content upload attempts before the package is declared failed.
         $uploadMaxAttempts = if ($null -ne $savedConfig.IntuneUploadAttempts -and [int]$savedConfig.IntuneUploadAttempts -ge 1 -and [int]$savedConfig.IntuneUploadAttempts -le 10) { [int]$savedConfig.IntuneUploadAttempts } else { 3 }
 
+        # Optional AzCopy upload engine (Intune Package Options). When on, content is uploaded with
+        # AzCopy instead of the built-in chunked uploader; ChunkSize/ParallelUploads are then ignored.
+        $useAzCopy = ($savedConfig.IntuneUseAzCopy -eq 1)
+        $azCopyShowWindow = ($savedConfig.IntuneAzCopyShowWindow -eq 1)
+
         # Optional user-selected custom package icon (Intune Package Options)
         $customIconPath = if (-not [string]::IsNullOrEmpty($savedConfig.IntuneCustomIconPath) -and (Test-Path -LiteralPath $savedConfig.IntuneCustomIconPath)) { [string]$savedConfig.IntuneCustomIconPath } else { '' }
 
-        Write-DATLogEntry -Value "[Intune Pipeline] Uploading to Intune (chunk: ${uploadChunkSizeMB}MB, parallel: $uploadParallelCount)..." -Severity 1 -UpdateUI
+        # Optional RBAC scope tag id(s) selected in Intune Package Options. The feature is
+        # opt-in (IntuneScopeTagsEnabled); when it is off, or no id is stored, default to the
+        # built-in Default tag (0) so tenants that enforce scope tags still succeed.
+        $scopeTagsFeatureOn = ($savedConfig.IntuneScopeTagsEnabled -eq 1)
+        $scopeTagIds = if ($scopeTagsFeatureOn -and -not [string]::IsNullOrWhiteSpace($savedConfig.IntuneScopeTagIds)) {
+            @(([string]$savedConfig.IntuneScopeTagIds).Split(',') | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+        } else { @("0") }
+        if ($scopeTagIds.Count -eq 0) { $scopeTagIds = @("0") }
+
+        Write-DATLogEntry -Value "[Intune Pipeline] Uploading to Intune (engine: $(if ($useAzCopy) { 'AzCopy' } else { "built-in, chunk: ${uploadChunkSizeMB}MB, parallel: $uploadParallelCount" }))..." -Severity 1 -UpdateUI
         Set-DATRegistryValue -Name "RunningMessage" -Value "Uploading to Intune: $OEM $Model ($intuneWinSize MB)..." -Type String
         $result = Invoke-DATIntuneWin32AppUpload -IntuneWinFile $intuneWinFile `
             -DisplayName $displayName `
@@ -12744,7 +13549,10 @@ function Invoke-DATIntunePackageCreation {
             -ChunkSizeMB $uploadChunkSizeMB `
             -ParallelUploads $uploadParallelCount `
             -MaxUploadAttempts $uploadMaxAttempts `
-            -CustomIconPath $customIconPath
+            -UseAzCopy:$useAzCopy `
+            -AzCopyShowWindow:$azCopyShowWindow `
+            -CustomIconPath $customIconPath `
+            -RoleScopeTagIds $scopeTagIds
 
         Write-DATLogEntry -Value "[Intune Pipeline] SUCCESS: $displayName uploaded to Intune (App ID: $($result.AppId))" -Severity 1 -UpdateUI
         Set-DATRegistryValue -Name "RunningMessage" -Value "Intune package created: $OEM $Model ($intuneWinSize MB)" -Type String
@@ -12953,8 +13761,10 @@ function Get-DATBiosCatalog {
         Write-DATLogEntry -Value "[BIOS] Catalog cache path: $cachePath" -Severity 1
         Set-DATRegistryValue -Name "RunningMessage" -Value "Downloading BIOS catalog..." -Type String
 
-        # HMAC-SHA256 request signing for GET (softfail-safe -- skipped if secret is absent or computation fails)
-        $hmacHeaders = @{}
+        # HMAC-SHA256 request signing for GET (softfail-safe -- skipped if secret is absent or computation
+        # fails). x-dat-version is set unconditionally (outside the HMAC block) so the API version gate
+        # can read it even when HMAC signing is skipped -- it must be present on every API call.
+        $hmacHeaders = @{ 'x-dat-version' = [string]$global:ScriptRelease }
         try {
             $telConfig = Get-DATTelemetryConfig
             $hmacSecret = $null
@@ -12975,14 +13785,24 @@ function Get-DATBiosCatalog {
             Write-DATLogEntry -Value "[BIOS] HMAC signing skipped: $($_.Exception.Message)" -Severity 2
         }
 
+        # Download to a temp path and move on success so a failed request (including a 426 upgrade
+        # rejection) can never truncate or clobber a previously cached catalog.
         $downloaded = $false
+        $tempDownload = "$cachePath.download"
         for ($i = 1; $i -le 3; $i++) {
             try {
                 $proxyParams = Get-DATWebRequestProxy
-                Invoke-WebRequest -Uri $catalogURL -OutFile $cachePath -Headers $hmacHeaders -UseBasicParsing -TimeoutSec 60 -ErrorAction Stop @proxyParams
+                Invoke-WebRequest -Uri $catalogURL -OutFile $tempDownload -Headers $hmacHeaders -UseBasicParsing -TimeoutSec 60 -ErrorAction Stop @proxyParams
+                Move-Item -Path $tempDownload -Destination $cachePath -Force
                 $downloaded = $true
                 break
             } catch {
+                if (Test-Path $tempDownload) { Remove-Item $tempDownload -Force -ErrorAction SilentlyContinue }
+                # HTTP 426 = client version below the API minimum. Record the upgrade prompt and abort
+                # immediately -- do NOT retry and do NOT silently fall back to a stale cached catalog.
+                if (Resolve-DATApiUpgradeRequired -ErrorRecord $_ -Source '[BIOS]') {
+                    throw "DATUpgradeRequired: a newer Driver Automation Tool version is required to download the BIOS catalog."
+                }
                 Write-DATLogEntry -Value "[Warning] - BIOS catalog download attempt $i/3 failed: $($_.Exception.Message)" -Severity 2
                 if ($i -lt 3) { Start-Sleep -Seconds 5 } else {
                     # If download fails but we have a cached copy, use it
@@ -13150,8 +13970,10 @@ function Get-DATDriverCatalog {
         Write-DATLogEntry -Value "[DRIVERS] Catalog cache path: $cachePath" -Severity 1
         Set-DATRegistryValue -Name "RunningMessage" -Value "Downloading driver catalog..." -Type String
 
-        # HMAC-SHA256 request signing for GET (softfail-safe -- skipped if secret is absent or computation fails)
-        $hmacHeaders = @{}
+        # HMAC-SHA256 request signing for GET (softfail-safe -- skipped if secret is absent or computation
+        # fails). x-dat-version is set unconditionally (outside the HMAC block) so the API version gate
+        # can read it even when HMAC signing is skipped -- it must be present on every API call.
+        $hmacHeaders = @{ 'x-dat-version' = [string]$global:ScriptRelease }
         try {
             $telConfig = Get-DATTelemetryConfig
             $hmacSecret = $null
@@ -13172,14 +13994,24 @@ function Get-DATDriverCatalog {
             Write-DATLogEntry -Value "[DRIVERS] HMAC signing skipped: $($_.Exception.Message)" -Severity 2
         }
 
+        # Download to a temp path and move on success so a failed request (including a 426 upgrade
+        # rejection) can never truncate or clobber a previously cached catalog.
         $downloaded = $false
+        $tempDownload = "$cachePath.download"
         for ($i = 1; $i -le 3; $i++) {
             try {
                 $proxyParams = Get-DATWebRequestProxy
-                Invoke-WebRequest -Uri $catalogURL -OutFile $cachePath -Headers $hmacHeaders -UseBasicParsing -TimeoutSec 60 -ErrorAction Stop @proxyParams
+                Invoke-WebRequest -Uri $catalogURL -OutFile $tempDownload -Headers $hmacHeaders -UseBasicParsing -TimeoutSec 60 -ErrorAction Stop @proxyParams
+                Move-Item -Path $tempDownload -Destination $cachePath -Force
                 $downloaded = $true
                 break
             } catch {
+                if (Test-Path $tempDownload) { Remove-Item $tempDownload -Force -ErrorAction SilentlyContinue }
+                # HTTP 426 = client version below the API minimum. Record the upgrade prompt and abort
+                # immediately -- do NOT retry and do NOT silently fall back to a stale cached catalog.
+                if (Resolve-DATApiUpgradeRequired -ErrorRecord $_ -Source '[DRIVERS]') {
+                    throw "DATUpgradeRequired: a newer Driver Automation Tool version is required to download the driver catalog."
+                }
                 Write-DATLogEntry -Value "[Warning] - Driver catalog download attempt $i/3 failed: $($_.Exception.Message)" -Severity 2
                 if ($i -lt 3) { Start-Sleep -Seconds 5 } else {
                     # If download fails but we have a cached copy, use it
@@ -14046,7 +14878,12 @@ function Invoke-DATBiosPackaging {
     Set-DATRegistryValue -Name "RunningMessage" -Value "Creating BIOS WIM for $OEM $Model..." -Type String
 
     $wimEngine = (Get-ItemProperty -Path $global:RegPath -Name 'WimEngine' -ErrorAction SilentlyContinue).WimEngine
-    if ([string]::IsNullOrEmpty($wimEngine) -or $wimEngine -notin @('dism','wimlib','7zip')) { $wimEngine = 'dism' }
+    if ([string]::IsNullOrEmpty($wimEngine) -or $wimEngine -notin @('dism','wimlib','7zip')) {
+        # No explicit choice: prefer bundled wimlib (self-contained, no dismhost/DISM providers --
+        # avoids DISM-hangs-at-init). Fall back to DISM when wimlib is not bundled.
+        $bundledWimlib = Join-Path $global:ToolsDirectory 'Wimlib\wimlib-imagex.exe'
+        $wimEngine = if (Test-Path $bundledWimlib) { 'wimlib' } else { 'dism' }
+    }
 
     try {
         if ($wimEngine -eq 'wimlib') {
@@ -14114,8 +14951,11 @@ $script:DATTelemetryConfig = $null
 function Get-DATTelemetryConfig {
     <#
     .SYNOPSIS
-        Fetches and caches the remote dat-config.json from GitHub.
-        Returns $null if the fetch fails or telemetry is disabled remotely.
+        Returns the DAT API config (apiBaseUrl, endpoints, HMAC secret, kill switch, version gate).
+        Prefers the remote copy on GitHub -- the freshest source, which carries the server-controlled
+        kill switch, minimum-version gate and any rotated secret -- and caches it locally on success.
+        If the remote fetch fails (offline, GitHub outage, HTTP 429) it falls back to the last-known-good
+        local copy so the tool keeps working. Returns $null only when neither remote nor local is available.
     #>
     [CmdletBinding()]
     [OutputType([PSCustomObject])]
@@ -14127,18 +14967,197 @@ function Get-DATTelemetryConfig {
         return $script:DATTelemetryConfig
     }
 
-    $configUrl = 'https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/refs/heads/master/Data/DATAPIConfig.json'
+    $configUrl = $global:DATConfigUrl
+    $localPath = Join-Path $global:ScriptDirectory 'Data\DATAPIConfig.json'
+
+    # 1. Prefer the remote copy. On success, cache it locally as the last-known-good fallback.
     try {
         $proxyParams = Get-DATWebRequestProxy
         if ($proxyParams -isnot [hashtable]) { $proxyParams = @{} }
         $response = Invoke-RestMethod -Uri $configUrl -UseBasicParsing -TimeoutSec 5 -ErrorAction Stop @proxyParams
-        $script:DATTelemetryConfig = $response
-        Write-DATLogEntry -Value "[Telemetry] Remote config loaded (apiBaseUrl: $($response.apiBaseUrl))" -Severity 1
-        return $script:DATTelemetryConfig
+        if ($null -ne $response -and -not [string]::IsNullOrEmpty($response.apiBaseUrl)) {
+            $script:DATTelemetryConfig = $response
+            try {
+                $dataDir = Split-Path $localPath -Parent
+                if (-not (Test-Path -LiteralPath $dataDir)) { New-Item -Path $dataDir -ItemType Directory -Force | Out-Null }
+                $response | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $localPath -Encoding UTF8 -ErrorAction Stop
+            } catch {
+                Write-DATLogEntry -Value "[Telemetry] Could not cache API config locally ($localPath): $($_.Exception.Message)" -Severity 2
+            }
+            Write-DATLogEntry -Value "[Telemetry] Remote config loaded from $configUrl (apiBaseUrl: $($response.apiBaseUrl))" -Severity 1
+            return $script:DATTelemetryConfig
+        }
+        Write-DATLogEntry -Value "[Telemetry] Remote config from $configUrl was empty/invalid -- falling back to local copy" -Severity 2
     } catch {
-        Write-DATLogEntry -Value "[Telemetry] Failed to fetch remote config: $($_.Exception.Message)" -Severity 2
-        return $null
+        Write-DATLogEntry -Value "[Telemetry] Failed to fetch remote config from $configUrl : $($_.Exception.Message) -- falling back to local copy" -Severity 2
     }
+
+    # 2. Fall back to the cached/bundled local copy so a GitHub outage cannot break the tool.
+    if (Test-Path -LiteralPath $localPath) {
+        try {
+            $localRaw = Get-Content -LiteralPath $localPath -Raw -ErrorAction Stop
+            $local = $localRaw | ConvertFrom-Json -ErrorAction Stop
+            if ($null -ne $local -and -not [string]::IsNullOrEmpty($local.apiBaseUrl)) {
+                $script:DATTelemetryConfig = $local
+                Write-DATLogEntry -Value "[Telemetry] Using local fallback config: $localPath (apiBaseUrl: $($local.apiBaseUrl))" -Severity 2
+                return $script:DATTelemetryConfig
+            }
+        } catch {
+            Write-DATLogEntry -Value "[Telemetry] Local fallback config unreadable ($localPath): $($_.Exception.Message)" -Severity 2
+        }
+    }
+
+    Write-DATLogEntry -Value "[Telemetry] No remote or local API config available -- API-dependent features stay disabled until connectivity returns" -Severity 3
+    return $null
+}
+
+function Set-DATUpgradeRequiredState {
+    <#
+    .SYNOPSIS
+        Records an API "upgrade required" (HTTP 426) result to the registry so the UI or the headless
+        runner can surface it. Internal helper used by Resolve-DATApiUpgradeRequired.
+    #>
+    [CmdletBinding()]
+    param (
+        [AllowEmptyString()][string]$Message        = '',
+        [AllowEmptyString()][string]$DownloadUrl    = '',
+        [AllowEmptyString()][string]$MinimumVersion = ''
+    )
+    try {
+        Set-DATRegistryValue -Name 'UpgradeRequired'       -Value 1              -Type DWord
+        Set-DATRegistryValue -Name 'UpgradeMessage'        -Value $Message       -Type String
+        Set-DATRegistryValue -Name 'UpgradeDownloadUrl'    -Value $DownloadUrl    -Type String
+        Set-DATRegistryValue -Name 'UpgradeMinimumVersion' -Value $MinimumVersion -Type String
+    } catch { }
+}
+
+function Get-DATUpgradeRequiredState {
+    <#
+    .SYNOPSIS
+        Returns the pending API "upgrade required" (HTTP 426) state as a hashtable, or $null when no
+        upgrade signal is set. Read by the UI watcher and the headless runner.
+    #>
+    [CmdletBinding()]
+    [OutputType([hashtable])]
+    param ()
+    $flag = (Get-ItemProperty -Path $global:RegPath -Name 'UpgradeRequired' -ErrorAction SilentlyContinue).UpgradeRequired
+    if ($flag -ne 1) { return $null }
+    return @{
+        Message        = [string](Get-ItemProperty -Path $global:RegPath -Name 'UpgradeMessage'        -ErrorAction SilentlyContinue).UpgradeMessage
+        DownloadUrl    = [string](Get-ItemProperty -Path $global:RegPath -Name 'UpgradeDownloadUrl'    -ErrorAction SilentlyContinue).UpgradeDownloadUrl
+        MinimumVersion = [string](Get-ItemProperty -Path $global:RegPath -Name 'UpgradeMinimumVersion' -ErrorAction SilentlyContinue).UpgradeMinimumVersion
+    }
+}
+
+function Clear-DATUpgradeRequiredState {
+    <#
+    .SYNOPSIS
+        Clears the pending API "upgrade required" state after it has been shown to the user.
+    #>
+    [CmdletBinding()]
+    param ()
+    foreach ($valueName in @('UpgradeRequired', 'UpgradeMessage', 'UpgradeDownloadUrl', 'UpgradeMinimumVersion')) {
+        try { Remove-ItemProperty -Path $global:RegPath -Name $valueName -ErrorAction SilentlyContinue } catch { }
+    }
+}
+
+function Resolve-DATApiUpgradeRequired {
+    <#
+    .SYNOPSIS
+        Inspects a caught API error for HTTP 426 (Upgrade Required). On a match it records the upgrade
+        state (message / downloadUrl) and returns $true; otherwise returns $false. Engine-safe across
+        Windows PowerShell 5.1 (HttpWebResponse) and PowerShell 7 (HttpResponseMessage).
+    #>
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param (
+        [Parameter(Mandatory)]$ErrorRecord,
+        [string]$Source = '[API]'
+    )
+
+    # Status code: [int] of the StatusCode enum works on both HttpWebResponse (5.1) and
+    # HttpResponseMessage (7); .value__ is 5.1-only and must not be used.
+    $status = 0
+    try {
+        $resp = $ErrorRecord.Exception.Response
+        if ($null -ne $resp) { $status = [int]$resp.StatusCode }
+    } catch { $status = 0 }
+    if ($status -ne 426) { return $false }
+
+    # Body: PowerShell 7 exposes it via ErrorDetails.Message; fall back to the response stream for
+    # Windows PowerShell 5.1 where ErrorDetails may be empty.
+    $raw = $null
+    if ($ErrorRecord.ErrorDetails -and -not [string]::IsNullOrWhiteSpace($ErrorRecord.ErrorDetails.Message)) {
+        $raw = $ErrorRecord.ErrorDetails.Message
+    } else {
+        try {
+            $stream = $ErrorRecord.Exception.Response.GetResponseStream()
+            if ($stream) {
+                $reader = New-Object System.IO.StreamReader($stream)
+                $raw = $reader.ReadToEnd()
+                $reader.Dispose()
+            }
+        } catch { }
+    }
+
+    $info = $null
+    if (-not [string]::IsNullOrWhiteSpace($raw)) { try { $info = $raw | ConvertFrom-Json } catch { } }
+
+    $message = if ($info -and $info.message)     { [string]$info.message } else {
+        'This version of the Driver Automation Tool is no longer supported. Please upgrade to continue.'
+    }
+    $downloadUrl = if ($info -and $info.downloadUrl) { [string]$info.downloadUrl } else {
+        'https://github.com/maurice-daly/DriverAutomationTool/releases'
+    }
+    $minVersion = if ($info -and $info.minimumVersion) { [string]$info.minimumVersion } else { '' }
+
+    Write-DATLogEntry -Value "$Source API rejected the client (HTTP 426 Upgrade Required): $message" -Severity 3
+    Set-DATUpgradeRequiredState -Message $message -DownloadUrl $downloadUrl -MinimumVersion $minVersion
+    return $true
+}
+
+function Get-DATHttpThrottleInfo {
+    <#
+    .SYNOPSIS
+        Classifies a caught HTTP error as Azure Storage throttling. Returns a hashtable with the HTTP
+        status, the Azure error Code (ServerBusy / OperationTimedOut / ...), a Retry-After delay in
+        seconds, and IsThrottle ($true for 429/503 or a throttle code). Engine-safe (PS 5.1 / 7).
+    #>
+    [CmdletBinding()]
+    [OutputType([hashtable])]
+    param ([Parameter(Mandatory)]$ErrorRecord)
+
+    $status = 0; $retryAfter = 0; $code = ''
+    try {
+        $resp = $ErrorRecord.Exception.Response
+        if ($null -ne $resp) {
+            $status = [int]$resp.StatusCode
+            try {
+                $h = $resp.Headers
+                if ($null -ne $h) {
+                    # PS 5.1 HttpWebResponse exposes a string header; PS 7 HttpResponseMessage uses RetryAfter.Delta.
+                    $raStr = $null
+                    try { $raStr = $h['Retry-After'] } catch { $raStr = $null }
+                    if ([string]::IsNullOrEmpty($raStr)) {
+                        try { if ($h.RetryAfter -and $h.RetryAfter.Delta) { $retryAfter = [int]$h.RetryAfter.Delta.TotalSeconds } } catch { }
+                    } else {
+                        $tmp = 0; if ([int]::TryParse("$raStr", [ref]$tmp)) { $retryAfter = $tmp }
+                    }
+                }
+            } catch { }
+        }
+    } catch { $status = 0 }
+
+    try {
+        $body = $null
+        if ($ErrorRecord.ErrorDetails -and -not [string]::IsNullOrWhiteSpace($ErrorRecord.ErrorDetails.Message)) {
+            $body = $ErrorRecord.ErrorDetails.Message
+        }
+        if (-not [string]::IsNullOrWhiteSpace($body) -and $body -match '<Code>([^<]+)</Code>') { $code = $Matches[1] }
+    } catch { }
+
+    $isThrottle = ($status -eq 429 -or $status -eq 503 -or $code -in @('ServerBusy', 'TooManyRequests', 'OperationTimedOut'))
+    return @{ Status = $status; Code = $code; RetryAfter = $retryAfter; IsThrottle = [bool]$isThrottle }
 }
 
 function Test-DATTelemetryEnabled {
@@ -14255,8 +15274,9 @@ function Send-DATTelemetry {
     # breaking server-side HMAC verification.
     $bodyBytes = [System.Text.Encoding]::UTF8.GetBytes($json)
 
-    # HMAC-SHA256 request signing (softfail-safe -- skipped if secret is absent or computation fails)
-    $headers = @{}
+    # HMAC-SHA256 request signing (softfail-safe -- skipped if secret is absent or computation fails).
+    # x-dat-version is set unconditionally so the API version gate always sees it, even when HMAC is skipped.
+    $headers = @{ 'x-dat-version' = [string]$global:ScriptRelease }
     try {
         $hmacSecret = $null
         if ($config -and $config.PSObject.Properties['hmacSecret']) {
@@ -14288,6 +15308,9 @@ function Send-DATTelemetry {
             Write-Host "[Telemetry] Payload: $json"
         }
     } catch {
+        # HTTP 426 -- client version below the API minimum. Record the upgrade prompt (telemetry is
+        # fire-and-forget, so a failure must never surface as an error), then stop.
+        if (Resolve-DATApiUpgradeRequired -ErrorRecord $_ -Source '[Telemetry]') { return }
         Write-DATLogEntry -Value "[Telemetry] POST $Endpoint -- failed: $($_.Exception.Message)" -Severity 2
         if ($global:ExecutionMode -eq 'Scheduled Task') {
             Write-Host "[Telemetry] POST $Endpoint -- failed: $($_.Exception.Message)"
@@ -14349,8 +15372,9 @@ function Send-DATFeedback {
     # breaking server-side HMAC verification.
     $bodyBytes = [System.Text.Encoding]::UTF8.GetBytes($json)
 
-    # HMAC-SHA256 request signing (softfail-safe -- skipped if secret is absent or computation fails)
-    $headers = @{}
+    # HMAC-SHA256 request signing (softfail-safe -- skipped if secret is absent or computation fails).
+    # x-dat-version is set unconditionally so the API version gate always sees it, even when HMAC is skipped.
+    $headers = @{ 'x-dat-version' = [string]$global:ScriptRelease }
     try {
         $hmacSecret = $null
         if ($config -and $config.PSObject.Properties['hmacSecret']) {
@@ -14377,6 +15401,7 @@ function Send-DATFeedback {
             -Headers $headers -UseBasicParsing -TimeoutSec 30 -ErrorAction Stop @proxyParams
         Write-DATLogEntry -Value "[Feedback] Submitted $Rating feedback successfully" -Severity 1
     } catch {
+        [void](Resolve-DATApiUpgradeRequired -ErrorRecord $_ -Source '[Feedback]')
         Write-DATLogEntry -Value "[Feedback] Submit failed: $($_.Exception.Message)" -Severity 2
         throw
     }
@@ -14767,32 +15792,55 @@ function Test-DATTelemetryConnection {
     Write-DATLogEntry -Value "[Telemetry] Starting connectivity test..." -Severity 1
 
     $result = @{
-        ConfigOk   = $false
-        HealthOk   = $false
-        ApiBaseUrl = $null
-        Error      = $null
+        ConfigOk        = $false
+        HealthOk        = $false
+        ApiBaseUrl      = $null
+        ConfigUrl       = $global:DATConfigUrl
+        HealthUrl       = $null
+        FailedStep      = $null
+        HttpStatus      = 0
+        UsedLocalConfig = $false
+        Error           = $null
     }
 
-    # Step 1: Fetch remote config (force refresh)
-    Write-DATLogEntry -Value "[Telemetry] Step 1: Fetching remote config from GitHub..." -Severity 1
+    # Step 1: fetch the config directly from GitHub so this accurately tests the config source's
+    # reachability (Get-DATTelemetryConfig would silently fall back to a local copy and mask an outage).
+    Write-DATLogEntry -Value "[Telemetry] Step 1: Fetching config from $($global:DATConfigUrl)" -Severity 1
+    $config = $null
     try {
-        $config = Get-DATTelemetryConfig -Force
+        $proxyParams = Get-DATWebRequestProxy
+        if ($proxyParams -isnot [hashtable]) { $proxyParams = @{} }
+        $config = Invoke-RestMethod -Uri $global:DATConfigUrl -UseBasicParsing -TimeoutSec 10 -ErrorAction Stop @proxyParams
         if ($null -eq $config -or [string]::IsNullOrEmpty($config.apiBaseUrl)) {
-            $result.Error = "Remote config returned empty or missing apiBaseUrl"
-            Write-DATLogEntry -Value "[Telemetry] Config fetch returned empty -- $($result.Error)" -Severity 3
+            $result.FailedStep = 'Config (GitHub)'
+            $result.Error = "Config returned empty or missing apiBaseUrl: $($global:DATConfigUrl)"
+            Write-DATLogEntry -Value "[Telemetry] $($result.Error)" -Severity 3
             return $result
         }
         $result.ConfigOk = $true
         $result.ApiBaseUrl = $config.apiBaseUrl
         Write-DATLogEntry -Value "[Telemetry] Config OK -- apiBaseUrl: $($config.apiBaseUrl)" -Severity 1
     } catch {
-        $result.Error = "Config fetch failed: $($_.Exception.Message)"
+        $cStatus = 0; try { if ($_.Exception.Response) { $cStatus = [int]$_.Exception.Response.StatusCode } } catch { }
+        $result.HttpStatus = $cStatus
+        $result.FailedStep = 'Config (GitHub)'
+        $cStatusTxt = if ($cStatus -gt 0) { " (HTTP $cStatus)" } else { '' }
+        $result.Error = "GitHub config unreachable${cStatusTxt}: $($global:DATConfigUrl) -- $($_.Exception.Message)"
         Write-DATLogEntry -Value "[Telemetry] $($result.Error)" -Severity 3
-        return $result
+        # Try the cached local fallback so the API endpoint can still be tested.
+        $config = Get-DATTelemetryConfig
+        if ($null -ne $config -and -not [string]::IsNullOrEmpty($config.apiBaseUrl)) {
+            $result.UsedLocalConfig = $true
+            $result.ApiBaseUrl = $config.apiBaseUrl
+            Write-DATLogEntry -Value "[Telemetry] Using local fallback config for the API test (apiBaseUrl: $($config.apiBaseUrl))" -Severity 2
+        } else {
+            return $result
+        }
     }
 
     # Step 2: Hit the health endpoint
     $healthUrl = "$($config.apiBaseUrl)/$($config.endpoints.health)"
+    $result.HealthUrl = $healthUrl
     Write-DATLogEntry -Value "[Telemetry] Step 2: Testing health endpoint -- $healthUrl" -Severity 1
     try {
         $proxyParams = Get-DATWebRequestProxy
@@ -14801,12 +15849,16 @@ function Test-DATTelemetryConnection {
         $result.HealthOk = $true
         Write-DATLogEntry -Value "[Telemetry] Health endpoint OK" -Severity 1
     } catch {
-        $result.Error = $_.Exception.Message
-        Write-DATLogEntry -Value "[Telemetry] Health check failed: $($result.Error)" -Severity 2
+        $hStatus = 0; try { if ($_.Exception.Response) { $hStatus = [int]$_.Exception.Response.StatusCode } } catch { }
+        $result.HttpStatus = $hStatus
+        $result.FailedStep = 'Health (API)'
+        $hStatusTxt = if ($hStatus -gt 0) { " (HTTP $hStatus)" } else { '' }
+        $result.Error = "API health check failed${hStatusTxt}: $healthUrl -- $($_.Exception.Message)"
+        Write-DATLogEntry -Value "[Telemetry] $($result.Error)" -Severity 2
     }
 
-    $status = if ($result.ConfigOk -and $result.HealthOk) { "PASSED" } elseif ($result.ConfigOk) { "PARTIAL (config OK, health failed)" } else { "FAILED" }
-    Write-DATLogEntry -Value "[Telemetry] Connectivity test result: $status" -Severity $(if ($result.HealthOk) { 1 } else { 2 })
+    $overall = if ($result.ConfigOk -and $result.HealthOk) { "PASSED" } elseif ($result.HealthOk -or $result.ConfigOk) { "PARTIAL" } else { "FAILED" }
+    Write-DATLogEntry -Value "[Telemetry] Connectivity test result: $overall" -Severity $(if ($result.HealthOk) { 1 } else { 2 })
 
     return $result
 }

@@ -934,7 +934,7 @@
                                    Foreground="{DynamicResource AccentColor}" VerticalAlignment="Center" Margin="0,0,8,0"/>
                         <TextBlock Text="Driver Automation Tool" FontSize="13" FontWeight="SemiBold"
                                    Foreground="{DynamicResource WindowForeground}" VerticalAlignment="Center"/>
-                        <TextBlock x:Name="txt_Version" Text=" Version 10.2.1" FontSize="11"
+                        <TextBlock x:Name="txt_Version" Text=" Version 10.2.2" FontSize="11"
                                    Foreground="{DynamicResource InputPlaceholder}" VerticalAlignment="Center" Margin="4,0"/>
                     </StackPanel>
 
@@ -3224,6 +3224,11 @@
                                                                 <Run Text="5."/>
                                                                 <Run Text=" (Optional) DeviceManagementConfiguration.ReadWrite.All — required for assignment filter automation"/>
                                                             </TextBlock>
+                                                            <TextBlock FontSize="13" Foreground="{DynamicResource InputPlaceholder}"
+                                                                       TextWrapping="Wrap" Margin="8,0,0,0">
+                                                                <Run Text="6."/>
+                                                                <Run Text=" (Optional) DeviceManagementRBAC.Read.All — required for RBAC scope tag selection"/>
+                                                            </TextBlock>
                                                         </StackPanel>
                                                     </Border>
                                                 </StackPanel>
@@ -3252,6 +3257,9 @@
                                                 </TextBlock>
                                                 <TextBlock FontSize="11" Foreground="{DynamicResource InputPlaceholder}" Margin="0,2">
                                                     <Run Text="&#x2022;"/><Run Text="  GroupMember.Read.All"/>
+                                                </TextBlock>
+                                                <TextBlock FontSize="11" Foreground="{DynamicResource InputPlaceholder}" Margin="0,2">
+                                                    <Run Text="&#x2022;"/><Run Text="  DeviceManagementRBAC.Read.All"/>
                                                 </TextBlock>
                                             </StackPanel>
                                             <Grid>
@@ -3600,6 +3608,62 @@
                                 </StackPanel>
                             </Border>
 
+                            <!-- RBAC Scope Tags -->
+                            <Border Style="{StaticResource CardPanel}" Margin="0,0,0,12">
+                                <StackPanel>
+                                    <TextBlock FontSize="14" FontWeight="SemiBold"
+                                               Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,4">
+                                        <Run Text="&#xE8D7;" FontFamily="Segoe MDL2 Assets" FontSize="14"/><Run Text="  RBAC Scope Tags"/>
+                                    </TextBlock>
+                                    <TextBlock Text="Assign one or more RBAC scope tags to the driver and BIOS apps created in Intune. Tenants that enforce role-based scope tags require every new app to carry a permitted tag, otherwise creation fails. Select the Default tag unless your tenant requires specific ones. The list is populated from your tenant after you authenticate to Intune."
+                                               FontSize="12" Foreground="{DynamicResource InputPlaceholder}" Margin="0,0,0,12" TextWrapping="Wrap" LineHeight="18"/>
+
+                                    <!-- Enable toggle row -->
+                                    <Grid Margin="0,0,0,12">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <CheckBox x:Name="chk_EnableScopeTags"
+                                                  Style="{StaticResource ToggleSwitch}"
+                                                  VerticalAlignment="Center"
+                                                  Margin="0,0,12,0"/>
+                                        <TextBlock x:Name="txt_ScopeTagFeatureState" Grid.Column="1"
+                                                   Text="Off" FontSize="12" FontWeight="SemiBold"
+                                                   Foreground="{DynamicResource InputPlaceholder}"
+                                                   VerticalAlignment="Center"/>
+                                    </Grid>
+
+                                    <Grid Margin="0,0,0,6">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Grid.Column="0" Text="Select one or more scope tags:" FontSize="12" FontWeight="SemiBold"
+                                                   Foreground="{DynamicResource WindowForeground}" VerticalAlignment="Center"/>
+                                        <Button x:Name="btn_RefreshScopeTags" Grid.Column="1" Style="{StaticResource SecondaryButton}"
+                                                Height="30" Padding="10,0" ToolTip="Refresh the scope tag list from Intune">
+                                            <TextBlock><Run Text="&#xE72C;" FontFamily="Segoe MDL2 Assets"/><Run Text="  Refresh"/></TextBlock>
+                                        </Button>
+                                    </Grid>
+
+                                    <Border x:Name="border_ScopeTagList" BorderBrush="{DynamicResource InputBorder}" BorderThickness="1"
+                                            CornerRadius="6" Background="{DynamicResource InputBackground}" Padding="8,6">
+                                        <!-- MaxHeight caps the visible list at ~5 rows (5 x 28px); the rest scrolls. -->
+                                        <ScrollViewer x:Name="scroll_ScopeTagList" VerticalScrollBarVisibility="Auto" MaxHeight="140">
+                                            <StackPanel x:Name="panel_ScopeTagList"/>
+                                        </ScrollViewer>
+                                    </Border>
+
+                                    <StackPanel x:Name="panel_ScopeTagStatus" Orientation="Horizontal" Margin="0,10,0,0" Visibility="Collapsed">
+                                        <TextBlock x:Name="txt_ScopeTagStatusIcon" FontFamily="Segoe MDL2 Assets" FontSize="14"
+                                                   VerticalAlignment="Center" Margin="0,0,8,0"/>
+                                        <TextBlock x:Name="txt_ScopeTagStatusText" FontSize="12" TextWrapping="Wrap"
+                                                   VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </StackPanel>
+                            </Border>
+
                             <!-- Package Deployment -->
                             <Border Style="{StaticResource CardPanel}" Margin="0,0,0,12">
                                 <StackPanel>
@@ -3779,6 +3843,10 @@
                                                Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,6"/>
                                     <TextBlock Text="When enabled, an assignment filter matching the device manufacturer (or model) will be created automatically after each package is uploaded and assigned to 'All Devices' with the filter applied."
                                                FontSize="12" Foreground="{DynamicResource InputPlaceholder}" TextWrapping="Wrap" Margin="0,0,0,12" LineHeight="18"/>
+                                    <TextBlock x:Name="txt_AutoFilterDeployHint"
+                                               Text="Requires 'Deploy to All Devices' to be enabled -- an assignment filter is only applied as part of a deployment. With deployment off, no filter is created or applied."
+                                               FontSize="12" FontWeight="SemiBold" Foreground="{DynamicResource InputPlaceholder}"
+                                               TextWrapping="Wrap" Margin="0,0,0,12" LineHeight="18"/>
                                     <Grid Margin="0,0,0,16">
                                         <Grid.ColumnDefinitions>
                                             <ColumnDefinition Width="Auto"/>
@@ -3854,6 +3922,75 @@
                                     <!-- Required filters preview -->
                                     <TextBlock x:Name="txt_FilterPreview" FontSize="12" FontStyle="Italic"
                                                Foreground="{DynamicResource InputPlaceholder}" Margin="0,12,0,0" TextWrapping="Wrap"/>
+                                </StackPanel>
+                            </Border>
+
+                            <!-- Upload Engine (AzCopy) -->
+                            <Border Style="{StaticResource CardPanel}" Margin="0,0,0,12">
+                                <StackPanel>
+                                    <TextBlock FontSize="14" FontWeight="SemiBold"
+                                               Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,4">
+                                        <Run Text="&#xE898;" FontFamily="Segoe MDL2 Assets" FontSize="14"/><Run Text="  Upload Engine (AzCopy)"/>
+                                    </TextBlock>
+                                    <TextBlock Text="Upload Intune package content with Microsoft AzCopy instead of the built-in chunked uploader. AzCopy self-tunes concurrency for higher throughput on large driver packages and is downloaded automatically on first use. When AzCopy is enabled, the Chunk Size and Parallel Uploads settings below apply only to the built-in uploader."
+                                               FontSize="12" Foreground="{DynamicResource InputPlaceholder}" Margin="0,0,0,12" TextWrapping="Wrap" LineHeight="18"/>
+
+                                    <!-- AzCopy binary status (version + signature), mirrors the CURL status box -->
+                                    <Border Background="{DynamicResource InputBackground}" CornerRadius="6" Padding="12,10" Margin="0,0,0,14">
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="Auto"/>
+                                                <ColumnDefinition Width="*"/>
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock x:Name="txt_AzCopyStatusIcon" Grid.Column="0"
+                                                       FontFamily="Segoe MDL2 Assets" FontSize="14"
+                                                       VerticalAlignment="Center" Margin="0,0,10,0"
+                                                       Foreground="{DynamicResource InputPlaceholder}"
+                                                       Text="&#xE946;"/>
+                                            <TextBlock x:Name="txt_AzCopyStatus" Grid.Column="1"
+                                                       FontSize="12" VerticalAlignment="Center"
+                                                       Foreground="{DynamicResource InputPlaceholder}"
+                                                       Text="Checking AzCopy status..."/>
+                                        </Grid>
+                                    </Border>
+
+                                    <!-- Use AzCopy toggle -->
+                                    <Grid Margin="0,0,0,12">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <CheckBox x:Name="chk_IntuneUseAzCopy"
+                                                  Style="{StaticResource ToggleSwitch}"
+                                                  VerticalAlignment="Center"
+                                                  Margin="0,0,12,0"/>
+                                        <TextBlock x:Name="txt_IntuneUseAzCopyState" Grid.Column="1"
+                                                   Text="Off" FontSize="12" FontWeight="SemiBold"
+                                                   Foreground="{DynamicResource InputPlaceholder}"
+                                                   VerticalAlignment="Center"/>
+                                    </Grid>
+
+                                    <!-- Show AzCopy window sub-option (only relevant when AzCopy is on) -->
+                                    <StackPanel x:Name="panel_AzCopyWindow" Visibility="Collapsed">
+                                        <TextBlock Text="Show AzCopy Window" FontSize="13" FontWeight="SemiBold"
+                                                   Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,4"/>
+                                        <TextBlock Text="Run AzCopy in a visible console window so you can watch its native progress output. When off, AzCopy runs hidden and progress is reported inside this tool. Hidden is recommended -- it keeps the one-time storage access token out of a visible window."
+                                                   FontSize="12" Foreground="{DynamicResource InputPlaceholder}" Margin="0,0,0,8" TextWrapping="Wrap" LineHeight="18"/>
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="Auto"/>
+                                                <ColumnDefinition Width="Auto"/>
+                                            </Grid.ColumnDefinitions>
+                                            <CheckBox x:Name="chk_IntuneAzCopyShowWindow"
+                                                      Style="{StaticResource ToggleSwitch}"
+                                                      VerticalAlignment="Center"
+                                                      Margin="0,0,12,0"/>
+                                            <TextBlock x:Name="txt_IntuneAzCopyShowWindowState" Grid.Column="1"
+                                                       Text="Off" FontSize="12" FontWeight="SemiBold"
+                                                       Foreground="{DynamicResource InputPlaceholder}"
+                                                       VerticalAlignment="Center"/>
+                                        </Grid>
+                                    </StackPanel>
                                 </StackPanel>
                             </Border>
 
@@ -4765,6 +4902,13 @@
                                                 </MenuItem.Icon>
                                             </MenuItem>
 
+                                            <MenuItem x:Name="ctx_UpdateScopeTags" Header="Update / Assign Scope Tags">
+                                                <MenuItem.Icon>
+                                                    <TextBlock Text="&#xE8D7;" FontFamily="Segoe MDL2 Assets" FontSize="14"
+                                                               Foreground="{DynamicResource AccentColor}"/>
+                                                </MenuItem.Icon>
+                                            </MenuItem>
+
                                             <Separator/>
 
                                             <MenuItem x:Name="ctx_RemoveAssignments" Header="Remove Assignments">
@@ -5278,6 +5422,17 @@
                                                     <TextBlock><Run Text="&#xED25;" FontFamily="Segoe MDL2 Assets"/><Run Text="  Browse"/></TextBlock>
                                                 </Button>
                                             </Grid>
+                                            <!-- Long path warning (path over 120 chars while Windows long-path support is off) -->
+                                            <Border x:Name="panel_TempPathWarning" Margin="0,6,0,0" Visibility="Collapsed"
+                                                    Background="{DynamicResource StatusWarningBackground}" CornerRadius="6" Padding="8,6">
+                                                <StackPanel Orientation="Horizontal">
+                                                    <TextBlock Text="&#xE7BA;" FontFamily="Segoe MDL2 Assets" FontSize="12"
+                                                               Foreground="{DynamicResource StatusWarning}" VerticalAlignment="Top" Margin="0,1,8,0"/>
+                                                    <TextBlock x:Name="txt_TempPathWarning" FontSize="11" TextWrapping="Wrap" MaxWidth="620"
+                                                               Foreground="{DynamicResource StatusWarning}"
+                                                               Text="This temporary path is long (over 120 characters) and Windows long path support is not enabled. Deeply nested driver files may exceed the 260-character MAX_PATH limit and fail to extract. Use a shorter path (for example C:\Temp) or enable the LongPathsEnabled policy."/>
+                                                </StackPanel>
+                                            </Border>
                                             <Grid x:Name="grid_TempFreeSpace" Margin="0,6,0,0" Visibility="Collapsed">
                                                 <Grid.RowDefinitions>
                                                     <RowDefinition Height="Auto"/>
@@ -5286,6 +5441,8 @@
                                                 <ProgressBar x:Name="progress_TempFreeSpace" Grid.Row="0" Height="6" Minimum="0" Maximum="100"
                                                              Background="{DynamicResource InputBackground}" Foreground="#3B82F6"
                                                              BorderThickness="0"/>
+                                                <TextBlock x:Name="txt_LongPathsStatus" Grid.Row="1" FontSize="10" Margin="0,4,0,0"
+                                                           Foreground="{DynamicResource InputPlaceholder}" HorizontalAlignment="Left"/>
                                                 <TextBlock x:Name="txt_TempFreeSpace" Grid.Row="1" FontSize="10" Margin="0,4,0,0"
                                                            Foreground="{DynamicResource InputPlaceholder}" HorizontalAlignment="Right"/>
                                             </Grid>
@@ -6048,6 +6205,16 @@
                                                        FontSize="11" Margin="0,4,0,0"
                                                        Foreground="{DynamicResource InputPlaceholder}"
                                                        Visibility="Collapsed"/>
+
+                                            <TextBlock Text="Custom Header Text (optional)" FontSize="12" FontWeight="SemiBold"
+                                                       Foreground="{DynamicResource WindowForeground}" Margin="0,12,0,6"/>
+                                            <TextBlock Text="Shown as a headline at the top of the Teams card -- useful for labelling which customer/tenant a build belongs to when several post to one channel."
+                                                       Foreground="{DynamicResource InputPlaceholder}" FontSize="12"
+                                                       TextWrapping="Wrap" Margin="0,0,0,6" LineHeight="18"/>
+                                            <TextBox x:Name="txt_TeamsCustomText"
+                                                     Style="{StaticResource RoundedTextBox}"
+                                                     Height="36"
+                                                     MaxLength="200"/>
                                         </StackPanel>
                                     </Border>
 
@@ -6639,7 +6806,7 @@
                                     <StackPanel>
                                         <TextBlock Text="Driver Automation Tool" FontSize="22" FontWeight="Bold"
                                                    Foreground="{DynamicResource AccentColor}" Margin="0,0,0,4"/>
-                                        <TextBlock x:Name="txt_AboutVersion" Text="Version 10.2.1" FontSize="14"
+                                        <TextBlock x:Name="txt_AboutVersion" Text="Version 10.2.2" FontSize="14"
                                                    Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,16"/>
 
                                         <TextBlock TextWrapping="Wrap" FontSize="13"

@@ -3,6 +3,18 @@ Release Notes
 IMPORTANT
 - DAT Downloads have been moved to GitHub - https://github.com/maurice-daly/DriverAutomationTool
 
+Version 10.2.2
+What's New & Fixed
+- Intune RBAC Scope Tags — You can now assign one or more RBAC scope tags to the Intune apps the tool creates. Tenants that enforce role-based scope tags previously rejected every new app (creation failed with a "condition not met" error); apps now carry a permitted tag, with the built-in Default tag used automatically when none is selected. Includes a tag picker in Intune Package Options that populates from the connected tenant, plus scheduled/headless support. (#864)
+- Automatic Deployment & Assignment Filters — New option to automatically assign freshly built packages to All Devices or a chosen group, applying the matching assignment filter for each package. Fixed a case where an assignment filter's target was never set so the filter wasn't actually applied, and firmed up the per-model filter rule building (including Lenovo baseboard/machine-type matching). (#895, #897)
+- AzCopy Upload Engine (Intune) — Optional Microsoft AzCopy engine for uploading package content to Intune instead of the built-in chunked uploader. It self-tunes concurrency for higher throughput on large driver packages, is downloaded and signature-verified automatically on first use, can run hidden or in a visible window, and shows its version/signature status in Package Options. Also improved upload error handling and reporting.
+- WIM Engine Reliability — On machines where DISM hangs during initialization (banner shown, then no progress), the tool now prefers the bundled wimlib engine by default and adds a DISM stall/timeout so a stuck capture no longer wedges the whole build indefinitely.
+- Model Matching — Feature-Update Gating — Non-Dell driver packages now require the device's Windows feature update (e.g., 24H2 / 25H2) to match the build the pack was created for, preventing a build-specific package from installing on the wrong Windows release. Dell remains major-OS only, and BIOS packages stay OS-agnostic.
+- Toast / Teams Notifications — Added a custom header line to the Teams card so teams running multiple tenants into one channel can label each build by customer/tenant. Notifications now report genuinely updated models separately from those skipped because already current, with each model's true outcome shown — a check-only run is no longer misreported as having updated everything. (#842)
+- UI / Branding Fixes — The custom branding/image preview no longer shows a stale image served from the framework's cached decode; the file now loads fresh each time. Also improved file-path detection in settings and refined loading behaviour. (#896)
+- Build Reliability — A build that fails part-way through now cleans up its working directory and releases file handles correctly, instead of leaving a partial working folder behind. (#816)
+
+
 Version 10.2.1
 What's New & Fixed
 - BIOS Management — Fixed the automatic restart after a BIOS update being silently skipped on unattended/Intune devices. The Focus Assist / Do Not Disturb check no longer treats "no interactive user" (the normal state when running as SYSTEM) as a reason to hold back the reboot, so staged BIOS updates now apply as intended while still deferring for users who are genuinely busy or presenting. (#893)

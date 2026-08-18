@@ -72,6 +72,7 @@ $script:Themes = @{
         StatusWarning          = "#FFAA44"
         StatusWarningBackground = "#1AFFAA44"
         StatusError            = "#E74856"
+        StatusErrorText        = "#FF6B6B"
 
         # Known model row text -- cyan-blue in dark mode (green is too harsh)
         KnownModelForeground   = "#22D3EE"
@@ -176,6 +177,7 @@ $script:Themes = @{
         StatusWarning          = "#FFAA44"
         StatusWarningBackground = "#20FFAA44"
         StatusError            = "#E74856"
+        StatusErrorText        = "#C0392B"
 
         # Known model row text -- green reads well on the light surface
         KnownModelForeground   = "#107C10"

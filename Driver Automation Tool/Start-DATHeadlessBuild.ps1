@@ -54,6 +54,7 @@ function Send-DATHeadlessPreflightFailure {
         Send-DATTeamsNotification -WebhookUrl $config.TeamsWebhookUrl `
             -TotalModels $preflightModels.Count -SuccessCount 0 -FailedCount 0 `
             -NotProcessedCount $preflightModels.Count `
+            -CustomText ([string]$config.TeamsCustomText) `
             -Platform $config.Platform -PackageType $config.PackageType -Models $preflightModels -Outcome 'Failed'
         Write-DATLogEntry -Value "[Teams] Pre-flight failure notification sent -- $Reason" -Severity 1
     } catch {
@@ -231,6 +232,7 @@ if ($config.MaintenanceWindowEnabled -and $config.MaintenanceWindows -and @($con
 if ($config.TeamsNotificationsEnabled -and -not [string]::IsNullOrEmpty($config.TeamsWebhookUrl)) {
     $processingParams['TeamsNotificationsEnabled'] = $true
     $processingParams['TeamsWebhookUrl'] = $config.TeamsWebhookUrl
+    if (-not [string]::IsNullOrEmpty($config.TeamsCustomText)) { $processingParams['TeamsCustomText'] = $config.TeamsCustomText }
 }
 
 # Normalise platform name -- BuildConfig accepts 'ConfigMgr' or 'Configuration Manager'
@@ -283,6 +285,30 @@ switch ($config.Platform) {
                 exit 1
             }
             Write-Host "[Headless] Intune authentication successful (expires: $($authResult.ExpiresOn))"
+
+            # Apply the optional RBAC scope tag selection from the config. The build pipeline reads
+            # these from the registry ($global:RegPath), so persist them before processing. Only
+            # written when the config specifies them, leaving a UI-configured machine untouched.
+            $cfgScopeEnabled = $config.Intune.ScopeTagsEnabled
+            $cfgScopeIds     = $config.Intune.ScopeTagIds
+            if ($null -ne $cfgScopeIds -or $null -ne $cfgScopeEnabled) {
+                $idsList = @()
+                if ($cfgScopeIds -is [array]) {
+                    $idsList = @($cfgScopeIds)
+                } elseif (-not [string]::IsNullOrWhiteSpace([string]$cfgScopeIds)) {
+                    $idsList = @(([string]$cfgScopeIds).Split(','))
+                }
+                $idsList = @($idsList | ForEach-Object { ([string]$_).Trim() } | Where-Object { $_ })
+                $scopeOn = ($cfgScopeEnabled -eq $true) -or ($cfgScopeEnabled -eq 1) -or ($idsList.Count -gt 0)
+                if ($scopeOn -and $idsList.Count -gt 0) {
+                    Set-DATRegistryValue -Name 'IntuneScopeTagsEnabled' -Value 1 -Type DWord
+                    Set-DATRegistryValue -Name 'IntuneScopeTagIds' -Value ($idsList -join ',') -Type String
+                    Write-Host "[Headless] RBAC scope tag(s) applied from config: $($idsList -join ', ')"
+                } else {
+                    Set-DATRegistryValue -Name 'IntuneScopeTagsEnabled' -Value 0 -Type DWord
+                    Write-Host "[Headless] RBAC scope tags disabled by config -- Default tag (0) will be used"
+                }
+            }
 
             # Pass the live auth context to the processing function.
             $processingParams['IntuneAuthContext'] = Get-DATIntuneAuthContext -NoRefresh
@@ -465,8 +491,21 @@ try {
     Write-DATLogEntry -Value "[Headless] Build completed successfully at $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" -Severity 1
 } catch {
     $buildExitCode = 1
-    Write-Error "[Headless] Build failed: $_"
-    try { Write-DATLogEntry -Value "[Headless] Build failed: $($_.Exception.Message)" -Severity 3 } catch { }
+    # If the failure is the API version gate (HTTP 426), surface the upgrade instruction clearly and
+    # exit with a distinct code (2) so schedulers/monitoring can tell it apart from a build error.
+    $upgState = $null
+    try { $upgState = Get-DATUpgradeRequiredState } catch { }
+    if ($null -ne $upgState -or "$_" -match 'DATUpgradeRequired') {
+        $buildExitCode = 2
+        $upgMsg = if ($upgState -and $upgState.Message)     { $upgState.Message }     else { 'This version of the Driver Automation Tool is no longer supported. Please upgrade to continue.' }
+        $upgUrl = if ($upgState -and $upgState.DownloadUrl) { $upgState.DownloadUrl } else { 'https://github.com/maurice-daly/DriverAutomationTool/releases' }
+        Write-Error "[Headless] Upgrade required (HTTP 426): $upgMsg Download: $upgUrl"
+        try { Write-DATLogEntry -Value "[Headless] Upgrade required (HTTP 426): $upgMsg -- $upgUrl" -Severity 3 } catch { }
+        try { Clear-DATUpgradeRequiredState } catch { }
+    } else {
+        Write-Error "[Headless] Build failed: $_"
+        try { Write-DATLogEntry -Value "[Headless] Build failed: $($_.Exception.Message)" -Severity 3 } catch { }
+    }
 } finally {
     # Clean temporary storage in a finally block so it ALWAYS runs -- on success AND when the
     # build throws part-way through (#816). Previously this lived on the success path inside the

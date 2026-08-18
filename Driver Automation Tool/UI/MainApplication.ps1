@@ -2076,7 +2076,12 @@ function Show-DATLoadingSourcesModal {
         The modal auto-closes when all OEMs reach 'OK' or 'Error' status, or can be closed early.
     #>
     param (
-        [Parameter(Mandatory)][string[]]$OEMs
+        [Parameter(Mandatory)][string[]]$OEMs,
+        # When the DAT API driver catalog is the active source, the individual OEM catalog links
+        # (OEMLinks.xml) are not downloaded -- driver models come straight from the API. The
+        # "OEM Links" row is still shown for consistency, but marked as a neutral "Not required"
+        # terminal state instead of sitting on "Waiting..." for the whole load.
+        [switch]$UseAPICatalog
     )
 
     $theme = Get-DATTheme -ThemeName $script:CurrentTheme
@@ -2170,7 +2175,8 @@ function Show-DATLoadingSourcesModal {
     $subtitleText.Margin = [System.Windows.Thickness]::new(0, 0, 0, 24)
     $panel.Children.Add($subtitleText) | Out-Null
 
-    # Row order: DAT API → BIOS Catalog → OEM Links → OEMs (sorted A-Z)
+    # Row order (matches completion order so ticks light up top-to-bottom):
+    # DAT API -> OEM Links -> OEMs (sorted A-Z) -> BIOS Catalog
     $script:SourceStatusLabels = @{}
     $script:SourceStatusIcons  = @{}
 
@@ -2216,13 +2222,25 @@ function Show-DATLoadingSourcesModal {
 
     # 1. DAT API
     $panel.Children.Add((New-DATStatusRow -Label 'DAT API'      -Key 'DATAPI'))   | Out-Null
-    # 2. BIOS Catalog
-    $panel.Children.Add((New-DATStatusRow -Label 'BIOS Catalog' -Key 'BIOS'))     | Out-Null
-    # 3. OEM Links
+    # 2. OEM Links -- downloaded before the per-OEM parsing begins, so it completes before the
+    #    OEM rows below. Always shown; in DAT API catalog mode OEMLinks.xml is not downloaded, so
+    #    the row is marked as a neutral "Not required" terminal state (see below) instead of
+    #    sitting on "Waiting..." for the whole load.
     $panel.Children.Add((New-DATStatusRow -Label 'OEM Links'    -Key 'OEMLinks')) | Out-Null
-    # 4. OEMs (already sorted A-Z by caller)
+    # 3. OEMs (already sorted A-Z by caller)
     foreach ($oem in $OEMs) {
         $panel.Children.Add((New-DATStatusRow -Label $oem -Key $oem)) | Out-Null
+    }
+    # 4. BIOS Catalog -- the BIOS version lookup runs AFTER all OEM driver parsing in both modes,
+    #    so its row is placed last. Otherwise its green check lights up after the OEM rows above
+    #    it, making the tick sequence jump out of order.
+    $panel.Children.Add((New-DATStatusRow -Label 'BIOS Catalog' -Key 'BIOS'))     | Out-Null
+
+    # In DAT API catalog mode the individual OEM links (OEMLinks.xml) are not downloaded -- driver
+    # models come straight from the API -- so present the OEM Links row as "Not required" rather
+    # than leaving it pending forever.
+    if ($UseAPICatalog) {
+        Update-DATLoadingSourceStatus -Source 'OEMLinks' -Status 'Skipped' -Detail 'Not required (API catalog)'
     }
 
     $grid.Children.Add($panel) | Out-Null
@@ -2243,7 +2261,7 @@ function Update-DATLoadingSourceStatus {
     #>
     param (
         [Parameter(Mandatory)][string]$Source,
-        [Parameter(Mandatory)][ValidateSet('Loading','OK','Error','Cached')]
+        [Parameter(Mandatory)][ValidateSet('Loading','OK','Error','Cached','Skipped')]
         [string]$Status,
         [string]$Detail
     )
@@ -2285,6 +2303,15 @@ function Update-DATLoadingSourceStatus {
             $label.Text = if ($Detail) { $Detail } else { "Failed" }
             $label.Foreground = [System.Windows.Media.SolidColorBrush]::new(
                 [System.Windows.Media.ColorConverter]::ConvertFromString($theme['StatusError']))
+        }
+        'Skipped' {
+            # Neutral terminal state (e.g. OEM Links when the DAT API catalog supplies drivers).
+            $icon.Text = [string][char]0xE738  # Remove / dash glyph -- reads as "not applicable"
+            $icon.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+                [System.Windows.Media.ColorConverter]::ConvertFromString($theme['InputPlaceholder']))
+            $label.Text = if ($Detail) { $Detail } else { "Not required" }
+            $label.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+                [System.Windows.Media.ColorConverter]::ConvertFromString($theme['InputPlaceholder']))
         }
     }
 }
@@ -5441,6 +5468,31 @@ function Show-DATPackageRetentionModal {
     $dlg.ShowDialog() | Out-Null
 }
 
+function Show-DATUpgradeRequiredDialog {
+    <#
+    .SYNOPSIS
+        Surfaces an API "upgrade required" (HTTP 426) result to the user with a Download / Close prompt.
+        Built on the reusable Show-DATConfirmDialog so it inherits the current theme.
+    #>
+    param (
+        [AllowEmptyString()][string]$Message,
+        [AllowEmptyString()][string]$DownloadUrl
+    )
+    if ([string]::IsNullOrWhiteSpace($Message)) {
+        $Message = 'This version of the Driver Automation Tool is no longer supported by the online service. Please upgrade to the latest version to continue downloading catalogs and building packages.'
+    }
+    if ([string]::IsNullOrWhiteSpace($DownloadUrl)) {
+        $DownloadUrl = 'https://github.com/maurice-daly/DriverAutomationTool/releases'
+    }
+    $goToDownload = Show-DATConfirmDialog -Title 'Upgrade Required' -Message $Message `
+        -Type Warning -ConfirmLabel 'Download Update' -CancelLabel 'Close'
+    if ($goToDownload) {
+        try { Start-Process $DownloadUrl } catch {
+            Write-DATActivityLog "Failed to open the download URL: $($_.Exception.Message)" -Level Warn
+        }
+    }
+}
+
 function Show-DATCustomBuildCompleteDialog {
     param (
         [int]$DriverCount,
@@ -5752,9 +5804,9 @@ function Update-DATBuildModalFreeSpace {
 function Update-DATBuildModalStats {
     <#
     .SYNOPSIS
-        Refreshes the live stat tiles from the registry: downloads remaining (counts down as
-        packages succeed), packages created, failed (red when > 0), and a running average of the
-        download throughput. Called each build progress tick.
+        Refreshes the live stat tiles from the registry: downloads required (a running total that
+        never reads below the packages already produced), packages created, failed (red when > 0),
+        and a running average of the download throughput. Called each build progress tick.
     #>
     if ($null -eq $script:BuildModalSuccessValue) { return }
     try {
@@ -5766,14 +5818,22 @@ function Update-DATBuildModalStats {
         $failed = 0
         try { $failed = [int]$rv.FailedPackages } catch { $failed = 0 }
 
-        # Downloads remaining -- initial required count minus packages already created
+        # "Downloads Required" is a running TOTAL, not a countdown: it must never read fewer than the
+        # packages already produced, otherwise it can show 0 while the build is still downloading. The
+        # pre-build estimate undercounts whenever a model's grid status and the build's own
+        # skip-if-current decision diverge, so grow the figure to match reality and stay truthful.
         if ($null -ne $script:BuildModalDownloadsValue) {
-            $remaining = $script:BuildInitialDownloads - $created
-            if ($remaining -lt 0) { $remaining = 0 }
-            $script:BuildModalDownloadsValue.Text = "$remaining"
+            $required = [Math]::Max([int]$script:BuildInitialDownloads, $created)
+            $script:BuildModalDownloadsValue.Text = "$required"
         }
 
         $script:BuildModalSuccessValue.Text = "$created"
+
+        if ($null -ne $script:BuildModalSkippedValue) {
+            $skipped = 0
+            try { $skipped = [int]$rv.SkippedPackages } catch { $skipped = 0 }
+            $script:BuildModalSkippedValue.Text = "$skipped"
+        }
 
         if ($null -ne $script:BuildModalFailedValue) {
             $script:BuildModalFailedValue.Text = "$failed"
@@ -5946,9 +6006,9 @@ function Show-DATBuildProgressModal {
     $tilesGrid.Children.Add($tileFree.Card) | Out-Null
     $outerPanel.Children.Add($tilesGrid) | Out-Null
 
-    # Summary tiles -- row 2: Packages Created | Failed | Avg Throughput
+    # Summary tiles -- row 2: Packages Created | Skipped (current) | Failed | Avg Throughput
     $tilesGrid2 = [System.Windows.Controls.Grid]::new()
-    for ($tcol2 = 0; $tcol2 -lt 3; $tcol2++) {
+    for ($tcol2 = 0; $tcol2 -lt 4; $tcol2++) {
         $tcd2 = [System.Windows.Controls.ColumnDefinition]::new()
         $tcd2.Width = [System.Windows.GridLength]::new(1, [System.Windows.GridUnitType]::Star)
         $tilesGrid2.ColumnDefinitions.Add($tcd2)
@@ -5956,9 +6016,11 @@ function Show-DATBuildProgressModal {
     $tilesGrid2.Margin = [System.Windows.Thickness]::new(0, 0, 0, 16)
 
     $tileSuccess    = New-DATBuildSummaryTile -ValueText '0' -LabelText 'Packages Created' -ValueColorHex '#22C55E' -Column 0
-    $tileFailed     = New-DATBuildSummaryTile -ValueText '0' -LabelText 'Failed' -ValueColorHex $theme['WindowForeground'] -Column 1
-    $tileThroughput = New-DATBuildSummaryTile -ValueText '-- MB/s' -LabelText 'Avg Throughput' -ValueColorHex $theme['AccentColor'] -Column 2
+    $tileSkipped    = New-DATBuildSummaryTile -ValueText '0' -LabelText 'Skipped (current)' -ValueColorHex $theme['AccentColor'] -Column 1
+    $tileFailed     = New-DATBuildSummaryTile -ValueText '0' -LabelText 'Failed' -ValueColorHex $theme['WindowForeground'] -Column 2
+    $tileThroughput = New-DATBuildSummaryTile -ValueText '-- MB/s' -LabelText 'Avg Throughput' -ValueColorHex $theme['AccentColor'] -Column 3
     $tilesGrid2.Children.Add($tileSuccess.Card) | Out-Null
+    $tilesGrid2.Children.Add($tileSkipped.Card) | Out-Null
     $tilesGrid2.Children.Add($tileFailed.Card) | Out-Null
     $tilesGrid2.Children.Add($tileThroughput.Card) | Out-Null
     $outerPanel.Children.Add($tilesGrid2) | Out-Null
@@ -5970,6 +6032,7 @@ function Show-DATBuildProgressModal {
     $script:BuildModalDownloadsValue = $tileDownloads.Value
     $script:BuildInitialDownloads = $DownloadsRequired
     $script:BuildModalSuccessValue = $tileSuccess.Value
+    $script:BuildModalSkippedValue = $tileSkipped.Value
     $script:BuildModalFailedValue = $tileFailed.Value
     $script:BuildModalThroughputValue = $tileThroughput.Value
     $script:BuildModalDefaultFgHex = "$($theme['WindowForeground'])"
@@ -6766,7 +6829,9 @@ function Update-DATBuildModalFromRegistry {
     $failuresJson = [string]$regValues.BuildFailures
     if (-not [string]::IsNullOrEmpty($failuresJson)) {
         $failList = $null
-        try { $failList = @($failuresJson | ConvertFrom-Json) } catch { $failList = $null }
+        # Assign before wrapping -- Windows PowerShell 5.1 emits a parsed JSON array as a single
+        # pipeline object, so @(... | ConvertFrom-Json) collapses multiple entries into one.
+        try { $failParsed = $failuresJson | ConvertFrom-Json; $failList = @($failParsed) } catch { $failList = $null }
         if ($failList) {
             foreach ($bf in $failList) {
                 if (-not $bf.Model) { continue }
@@ -6808,6 +6873,57 @@ function Update-DATBuildModalFromRegistry {
                 }
                 if ($stageToError) {
                     Update-DATBuildModalStage -ModelKey $failKey -Stage $stageToError -State Error
+                }
+            }
+        }
+    }
+
+    # Mark skipped-as-current packages (already at the current version) as Skipped so they render
+    # grey/distinct instead of green -- they completed but no package was built, so they must not look
+    # identical to a real build. Runs before the completed-model greening pass, which then leaves any
+    # row carrying a Skipped stage untouched.
+    $skippedJson = [string]$regValues.BuildSkippedCurrent
+    if (-not [string]::IsNullOrEmpty($skippedJson)) {
+        $skipList = $null
+        # Assign before wrapping -- Windows PowerShell 5.1 emits a parsed JSON array as a single
+        # pipeline object, so @(... | ConvertFrom-Json) collapses multiple entries into one.
+        try { $skParsed = $skippedJson | ConvertFrom-Json; $skipList = @($skParsed) } catch { $skipList = $null }
+        if ($skipList) {
+            foreach ($sk in $skipList) {
+                if (-not $sk.Model) { continue }
+                $skCandidates = @()
+                for ($ski = 0; $ski -lt $global:SelectedModels.Count; $ski++) {
+                    $ssm = $global:SelectedModels[$ski]
+                    if ($ssm.OEM -eq $sk.OEM -and $ssm.Model -eq $sk.Model) { $skCandidates += $ski }
+                }
+                if ($skCandidates.Count -eq 0) { continue }
+                $skIdx = $skCandidates[0]
+                if ($skCandidates.Count -gt 1 -and $sk.OS) {
+                    foreach ($c in $skCandidates) {
+                        $ssmOS = [string]$global:SelectedModels[$c].OS
+                        if ($ssmOS -and ($sk.OS -like "*$ssmOS*" -or $ssmOS -like "*$($sk.OS)*")) { $skIdx = $c; break }
+                    }
+                }
+                $skJob = $skIdx + 1
+                $skDisplay = if ($script:BuildModalPackageType -eq 'All') {
+                    if ($sk.PackageType -eq 'BIOS') { "$($sk.Model) (BIOS)" } else { "$($sk.Model) (Drivers)" }
+                } else {
+                    $sk.Model
+                }
+                $skKey = "$($sk.OEM)|$skJob|$skDisplay"
+                if (-not $script:BuildModalRows.ContainsKey($skKey)) { continue }
+                $skRow = $script:BuildModalRows[$skKey]
+                $skAlready = $false
+                foreach ($s in $skRow.Stages) { if ($skRow.Status[$s] -eq 'Skipped') { $skAlready = $true; break } }
+                if ($skAlready) { continue }
+                foreach ($s in $skRow.Stages) {
+                    Update-DATBuildModalStage -ModelKey $skKey -Stage $s -State Skipped
+                }
+                if ($skRow.Subtitle) {
+                    $skReason = if ($sk.Reason) { $sk.Reason } else { 'Current' }
+                    $skPhase = if ($script:BuildModalPackageType -eq 'All') { if ($skKey -match '\(BIOS\)$') { 'BIOS -- ' } else { 'Drivers -- ' } } else { '' }
+                    $skRow.Subtitle.Text = "$skPhase$skReason -- skipped"
+                    $skRow.Subtitle.FontStyle = [System.Windows.FontStyles]::Italic
                 }
             }
         }
@@ -7806,8 +7922,12 @@ $btn_RefreshModels.Add_Click({
 
     Write-DATActivityLog "Starting model refresh..." -Level Info
 
-    # Show the Loading Sources modal -- OEMs sorted A-Z
-    Show-DATLoadingSourcesModal -OEMs ($selectedOEMs | Sort-Object)
+    # Show the Loading Sources modal -- OEMs sorted A-Z. Windows 10 selections force OEM-direct
+    # catalog mode (the API catalog has no reliable Win10 data), so the OEM Links row is shown
+    # then; otherwise it is omitted in API catalog mode where OEMLinks.xml is not downloaded.
+    $anyWin10Selected = @($selectedOSes | Where-Object { $_ -like 'Windows 10*' }).Count -gt 0
+    $effectiveUseDATAPICatalog = ($chk_UseDATAPICatalog.IsChecked -eq $true) -and (-not $anyWin10Selected)
+    Show-DATLoadingSourcesModal -OEMs ($selectedOEMs | Sort-Object) -UseAPICatalog:$effectiveUseDATAPICatalog
 
     # Create background runspace with shared log queue
     $script:RefreshRunspace = [runspacefactory]::CreateRunspace()
@@ -10346,8 +10466,10 @@ $btn_Build.Add_Click({
     Set-DATRegistryValue -Name "CompletedBiosPackages" -Value "0" -Type String
     Set-DATRegistryValue -Name "FailedPackages" -Value "0" -Type String
     Set-DATRegistryValue -Name "PackagesCreated" -Value "0" -Type String
-    # Clear the structured failure list so the progress modal cannot mark rows from a prior build.
+    Set-DATRegistryValue -Name "SkippedPackages" -Value "0" -Type String
+    # Clear the structured failure/skip lists so the progress modal cannot mark rows from a prior build.
     Remove-ItemProperty -Path $global:RegPath -Name 'BuildFailures' -ErrorAction SilentlyContinue
+    Remove-ItemProperty -Path $global:RegPath -Name 'BuildSkippedCurrent' -ErrorAction SilentlyContinue
     Set-DATRegistryValue -Name "RunningState"  -Value "Starting" -Type String
     Set-DATRegistryValue -Name "RunningMode"   -Value "Download" -Type String
     Set-DATRegistryValue -Name "PackagePhase"  -Value "" -Type String
@@ -10463,7 +10585,7 @@ $btn_Build.Add_Click({
     $script:BuildPS.Runspace = $script:BuildRunspace
     Add-DATCoreRunspaceBootstrap -PowerShell $script:BuildPS -IntuneAuthContext $intuneAuthContext -ModulePath $resolvedModulePath
     [void]$script:BuildPS.AddScript({
-        param($ScriptDir, $RegPath, $RunningMode, $SelectedModels, $StoragePath, $PackagePath, $DisableToast, $DisableRestart, $SiteServer, $SiteCode, $PackageType, $DPGroups, $DPs, $DistPriority, $EnableBDR, $DebugBuildPath, $CustomBrandingPath, $HPPasswordBinPath, $ToastTimeoutAction, $MaxDeferrals, $BIOSRestartDelayMinutes, $TeamsWebhookUrl, $TeamsNotificationsEnabled, $CustomToastTextsJson, $ConsoleFolderID, $MaintenanceWindowsJson, $AlarmMode, $AlarmSound, $CreateIntuneWinOnly, $GenerateXmlLogicPackage, $ExtractDownloadOnlyContent, $ShowBrandingBannerAllToasts)
+        param($ScriptDir, $RegPath, $RunningMode, $SelectedModels, $StoragePath, $PackagePath, $DisableToast, $DisableRestart, $SiteServer, $SiteCode, $PackageType, $DPGroups, $DPs, $DistPriority, $EnableBDR, $DebugBuildPath, $CustomBrandingPath, $HPPasswordBinPath, $ToastTimeoutAction, $MaxDeferrals, $BIOSRestartDelayMinutes, $TeamsWebhookUrl, $TeamsNotificationsEnabled, $TeamsCustomText, $CustomToastTextsJson, $ConsoleFolderID, $MaintenanceWindowsJson, $AlarmMode, $AlarmSound, $CreateIntuneWinOnly, $GenerateXmlLogicPackage, $ExtractDownloadOnlyContent, $ShowBrandingBannerAllToasts)
         try {
             $procParams = @{
                 ScriptDirectory = $ScriptDir
@@ -10500,6 +10622,7 @@ $btn_Build.Add_Click({
             if ($TeamsNotificationsEnabled -and -not [string]::IsNullOrEmpty($TeamsWebhookUrl)) {
                 $procParams['TeamsNotificationsEnabled'] = $true
                 $procParams['TeamsWebhookUrl'] = $TeamsWebhookUrl
+                if (-not [string]::IsNullOrEmpty($TeamsCustomText)) { $procParams['TeamsCustomText'] = $TeamsCustomText }
             }
             Start-DATModelProcessing @procParams
         } catch [System.Management.Automation.PipelineStoppedException] {
@@ -10567,8 +10690,10 @@ $btn_Build.Add_Click({
     # Teams notification settings
     $teamsEnabled = $chk_TeamsNotifications.IsChecked -eq $true
     $teamsUrl = $txt_TeamsWebhookUrl.Text
+    $teamsCustomText = if ($null -ne $txt_TeamsCustomText) { $txt_TeamsCustomText.Text } else { '' }
     [void]$script:BuildPS.AddArgument($teamsUrl)
     [void]$script:BuildPS.AddArgument($teamsEnabled)
+    [void]$script:BuildPS.AddArgument($teamsCustomText)
 
     # Custom toast text (Intune only) -- pass per-type custom texts as JSON
     $customToastTextsJson = $null
@@ -14876,6 +15001,47 @@ function Update-DATDiskFreeSpace {
     }
 }
 
+# Detects whether Windows long path (>260 char) support is enabled via the
+# HKLM\SYSTEM\CurrentControlSet\Control\FileSystem\LongPathsEnabled policy.
+function Get-DATLongPathsEnabled {
+    try {
+        $v = (Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' -Name 'LongPathsEnabled' -ErrorAction Stop).LongPathsEnabled
+        return ([int]$v -eq 1)
+    } catch {
+        return $false
+    }
+}
+
+# Updates the temp-path advisories: a left-aligned long-paths status line (matching the free
+# space text on the right) and a warning shown when the path is long (>120 chars) while long
+# path support is disabled -- deep driver folders can then exceed MAX_PATH and fail extraction.
+function Update-DATTempPathAdvisories {
+    param([AllowEmptyString()][string]$Path)
+
+    $longPathsOn = Get-DATLongPathsEnabled
+    $theme = Get-DATTheme -ThemeName $script:CurrentTheme
+
+    if ($null -ne $txt_LongPathsStatus) {
+        if ($longPathsOn) {
+            $txt_LongPathsStatus.Text = 'Long paths: Enabled'
+            $txt_LongPathsStatus.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+                [System.Windows.Media.ColorConverter]::ConvertFromString($theme['StatusSuccess']))
+        } else {
+            $txt_LongPathsStatus.Text = 'Long paths: Not enabled'
+            $txt_LongPathsStatus.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+                [System.Windows.Media.ColorConverter]::ConvertFromString($theme['InputPlaceholder']))
+        }
+    }
+
+    if ($null -ne $panel_TempPathWarning) {
+        $isLong = (-not [string]::IsNullOrEmpty($Path)) -and ($Path.Length -gt 120)
+        $panel_TempPathWarning.Visibility = if ($isLong -and -not $longPathsOn) { 'Visible' } else { 'Collapsed' }
+    }
+}
+
+# Refresh the long-path status/warning whenever the temp path changes (typed, browsed or restored).
+$txt_TempStorage.Add_TextChanged({ Update-DATTempPathAdvisories -Path $txt_TempStorage.Text })
+
 $btn_BrowseTemp.Add_Click({
     $dialog = New-Object System.Windows.Forms.FolderBrowserDialog
     $dialog.Description = "Select Temporary Storage Path (local paths only)"
@@ -15049,26 +15215,30 @@ $btn_TestTelemetry.Add_Click({
     try {
         $testResult = Test-DATTelemetryConnection
 
+        $theme = Get-DATTheme -ThemeName $script:CurrentTheme
+        $statusPart = if ([int]$testResult.HttpStatus -gt 0) { " (HTTP $($testResult.HttpStatus))" } else { '' }
         if ($testResult.ConfigOk -and $testResult.HealthOk) {
             $txt_TelemetryTestResult.Foreground = [System.Windows.Media.SolidColorBrush]::new(
-                [System.Windows.Media.ColorConverter]::ConvertFromString(
-                    (Get-DATTheme -ThemeName $script:CurrentTheme)['StatusSuccess']))
-            $txt_TelemetryTestResult.Text = "Connected -- $($testResult.ApiBaseUrl)"
-        } elseif ($testResult.ConfigOk) {
+                [System.Windows.Media.ColorConverter]::ConvertFromString($theme['StatusSuccess']))
+            $txt_TelemetryTestResult.Text = "Success -- GitHub config and API health both reachable ($($testResult.ApiBaseUrl))."
+        } elseif ($testResult.HealthOk -and $testResult.UsedLocalConfig) {
             $txt_TelemetryTestResult.Foreground = [System.Windows.Media.SolidColorBrush]::new(
-                [System.Windows.Media.ColorConverter]::ConvertFromString(
-                    (Get-DATTheme -ThemeName $script:CurrentTheme)['StatusWarning']))
-            $txt_TelemetryTestResult.Text = "Config OK, API unreachable: $($testResult.Error)"
+                [System.Windows.Media.ColorConverter]::ConvertFromString($theme['StatusWarning']))
+            $txt_TelemetryTestResult.Text = "Partial -- API health OK using the local fallback config. GitHub config unreachable$statusPart at $($testResult.ConfigUrl)"
+        } elseif ($testResult.FailedStep -eq 'Health (API)') {
+            $cfgNote = if ($testResult.UsedLocalConfig) { ' (GitHub config unreachable, used local fallback)' } elseif ($testResult.ConfigOk) { ' (GitHub config was OK)' } else { '' }
+            $txt_TelemetryTestResult.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+                [System.Windows.Media.ColorConverter]::ConvertFromString($theme['StatusErrorText']))
+            $txt_TelemetryTestResult.Text = "Failed at the API health check$statusPart -- $($testResult.HealthUrl)$cfgNote"
         } else {
             $txt_TelemetryTestResult.Foreground = [System.Windows.Media.SolidColorBrush]::new(
-                [System.Windows.Media.ColorConverter]::ConvertFromString(
-                    (Get-DATTheme -ThemeName $script:CurrentTheme)['StatusError']))
-            $txt_TelemetryTestResult.Text = "$($testResult.Error)"
+                [System.Windows.Media.ColorConverter]::ConvertFromString($theme['StatusErrorText']))
+            $txt_TelemetryTestResult.Text = "Failed at the GitHub config fetch$statusPart -- $($testResult.ConfigUrl)"
         }
     } catch {
         $txt_TelemetryTestResult.Foreground = [System.Windows.Media.SolidColorBrush]::new(
             [System.Windows.Media.ColorConverter]::ConvertFromString(
-                (Get-DATTheme -ThemeName $script:CurrentTheme)['StatusError']))
+                (Get-DATTheme -ThemeName $script:CurrentTheme)['StatusErrorText']))
         $txt_TelemetryTestResult.Text = "Test failed: $($_.Exception.Message)"
     }
 
@@ -15231,6 +15401,9 @@ $chk_TeamsNotifications.Add_Unchecked({
 $txt_TeamsWebhookUrl.Add_LostFocus({
     $url = $txt_TeamsWebhookUrl.Text
     Set-DATRegistryValue -Name "TeamsWebhookUrl" -Value $url -Type String
+})
+$txt_TeamsCustomText.Add_LostFocus({
+    Set-DATRegistryValue -Name "TeamsCustomText" -Value $txt_TeamsCustomText.Text -Type String
 })
 $btn_TeamsTest.Add_Click({
     $url = $txt_TeamsWebhookUrl.Text
@@ -15429,6 +15602,7 @@ $btn_ScheduleSave.Add_Click({
     $schedBIOSRestartDelay = if (($txt_BIOSRestartDelay.Text -match '^\d+$')) { [int]$txt_BIOSRestartDelay.Text } else { 10 }
     $schedTeamsEnabled = $chk_TeamsNotifications.IsChecked -eq $true
     $schedTeamsUrl = $txt_TeamsWebhookUrl.Text
+    $schedTeamsCustomText = if ($null -ne $txt_TeamsCustomText) { $txt_TeamsCustomText.Text } else { '' }
     $regConfig = Get-ItemProperty -Path $global:RegPath -ErrorAction SilentlyContinue
     $schedTempPath = if ($regConfig -and -not [string]::IsNullOrEmpty($regConfig.TempStoragePath)) { $regConfig.TempStoragePath } else { '' }
     $schedPkgPath = if ($regConfig -and -not [string]::IsNullOrEmpty($regConfig.PackageStoragePath)) { $regConfig.PackageStoragePath } else { '' }
@@ -15450,6 +15624,11 @@ $btn_ScheduleSave.Add_Click({
         TenantId  = if ($schedPlatform -eq 'Intune') { $schedTenantId } else { '' }
         AppId     = if ($schedPlatform -eq 'Intune') { $schedAppId } else { '' }
         AppSecret = if ($schedPlatform -eq 'Intune') { $schedSecret } else { '' }
+        # Carry the RBAC scope tag selection so scheduled/headless runs stamp the same tag(s).
+        ScopeTagsEnabled = ($schedPlatform -eq 'Intune') -and ($regConfig -and $regConfig.IntuneScopeTagsEnabled -eq 1)
+        ScopeTagIds = if ($schedPlatform -eq 'Intune' -and $regConfig -and -not [string]::IsNullOrWhiteSpace($regConfig.IntuneScopeTagIds)) {
+            @(([string]$regConfig.IntuneScopeTagIds).Split(',') | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+        } else { @() }
     }
 
     # Maintenance window settings (Intune only) -- read from the live UI state
@@ -15472,7 +15651,7 @@ $btn_ScheduleSave.Add_Click({
             -DisableToast $schedDisableToast -DisableRestart $schedDisableRestart `
             -ToastTimeoutAction $schedTimeoutAction -MaxDeferrals $schedMaxDeferrals `
             -BIOSRestartDelayMinutes $schedBIOSRestartDelay `
-            -TeamsWebhookUrl $schedTeamsUrl -TeamsNotificationsEnabled $schedTeamsEnabled -ConfigMgr $schedCM `
+            -TeamsWebhookUrl $schedTeamsUrl -TeamsNotificationsEnabled $schedTeamsEnabled -TeamsCustomText $schedTeamsCustomText -ConfigMgr $schedCM `
             -Intune $schedIntune `
             -MaintenanceWindowEnabled $schedMWEnabled -MaintenanceWindowMode $schedMWMode -MaintenanceWindows $schedMWindows `
             -CleanTempOnExit $schedCleanTemp `
@@ -15693,17 +15872,18 @@ $btn_TestProxy.Add_Click({
 
     $result = Test-DATProxyConnection
     if ($result.Success) {
-        $txt_ProxyStatus.Text = "Connection successful"
+        $txt_ProxyStatus.Text = "Connection successful -- reached $($result.Url)"
         $txt_ProxyStatus.Foreground = [System.Windows.Media.SolidColorBrush]::new(
             [System.Windows.Media.ColorConverter]::ConvertFromString(
                 (Get-DATTheme -ThemeName $script:CurrentTheme)['StatusSuccess']))
-        Write-DATActivityLog "Proxy test: Connection successful" -Level Success
+        Write-DATActivityLog "Proxy test: reached $($result.Url)" -Level Success
     } else {
-        $txt_ProxyStatus.Text = "Failed: $($result.Message)"
+        $statusPart = if ([int]$result.HttpStatus -gt 0) { " (HTTP $($result.HttpStatus))" } else { '' }
+        $txt_ProxyStatus.Text = "Failed to reach $($result.Url)$statusPart -- $($result.Message)"
         $txt_ProxyStatus.Foreground = [System.Windows.Media.SolidColorBrush]::new(
             [System.Windows.Media.ColorConverter]::ConvertFromString(
-                (Get-DATTheme -ThemeName $script:CurrentTheme)['StatusError']))
-        Write-DATActivityLog "Proxy test failed: $($result.Message)" -Level Error
+                (Get-DATTheme -ThemeName $script:CurrentTheme)['StatusErrorText']))
+        Write-DATActivityLog "Proxy test failed ($($result.Url))${statusPart}: $($result.Message)" -Level Error
     }
 })
 
@@ -17775,13 +17955,19 @@ $chk_DeployAllDevices = $Window.FindName('chk_DeployAllDevices')
 $txt_DeployAllState = $Window.FindName('txt_DeployAllState')
 $txt_DeployWarning = $Window.FindName('txt_DeployWarning')
 
-# Reflects the TRUE deployment outcome, accounting for BOTH the Deploy toggle and the
-# Automatic Assignment Filter -- the filter path deploys independently of the Deploy toggle,
-# so turning off 'Deploy to All Devices' alone does not guarantee that nothing is deployed.
+# Reflects the TRUE deployment outcome. The Automatic Assignment Filter is gated by the Deploy
+# toggle -- an assignment filter is only ever applied as part of an assignment, so with
+# 'Deploy to All Devices' off nothing is deployed and no filter is created.
 function Update-DATDeployWarning {
     if ($null -eq $txt_DeployWarning) { return }
     $deployOn = $chk_DeployAllDevices.IsChecked -eq $true
     $filterOn = ($null -ne $chk_AutoAssignmentFilter) -and ($chk_AutoAssignmentFilter.IsChecked -eq $true)
+
+    # Emphasise the filter-card requirement note (amber) when the filter is on but deployment is off
+    if ($null -ne $txt_AutoFilterDeployHint) {
+        $hintBrush = if ($filterOn -and -not $deployOn) { 'StatusWarning' } else { 'InputPlaceholder' }
+        $txt_AutoFilterDeployHint.Foreground = $Window.FindResource($hintBrush)
+    }
     $targetName = (Get-ItemProperty -Path $global:RegPath -Name 'DeployTargetGroupName' -ErrorAction SilentlyContinue).DeployTargetGroupName
     if ([string]::IsNullOrWhiteSpace($targetName)) { $targetName = 'All Devices' }
 
@@ -17905,8 +18091,23 @@ $btn_SearchDeployGroup.Add_Click({
                 $item.ToolTip = "$($g.displayName)`n$($g.id)"
                 $cmb_DeployGroupResults.Items.Add($item) | Out-Null
             }
-            $txt_DeployGroupStatus.Text = "$($results.Count) group(s) found. Select one to set as the deployment target."
             $cmb_DeployGroupResults.Visibility = 'Visible'
+            if ($results.Count -eq 1) {
+                # A lone result cannot be applied via SelectionChanged: WPF treats the
+                # sole item as already-current, so the user's click raises no selection
+                # change and the target is never set (issue #895). Apply it directly and
+                # show it selected. Runs while selection is suppressed so setting
+                # SelectedIndex here does not double-trigger the handler.
+                $cmb_DeployGroupResults.SelectedIndex = 0
+                $only = $results[0]
+                Set-DATDeployTargetGroup -GroupId $only.id -GroupName $only.displayName
+                $txt_DeployGroupStatus.Text = "1 group found and set as the deployment target."
+            } else {
+                # Force no selection so a click on ANY item -- including the first --
+                # is a genuine index change that raises SelectionChanged.
+                $cmb_DeployGroupResults.SelectedIndex = -1
+                $txt_DeployGroupStatus.Text = "$($results.Count) group(s) found. Select one to set as the deployment target."
+            }
         }
         $script:DeployGroupSuppressSelection = $false
         Write-DATActivityLog "Entra group search for '$($searchText.Trim())' returned $($results.Count) result(s)" -Level Info
@@ -17979,6 +18180,7 @@ $txt_IMENotificationsHint = $Window.FindName('txt_IMENotificationsHint')
 $txt_FilterCount = $Window.FindName('txt_FilterCount')
 $txt_FilterRemaining = $Window.FindName('txt_FilterRemaining')
 $txt_FilterWarning = $Window.FindName('txt_FilterWarning')
+$txt_AutoFilterDeployHint = $Window.FindName('txt_AutoFilterDeployHint')
 $txt_FilterModeHint = $Window.FindName('txt_FilterModeHint')
 $txt_FilterPreview = $Window.FindName('txt_FilterPreview')
 $btn_RefreshFilterCount = $Window.FindName('btn_RefreshFilterCount')
@@ -18569,6 +18771,103 @@ $cmb_IntuneParallelUploads.Add_SelectionChanged({
     }
 })
 
+# Upload Engine (AzCopy) settings
+$chk_IntuneUseAzCopy             = $Window.FindName('chk_IntuneUseAzCopy')
+$txt_IntuneUseAzCopyState        = $Window.FindName('txt_IntuneUseAzCopyState')
+$panel_AzCopyWindow              = $Window.FindName('panel_AzCopyWindow')
+$chk_IntuneAzCopyShowWindow      = $Window.FindName('chk_IntuneAzCopyShowWindow')
+$txt_IntuneAzCopyShowWindowState = $Window.FindName('txt_IntuneAzCopyShowWindowState')
+$txt_AzCopyStatusIcon            = $Window.FindName('txt_AzCopyStatusIcon')
+$txt_AzCopyStatus                = $Window.FindName('txt_AzCopyStatus')
+
+# Reports the bundled AzCopy binary's version + signature in the Package Options card,
+# using the same status-box language as the CURL utility. Only present once AzCopy has
+# been downloaded to Tools\AzCopy (on first AzCopy upload); otherwise a neutral hint is shown.
+function Update-AzCopyStatus {
+    if ($null -eq $txt_AzCopyStatus -or $null -eq $txt_AzCopyStatusIcon) { return }
+
+    $azCopyPath = $null
+    if (-not [string]::IsNullOrEmpty($global:ToolsDirectory)) {
+        $azCopyPath = Join-Path $global:ToolsDirectory 'AzCopy\azcopy.exe'
+    }
+
+    if ([string]::IsNullOrEmpty($azCopyPath) -or -not (Test-Path -LiteralPath $azCopyPath)) {
+        $txt_AzCopyStatusIcon.Text = [string][char]0xE946
+        $txt_AzCopyStatusIcon.Foreground = $Window.FindResource('InputPlaceholder')
+        $txt_AzCopyStatus.Text = "Not downloaded -- fetched automatically on first AzCopy upload"
+        $txt_AzCopyStatus.Foreground = $Window.FindResource('InputPlaceholder')
+        return
+    }
+
+    # AzCopy prints e.g. "azcopy version 10.32.7"
+    $azCopyVersion = 'unknown'
+    try {
+        $azCopyVersion = (& $azCopyPath '--version' 2>&1 | Select-Object -First 1) -replace '(?i)^azcopy\s+version\s+', '' -replace '\s.*', ''
+    } catch {
+        $azCopyVersion = 'unknown'
+    }
+
+    $azSig = $null
+    try {
+        $azSig = Get-AuthenticodeSignature -FilePath $azCopyPath -ErrorAction Stop
+    } catch {
+        Write-DATActivityLog "AzCopy: Could not check signature -- $($_.Exception.Message)" -Level Warn
+    }
+    $isSigned = $azSig -and $azSig.Status -eq 'Valid'
+    $isTampered = $azSig -and $azSig.Status -eq 'HashMismatch'
+
+    if ($isSigned) {
+        $signerName = $azSig.SignerCertificate.Subject -replace '^CN=|,.*$', ''
+        $txt_AzCopyStatusIcon.Text = [string][char]0xE930
+        $txt_AzCopyStatusIcon.Foreground = $Window.FindResource('StatusSuccess')
+        $txt_AzCopyStatus.Text = "v$azCopyVersion -- Signed by $signerName"
+        $txt_AzCopyStatus.Foreground = $Window.FindResource('StatusSuccess')
+        Write-DATActivityLog "AzCopy: v$azCopyVersion at $azCopyPath -- Signed ($signerName)" -Level Info
+    } elseif ($isTampered) {
+        $txt_AzCopyStatusIcon.Text = [string][char]0xE783
+        $txt_AzCopyStatusIcon.Foreground = $Window.FindResource('StatusError')
+        $txt_AzCopyStatus.Text = "v$azCopyVersion -- BLOCKED: Signature hash mismatch (possibly tampered)"
+        $txt_AzCopyStatus.Foreground = $Window.FindResource('StatusError')
+        Write-DATActivityLog "AzCopy: v$azCopyVersion at $azCopyPath -- BLOCKED: HashMismatch" -Level Error
+    } else {
+        $txt_AzCopyStatusIcon.Text = [string][char]0xE783
+        $txt_AzCopyStatusIcon.Foreground = $Window.FindResource('StatusError')
+        $txt_AzCopyStatus.Text = "v$azCopyVersion -- Unsigned (expected Microsoft signature)"
+        $txt_AzCopyStatus.Foreground = $Window.FindResource('StatusError')
+        Write-DATActivityLog "AzCopy: v$azCopyVersion at $azCopyPath -- Unsigned (unexpected for a Microsoft binary)" -Level Warn
+    }
+}
+
+Update-AzCopyStatus
+
+$chk_IntuneUseAzCopy.Add_Checked({
+    Set-DATRegistryValue -Name "IntuneUseAzCopy" -Value 1 -Type DWord
+    $txt_IntuneUseAzCopyState.Text = 'On'
+    $txt_IntuneUseAzCopyState.Foreground = $Window.FindResource('AccentColor')
+    $panel_AzCopyWindow.Visibility = 'Visible'
+    Update-AzCopyStatus
+    Write-DATActivityLog "Upload engine: AzCopy enabled" -Level Info
+})
+$chk_IntuneUseAzCopy.Add_Unchecked({
+    Set-DATRegistryValue -Name "IntuneUseAzCopy" -Value 0 -Type DWord
+    $txt_IntuneUseAzCopyState.Text = 'Off'
+    $txt_IntuneUseAzCopyState.Foreground = $Window.FindResource('InputPlaceholder')
+    $panel_AzCopyWindow.Visibility = 'Collapsed'
+    Write-DATActivityLog "Upload engine: built-in chunked uploader" -Level Info
+})
+$chk_IntuneAzCopyShowWindow.Add_Checked({
+    Set-DATRegistryValue -Name "IntuneAzCopyShowWindow" -Value 1 -Type DWord
+    $txt_IntuneAzCopyShowWindowState.Text = 'On'
+    $txt_IntuneAzCopyShowWindowState.Foreground = $Window.FindResource('AccentColor')
+    Write-DATActivityLog "AzCopy window: visible" -Level Info
+})
+$chk_IntuneAzCopyShowWindow.Add_Unchecked({
+    Set-DATRegistryValue -Name "IntuneAzCopyShowWindow" -Value 0 -Type DWord
+    $txt_IntuneAzCopyShowWindowState.Text = 'Off'
+    $txt_IntuneAzCopyShowWindowState.Foreground = $Window.FindResource('InputPlaceholder')
+    Write-DATActivityLog "AzCopy window: hidden" -Level Info
+})
+
 #endregion Package Deployment
 
 #region Package Retention
@@ -18678,12 +18977,23 @@ $script:CustomBrandingImagePath = $null
 function Set-DATToastBannerImage {
     param([string]$ImagePath)
     if (-not [string]::IsNullOrEmpty($ImagePath) -and (Test-Path $ImagePath)) {
+        # Load the image from an in-memory copy of the file bytes rather than via
+        # UriSource. WPF keeps a URI-keyed decode cache, so re-importing the same
+        # path after the file content changed would otherwise serve a stale bitmap
+        # in the preview (issue #896). A MemoryStream bypasses that cache entirely
+        # and avoids locking the source file. Note: IgnoreImageCache must NOT be set
+        # with a StreamSource -- WPF keys its image cache on the source URI, and with
+        # no URI the lookup receives a null key and EndInit() throws
+        # "Key cannot be null". The MemoryStream already bypasses the cache.
+        $bytes = [System.IO.File]::ReadAllBytes($ImagePath)
+        $stream = New-Object System.IO.MemoryStream(, $bytes)
         $bitmap = New-Object System.Windows.Media.Imaging.BitmapImage
         $bitmap.BeginInit()
-        $bitmap.UriSource = New-Object System.Uri($ImagePath, [System.UriKind]::Absolute)
         $bitmap.CacheOption = [System.Windows.Media.Imaging.BitmapCacheOption]::OnLoad
+        $bitmap.StreamSource = $stream
         $bitmap.EndInit()
         $bitmap.Freeze()
+        $stream.Dispose()
         $img_ToastBanner.ImageSource = $bitmap
         if ($null -ne $img_ToastStatusBanner) { $img_ToastStatusBanner.ImageSource = $bitmap }
     }
@@ -18816,13 +19126,19 @@ function Set-DATIntuneIconPreview {
         return
     }
     try {
-        # OnLoad caching reads the file fully then releases the handle, so the PNG is
-        # not locked for the process lifetime (allows Clear/overwrite later).
+        # Load from an in-memory byte copy so a re-imported icon is reflected in the
+        # preview rather than served stale from WPF's URI-keyed decode cache (issue
+        # #896). OnLoad + a disposed MemoryStream also releases the file handle so
+        # the PNG is not locked for the process lifetime (allows Clear/overwrite).
+        $iconBytes = [System.IO.File]::ReadAllBytes($Path)
+        $iconStream = New-Object System.IO.MemoryStream(, $iconBytes)
         $bmp = New-Object System.Windows.Media.Imaging.BitmapImage
         $bmp.BeginInit()
         $bmp.CacheOption = [System.Windows.Media.Imaging.BitmapCacheOption]::OnLoad
-        $bmp.UriSource = [Uri]::new($Path)
+        $bmp.StreamSource = $iconStream
         $bmp.EndInit()
+        $bmp.Freeze()
+        $iconStream.Dispose()
         $img_IntunePackageIconPreview.Source = $bmp
         $img_IntunePackageIconPreview.Visibility = 'Visible'
         $txt_IntuneIconPlaceholder.Visibility = 'Collapsed'
@@ -18890,6 +19206,245 @@ $btn_ClearIntunePackageIcon.Add_Click({
     Set-DATRegistryValue -Name 'IntuneCustomIconPath' -Value '' -Type String
     Remove-ItemProperty -Path $global:RegPath -Name 'IntuneCustomIconPath' -ErrorAction SilentlyContinue
 })
+
+#region Intune RBAC Scope Tags
+$panel_ScopeTagList    = $Window.FindName('panel_ScopeTagList')
+$border_ScopeTagList   = $Window.FindName('border_ScopeTagList')
+$btn_RefreshScopeTags  = $Window.FindName('btn_RefreshScopeTags')
+$chk_EnableScopeTags   = $Window.FindName('chk_EnableScopeTags')
+$txt_ScopeTagFeatureState = $Window.FindName('txt_ScopeTagFeatureState')
+$panel_ScopeTagStatus  = $Window.FindName('panel_ScopeTagStatus')
+$txt_ScopeTagStatusIcon = $Window.FindName('txt_ScopeTagStatusIcon')
+$txt_ScopeTagStatusText = $Window.FindName('txt_ScopeTagStatusText')
+
+# Shared state for the scope-tag list (event-handler closures cannot capture nested
+# scope variables under PS 5.1, so keep mutable state here).
+$script:ScopeTagState = [hashtable]::Synchronized(@{ Suppress = $false; PermissionDenied = $false; Restoring = $false })
+
+# In-memory cache of the tenant's scope tags (@{ id; displayName }), refreshed from Graph.
+$script:ScopeTagCache = @()
+
+function Show-DATScopeTagStatus {
+    param([string]$Glyph, [string]$Message, [string]$ColorHex)
+    if ($null -eq $panel_ScopeTagStatus) { return }
+    $txt_ScopeTagStatusIcon.Text = $Glyph
+    $txt_ScopeTagStatusText.Text = $Message
+    $txt_ScopeTagStatusIcon.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.ColorConverter]::ConvertFromString($ColorHex))
+    $txt_ScopeTagStatusText.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.ColorConverter]::ConvertFromString($ColorHex))
+    $panel_ScopeTagStatus.Visibility = 'Visible'
+}
+
+# Reads the checked scope tag ids out of a checkbox StackPanel (main panel or a dialog panel).
+function Get-DATCheckedScopeTagIds {
+    param([System.Windows.Controls.Panel]$Panel)
+    $ids = @()
+    if ($null -eq $Panel) { return $ids }
+    foreach ($child in $Panel.Children) {
+        if ($child -is [System.Windows.Controls.CheckBox] -and $child.IsChecked -eq $true) {
+            $ids += [string]$child.Tag
+        }
+    }
+    return @($ids)
+}
+
+# Builds the merged tag list (Default + fetched + any extra saved ids) and fills a checkbox
+# StackPanel. Returns the ordered list of @{ Id; Label } used so callers can reason about it.
+function Build-DATScopeTagCheckboxes {
+    param(
+        [System.Windows.Controls.Panel]$Panel,
+        [array]$Tags,
+        [string[]]$CheckedIds,
+        [scriptblock]$OnChanged,
+        # Optional themed ControlTemplate applied to each checkbox. The main options panel lives
+        # in the main window and inherits the implicit CheckBox style, but a separately-created
+        # dialog window does not -- it passes a template so the checkboxes match the design language.
+        [System.Windows.Controls.ControlTemplate]$CheckBoxTemplate
+    )
+    $Panel.Children.Clear()
+    $checkedSet = @{}
+    foreach ($c in @($CheckedIds)) { if (-not [string]::IsNullOrWhiteSpace($c)) { $checkedSet[[string]$c] = $true } }
+
+    # Ordered, de-duplicated id list: Default first, then fetched tags, then any orphaned saved ids.
+    $ordered = [System.Collections.Generic.List[object]]::new()
+    $seen = @{}
+    $ordered.Add([PSCustomObject]@{ Id = '0'; Label = 'Default (0)' }); $seen['0'] = $true
+    foreach ($t in @($Tags)) {
+        $id = [string]$t.id
+        if ($seen.ContainsKey($id)) { continue }
+        $ordered.Add([PSCustomObject]@{ Id = $id; Label = "$($t.displayName) ($id)" }); $seen[$id] = $true
+    }
+    foreach ($id in $checkedSet.Keys) {
+        if (-not $seen.ContainsKey($id)) {
+            $ordered.Add([PSCustomObject]@{ Id = $id; Label = "Scope tag $id" }); $seen[$id] = $true
+        }
+    }
+
+    foreach ($item in $ordered) {
+        $cb = [System.Windows.Controls.CheckBox]::new()
+        $cb.Content = $item.Label
+        $cb.Tag = $item.Id
+        $cb.IsChecked = [bool]$checkedSet[$item.Id]
+        # Fixed row height (22 + 3+3 margin = 28px) so the list shows ~5 rows in the 140px
+        # viewport before the themed vertical scrollbar takes over.
+        $cb.Height = 22
+        $cb.VerticalContentAlignment = 'Center'
+        $cb.Margin = [System.Windows.Thickness]::new(0, 3, 0, 3)
+        $cb.SetResourceReference([System.Windows.Controls.Control]::ForegroundProperty, 'WindowForeground')
+        if ($null -ne $CheckBoxTemplate) { $cb.Template = $CheckBoxTemplate }
+        if ($OnChanged) { $cb.Add_Checked($OnChanged); $cb.Add_Unchecked($OnChanged) }
+        [void]$Panel.Children.Add($cb)
+    }
+    return $ordered
+}
+
+# Persists the main panel's checked scope tags to the registry (comma-separated).
+$script:PersistScopeTags = {
+    if ($script:ScopeTagState.Suppress) { return }
+    $ids = Get-DATCheckedScopeTagIds -Panel $panel_ScopeTagList
+    $value = if (@($ids).Count -gt 0) { ($ids -join ',') } else { '0' }
+    Set-DATRegistryValue -Name 'IntuneScopeTagIds' -Value $value -Type String
+}
+
+function Update-DATScopeTagDropdown {
+    param([switch]$Fetch, [switch]$ShowModalOnError)
+    if ($null -eq $panel_ScopeTagList) { return }
+
+    $script:ScopeTagState.PermissionDenied = $false
+
+    # The saved selection (comma-separated ids); default to the built-in Default tag (0).
+    $savedRaw = (Get-ItemProperty -Path $global:RegPath -Name 'IntuneScopeTagIds' -ErrorAction SilentlyContinue).IntuneScopeTagIds
+    $savedIds = @()
+    if (-not [string]::IsNullOrWhiteSpace($savedRaw)) {
+        $savedIds = @(([string]$savedRaw).Split(',') | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+    }
+    if (@($savedIds).Count -eq 0) { $savedIds = @('0') }
+
+    $permissionDenied = $false
+
+    if ($Fetch) {
+        try {
+            if (Test-DATIntuneAuth) {
+                # Suppress the warning stream so an expected 403 (RBAC permission not consented)
+                # does not spam the console -- it is surfaced via a modal (explicit action) or a
+                # greyed control (background refresh). Full detail still hits the log.
+                $script:ScopeTagCache = @(Get-DATIntuneRoleScopeTags -WarningAction SilentlyContinue 3>$null)
+            }
+        } catch {
+            $errMsg = $_.Exception.Message
+            if ($errMsg -match '403|Forbidden|DeviceManagementRBAC|not authorized') {
+                $permissionDenied = $true
+            } else {
+                Show-DATScopeTagStatus -Glyph ([string][char]0xE7BA) -Message "Could not load scope tags: $errMsg" -ColorHex '#E8A035'
+                if ($ShowModalOnError) {
+                    Show-DATInfoDialog -Title 'Could Not Load Scope Tags' -Type Error -ButtonLabel 'OK' -Message (
+                        "Failed to retrieve RBAC scope tags from Intune.`n`n$errMsg")
+                }
+            }
+        }
+    }
+
+    # Rebuild the checkbox list, preserving the saved checked state.
+    $script:ScopeTagState.Suppress = $true
+    Build-DATScopeTagCheckboxes -Panel $panel_ScopeTagList -Tags $script:ScopeTagCache -CheckedIds $savedIds -OnChanged $script:PersistScopeTags | Out-Null
+    $script:ScopeTagState.Suppress = $false
+
+    if (-not $Fetch) { return }
+
+    if ($permissionDenied) {
+        $script:ScopeTagState.PermissionDenied = $true
+        # Grey the list out to indicate the feature is unavailable without the permission.
+        if ($null -ne $border_ScopeTagList) { $border_ScopeTagList.IsEnabled = $false }
+        if ($ShowModalOnError) {
+            Show-DATScopeTagStatus -Glyph ([string][char]0xE72E) -Message "Required Microsoft Graph permission (DeviceManagementRBAC.Read.All) has not been granted." -ColorHex '#8A94A6'
+            Show-DATInfoDialog -Title 'Graph API Permission Required' -Type Warning -ButtonLabel 'OK' -Message (
+                "RBAC scope tags could not be enabled.`n`n" +
+                "Microsoft Graph returned 403 Forbidden because the token is missing the " +
+                "DeviceManagementRBAC.Read.All permission.`n`n" +
+                "To use this feature:`n" +
+                "  1. Disconnect and reconnect to Intune so the new permission is requested, and`n" +
+                "  2. Have an administrator grant (consent to) DeviceManagementRBAC.Read.All if prompted.`n`n" +
+                "Packages will continue to build with the Default scope tag while this feature is off.")
+        } else {
+            Show-DATScopeTagStatus -Glyph ([string][char]0xE72E) -Message "This option is unavailable -- the required Microsoft Graph permission (DeviceManagementRBAC.Read.All) has not been granted. Reconnect to Intune to request it." -ColorHex '#8A94A6'
+        }
+        return
+    }
+
+    if (Test-DATIntuneAuth) {
+        # Authenticated: enable the list and show what was loaded.
+        if ($null -ne $border_ScopeTagList) { $border_ScopeTagList.IsEnabled = $true }
+        $extra = @($script:ScopeTagCache | Where-Object { [string]$_.id -ne '0' }).Count
+        if ($extra -gt 0) {
+            Show-DATScopeTagStatus -Glyph ([string][char]0xE73E) -Message "$extra custom scope tag(s) available from your tenant. Tick one or more to assign." -ColorHex '#2ECC40'
+        } else {
+            Show-DATScopeTagStatus -Glyph ([string][char]0xE946) -Message "No custom scope tags found -- only the Default tag is available." -ColorHex '#E8A035'
+        }
+    } else {
+        # Not authenticated: grey the list out until the tenant's tags can be loaded.
+        if ($null -ne $border_ScopeTagList) { $border_ScopeTagList.IsEnabled = $false }
+        Show-DATScopeTagStatus -Glyph ([string][char]0xE946) -Message "Connect to Intune and the scope tags will load automatically." -ColorHex '#E8A035'
+    }
+}
+
+$btn_RefreshScopeTags.Add_Click({
+    Update-DATScopeTagDropdown -Fetch -ShowModalOnError
+})
+
+# RBAC feature enable/disable toggle. The feature is opt-in and OFF by default for new
+# installations -- packages build with the Default scope tag (0) until it is turned on.
+$chk_EnableScopeTags.Add_Checked({
+    Set-DATRegistryValue -Name 'IntuneScopeTagsEnabled' -Value 1 -Type DWord
+    $txt_ScopeTagFeatureState.Text = 'On'
+    $txt_ScopeTagFeatureState.Foreground = $Window.FindResource('AccentColor')
+    $btn_RefreshScopeTags.IsEnabled = $true
+    # The tag list stays greyed until authenticated -- real data loads on connect.
+    $isAuthed = Test-DATIntuneAuth
+    if ($null -ne $border_ScopeTagList) { $border_ScopeTagList.IsEnabled = $isAuthed }
+    if ($script:ScopeTagState.Restoring) { return }
+    Write-DATActivityLog "Intune RBAC scope tags enabled" -Level Info
+    if ($isAuthed) {
+        # Enabling is an explicit action -- surface a permission failure via the modal.
+        Update-DATScopeTagDropdown -Fetch -ShowModalOnError
+        if ($script:ScopeTagState.PermissionDenied) {
+            # The feature cannot be used without the permission -- revert the toggle to off.
+            $chk_EnableScopeTags.IsChecked = $false
+        }
+    } else {
+        Show-DATScopeTagStatus -Glyph ([string][char]0xE946) -Message "Connect to Intune and the scope tags will load automatically." -ColorHex '#E8A035'
+    }
+})
+$chk_EnableScopeTags.Add_Unchecked({
+    Set-DATRegistryValue -Name 'IntuneScopeTagsEnabled' -Value 0 -Type DWord
+    $txt_ScopeTagFeatureState.Text = 'Off'
+    $txt_ScopeTagFeatureState.Foreground = $Window.FindResource('InputPlaceholder')
+    if ($null -ne $border_ScopeTagList) { $border_ScopeTagList.IsEnabled = $false }
+    $btn_RefreshScopeTags.IsEnabled = $false
+    if ($null -ne $panel_ScopeTagStatus) { $panel_ScopeTagStatus.Visibility = 'Collapsed' }
+    if (-not $script:ScopeTagState.Restoring) {
+        Write-DATActivityLog "Intune RBAC scope tags disabled" -Level Info
+    }
+})
+
+# Build the initial checkbox list (Default + any previously saved tags), then restore the saved
+# enable state. Restoring is guarded so it configures the controls without triggering a
+# fetch/modal -- the tags load on the next successful Intune authentication if the feature is on.
+Update-DATScopeTagDropdown
+$script:ScopeTagState.Restoring = $true
+$scopeTagsEnabledSaved = (Get-ItemProperty -Path $global:RegPath -Name 'IntuneScopeTagsEnabled' -ErrorAction SilentlyContinue).IntuneScopeTagsEnabled
+$chk_EnableScopeTags.IsChecked = ($scopeTagsEnabledSaved -eq 1)
+# Ensure the disabled state is applied even when the saved value was already the default (off),
+# in which case the Unchecked handler does not fire.
+if ($scopeTagsEnabledSaved -ne 1) {
+    if ($null -ne $border_ScopeTagList) { $border_ScopeTagList.IsEnabled = $false }
+    $btn_RefreshScopeTags.IsEnabled = $false
+} elseif (-not (Test-DATIntuneAuth)) {
+    # Feature on but not yet authenticated: keep the list greyed and hint to connect.
+    Show-DATScopeTagStatus -Glyph ([string][char]0xE946) -Message "Connect to Intune and the scope tags will load automatically." -ColorHex '#E8A035'
+}
+$script:ScopeTagState.Restoring = $false
+#endregion Intune RBAC Scope Tags
 
 # Custom Toast Text -- Per notification type customization
 $txt_CustomToastTitle = $Window.FindName('txt_CustomToastTitle')
@@ -19424,11 +19979,16 @@ $btn_ShowToastPreview.Add_Click({
             $script:CustomBrandingImagePath
         } else { $script:DefaultBannerPath }
         if (Test-Path $bannerImagePath) {
+            # Load from an in-memory byte copy so a re-imported branding image is not
+            # served stale from WPF's URI-keyed decode cache (issue #896).
+            $bannerBytes = [System.IO.File]::ReadAllBytes($bannerImagePath)
+            $bannerStream = New-Object System.IO.MemoryStream(, $bannerBytes)
             $bitmap = New-Object System.Windows.Media.Imaging.BitmapImage
             $bitmap.BeginInit()
-            $bitmap.UriSource = New-Object System.Uri($bannerImagePath, [System.UriKind]::Absolute)
             $bitmap.CacheOption = [System.Windows.Media.Imaging.BitmapCacheOption]::OnLoad
+            $bitmap.StreamSource = $bannerStream
             $bitmap.EndInit(); $bitmap.Freeze()
+            $bannerStream.Dispose()
             $imgBrush = [System.Windows.Media.ImageBrush]::new($bitmap)
             $imgBrush.Stretch = [System.Windows.Media.Stretch]::UniformToFill
             $bannerBorder.Background = $imgBrush
@@ -19612,6 +20172,7 @@ $grid_IntuneApps.ContextMenu.Add_Opened({
     $ctx_UpdateDetectionScript.IsEnabled = $canAssign
     $ctx_UpdateRequirementScript.IsEnabled = $canAssign
     $ctx_RepublishMetadata.IsEnabled = $canAssign
+    $ctx_UpdateScopeTags.IsEnabled = $canAssign
     $ctx_RemoveAssignments.IsEnabled = $canAssign
     $ctx_UpdateRemoveFilter.IsEnabled = $canAssign
 })
@@ -19817,11 +20378,18 @@ function Invoke-DATIntuneAssignmentWithProgress {
     $script:AssignPS = [powershell]::Create()
     Add-DATCoreRunspaceBootstrap -PowerShell $script:AssignPS -CaptureIntuneAuthContext
     $script:AssignPS.AddScript({
-        param ($State, $AppList, $GroupId, $Intent, $FilterId, $FilterType, $IMENotifications)
+        param ($State, $AppList, $GroupId, $Intent, $FilterId, $FilterType, $IMENotifications, $ScopeTagIds)
         $imeNotify = if ([string]::IsNullOrEmpty($IMENotifications)) { 'showAll' } else { $IMENotifications }
+        $applyScopeTags = @($ScopeTagIds | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
         foreach ($app in $AppList) {
             $entry = @{ AppId = $app.AppId; DisplayName = $app.DisplayName; Success = $false; Error = '' }
             try {
+                # Ensure the app carries the configured RBAC scope tag before assigning. This
+                # brings packages created before the feature (Default tag only) in line with the
+                # selection. Best-effort -- a scope-tag failure must not block the assignment.
+                if ($applyScopeTags.Count -gt 0) {
+                    try { Set-DATIntuneAppScopeTags -AppId $app.AppId -RoleScopeTagIds $applyScopeTags } catch { }
+                }
                 if (-not [string]::IsNullOrEmpty($FilterId)) {
                     $effectiveFilterType = if ([string]::IsNullOrEmpty($FilterType)) { 'include' } else { $FilterType }
                     Set-DATIntuneAppAssignmentWithFilter -AppId $app.AppId -GroupId $GroupId -Intent $Intent -FilterId $FilterId -FilterType $effectiveFilterType -IMENotifications $imeNotify
@@ -19837,6 +20405,12 @@ function Invoke-DATIntuneAssignmentWithProgress {
         $State.Status = 'Complete'
     })
     $imeNotificationsPref = (Get-ItemProperty -Path $global:RegPath -Name 'IMENotifications' -ErrorAction SilentlyContinue).IMENotifications
+    # Resolve the configured RBAC scope tag (only when the opt-in feature is enabled).
+    $assignScopeTagIds = @()
+    $scopeCfg = Get-ItemProperty -Path $global:RegPath -ErrorAction SilentlyContinue
+    if ($scopeCfg.IntuneScopeTagsEnabled -eq 1 -and -not [string]::IsNullOrWhiteSpace($scopeCfg.IntuneScopeTagIds)) {
+        $assignScopeTagIds = @(([string]$scopeCfg.IntuneScopeTagIds).Split(',') | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+    }
     [void]$script:AssignPS.AddArgument($script:AssignState)
     [void]$script:AssignPS.AddArgument($appList)
     [void]$script:AssignPS.AddArgument($GroupResult.GroupId)
@@ -19844,6 +20418,7 @@ function Invoke-DATIntuneAssignmentWithProgress {
     [void]$script:AssignPS.AddArgument($GroupResult.FilterId)
     [void]$script:AssignPS.AddArgument($GroupResult.FilterType)
     [void]$script:AssignPS.AddArgument($imeNotificationsPref)
+    [void]$script:AssignPS.AddArgument($assignScopeTagIds)
     $script:AssignAsync = $script:AssignPS.BeginInvoke()
 
     # Poll timer to update icons as each assignment completes
@@ -19935,6 +20510,212 @@ function Invoke-DATIntuneAssignmentWithProgress {
 }
 
 # --- Generic bulk operation progress modal ---
+function Show-DATScopeTagSelectionDialog {
+    <#
+    .SYNOPSIS
+        Themed modal that lets the user pick one or more RBAC scope tags to apply to the selected
+        Intune package(s). Returns the chosen tag ids as a string array, or $null if cancelled or
+        the required Graph permission is missing.
+    #>
+    param (
+        [string]$AppLabel = 'the selected package(s)',
+        [string[]]$PreselectedIds = @('0')
+    )
+
+    if (-not (Test-DATIntuneAuth)) {
+        Show-DATInfoDialog -Title 'Not Connected' -Type Warning -ButtonLabel 'OK' -Message 'Connect to Intune before assigning scope tags.'
+        return $null
+    }
+
+    # Load the tenant's tags. A 403 means the RBAC read permission is not consented.
+    $tags = @()
+    try {
+        $tags = @(Get-DATIntuneRoleScopeTags -WarningAction SilentlyContinue 3>$null)
+    } catch {
+        if ($_.Exception.Message -match '403|Forbidden|DeviceManagementRBAC|not authorized') {
+            Show-DATInfoDialog -Title 'Graph API Permission Required' -Type Warning -ButtonLabel 'OK' -Message (
+                "RBAC scope tags could not be loaded.`n`n" +
+                "Microsoft Graph returned 403 Forbidden because the token is missing the " +
+                "DeviceManagementRBAC.Read.All permission.`n`n" +
+                "Disconnect and reconnect to Intune (and have an administrator consent to " +
+                "DeviceManagementRBAC.Read.All) to use this feature.")
+            return $null
+        }
+        Show-DATInfoDialog -Title 'Could Not Load Scope Tags' -Type Error -ButtonLabel 'OK' -Message "Failed to retrieve RBAC scope tags:`n`n$($_.Exception.Message)"
+        return $null
+    }
+
+    $theme = Get-DATTheme -ThemeName $script:CurrentTheme
+    $bgColor = [System.Windows.Media.ColorConverter]::ConvertFromString($theme['CardBackground'])
+    $fgBrush = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.ColorConverter]::ConvertFromString($theme['WindowForeground']))
+    $mutedBrush = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.ColorConverter]::ConvertFromString($theme['InputPlaceholder']))
+
+    $script:ScopeDlgResult = $null
+
+    $dlg = [System.Windows.Window]::new()
+    $dlg.WindowStyle = 'None'
+    $dlg.AllowsTransparency = $true
+    $dlg.Background = [System.Windows.Media.Brushes]::Transparent
+    $dlg.WindowStartupLocation = 'CenterOwner'
+    $dlg.Owner = $Window
+    $dlg.Width = 460
+    $dlg.SizeToContent = 'Height'
+    $dlg.MaxHeight = 560
+    $dlg.ResizeMode = 'NoResize'
+    $dlg.ShowInTaskbar = $false
+    # Merge theme resources so the checkbox foregrounds resolve via SetResourceReference.
+    $dlg.Resources.MergedDictionaries.Add((Get-DATThemeResourceDictionary -ThemeName $script:CurrentTheme))
+
+    $border = [System.Windows.Controls.Border]::new()
+    $border.Background = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.Color]::FromArgb(250, $bgColor.R, $bgColor.G, $bgColor.B))
+    $border.CornerRadius = [System.Windows.CornerRadius]::new(16)
+    $border.Padding = [System.Windows.Thickness]::new(28, 24, 28, 24)
+    $border.BorderBrush = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.ColorConverter]::ConvertFromString($theme['CardBorder']))
+    $border.BorderThickness = [System.Windows.Thickness]::new(1)
+    $shadow = [System.Windows.Media.Effects.DropShadowEffect]::new()
+    $shadow.BlurRadius = 30; $shadow.ShadowDepth = 0; $shadow.Opacity = 0.5
+    $shadow.Color = [System.Windows.Media.Colors]::Black
+    $border.Effect = $shadow
+
+    $panel = [System.Windows.Controls.StackPanel]::new()
+
+    $title = [System.Windows.Controls.TextBlock]::new()
+    $title.FontSize = 15; $title.FontWeight = [System.Windows.FontWeights]::Bold; $title.Foreground = $fgBrush
+    $tRun1 = [System.Windows.Documents.Run]::new([string][char]0xE8D7)
+    $tRun1.FontFamily = [System.Windows.Media.FontFamily]::new('Segoe MDL2 Assets'); $tRun1.FontSize = 14
+    $title.Inlines.Add($tRun1)
+    $title.Inlines.Add([System.Windows.Documents.Run]::new("  Update / Assign Scope Tags"))
+    $title.Margin = [System.Windows.Thickness]::new(0, 0, 0, 8)
+    $panel.Children.Add($title) | Out-Null
+
+    $subtitle = [System.Windows.Controls.TextBlock]::new()
+    $subtitle.Text = "Select the scope tag(s) to apply to $AppLabel. This updates the app in Intune; the installer content is unchanged."
+    $subtitle.FontSize = 12; $subtitle.Foreground = $mutedBrush; $subtitle.TextWrapping = 'Wrap'
+    $subtitle.Margin = [System.Windows.Thickness]::new(0, 0, 0, 14)
+    $panel.Children.Add($subtitle) | Out-Null
+
+    $listBorder = [System.Windows.Controls.Border]::new()
+    $listBorder.BorderBrush = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.ColorConverter]::ConvertFromString($theme['InputBorder']))
+    $listBorder.BorderThickness = [System.Windows.Thickness]::new(1)
+    $listBorder.CornerRadius = [System.Windows.CornerRadius]::new(6)
+    $listBorder.Background = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.ColorConverter]::ConvertFromString($theme['InputBackground']))
+    $listBorder.Padding = [System.Windows.Thickness]::new(8, 6, 8, 6)
+
+    # Themed checkbox template (rounded box + primary-coloured tick) matching the main UI. A
+    # dialog window does not inherit the implicit CheckBox style, so it is applied explicitly.
+    # DynamicResource brushes resolve from the theme dictionary merged into the dialog above.
+    $cbTemplate = [System.Windows.Markup.XamlReader]::Parse(@"
+<ControlTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" TargetType="CheckBox">
+    <Grid>
+        <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+        <Border x:Name="checkBorder" Grid.Column="0" Width="18" Height="18" CornerRadius="5"
+                Background="{DynamicResource SidebarActive}" BorderBrush="{DynamicResource CheckBorder}"
+                BorderThickness="1.5" VerticalAlignment="Center" SnapsToDevicePixels="True">
+            <Path x:Name="checkMark" Data="M3,7 L7,11 L13,3" Stroke="{DynamicResource ButtonPrimaryForeground}"
+                  StrokeThickness="2" StrokeLineJoin="Round" StrokeStartLineCap="Round" StrokeEndLineCap="Round"
+                  Stretch="Uniform" Width="10" Height="10" Visibility="Collapsed"
+                  VerticalAlignment="Center" HorizontalAlignment="Center"/>
+        </Border>
+        <ContentPresenter Grid.Column="1" Margin="8,0,0,0" VerticalAlignment="Center" RecognizesAccessKey="True"/>
+    </Grid>
+    <ControlTemplate.Triggers>
+        <Trigger Property="IsChecked" Value="True">
+            <Setter TargetName="checkBorder" Property="Background" Value="{DynamicResource ButtonPrimary}"/>
+            <Setter TargetName="checkBorder" Property="BorderBrush" Value="{DynamicResource ButtonPrimary}"/>
+            <Setter TargetName="checkMark" Property="Visibility" Value="Visible"/>
+        </Trigger>
+        <Trigger Property="IsMouseOver" Value="True">
+            <Setter TargetName="checkBorder" Property="BorderBrush" Value="{DynamicResource ButtonPrimary}"/>
+        </Trigger>
+        <Trigger Property="IsEnabled" Value="False">
+            <Setter TargetName="checkBorder" Property="Opacity" Value="0.4"/>
+        </Trigger>
+    </ControlTemplate.Triggers>
+</ControlTemplate>
+"@)
+
+    # MaxHeight caps the visible list at ~5 rows (5 x 28px); the rest scrolls with the themed bar.
+    $scroll = [System.Windows.Controls.ScrollViewer]::new()
+    $scroll.VerticalScrollBarVisibility = 'Auto'
+    $scroll.MaxHeight = 140
+    $listPanel = [System.Windows.Controls.StackPanel]::new()
+    Build-DATScopeTagCheckboxes -Panel $listPanel -Tags $tags -CheckedIds $PreselectedIds -OnChanged $null -CheckBoxTemplate $cbTemplate | Out-Null
+    $scroll.Content = $listPanel
+    $listBorder.Child = $scroll
+    $panel.Children.Add($listBorder) | Out-Null
+
+    # Themed button templates (rounded, hover) matching Show-DATConfirmDialog.
+    $secondaryBtnTemplate = @"
+<ControlTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" TargetType="Button">
+    <Border x:Name="bd" Background="$($theme['ButtonSecondary'])" CornerRadius="8" Padding="16,8">
+        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+    </Border>
+    <ControlTemplate.Triggers>
+        <Trigger Property="IsMouseOver" Value="True">
+            <Setter TargetName="bd" Property="Background" Value="$($theme['ButtonSecondaryHover'])"/>
+        </Trigger>
+    </ControlTemplate.Triggers>
+</ControlTemplate>
+"@
+    $primaryBtnTemplate = @"
+<ControlTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" TargetType="Button">
+    <Border x:Name="bd" Background="$($theme['ButtonPrimary'])" CornerRadius="8" Padding="16,8">
+        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+    </Border>
+    <ControlTemplate.Triggers>
+        <Trigger Property="IsMouseOver" Value="True">
+            <Setter TargetName="bd" Property="Background" Value="$($theme['ButtonPrimaryHover'])"/>
+        </Trigger>
+    </ControlTemplate.Triggers>
+</ControlTemplate>
+"@
+
+    # Button row
+    $btnRow = [System.Windows.Controls.StackPanel]::new()
+    $btnRow.Orientation = 'Horizontal'
+    $btnRow.HorizontalAlignment = 'Right'
+    $btnRow.Margin = [System.Windows.Thickness]::new(0, 18, 0, 0)
+
+    $cancelBtn = [System.Windows.Controls.Button]::new()
+    $cancelBtn.Content = 'Cancel'
+    $cancelBtn.MinWidth = 96; $cancelBtn.Height = 36; $cancelBtn.Margin = [System.Windows.Thickness]::new(0, 0, 10, 0)
+    $cancelBtn.Cursor = [System.Windows.Input.Cursors]::Hand
+    $cancelBtn.FontSize = 13; $cancelBtn.FontWeight = [System.Windows.FontWeights]::SemiBold
+    $cancelBtn.Template = [System.Windows.Markup.XamlReader]::Parse($secondaryBtnTemplate)
+    $cancelBtn.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.ColorConverter]::ConvertFromString($theme['ButtonSecondaryForeground']))
+    $cancelBtn.Add_Click({ $script:ScopeDlgResult = $null; $dlg.Close() })
+    $btnRow.Children.Add($cancelBtn) | Out-Null
+
+    $applyBtn = [System.Windows.Controls.Button]::new()
+    $applyBtn.Content = 'Apply'
+    $applyBtn.MinWidth = 116; $applyBtn.Height = 36
+    $applyBtn.Cursor = [System.Windows.Input.Cursors]::Hand
+    $applyBtn.FontSize = 13; $applyBtn.FontWeight = [System.Windows.FontWeights]::SemiBold
+    $applyBtn.Template = [System.Windows.Markup.XamlReader]::Parse($primaryBtnTemplate)
+    $applyBtn.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.ColorConverter]::ConvertFromString($theme['ButtonPrimaryForeground']))
+    $applyBtn.Add_Click({
+        $ids = Get-DATCheckedScopeTagIds -Panel $listPanel
+        if (@($ids).Count -eq 0) { $ids = @('0') }
+        $script:ScopeDlgResult = @($ids)
+        $dlg.Close()
+    })
+    $btnRow.Children.Add($applyBtn) | Out-Null
+    $panel.Children.Add($btnRow) | Out-Null
+
+    $border.Child = $panel
+    $dlg.Content = $border
+    $dlg.ShowDialog() | Out-Null
+    return $script:ScopeDlgResult
+}
+
 function Invoke-DATIntuneBulkAppProgress {
     <#
     .SYNOPSIS
@@ -19944,7 +20725,8 @@ function Invoke-DATIntuneBulkAppProgress {
     #>
     param (
         [array]$Apps,
-        [ValidateSet('RemoveAssignments','UpdateDetection','UpdateRequirement','UpdateMetadata')][string]$Operation
+        [ValidateSet('RemoveAssignments','UpdateDetection','UpdateRequirement','UpdateMetadata','UpdateScopeTags')][string]$Operation,
+        [string[]]$RoleScopeTagIds = @()
     )
 
     switch ($Operation) {
@@ -19952,6 +20734,7 @@ function Invoke-DATIntuneBulkAppProgress {
         'UpdateDetection'   { $titleIcon = [char]0xE9F5; $titleText = 'Updating Detection & Remediation Scripts';    $doneLabel = 'Updated';  $doneSummary = 'script updated on' }
         'UpdateRequirement' { $titleIcon = [char]0xE90F; $titleText = 'Updating Requirement Script';                 $doneLabel = 'Updated';  $doneSummary = 'script updated on' }
         'UpdateMetadata'    { $titleIcon = [char]0xE898; $titleText = 'Republishing Metadata';                       $doneLabel = 'Updated';  $doneSummary = 'metadata republished on' }
+        'UpdateScopeTags'   { $titleIcon = [char]0xE8D7; $titleText = 'Updating Scope Tags';                         $doneLabel = 'Updated';  $doneSummary = 'scope tags updated on' }
     }
 
     $theme = Get-DATTheme -ThemeName $script:CurrentTheme
@@ -20110,7 +20893,8 @@ function Invoke-DATIntuneBulkAppProgress {
     $script:BulkPS = [powershell]::Create()
     Add-DATCoreRunspaceBootstrap -PowerShell $script:BulkPS -CaptureIntuneAuthContext
     $script:BulkPS.AddScript({
-        param ($State, $AppList, $Operation)
+        param ($State, $AppList, $Operation, $RoleScopeTagIds)
+        $scopeTags = @($RoleScopeTagIds | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
         foreach ($app in $AppList) {
             $entry = @{ AppId = $app.AppId; DisplayName = $app.DisplayName; Success = $false; Error = ''; Count = 0 }
             try {
@@ -20119,6 +20903,10 @@ function Invoke-DATIntuneBulkAppProgress {
                     'UpdateDetection'   { Update-DATIntuneAppRuleScript -AppId $app.AppId -ScriptType 'Detection'   | Out-Null }
                     'UpdateRequirement' { Update-DATIntuneAppRuleScript -AppId $app.AppId -ScriptType 'Requirement' | Out-Null }
                     'UpdateMetadata'    { Update-DATIntuneAppMetadata -AppId $app.AppId | Out-Null }
+                    'UpdateScopeTags'   {
+                        $applyTags = if ($scopeTags.Count -gt 0) { $scopeTags } else { @('0') }
+                        Set-DATIntuneAppScopeTags -AppId $app.AppId -RoleScopeTagIds $applyTags | Out-Null
+                    }
                 }
                 $entry.Success = $true
             } catch {
@@ -20131,6 +20919,7 @@ function Invoke-DATIntuneBulkAppProgress {
     [void]$script:BulkPS.AddArgument($script:BulkState)
     [void]$script:BulkPS.AddArgument($appList)
     [void]$script:BulkPS.AddArgument($Operation)
+    [void]$script:BulkPS.AddArgument($RoleScopeTagIds)
     $script:BulkAsync = $script:BulkPS.BeginInvoke()
 
     $script:BulkLastSeen = 0
@@ -20278,6 +21067,32 @@ $ctx_RepublishMetadata.Add_Click({
     if (-not $confirm) { return }
 
     Invoke-DATIntuneBulkAppProgress -Apps $checkedApps -Operation 'UpdateMetadata'
+})
+
+# Update / Assign Scope Tags -- lets the user pick one or more RBAC scope tags and applies them
+# to the selected package(s) via a Graph PATCH. The installer content and rules are untouched.
+$ctx_UpdateScopeTags.Add_Click({
+    $checkedApps = Get-DATCheckedIntuneApps
+    if ($checkedApps.Count -eq 0) {
+        $highlighted = $grid_IntuneApps.SelectedItem
+        if ($null -eq $highlighted) { return }
+        $checkedApps = @($highlighted)
+    }
+
+    $appLabel = if ($checkedApps.Count -eq 1) { "'$($checkedApps[0].DisplayName)'" } else { "$($checkedApps.Count) selected packages" }
+
+    # Pre-select from the configured default (the main Intune Package Options selection).
+    $preselect = @('0')
+    $savedRaw = (Get-ItemProperty -Path $global:RegPath -Name 'IntuneScopeTagIds' -ErrorAction SilentlyContinue).IntuneScopeTagIds
+    if (-not [string]::IsNullOrWhiteSpace($savedRaw)) {
+        $preselect = @(([string]$savedRaw).Split(',') | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+        if (@($preselect).Count -eq 0) { $preselect = @('0') }
+    }
+
+    $selected = Show-DATScopeTagSelectionDialog -AppLabel $appLabel -PreselectedIds $preselect
+    if ($null -eq $selected) { return }
+
+    Invoke-DATIntuneBulkAppProgress -Apps $checkedApps -Operation 'UpdateScopeTags' -RoleScopeTagIds $selected
 })
 
 # Remove Assignments -- clears ALL group assignments from the selected package(s) without deleting the app
@@ -20956,6 +21771,13 @@ function Update-DATIntuneAuthUI {
                 $txt_FilterWarning.Visibility = 'Collapsed'
             }
         } catch { }
+
+        # Auto-populate the RBAC scope tag dropdown from the tenant now that we are connected --
+        # only when the opt-in feature is enabled.
+        try {
+            $scopeTagsEnabled = (Get-ItemProperty -Path $global:RegPath -Name 'IntuneScopeTagsEnabled' -ErrorAction SilentlyContinue).IntuneScopeTagsEnabled
+            if ($scopeTagsEnabled -eq 1) { Update-DATScopeTagDropdown -Fetch }
+        } catch { }
     } else {
         $indicator_IntuneAuth.Fill = [System.Windows.Media.SolidColorBrush]::new(
             [System.Windows.Media.ColorConverter]::ConvertFromString(
@@ -20975,6 +21797,17 @@ function Update-DATIntuneAuthUI {
         $script:IntuneAppsData.Clear()
         $panel_IntunePermissions.Visibility = 'Collapsed'
         $panel_PermissionItems.Children.Clear()
+
+        # Grey out the RBAC scope tag list -- it needs a live Intune connection to load tags.
+        if ($null -ne $border_ScopeTagList) {
+            $scopeTagsEnabled = (Get-ItemProperty -Path $global:RegPath -Name 'IntuneScopeTagsEnabled' -ErrorAction SilentlyContinue).IntuneScopeTagsEnabled
+            if ($scopeTagsEnabled -eq 1) {
+                $border_ScopeTagList.IsEnabled = $false
+                if (Get-Command Show-DATScopeTagStatus -ErrorAction SilentlyContinue) {
+                    Show-DATScopeTagStatus -Glyph ([string][char]0xE946) -Message "Connect to Intune and the scope tags will load automatically." -ColorHex '#E8A035'
+                }
+            }
+        }
     }
 }
 
@@ -21856,6 +22689,9 @@ $btn_VerifyIntunePermissions.Add_Click({
         # Optional -- only needed for the assignment filter feature. Always shown (mirrors
         # Test-DATIntunePermissions) so it is never invisible; a missing result is informational.
         @{ Name = 'DeviceManagementConfiguration.ReadWrite.All'; Description = 'Create and manage assignment filters (optional)'; Optional = $true }
+        # Optional -- only needed for the RBAC scope tag feature. Always shown (mirrors
+        # Test-DATIntunePermissions) so it is never invisible; a missing result is informational.
+        @{ Name = 'DeviceManagementRBAC.Read.All'; Description = 'Read RBAC scope tags for package assignment (optional)'; Optional = $true }
     )
     $script:PermDlgIcons = @{}
     foreach ($rp in $requiredPerms) {
@@ -21954,13 +22790,24 @@ $btn_VerifyIntunePermissions.Add_Click({
             }
             $script:PermDlgSubtitle.Text = 'Verification complete.'
             if ($result.Granted) {
+                $deniedOptional = @($result.Permissions | Where-Object { $_.Status -ne 'Granted' -and $_.Optional })
                 $script:PermDlgSummary.Inlines.Clear()
-                $iconRun = [System.Windows.Documents.Run]::new([string][char]0xE73E + '  ')
-                $iconRun.FontFamily = [System.Windows.Media.FontFamily]::new('Segoe MDL2 Assets')
-                $script:PermDlgSummary.Inlines.Add($iconRun)
-                $script:PermDlgSummary.Inlines.Add([System.Windows.Documents.Run]::new('All required permissions are granted.'))
-                $script:PermDlgSummary.Foreground = [System.Windows.Media.SolidColorBrush]::new(
-                    [System.Windows.Media.ColorConverter]::ConvertFromString('#22C55E'))
+                if ($deniedOptional.Count -gt 0) {
+                    $iconRun = [System.Windows.Documents.Run]::new([string][char]0xE7BA + '  ')
+                    $iconRun.FontFamily = [System.Windows.Media.FontFamily]::new('Segoe MDL2 Assets')
+                    $script:PermDlgSummary.Inlines.Add($iconRun)
+                    $optNames = (($deniedOptional | ForEach-Object { $_.Name }) -join ', ')
+                    $script:PermDlgSummary.Inlines.Add([System.Windows.Documents.Run]::new("All required permissions granted. Optional NOT granted: $optNames -- related features (Assignment Filters / RBAC scope tags) stay unavailable until consented."))
+                    $script:PermDlgSummary.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+                        [System.Windows.Media.ColorConverter]::ConvertFromString('#F59E0B'))
+                } else {
+                    $iconRun = [System.Windows.Documents.Run]::new([string][char]0xE73E + '  ')
+                    $iconRun.FontFamily = [System.Windows.Media.FontFamily]::new('Segoe MDL2 Assets')
+                    $script:PermDlgSummary.Inlines.Add($iconRun)
+                    $script:PermDlgSummary.Inlines.Add([System.Windows.Documents.Run]::new('All required permissions are granted.'))
+                    $script:PermDlgSummary.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+                        [System.Windows.Media.ColorConverter]::ConvertFromString('#22C55E'))
+                }
             } else {
                 $denied = ($result.Permissions | Where-Object { $_.Status -ne 'Granted' -and -not $_.Optional }).Count
                 $script:PermDlgSummary.Inlines.Clear()
@@ -24743,6 +25590,23 @@ try {
             Write-Host "(restore failed)" -ForegroundColor DarkYellow
         }
 
+        # Restore Upload Engine (AzCopy)
+        Write-Host "  Upload Engine : " -NoNewline -ForegroundColor DarkGray
+        if ($null -ne $savedConfig.IntuneUseAzCopy -and $savedConfig.IntuneUseAzCopy -eq 1) {
+            $chk_IntuneUseAzCopy.IsChecked = $true
+            $txt_IntuneUseAzCopyState.Text = 'On'
+            $txt_IntuneUseAzCopyState.Foreground = $Window.FindResource('AccentColor')
+            $panel_AzCopyWindow.Visibility = 'Visible'
+            Write-Host "AzCopy" -ForegroundColor White
+        } else {
+            Write-Host "Built-in" -ForegroundColor DarkYellow
+        }
+        if ($null -ne $savedConfig.IntuneAzCopyShowWindow -and $savedConfig.IntuneAzCopyShowWindow -eq 1) {
+            $chk_IntuneAzCopyShowWindow.IsChecked = $true
+            $txt_IntuneAzCopyShowWindowState.Text = 'On'
+            $txt_IntuneAzCopyShowWindowState.Foreground = $Window.FindResource('AccentColor')
+        }
+
         # Restore Upload Chunk Size
         Write-Host "  Chunk Size    : " -NoNewline -ForegroundColor DarkGray
         if ($null -ne $savedConfig.IntuneChunkSizeMB -and $savedConfig.IntuneChunkSizeMB -gt 0) {
@@ -24836,6 +25700,11 @@ try {
             $txt_TeamsWebhookUrl.Text = $savedConfig.TeamsWebhookUrl
             Write-Host "  Teams URL     : " -NoNewline -ForegroundColor DarkGray
             Write-Host "(configured)" -ForegroundColor White
+        }
+        if (-not [string]::IsNullOrEmpty($savedConfig.TeamsCustomText)) {
+            $txt_TeamsCustomText.Text = $savedConfig.TeamsCustomText
+            Write-Host "  Teams Header  : " -NoNewline -ForegroundColor DarkGray
+            Write-Host $savedConfig.TeamsCustomText -ForegroundColor White
         }
 
         # Restore OEM selections
@@ -25149,7 +26018,11 @@ try {
 
         # Restore WIM Engine
         Write-Host "  WIM Engine    : " -NoNewline -ForegroundColor DarkGray
-        $wimEngineVal = if (-not [string]::IsNullOrEmpty($savedConfig.WimEngine)) { $savedConfig.WimEngine } else { 'dism' }
+        # No saved choice: default to bundled wimlib when available (more reliable than DISM,
+        # which can hang at initialisation on some machines); otherwise DISM.
+        $wimEngineVal = if (-not [string]::IsNullOrEmpty($savedConfig.WimEngine)) { $savedConfig.WimEngine }
+                        elseif ($cmbi_Wimlib.IsEnabled) { 'wimlib' }
+                        else { 'dism' }
         $wimEngineLabel = switch ($wimEngineVal) {
             'wimlib' { 'wimlib (Multi-threaded)' }
             '7zip'   { '7-Zip' }
@@ -25365,7 +26238,7 @@ if (Test-Path $logoPath) {
 
 # Read version from module manifest
 $manifestPath = Join-Path $AppRoot "Modules\DriverAutomationToolCore\DriverAutomationToolCore.psd1"
-$script:versionString = "v10.2.1"
+$script:versionString = "v10.2.2"
 if (Test-Path $manifestPath) {
     $manifestData = Import-PowerShellDataFile $manifestPath
     $ver = [version]$manifestData.ModuleVersion
@@ -26370,6 +27243,17 @@ $Window.Add_ContentRendered({
                 if ($consentConfirmed) {
                     Set-DATRegistryValue -Name "EnvProfilePromptShown" -Value 1 -Type DWord
                     Write-DATActivityLog "Telemetry/environment-profile consent modal confirmed (one-time forced prompt)" -Level Info
+                    # The Common Settings dropdowns were pre-selected from the registry during
+                    # window setup, before this modal ran. Re-sync them from the values the modal
+                    # just saved so they no longer show defaults until a relaunch (and so a later
+                    # SelectionChanged does not overwrite the freshly saved profile with defaults).
+                    if ($null -ne $cmb_DeviceCountRange -and $null -ne $cmb_ManagementPlatform) {
+                        $envProfilePostModal = Get-DATEnvironmentProfile
+                        $rangeSelPost = $cmb_DeviceCountRange.Items | Where-Object { [string]$_.Tag -eq $envProfilePostModal.DeviceCountRange } | Select-Object -First 1
+                        if ($null -ne $rangeSelPost) { $cmb_DeviceCountRange.SelectedItem = $rangeSelPost }
+                        $platSelPost = $cmb_ManagementPlatform.Items | Where-Object { [string]$_.Tag -eq $envProfilePostModal.ManagementPlatform } | Select-Object -First 1
+                        if ($null -ne $platSelPost) { $cmb_ManagementPlatform.SelectedItem = $platSelPost }
+                    }
                 } else {
                     Write-DATActivityLog "Telemetry/environment-profile consent modal dismissed without a choice -- will re-prompt next launch" -Level Warn
                 }
@@ -26634,4 +27518,23 @@ $Window.Add_ContentRendered({
         Invoke-DATRefreshModelsClick
     }
 })
+
+# Watch for an API "upgrade required" (HTTP 426) signal raised by any background API call (catalog
+# fetch, telemetry) and surface the upgrade prompt once on the UI thread. Registry is the
+# cross-runspace channel, so this covers builds, model refreshes and telemetry alike.
+$script:UpgradeWatchTimer = New-Object System.Windows.Threading.DispatcherTimer
+$script:UpgradeWatchTimer.Interval = [TimeSpan]::FromSeconds(3)
+$script:UpgradeWatchTimer.Add_Tick({
+    if ($script:WindowClosing) { try { $script:UpgradeWatchTimer.Stop() } catch {}; return }
+    try {
+        $upg = Get-DATUpgradeRequiredState
+        if ($null -ne $upg -and -not $script:UpgradeRequiredShown) {
+            $script:UpgradeRequiredShown = $true
+            Clear-DATUpgradeRequiredState
+            Show-DATUpgradeRequiredDialog -Message $upg.Message -DownloadUrl $upg.DownloadUrl
+        }
+    } catch { }
+})
+$script:UpgradeWatchTimer.Start()
+
 $Window.ShowDialog() | Out-Null
