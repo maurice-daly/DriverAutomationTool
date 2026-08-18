@@ -14,6 +14,9 @@
 
 ---
 
+## Important
+**August 17th 2026** - Due to a number of functional changes, it is recommened that anyone running DAT builds 10.1.9.0 and lower, upgrade immediately. The API will no longer serve requests for older verisons.
+
 ## Overview
 
 The Driver Automation Tool is a PowerShell WPF desktop application that automates the full lifecycle of OEM driver and BIOS package management — from catalog discovery and download through extraction, WIM packaging, and deployment to Configuration Manager or Microsoft Intune.
