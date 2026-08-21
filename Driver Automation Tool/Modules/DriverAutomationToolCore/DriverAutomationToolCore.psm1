@@ -4,7 +4,7 @@
      Organization:  MSEndpointMgr / Patch My PC
      Filename:      DriverAutomationToolCore.psm1
      Purpose:       Core functions for Driver Automation Tool v2.0
-     Version:       10.2.2.0
+     Version:       10.2.3.0
     ===========================================================================
 #>
 
@@ -37,8 +37,8 @@ if ($PSVersionTable.PSVersion.Major -le 5) {
 
 #region Variables
 
-[version]$global:ScriptRelease = "10.2.2.0"
-$global:ScriptBuildDate = "06-08-2026"
+[version]$global:ScriptRelease = "10.2.3.0"
+$global:ScriptBuildDate = "21-08-2026"
 $global:ReleaseNotesURL = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/DriverAutomationToolNotes.txt"
 $global:DATConfigUrl = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/refs/heads/master/Data/DATAPIConfig.json"
 $OEMLinksURL = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/OEMLinks.xml"
@@ -1792,7 +1792,13 @@ function Invoke-DATDriverFilePackaging {
     # well-formed packages while still unpacking standalone bundle CABs. The loop
     # handles CABs nested inside CABs (bounded to prevent runaway recursion).
     # Scoped to Acer, the only OEM known to ship this ZIP-of-CABs layout.
-    if ($OEM -eq 'Acer') {
+    #
+    # TEMPORARILY DISABLED: expanding each cabinet into a sub-folder named after itself
+    # deepens the tree on every pass, which is a prime cause of MAX_PATH overflow. This
+    # flag turns the expansion off so we can confirm whether the near-empty WIMs were
+    # actually a long-path problem. Set $expandNestedAcerCabs = $true to re-enable.
+    $expandNestedAcerCabs = $false
+    if ($expandNestedAcerCabs -and $OEM -eq 'Acer') {
         $expandPassLimit = 6
         for ($expandPass = 0; $expandPass -lt $expandPassLimit; $expandPass++) {
             $bundleCabs = @(
@@ -3985,8 +3991,6 @@ function Start-DATModelProcessing {
         [string]$HPPasswordBinPath,
         [string]$TeamsWebhookUrl,
         [switch]$TeamsNotificationsEnabled,
-        [AllowEmptyString()]
-        [string]$TeamsCustomText = '',
         [string]$CustomToastTextsJson,
         [string]$MaintenanceWindowsJson,
         [switch]$AlarmMode,
@@ -5348,44 +5352,10 @@ function Start-DATModelProcessing {
             $attemptedCount    = [Math]::Min($currentIndex, $totalModels)
             $failedCount       = [Math]::Max(0, $attemptedCount - $completedCount)
             $notProcessedCount = [Math]::Max(0, $totalModels - $attemptedCount)
-
-            # Derive an accurate per-model outcome from the unambiguous skipped/failed lists so the
-            # card distinguishes genuinely UPDATED models from ones SKIPPED because already current
-            # (a check-only run previously read as "everything updated" -- issue #842). A model that
-            # produced at least one package (not in the skipped/failed sets, and reached) is Updated.
-            $skippedKeys = @{}
-            foreach ($s in $buildSkipped)  { if ($s.OEM -and $s.Model) { $skippedKeys["$($s.OEM)|$($s.Model)"] = $true } }
-            $failedKeys  = @{}
-            foreach ($f in $buildFailures) { if ($f.OEM -and $f.Model) { $failedKeys["$($f.OEM)|$($f.Model)"]  = $true } }
-
-            $modelStatuses = @()
-            $updatedCount = 0; $skippedModelCount = 0
-            for ($mi = 0; $mi -lt $modelList.Count; $mi++) {
-                $mEntry = $modelList[$mi]
-                $mOem   = $mEntry.OEM
-                $mName  = if ($mEntry.Model) { $mEntry.Model } else { 'Unknown' }
-                $mKey   = "$mOem|$mName"
-                if ($mi -ge $attemptedCount) {
-                    $status = 'Not Processed'
-                } elseif ($failedKeys.ContainsKey($mKey) -and -not $skippedKeys.ContainsKey($mKey)) {
-                    $status = 'Failed'
-                } elseif ($skippedKeys.ContainsKey($mKey) -and -not $failedKeys.ContainsKey($mKey)) {
-                    $status = 'Skipped (up to date)'; $skippedModelCount++
-                } elseif ($failedKeys.ContainsKey($mKey) -and $skippedKeys.ContainsKey($mKey)) {
-                    # Mixed result across package types (e.g. drivers failed, BIOS current).
-                    $status = 'Partial'; $updatedCount++
-                } else {
-                    $status = 'Updated'; $updatedCount++
-                }
-                $modelStatuses += @{ OEM = $mOem; Model = $mName; Status = $status }
-            }
-
             try {
                 Send-DATTeamsNotification -WebhookUrl $TeamsWebhookUrl `
                     -TotalModels $totalModels -SuccessCount $completedCount -FailedCount $failedCount `
                     -NotProcessedCount $notProcessedCount `
-                    -UpdatedCount $updatedCount -SkippedCount $skippedModelCount -ModelStatuses $modelStatuses `
-                    -CustomText $TeamsCustomText `
                     -Platform $RunningMode -PackageType $PackageType -Models $modelList -Outcome $buildOutcome
                 Write-DATLogEntry -Value "[Teams] Build notification sent successfully" -Severity 1
             } catch {
@@ -5406,20 +5376,7 @@ function Send-DATTeamsNotification {
         [string]$PackageType = 'Drivers',
         [array]$Models = @(),
         [ValidateSet('Auto', 'Completed', 'CompletedWithErrors', 'Aborted', 'Failed')][string]$Outcome = 'Auto',
-        [int]$NotProcessedCount = 0,
-        # Optional per-tenant headline shown at the top of the card (e.g. customer/tenant name),
-        # so multiple tenants posting to one channel can be told apart. Empty = no headline.
-        [AllowEmptyString()]
-        [string]$CustomText = '',
-        # Count of models skipped because their package was already current. Shown as a distinct
-        # fact so a check-only run is not misread as having updated everything.
-        [int]$SkippedCount = 0,
-        # Count of models genuinely updated (packages created). -1 keeps the legacy 'Succeeded'
-        # fact (SuccessCount) for existing callers that don't supply this.
-        [int]$UpdatedCount = -1,
-        # Optional array of @{ OEM; Model; Status } (Status: Updated/Skipped/Failed/Not Processed).
-        # When supplied the model list shows each outcome instead of a flat selected-models list.
-        [array]$ModelStatuses = @()
+        [int]$NotProcessedCount = 0
     )
 
     # 'Auto' derives the state from FailedCount as before, so existing callers are unaffected.
@@ -5464,39 +5421,21 @@ function Send-DATTeamsNotification {
     $summaryFacts = @(
         @{ title = 'Platform';     value = $Platform },
         @{ title = 'Package Type'; value = $PackageType },
-        @{ title = 'Total Models'; value = "$TotalModels" }
+        @{ title = 'Total Models'; value = "$TotalModels" },
+        @{ title = 'Succeeded';    value = "$SuccessCount" },
+        @{ title = 'Failed';       value = "$FailedCount" }
     )
-    if ($UpdatedCount -ge 0) {
-        # Accurate breakdown: genuinely updated vs skipped-because-current.
-        $summaryFacts += @{ title = 'Updated'; value = "$UpdatedCount" }
-        if ($SkippedCount -gt 0) { $summaryFacts += @{ title = 'Skipped (up to date)'; value = "$SkippedCount" } }
-    } else {
-        # Legacy callers: keep the original 'Succeeded' fact.
-        $summaryFacts += @{ title = 'Succeeded'; value = "$SuccessCount" }
-    }
-    $summaryFacts += @{ title = 'Failed'; value = "$FailedCount" }
     if ($NotProcessedCount -gt 0) {
         $summaryFacts += @{ title = 'Not Processed'; value = "$NotProcessedCount" }
     }
     $summaryFacts += @{ title = 'Host';          value = $hostname }
     $summaryFacts += @{ title = $timestampLabel; value = $timestamp }
 
-    # Build model list for the card. When per-model statuses are supplied, show each model's
-    # outcome (Updated / Skipped / Failed / Not Processed) so a run that only checked models is
-    # not misread as having updated them; otherwise fall back to the flat selected-models list.
-    $modelSectionTitle = if ($ModelStatuses.Count -gt 0) { 'Model Results' } else { 'Selected Models' }
+    # Build model list for the card
     $modelFacts = @()
-    if ($ModelStatuses.Count -gt 0) {
-        foreach ($ms in $ModelStatuses) {
-            $msModel  = if ($ms.Model) { $ms.Model } else { "$($ms.OEM) Unknown" }
-            $msStatus = if ($ms.Status) { $ms.Status } else { 'Processed' }
-            $modelFacts += @{ title = $ms.OEM; value = "$msModel -- $msStatus" }
-        }
-    } else {
-        foreach ($m in $Models) {
-            $modelName = if ($m.Model) { $m.Model } else { "$($m.OEM) Unknown" }
-            $modelFacts += @{ title = $m.OEM; value = $modelName }
-        }
+    foreach ($m in $Models) {
+        $modelName = if ($m.Model) { $m.Model } else { "$($m.OEM) Unknown" }
+        $modelFacts += @{ title = $m.OEM; value = $modelName }
     }
     if ($modelFacts.Count -eq 0) { $modelFacts += @{ title = 'Models'; value = 'None specified' } }
 
@@ -5562,7 +5501,7 @@ function Send-DATTeamsNotification {
                             items     = @(
                                 @{
                                     type   = 'TextBlock'
-                                    text   = $modelSectionTitle
+                                    text   = 'Selected Models'
                                     weight = 'Bolder'
                                     spacing = 'Medium'
                                 },
@@ -5576,22 +5515,6 @@ function Send-DATTeamsNotification {
                 }
             }
         )
-    }
-
-    # Prepend the optional per-tenant headline just under the DAT title row.
-    if (-not [string]::IsNullOrWhiteSpace($CustomText)) {
-        $headlineBlock = @{
-            type   = 'TextBlock'
-            text   = $CustomText
-            wrap   = $true
-            weight = 'Bolder'
-            size   = 'Large'
-            color  = 'Accent'
-            spacing = 'Small'
-        }
-        $bodyList = [System.Collections.ArrayList]@($card.attachments[0].content.body)
-        $bodyList.Insert(1, $headlineBlock)
-        $card.attachments[0].content.body = $bodyList.ToArray()
     }
 
     $jsonPayload = $card | ConvertTo-Json -Depth 20 -Compress
@@ -5620,7 +5543,6 @@ function Export-DATBuildConfig {
         [int]$BIOSRestartDelayMinutes = 3,
         [string]$TeamsWebhookUrl,
         [bool]$TeamsNotificationsEnabled = $false,
-        [string]$TeamsCustomText = '',
         [hashtable]$Intune,
         [hashtable]$ConfigMgr,
         [bool]$MaintenanceWindowEnabled = $false,
@@ -5669,7 +5591,6 @@ function Export-DATBuildConfig {
         DownloadOnlyExtractContent = $DownloadOnlyExtractContent
         TeamsWebhookUrl            = if ($TeamsWebhookUrl) { $TeamsWebhookUrl } else { '' }
         TeamsNotificationsEnabled  = $TeamsNotificationsEnabled
-        TeamsCustomText            = if ($TeamsCustomText) { $TeamsCustomText } else { '' }
         Intune                     = if ($Intune) { $Intune } else { [ordered]@{ TenantEnvironment = 'Commercial'; TenantId = ''; AppId = ''; AppSecret = '' } }
         ConfigMgr                  = if ($ConfigMgr) { $ConfigMgr } else { [ordered]@{ SiteServer = ''; SiteCode = ''; DistributionPointGroups = @(); DistributionPriority = 'Normal' } }
         MaintenanceWindowEnabled   = $MaintenanceWindowEnabled
@@ -7370,8 +7291,15 @@ New-HPDriverPack -Platform "$PlatformID" -Os "$HPOS" -OSVer "$WindowsBuild" -For
             if (-not [string]::IsNullOrEmpty($catalogFileHash)) {
                 $algo = if ($catalogHashMethod -match '^(SHA256|SHA1|MD5|SHA384|SHA512)$') { $catalogHashMethod } else { 'SHA256' }
                 Write-DATLogEntry -Value "[$OEM] Verifying file hash ($algo)..." -Severity 1
-                $computedHash = (Get-FileHash -Path $downloadedFile -Algorithm $algo -ErrorAction SilentlyContinue).Hash
-                if ($computedHash -eq $catalogFileHash) {
+                $computedHash = Get-DATVerificationHash -FilePath $downloadedFile -Algorithm $algo
+                if ($null -eq $computedHash) {
+                    # Hash could not be computed (e.g. MD5 blocked by a FIPS host policy). The file
+                    # was fetched over enforced HTTPS; proceed without hash verification rather than
+                    # failing the download outright (#900).
+                    Write-DATLogEntry -Value "[$OEM] Could not compute $algo hash (FIPS policy may block $algo) -- proceeding without hash verification." -Severity 2
+                    $downloadVerified = $true
+                    break
+                } elseif ($computedHash -eq $catalogFileHash) {
                     Write-DATLogEntry -Value "[$OEM] Hash verified ($algo): $computedHash" -Severity 1
                     $downloadVerified = $true
                     break
@@ -14355,7 +14283,7 @@ function Start-DATBiosDownload {
                 'MD5'    { 'MD5' }
                 default  { 'SHA256' }
             }
-            $existingHash = (Get-FileHash -Path $destFile -Algorithm $algo -ErrorAction SilentlyContinue).Hash
+            $existingHash = Get-DATVerificationHash -FilePath $destFile -Algorithm $algo
             if ($existingHash -eq $BiosEntry.FileHash) {
                 Write-DATLogEntry -Value "[BIOS] File already cached with valid hash: $destFile" -Severity 1
                 return $destFile
@@ -14416,7 +14344,7 @@ function Start-DATBiosDownload {
             'MD5'    { 'MD5' }
             default  { 'SHA256' }
         }
-        $downloadedHash = (Get-FileHash -Path $destFile -Algorithm $algo -ErrorAction SilentlyContinue).Hash
+        $downloadedHash = Get-DATVerificationHash -FilePath $destFile -Algorithm $algo
         if ($downloadedHash -eq $BiosEntry.FileHash) {
             Write-DATLogEntry -Value "[BIOS] Hash verified ($algo): $downloadedHash" -Severity 1
         } elseif ($OEM -ne 'Acer' -and (Test-DATFileSignature -FilePath $destFile -Context $sigContext)) {
@@ -15547,10 +15475,38 @@ function Update-DATHPSoftPaqManifestReference {
     }
 }
 
+function Get-DATVerificationHash {
+    <#
+    .SYNOPSIS
+        FIPS-safe wrapper around Get-FileHash. Returns the hex hash string, or $null when the
+        hash cannot be computed.
+    .DESCRIPTION
+        On a FIPS-enforced host, requesting an MD5 hash makes Get-FileHash throw a terminating
+        .NET exception ("not part of the Windows Platform FIPS validated cryptographic
+        algorithms") that -ErrorAction cannot suppress -- historically this surfaced as a hard
+        "Download attempt failed" and blocked the download entirely (#900). Catalog hashes are
+        dictated by the OEM (e.g. Acer publishes MD5), so the algorithm cannot simply be changed.
+        Instead, catch the failure and return $null so the caller falls back to its existing
+        Authenticode / enforced-HTTPS trust path rather than aborting.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param (
+        [Parameter(Mandatory)][string]$FilePath,
+        [Parameter(Mandatory)][string]$Algorithm
+    )
+    try {
+        return (Get-FileHash -Path $FilePath -Algorithm $Algorithm -ErrorAction Stop).Hash
+    } catch {
+        Write-DATLogEntry -Value "[Hash] Unable to compute $Algorithm hash for $FilePath`: $($_.Exception.Message). Expected for MD5 on a FIPS-enforced host -- falling back to signature/HTTPS trust." -Severity 2
+        return $null
+    }
+}
+
 function Get-DATPackageHash {
     <#
     .SYNOPSIS
-        Computes the MD5 hash of a file. Returns the hex string, or $null on failure/timeout.
+        Computes the SHA256 hash of a file. Returns the hex string, or $null on failure/timeout.
     .DESCRIPTION
         The hash is computed on a background runspace guarded by a timeout so a stalled file
         read -- antivirus real-time scan lock, a lingering wimlib/dismhost handle on a freshly
@@ -15558,6 +15514,10 @@ function Get-DATPackageHash {
         file is opened with a ReadWrite share so a concurrent reader/scanner does not raise a
         sharing violation. Because the hash only decorates optional telemetry, a timeout logs a
         warning and returns $null rather than throwing or hanging the build.
+
+        SHA256 (not MD5) is used so the computation succeeds on FIPS-enforced hosts, where the
+        legacy MD5 provider constructor throws "not part of the Windows Platform FIPS validated
+        cryptographic algorithms" (#900).
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -15571,14 +15531,14 @@ function Get-DATPackageHash {
     # Self-contained -- uses only .NET types so it runs in a bare runspace with no module import.
     $hashScript = {
         param($Path)
-        $md5 = [System.Security.Cryptography.MD5]::Create()
+        $sha256 = [System.Security.Cryptography.SHA256]::Create()
         $stream = [System.IO.File]::Open($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
         try {
-            $hashBytes = $md5.ComputeHash($stream)
+            $hashBytes = $sha256.ComputeHash($stream)
             return [BitConverter]::ToString($hashBytes).Replace('-', '')
         } finally {
             $stream.Close()
-            $md5.Dispose()
+            $sha256.Dispose()
         }
     }
 
@@ -15587,7 +15547,7 @@ function Get-DATPackageHash {
         try {
             return (& $hashScript $FilePath)
         } catch {
-            Write-DATLogEntry -Value "[Telemetry] MD5 hash failed for $FilePath`: $($_.Exception.Message)" -Severity 2
+            Write-DATLogEntry -Value "[Telemetry] SHA256 hash failed for $FilePath`: $($_.Exception.Message)" -Severity 2
             return $null
         }
     }
@@ -15609,7 +15569,7 @@ function Get-DATPackageHash {
         $async = $ps.BeginInvoke()
         if (-not $async.AsyncWaitHandle.WaitOne([TimeSpan]::FromSeconds($TimeoutSeconds))) {
             $timedOut = $true
-            Write-DATLogEntry -Value "[Telemetry] MD5 hash timed out after ${TimeoutSeconds}s for $FilePath -- skipping hash" -Severity 2
+            Write-DATLogEntry -Value "[Telemetry] SHA256 hash timed out after ${TimeoutSeconds}s for $FilePath -- skipping hash" -Severity 2
             # Non-blocking abandon: request an async stop and return at once. Do not wait on it.
             try { [void]$ps.BeginStop($null, $null) } catch {}
             return $null
@@ -15617,7 +15577,7 @@ function Get-DATPackageHash {
         $result = $ps.EndInvoke($async)
         return ($result | Select-Object -First 1)
     } catch {
-        Write-DATLogEntry -Value "[Telemetry] MD5 hash failed for $FilePath`: $($_.Exception.Message)" -Severity 2
+        Write-DATLogEntry -Value "[Telemetry] SHA256 hash failed for $FilePath`: $($_.Exception.Message)" -Severity 2
         return $null
     } finally {
         # Only dispose on the completed/failed paths. On the timeout path Dispose() would block
@@ -15663,7 +15623,7 @@ function Send-DATDriverReport {
     if (-not [string]::IsNullOrEmpty($PackageVersion)) { $body['packageVersion'] = $PackageVersion }
     if ($DownloadTime -gt 0) { $body['downloadTime'] = $DownloadTime }
     if ($PackageSize -gt 0)  { $body['packageSize']  = $PackageSize }
-    if (-not [string]::IsNullOrEmpty($PackageHash))    { $body['packageHash']  = $PackageHash; $body['hashMethod'] = 'MD5' }
+    if (-not [string]::IsNullOrEmpty($PackageHash))    { $body['packageHash']  = $PackageHash; $body['hashMethod'] = 'SHA256' }
 
     Send-DATTelemetry -Endpoint $config.endpoints.driverReport -Body $body
 }
@@ -15700,7 +15660,7 @@ function Send-DATBiosReport {
     }
     if (-not [string]::IsNullOrEmpty($CurrentBiosVersion)) { $body['currentBiosVersion'] = $CurrentBiosVersion }
     if (-not [string]::IsNullOrEmpty($TargetBiosVersion))  { $body['targetBiosVersion']  = $TargetBiosVersion }
-    if (-not [string]::IsNullOrEmpty($PackageHash))        { $body['packageHash']  = $PackageHash; $body['hashMethod'] = 'MD5' }
+    if (-not [string]::IsNullOrEmpty($PackageHash))        { $body['packageHash']  = $PackageHash; $body['hashMethod'] = 'SHA256' }
 
     Send-DATTelemetry -Endpoint $config.endpoints.biosReport -Body $body
 }

@@ -54,7 +54,6 @@ function Send-DATHeadlessPreflightFailure {
         Send-DATTeamsNotification -WebhookUrl $config.TeamsWebhookUrl `
             -TotalModels $preflightModels.Count -SuccessCount 0 -FailedCount 0 `
             -NotProcessedCount $preflightModels.Count `
-            -CustomText ([string]$config.TeamsCustomText) `
             -Platform $config.Platform -PackageType $config.PackageType -Models $preflightModels -Outcome 'Failed'
         Write-DATLogEntry -Value "[Teams] Pre-flight failure notification sent -- $Reason" -Severity 1
     } catch {
@@ -232,7 +231,6 @@ if ($config.MaintenanceWindowEnabled -and $config.MaintenanceWindows -and @($con
 if ($config.TeamsNotificationsEnabled -and -not [string]::IsNullOrEmpty($config.TeamsWebhookUrl)) {
     $processingParams['TeamsNotificationsEnabled'] = $true
     $processingParams['TeamsWebhookUrl'] = $config.TeamsWebhookUrl
-    if (-not [string]::IsNullOrEmpty($config.TeamsCustomText)) { $processingParams['TeamsCustomText'] = $config.TeamsCustomText }
 }
 
 # Normalise platform name -- BuildConfig accepts 'ConfigMgr' or 'Configuration Manager'

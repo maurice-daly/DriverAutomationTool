@@ -3,6 +3,14 @@ Release Notes
 IMPORTANT
 - DAT Downloads have been moved to GitHub - https://github.com/maurice-daly/DriverAutomationTool
 
+Version 10.2.3
+What's New & Fixed
+- Security / FIPS Compliance — Package integrity hashing now uses SHA256 instead of MD5, so the tool no longer errors out with "not part of the Windows Platform FIPS validated cryptographic algorithms" on FIPS-enforced hosts. Where an OEM catalog only publishes an MD5 hash, verification now degrades gracefully to Authenticode/HTTPS trust rather than failing the download. (#900)
+- BIOS Management — Fixed BIOS package detection that failed during a live ConfigMgr task sequence while working correctly in debug mode. Matching previously relied on a value only populated in debug, which broke SystemSKU-to-model fallback — most visibly on Lenovo, where the SKU is only the 4-character machine type. (#902)
+- Driver Packaging (Acer) — Disabled the nested cabinet self-expansion that deepened the folder tree on every pass, a primary cause of MAX_PATH overflow and near-empty output WIMs on Acer driver packages.
+- UI / Usability — Added a long-path advisory: when the selected temporary path exceeds 120 characters and Windows long-path support is off, a warning panel with an "Enable long path support" action is shown to prevent deep driver files from exceeding the 260-character limit.
+- UI / Usability — The cleanup results list is now wrapped in a height-capped, internally scrolling panel so a large result set can no longer grow the borderless window off-screen and hide the Close button.
+
 Version 10.2.2
 What's New & Fixed
 - Intune RBAC Scope Tags — You can now assign one or more RBAC scope tags to the Intune apps the tool creates. Tenants that enforce role-based scope tags previously rejected every new app (creation failed with a "condition not met" error); apps now carry a permitted tag, with the built-in Default tag used automatically when none is selected. Includes a tag picker in Intune Package Options that populates from the connected tenant, plus scheduled/headless support. (#864)

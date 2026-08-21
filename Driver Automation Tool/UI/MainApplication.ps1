@@ -2889,16 +2889,30 @@ function Show-DATBuildSummaryDialog {
     $grid.ColumnDefinitions.Add($col2) | Out-Null
     $grid.ColumnDefinitions.Add($col3) | Out-Null
 
+    # Failed counts come from the authoritative BuildFailures list (same source as the
+    # "View Failures" button) -- NOT TotalModels-Success, which wrongly counts skipped-current,
+    # not-applicable (Microsoft Surface BIOS) and no-match models as failures.
+    $driverFailed = 0
+    $biosFailed = 0
+    try {
+        $bfJson = (Get-ItemProperty -Path $global:RegPath -Name 'BuildFailures' -ErrorAction SilentlyContinue).BuildFailures
+        if (-not [string]::IsNullOrWhiteSpace($bfJson)) {
+            $bfList = @($bfJson | ConvertFrom-Json)
+            $driverFailed = @($bfList | Where-Object { $_.PackageType -eq 'Drivers' }).Count
+            $biosFailed = @($bfList | Where-Object { $_.PackageType -eq 'BIOS' }).Count
+        }
+    } catch {
+        Write-DATLogEntry -Value "[UI] Build summary failure parse error: $($_.Exception.Message)" -Severity 2
+    }
+
     # Build rows based on package type
     $rows = @()
     $showDrivers = $PackageType -in @('Drivers', 'All', 'Drivers Pilot', 'All Pilot')
     $showBios = $PackageType -in @('BIOS', 'All', 'BIOS Pilot', 'All Pilot')
     if ($showDrivers) {
-        $driverFailed = [math]::Max(0, $TotalModels - $DriverSuccess)
         $rows += @{ Label = 'Driver Packages'; Success = $DriverSuccess; Failed = $driverFailed }
     }
     if ($showBios) {
-        $biosFailed = [math]::Max(0, $TotalModels - $BiosSuccess)
         $rows += @{ Label = 'BIOS Packages'; Success = $BiosSuccess; Failed = $biosFailed }
     }
 
@@ -5148,11 +5162,18 @@ function Show-DATPackageRetentionModal {
         [System.Windows.Media.ColorConverter]::ConvertFromString($theme['AccentColor']))
     $panel.Children.Add($spinner) | Out-Null
 
-    # Results list (hidden until complete)
+    # Results list (hidden until complete). Wrapped in a height-capped ScrollViewer so a large
+    # cleanup can't grow the borderless, non-resizable window past the screen and push the Close
+    # button off the bottom -- the list scrolls internally instead.
     $resultsPanel = [System.Windows.Controls.StackPanel]::new()
-    $resultsPanel.Visibility = 'Collapsed'
-    $resultsPanel.Margin = [System.Windows.Thickness]::new(0, 0, 0, 16)
-    $panel.Children.Add($resultsPanel) | Out-Null
+    $resultsScroller = [System.Windows.Controls.ScrollViewer]::new()
+    $resultsScroller.Visibility = 'Collapsed'
+    $resultsScroller.MaxHeight = 320
+    $resultsScroller.VerticalScrollBarVisibility   = 'Auto'
+    $resultsScroller.HorizontalScrollBarVisibility = 'Disabled'
+    $resultsScroller.Margin = [System.Windows.Thickness]::new(0, 0, 0, 16)
+    $resultsScroller.Content = $resultsPanel
+    $panel.Children.Add($resultsScroller) | Out-Null
 
     # Cancel/Close button -- shown from the start as "Cancel" so a long-running or stalled
     # cleanup can always be dismissed; relabelled "Close" once the run finishes.
@@ -5445,7 +5466,7 @@ function Show-DATPackageRetentionModal {
                     }
                 }
 
-                $resultsPanel.Visibility = 'Visible'
+                $resultsScroller.Visibility = 'Visible'
                 $dlg.SizeToContent       = [System.Windows.SizeToContent]::Height
           } catch {
                 try { Write-DATLogEntry -Value "[Retention] Completion render error: $($_.Exception.Message)" -Severity 2 } catch { }
@@ -10292,10 +10313,13 @@ $btn_Build.Add_Click({
     # Use the user-configured temp storage path (same path the build actually uses)
     $pfRegConfig = Get-ItemProperty -Path $global:RegPath -ErrorAction SilentlyContinue
     $pfTempDir = if ($pfRegConfig -and -not [string]::IsNullOrEmpty($pfRegConfig.TempStoragePath)) { $pfRegConfig.TempStoragePath } else { $global:TempDirectory }
+    # When the Windows long path policy is enabled the 260-char limit no longer applies, so the
+    # long-path advisories below are suppressed (the admin has already applied the workaround).
+    $pfLongPathsOn = Get-DATLongPathsEnabled
 
     # Warn if the temp storage path itself is excessively long
-    if ($pfTempDir.Length -gt 100) {
-        $pfTempMessage = "The temp storage path is $($pfTempDir.Length) characters long, which significantly increases the risk of exceeding the Windows 260-character path limit during driver extraction.`n`nCurrent path: $pfTempDir`n`nThis can cause driver extractions to fail silently or produce incomplete packages with missing files. If you continue, the resulting packages may not contain all expected drivers and could cause deployment issues.`n`nTo resolve this, shorten the temp storage path in Common Settings."
+    if (-not $pfLongPathsOn -and $pfTempDir.Length -gt 100) {
+        $pfTempMessage = "The temp storage path is $($pfTempDir.Length) characters long, which significantly increases the risk of exceeding the Windows 260-character path limit during driver extraction.`n`nCurrent path: $pfTempDir`n`nThis can cause driver extractions to fail silently or produce incomplete packages with missing files. If you continue, the resulting packages may not contain all expected drivers and could cause deployment issues.`n`nTo resolve this, shorten the temp storage path in Common Settings, or enable Windows long path support (LongPathsEnabled) from the temp path warning in Common Settings."
         $pfTempContinue = Show-DATConfirmDialog -Title 'Long Path Warning' `
             -Message $pfTempMessage -Type Warning -ConfirmLabel 'Continue Anyway' -CancelLabel 'Cancel Build'
         if (-not $pfTempContinue) {
@@ -10306,18 +10330,20 @@ $btn_Build.Add_Click({
     }
 
     $pfLongModels = @()
-    foreach ($m in $selectedModels) {
-        $pfTestPath = Join-Path $pfTempDir "Build\$($m.OEM)\$($m.Model)\$pfSelectedOS\Extracted"
-        if (($pfTestPath.Length + $pfNestedFileHeadroom) -ge $pfMaxPathLimit) {
-            $pfLongModels += [PSCustomObject]@{
-                Model      = "$($m.OEM) $($m.Model)"
-                PathLength = $pfTestPath.Length
+    if (-not $pfLongPathsOn) {
+        foreach ($m in $selectedModels) {
+            $pfTestPath = Join-Path $pfTempDir "Build\$($m.OEM)\$($m.Model)\$pfSelectedOS\Extracted"
+            if (($pfTestPath.Length + $pfNestedFileHeadroom) -ge $pfMaxPathLimit) {
+                $pfLongModels += [PSCustomObject]@{
+                    Model      = "$($m.OEM) $($m.Model)"
+                    PathLength = $pfTestPath.Length
+                }
             }
         }
     }
     if ($pfLongModels.Count -gt 0) {
         $pfModelList = ($pfLongModels | ForEach-Object { "  - $($_.Model) ($($_.PathLength) chars)" }) -join "`n"
-        $pfMessage = "The following model(s) have extraction paths that may exceed the Windows 260-character path limit:`n`n$pfModelList`n`nThis can cause driver extractions to fail silently or produce incomplete packages with missing files. If you continue, the resulting packages may not contain all expected drivers and could cause deployment issues.`n`nTo resolve this, shorten the temp storage path (currently: $pfTempDir)."
+        $pfMessage = "The following model(s) have extraction paths that may exceed the Windows 260-character path limit:`n`n$pfModelList`n`nThis can cause driver extractions to fail silently or produce incomplete packages with missing files. If you continue, the resulting packages may not contain all expected drivers and could cause deployment issues.`n`nTo resolve this, shorten the temp storage path (currently: $pfTempDir), or enable Windows long path support (LongPathsEnabled) from the temp path warning in Common Settings."
         $pfContinue = Show-DATConfirmDialog -Title 'Long Path Warning' `
             -Message $pfMessage -Type Warning -ConfirmLabel 'Continue Anyway' -CancelLabel 'Cancel Build'
         if (-not $pfContinue) {
@@ -10585,7 +10611,7 @@ $btn_Build.Add_Click({
     $script:BuildPS.Runspace = $script:BuildRunspace
     Add-DATCoreRunspaceBootstrap -PowerShell $script:BuildPS -IntuneAuthContext $intuneAuthContext -ModulePath $resolvedModulePath
     [void]$script:BuildPS.AddScript({
-        param($ScriptDir, $RegPath, $RunningMode, $SelectedModels, $StoragePath, $PackagePath, $DisableToast, $DisableRestart, $SiteServer, $SiteCode, $PackageType, $DPGroups, $DPs, $DistPriority, $EnableBDR, $DebugBuildPath, $CustomBrandingPath, $HPPasswordBinPath, $ToastTimeoutAction, $MaxDeferrals, $BIOSRestartDelayMinutes, $TeamsWebhookUrl, $TeamsNotificationsEnabled, $TeamsCustomText, $CustomToastTextsJson, $ConsoleFolderID, $MaintenanceWindowsJson, $AlarmMode, $AlarmSound, $CreateIntuneWinOnly, $GenerateXmlLogicPackage, $ExtractDownloadOnlyContent, $ShowBrandingBannerAllToasts)
+        param($ScriptDir, $RegPath, $RunningMode, $SelectedModels, $StoragePath, $PackagePath, $DisableToast, $DisableRestart, $SiteServer, $SiteCode, $PackageType, $DPGroups, $DPs, $DistPriority, $EnableBDR, $DebugBuildPath, $CustomBrandingPath, $HPPasswordBinPath, $ToastTimeoutAction, $MaxDeferrals, $BIOSRestartDelayMinutes, $TeamsWebhookUrl, $TeamsNotificationsEnabled, $CustomToastTextsJson, $ConsoleFolderID, $MaintenanceWindowsJson, $AlarmMode, $AlarmSound, $CreateIntuneWinOnly, $GenerateXmlLogicPackage, $ExtractDownloadOnlyContent, $ShowBrandingBannerAllToasts)
         try {
             $procParams = @{
                 ScriptDirectory = $ScriptDir
@@ -10622,7 +10648,6 @@ $btn_Build.Add_Click({
             if ($TeamsNotificationsEnabled -and -not [string]::IsNullOrEmpty($TeamsWebhookUrl)) {
                 $procParams['TeamsNotificationsEnabled'] = $true
                 $procParams['TeamsWebhookUrl'] = $TeamsWebhookUrl
-                if (-not [string]::IsNullOrEmpty($TeamsCustomText)) { $procParams['TeamsCustomText'] = $TeamsCustomText }
             }
             Start-DATModelProcessing @procParams
         } catch [System.Management.Automation.PipelineStoppedException] {
@@ -10690,10 +10715,8 @@ $btn_Build.Add_Click({
     # Teams notification settings
     $teamsEnabled = $chk_TeamsNotifications.IsChecked -eq $true
     $teamsUrl = $txt_TeamsWebhookUrl.Text
-    $teamsCustomText = if ($null -ne $txt_TeamsCustomText) { $txt_TeamsCustomText.Text } else { '' }
     [void]$script:BuildPS.AddArgument($teamsUrl)
     [void]$script:BuildPS.AddArgument($teamsEnabled)
-    [void]$script:BuildPS.AddArgument($teamsCustomText)
 
     # Custom toast text (Intune only) -- pass per-type custom texts as JSON
     $customToastTextsJson = $null
@@ -11753,7 +11776,9 @@ function Invoke-DATConfigMgrConnect {
             # Enable ConfigMgr known model lookup if toggle is on
             if ($chk_KnownModels.IsChecked) {
                 $btn_ConfigMgrKnownModelLookup.IsEnabled = $true
-                Invoke-DATConfigMgrKnownModelLookup
+                # Connect-time lookup: cache devices and scan versions but do not auto-tick
+                # grid rows (avoids overwriting the user's manual model selection).
+                Invoke-DATConfigMgrKnownModelLookup -AutoSelectMatches:$false
             }
         } else {
             $txt_SiteCode.Foreground = $Window.FindResource('StatusWarning')
@@ -11835,6 +11860,10 @@ function Update-DATConfigMgrKnownModelSelection {
 }
 
 function Invoke-DATConfigMgrKnownModelLookup {
+    # See Invoke-DATIntuneKnownModelLookup: $AutoSelectMatches is $true for explicit user
+    # gestures and $false for automatic connect-time lookups so the latter never overwrite a
+    # manual grid selection.
+    param([bool]$AutoSelectMatches = $true)
     if ([string]::IsNullOrEmpty($global:SiteCode) -or [string]::IsNullOrEmpty($global:SiteServer)) {
         $txt_ConfigMgrKnownModelStatus.Text = "Please connect to Configuration Manager first."
         $txt_ConfigMgrKnownModelStatus.Foreground = [System.Windows.Media.SolidColorBrush]::new(
@@ -11855,10 +11884,11 @@ function Invoke-DATConfigMgrKnownModelLookup {
     $siteCode = $global:SiteCode
 
     $script:ConfigMgrModelLookupState = [hashtable]::Synchronized(@{
-        Status   = 'Running'
-        Progress = "Connecting to $siteServer..."
-        Result   = $null
-        Error    = $null
+        Status     = 'Running'
+        Progress   = "Connecting to $siteServer..."
+        Result     = $null
+        Error      = $null
+        AutoSelect = $AutoSelectMatches
     })
 
     $script:ConfigMgrModelLookupPS = [powershell]::Create()
@@ -11919,7 +11949,9 @@ function Invoke-DATConfigMgrKnownModelLookup {
                 }
             }
 
-            Update-DATConfigMgrKnownModelSelection
+            # Auto-select matching models only for explicit lookups. Automatic connect-time
+            # lookups skip selection so they cannot overwrite the user's manual grid picks.
+            if ($state.AutoSelect) { Update-DATConfigMgrKnownModelSelection }
             Update-DATSelectKnownModelsVisibility
             # Compare catalog versions against what is deployed and flag available updates.
             Invoke-DATDeployedVersionScan
@@ -12252,6 +12284,11 @@ function Update-DATKnownModelSelection {
 }
 
 function Invoke-DATIntuneKnownModelLookup {
+    # $AutoSelectMatches gates whether matched known models are ticked in the grid. Explicit
+    # user gestures (enabling the option, clicking Lookup) pass $true; automatic connect-time /
+    # startup lookups pass $false so a background lookup cannot overwrite a selection the user
+    # made while it was still running.
+    param([bool]$AutoSelectMatches = $true)
     if (-not (Test-DATIntuneAuth)) {
         $txt_IntuneKnownModelStatus.Text = "Please authenticate to Intune first."
         $txt_IntuneKnownModelStatus.Foreground = [System.Windows.Media.SolidColorBrush]::new(
@@ -12275,10 +12312,11 @@ function Invoke-DATIntuneKnownModelLookup {
 
     # Shared state for background progress reporting
     $script:IntuneModelLookupState = [hashtable]::Synchronized(@{
-        Status   = 'Running'
-        Progress = 'Querying Graph...'
-        Result   = $null
-        Error    = $null
+        Status     = 'Running'
+        Progress   = 'Querying Graph...'
+        Result     = $null
+        Error      = $null
+        AutoSelect = $AutoSelectMatches
     })
 
     $script:IntuneModelLookupPS = [powershell]::Create()
@@ -12342,8 +12380,9 @@ function Invoke-DATIntuneKnownModelLookup {
                 }
             }
 
-            # Auto-select matching models in the grid if populated
-            Update-DATKnownModelSelection
+            # Auto-select matching models only for explicit lookups. Automatic connect-time
+            # lookups skip selection so they cannot overwrite the user's manual grid picks.
+            if ($state.AutoSelect) { Update-DATKnownModelSelection }
             Update-DATSelectKnownModelsVisibility
             # Compare catalog versions against what is deployed and flag available updates.
             Invoke-DATDeployedVersionScan
@@ -15039,8 +15078,69 @@ function Update-DATTempPathAdvisories {
     }
 }
 
+# Applies the Windows long path policy (LongPathsEnabled=1) so deep driver folders can exceed
+# the 260-char MAX_PATH limit. Elevates via a hidden PowerShell if the app is not already admin,
+# then refreshes the advisories so the warning clears once the policy is confirmed set.
+function Invoke-DATEnableLongPaths {
+    if (Get-DATLongPathsEnabled) {
+        Update-DATTempPathAdvisories -Path $txt_TempStorage.Text
+        Show-DATInfoDialog -Title 'Already Enabled' -Type Info `
+            -Message 'Windows long path support (LongPathsEnabled) is already enabled.'
+        return
+    }
+
+    $confirm = Show-DATConfirmDialog -Title 'Enable Long Path Support' -Type Info `
+        -ConfirmLabel 'Enable' -CancelLabel 'Cancel' `
+        -Message ("This will set the Windows policy:`n`n" +
+                  "HKLM\SYSTEM\CurrentControlSet\Control\FileSystem`nLongPathsEnabled = 1`n`n" +
+                  "It allows file paths longer than 260 characters so deeply nested driver folders extract correctly. " +
+                  "Administrator rights are required, and a system restart may be needed for all applications to honour the change.`n`n" +
+                  "Apply this setting now?")
+    if (-not $confirm) { return }
+
+    $regKeyPath = 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem'
+    $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+
+    try {
+        if ($isAdmin) {
+            New-ItemProperty -Path $regKeyPath -Name 'LongPathsEnabled' -Value 1 -PropertyType DWord -Force -ErrorAction Stop | Out-Null
+        } else {
+            # Not elevated -- run a hidden elevated PowerShell to write the HKLM policy.
+            $elevCmd = "New-ItemProperty -Path '$regKeyPath' -Name 'LongPathsEnabled' -Value 1 -PropertyType DWord -Force | Out-Null"
+            $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($elevCmd))
+            $proc = Start-Process -FilePath 'powershell.exe' `
+                -ArgumentList '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', $encoded `
+                -Verb RunAs -WindowStyle Hidden -PassThru -Wait -ErrorAction Stop
+            if ($proc.ExitCode -ne 0) { throw "Elevated helper exited with code $($proc.ExitCode)." }
+        }
+    } catch {
+        Write-DATActivityLog "Failed to enable long path support: $($_.Exception.Message)" -Level Error
+        Show-DATInfoDialog -Title 'Could Not Enable Long Paths' -Type Warning `
+            -Message ("The LongPathsEnabled policy could not be set.`n`n$($_.Exception.Message)`n`n" +
+                      "You can set it manually from an elevated PowerShell prompt:`n`n" +
+                      "New-ItemProperty -Path '$regKeyPath' -Name 'LongPathsEnabled' -Value 1 -PropertyType DWORD -Force")
+        return
+    }
+
+    if (Get-DATLongPathsEnabled) {
+        Write-DATActivityLog "Enabled Windows long path support (LongPathsEnabled=1)" -Level Success
+        Update-DATTempPathAdvisories -Path $txt_TempStorage.Text
+        Show-DATInfoDialog -Title 'Long Paths Enabled' -Type Success `
+            -Message "Windows long path support is now enabled.`n`nA system restart may be required for all applications to fully honour the change."
+    } else {
+        Write-DATActivityLog "Long path support write completed but LongPathsEnabled was not detected afterwards" -Level Warn
+        Show-DATInfoDialog -Title 'Verification Failed' -Type Warning `
+            -Message 'The setting was written but could not be verified. A system restart may be required for it to take effect.'
+    }
+}
+
 # Refresh the long-path status/warning whenever the temp path changes (typed, browsed or restored).
 $txt_TempStorage.Add_TextChanged({ Update-DATTempPathAdvisories -Path $txt_TempStorage.Text })
+
+$btn_EnableLongPaths = $Window.FindName('btn_EnableLongPaths')
+if ($null -ne $btn_EnableLongPaths) {
+    $btn_EnableLongPaths.Add_Click({ Invoke-DATEnableLongPaths })
+}
 
 $btn_BrowseTemp.Add_Click({
     $dialog = New-Object System.Windows.Forms.FolderBrowserDialog
@@ -15402,9 +15502,6 @@ $txt_TeamsWebhookUrl.Add_LostFocus({
     $url = $txt_TeamsWebhookUrl.Text
     Set-DATRegistryValue -Name "TeamsWebhookUrl" -Value $url -Type String
 })
-$txt_TeamsCustomText.Add_LostFocus({
-    Set-DATRegistryValue -Name "TeamsCustomText" -Value $txt_TeamsCustomText.Text -Type String
-})
 $btn_TeamsTest.Add_Click({
     $url = $txt_TeamsWebhookUrl.Text
     if ([string]::IsNullOrWhiteSpace($url)) {
@@ -15602,7 +15699,6 @@ $btn_ScheduleSave.Add_Click({
     $schedBIOSRestartDelay = if (($txt_BIOSRestartDelay.Text -match '^\d+$')) { [int]$txt_BIOSRestartDelay.Text } else { 10 }
     $schedTeamsEnabled = $chk_TeamsNotifications.IsChecked -eq $true
     $schedTeamsUrl = $txt_TeamsWebhookUrl.Text
-    $schedTeamsCustomText = if ($null -ne $txt_TeamsCustomText) { $txt_TeamsCustomText.Text } else { '' }
     $regConfig = Get-ItemProperty -Path $global:RegPath -ErrorAction SilentlyContinue
     $schedTempPath = if ($regConfig -and -not [string]::IsNullOrEmpty($regConfig.TempStoragePath)) { $regConfig.TempStoragePath } else { '' }
     $schedPkgPath = if ($regConfig -and -not [string]::IsNullOrEmpty($regConfig.PackageStoragePath)) { $regConfig.PackageStoragePath } else { '' }
@@ -15651,7 +15747,7 @@ $btn_ScheduleSave.Add_Click({
             -DisableToast $schedDisableToast -DisableRestart $schedDisableRestart `
             -ToastTimeoutAction $schedTimeoutAction -MaxDeferrals $schedMaxDeferrals `
             -BIOSRestartDelayMinutes $schedBIOSRestartDelay `
-            -TeamsWebhookUrl $schedTeamsUrl -TeamsNotificationsEnabled $schedTeamsEnabled -TeamsCustomText $schedTeamsCustomText -ConfigMgr $schedCM `
+            -TeamsWebhookUrl $schedTeamsUrl -TeamsNotificationsEnabled $schedTeamsEnabled -ConfigMgr $schedCM `
             -Intune $schedIntune `
             -MaintenanceWindowEnabled $schedMWEnabled -MaintenanceWindowMode $schedMWMode -MaintenanceWindows $schedMWindows `
             -CleanTempOnExit $schedCleanTemp `
@@ -21747,7 +21843,9 @@ function Update-DATIntuneAuthUI {
             $btn_IntuneKnownModelLookup.IsEnabled = $true
             # Auto-run the lookup if no results cached yet
             if (-not $script:IntuneKnownMakes -and -not $script:IntuneKnownModels) {
-                Invoke-DATIntuneKnownModelLookup
+                # Connect-time lookup: cache devices and scan versions but do not auto-tick
+                # grid rows (avoids overwriting the user's manual model selection).
+                Invoke-DATIntuneKnownModelLookup -AutoSelectMatches:$false
             }
         }
         # Auto-refresh assignment filter count
@@ -22742,6 +22840,7 @@ $btn_VerifyIntunePermissions.Add_Click({
     $script:PermDlgSummary = [System.Windows.Controls.TextBlock]::new()
     $script:PermDlgSummary.FontSize = 12
     $script:PermDlgSummary.FontWeight = [System.Windows.FontWeights]::SemiBold
+    $script:PermDlgSummary.TextWrapping = 'Wrap'
     $script:PermDlgSummary.Margin = [System.Windows.Thickness]::new(0, 12, 0, 0)
     $script:PermDlgSummary.Visibility = 'Collapsed'
     $permPanel.Children.Add($script:PermDlgSummary) | Out-Null
@@ -25701,11 +25800,6 @@ try {
             Write-Host "  Teams URL     : " -NoNewline -ForegroundColor DarkGray
             Write-Host "(configured)" -ForegroundColor White
         }
-        if (-not [string]::IsNullOrEmpty($savedConfig.TeamsCustomText)) {
-            $txt_TeamsCustomText.Text = $savedConfig.TeamsCustomText
-            Write-Host "  Teams Header  : " -NoNewline -ForegroundColor DarkGray
-            Write-Host $savedConfig.TeamsCustomText -ForegroundColor White
-        }
 
         # Restore OEM selections
         if (-not [string]::IsNullOrEmpty($savedConfig.SelectedOEMs)) {
@@ -26238,7 +26332,7 @@ if (Test-Path $logoPath) {
 
 # Read version from module manifest
 $manifestPath = Join-Path $AppRoot "Modules\DriverAutomationToolCore\DriverAutomationToolCore.psd1"
-$script:versionString = "v10.2.2"
+$script:versionString = "v10.2.3"
 if (Test-Path $manifestPath) {
     $manifestData = Import-PowerShellDataFile $manifestPath
     $ver = [version]$manifestData.ModuleVersion

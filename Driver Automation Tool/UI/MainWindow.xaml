@@ -934,7 +934,7 @@
                                    Foreground="{DynamicResource AccentColor}" VerticalAlignment="Center" Margin="0,0,8,0"/>
                         <TextBlock Text="Driver Automation Tool" FontSize="13" FontWeight="SemiBold"
                                    Foreground="{DynamicResource WindowForeground}" VerticalAlignment="Center"/>
-                        <TextBlock x:Name="txt_Version" Text=" Version 10.2.2" FontSize="11"
+                        <TextBlock x:Name="txt_Version" Text=" Version 10.2.3" FontSize="11"
                                    Foreground="{DynamicResource InputPlaceholder}" VerticalAlignment="Center" Margin="4,0"/>
                     </StackPanel>
 
@@ -5423,15 +5423,33 @@
                                                 </Button>
                                             </Grid>
                                             <!-- Long path warning (path over 120 chars while Windows long-path support is off) -->
-                                            <Border x:Name="panel_TempPathWarning" Margin="0,6,0,0" Visibility="Collapsed"
-                                                    Background="{DynamicResource StatusWarningBackground}" CornerRadius="6" Padding="8,6">
-                                                <StackPanel Orientation="Horizontal">
-                                                    <TextBlock Text="&#xE7BA;" FontFamily="Segoe MDL2 Assets" FontSize="12"
-                                                               Foreground="{DynamicResource StatusWarning}" VerticalAlignment="Top" Margin="0,1,8,0"/>
-                                                    <TextBlock x:Name="txt_TempPathWarning" FontSize="11" TextWrapping="Wrap" MaxWidth="620"
-                                                               Foreground="{DynamicResource StatusWarning}"
-                                                               Text="This temporary path is long (over 120 characters) and Windows long path support is not enabled. Deeply nested driver files may exceed the 260-character MAX_PATH limit and fail to extract. Use a shorter path (for example C:\Temp) or enable the LongPathsEnabled policy."/>
-                                                </StackPanel>
+                                            <Border x:Name="panel_TempPathWarning" Margin="0,8,0,0" Visibility="Collapsed"
+                                                    Background="{DynamicResource StatusWarningBackground}" CornerRadius="8"
+                                                    BorderBrush="{DynamicResource StatusWarning}" BorderThickness="1"
+                                                    Padding="14,12">
+                                                <Grid>
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="Auto"/>
+                                                        <ColumnDefinition Width="*"/>
+                                                    </Grid.ColumnDefinitions>
+                                                    <TextBlock Grid.Column="0" Text="&#xE7BA;" FontFamily="Segoe MDL2 Assets" FontSize="18"
+                                                               Foreground="{DynamicResource StatusWarning}" VerticalAlignment="Top" Margin="0,1,12,0"/>
+                                                    <StackPanel Grid.Column="1">
+                                                        <TextBlock Text="Long path support recommended" FontSize="13" FontWeight="SemiBold"
+                                                                   Foreground="{DynamicResource StatusWarning}" Margin="0,0,0,5"/>
+                                                        <TextBlock x:Name="txt_TempPathWarning" FontSize="12" TextWrapping="Wrap" LineHeight="18"
+                                                                   Foreground="{DynamicResource WindowForeground}"
+                                                                   Text="This temporary path is over 120 characters and Windows long path support is turned off. Deeply nested driver files may exceed the 260-character MAX_PATH limit and fail to extract. Enable long path support below, or use a shorter path such as C:\Temp."/>
+                                                        <Button x:Name="btn_EnableLongPaths" HorizontalAlignment="Left" Margin="0,12,0,0"
+                                                                Style="{StaticResource WarningButton}"
+                                                                ToolTip="Sets HKLM\SYSTEM\CurrentControlSet\Control\FileSystem\LongPathsEnabled = 1 (requires administrator rights). A restart may be needed for all applications to honour the change.">
+                                                            <StackPanel Orientation="Horizontal">
+                                                                <TextBlock Text="&#xE90F;" FontFamily="Segoe MDL2 Assets" FontSize="13" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                                                                <TextBlock Text="Enable Long Path Support" VerticalAlignment="Center"/>
+                                                            </StackPanel>
+                                                        </Button>
+                                                    </StackPanel>
+                                                </Grid>
                                             </Border>
                                             <Grid x:Name="grid_TempFreeSpace" Margin="0,6,0,0" Visibility="Collapsed">
                                                 <Grid.RowDefinitions>
@@ -6205,16 +6223,6 @@
                                                        FontSize="11" Margin="0,4,0,0"
                                                        Foreground="{DynamicResource InputPlaceholder}"
                                                        Visibility="Collapsed"/>
-
-                                            <TextBlock Text="Custom Header Text (optional)" FontSize="12" FontWeight="SemiBold"
-                                                       Foreground="{DynamicResource WindowForeground}" Margin="0,12,0,6"/>
-                                            <TextBlock Text="Shown as a headline at the top of the Teams card -- useful for labelling which customer/tenant a build belongs to when several post to one channel."
-                                                       Foreground="{DynamicResource InputPlaceholder}" FontSize="12"
-                                                       TextWrapping="Wrap" Margin="0,0,0,6" LineHeight="18"/>
-                                            <TextBox x:Name="txt_TeamsCustomText"
-                                                     Style="{StaticResource RoundedTextBox}"
-                                                     Height="36"
-                                                     MaxLength="200"/>
                                         </StackPanel>
                                     </Border>
 
@@ -6806,7 +6814,7 @@
                                     <StackPanel>
                                         <TextBlock Text="Driver Automation Tool" FontSize="22" FontWeight="Bold"
                                                    Foreground="{DynamicResource AccentColor}" Margin="0,0,0,4"/>
-                                        <TextBlock x:Name="txt_AboutVersion" Text="Version 10.2.2" FontSize="14"
+                                        <TextBlock x:Name="txt_AboutVersion" Text="Version 10.2.3" FontSize="14"
                                                    Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,16"/>
 
                                         <TextBlock TextWrapping="Wrap" FontSize="13"
