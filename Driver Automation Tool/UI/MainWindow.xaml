@@ -1006,7 +1006,7 @@
                                    Foreground="{DynamicResource AccentColor}" VerticalAlignment="Center" Margin="0,0,8,0"/>
                         <TextBlock Text="Driver Automation Tool" FontSize="13" FontWeight="SemiBold"
                                    Foreground="{DynamicResource WindowForeground}" VerticalAlignment="Center"/>
-                        <TextBlock x:Name="txt_Version" Text=" Version 10.2.5" FontSize="11"
+                        <TextBlock x:Name="txt_Version" Text=" Version 10.2.6" FontSize="11"
                                    Foreground="{DynamicResource InputPlaceholder}" VerticalAlignment="Center" Margin="4,0"/>
                     </StackPanel>
 
@@ -1391,6 +1391,18 @@
                                                         Padding="4"
                                                         MinWidth="{Binding ActualWidth, ElementName=btn_OSToggle}">
                                                     <StackPanel>
+                                                        <Border x:Name="border_OS_Win11_26H1" Background="Transparent" CornerRadius="8" Padding="12,7" Margin="0,1" Cursor="Hand">
+                                                            <Border.Style>
+                                                                <Style TargetType="Border">
+                                                                    <Style.Triggers>
+                                                                        <Trigger Property="IsMouseOver" Value="True">
+                                                                            <Setter Property="Background" Value="{DynamicResource SidebarHover}"/>
+                                                                        </Trigger>
+                                                                    </Style.Triggers>
+                                                                </Style>
+                                                            </Border.Style>
+                                                            <CheckBox x:Name="chk_OS_Win11_26H1" Content="Windows 11 26H1" Margin="0"/>
+                                                        </Border>
                                                         <Border x:Name="border_OS_Win11_25H2" Background="Transparent" CornerRadius="8" Padding="12,7" Margin="0,1" Cursor="Hand">
                                                             <Border.Style>
                                                                 <Style TargetType="Border">
@@ -1770,7 +1782,7 @@
                                                                  purely visual. All toggling goes through the PreviewMouseLeftButtonDown
                                                                  / PreviewKeyDown handlers which set item.Selected directly.
                                                                  Because ModelItem implements INPC, the TwoWay binding updates
-                                                                 the visual automatically — no manual tree-walking needed.
+                                                                 the visual automatically, with no manual tree-walking needed.
                                                                  TwoWay is used (not OneWay) so the binding engine tracks the
                                                                  property correctly via INPC; user write-back is impossible
                                                                  because IsHitTestVisible=False means no user interaction reaches
@@ -2246,6 +2258,7 @@
                                 </ComboBox>
                                 <ComboBox x:Name="cmb_CmPkgOS" Grid.Column="1" Grid.Row="1" Margin="8,0,0,0" Height="34">
                                     <ComboBoxItem Content="All" IsSelected="True"/>
+                                    <ComboBoxItem Content="Windows 11 26H1"/>
                                     <ComboBoxItem Content="Windows 11 25H2"/>
                                     <ComboBoxItem Content="Windows 11 24H2"/>
                                     <ComboBoxItem Content="Windows 11 23H2"/>
@@ -3312,7 +3325,7 @@
                                                         </TextBlock>
                                                         <TextBlock TextWrapping="Wrap" FontSize="13" LineHeight="20"
                                                                    Foreground="{DynamicResource InputPlaceholder}" Margin="0,0,0,8">
-                                                            Opens your default browser with the Microsoft account picker. Sign in directly — no codes to copy. Tokens refresh silently in the background.
+                                                            Opens your default browser with the Microsoft account picker. Sign in directly &#x2014; no codes to copy. Tokens refresh silently in the background.
                                                         </TextBlock>
                                                     </StackPanel>
                                                 </DockPanel>
@@ -3460,12 +3473,12 @@
                                                             <TextBlock FontSize="13" Foreground="{DynamicResource InputPlaceholder}"
                                                                        TextWrapping="Wrap" Margin="8,0,0,0">
                                                                 <Run Text="5."/>
-                                                                <Run Text=" (Optional) DeviceManagementConfiguration.ReadWrite.All — required for assignment filter automation"/>
+                                                                <Run Text=" (Optional) DeviceManagementConfiguration.ReadWrite.All &#x2014; required for assignment filter automation"/>
                                                             </TextBlock>
                                                             <TextBlock FontSize="13" Foreground="{DynamicResource InputPlaceholder}"
                                                                        TextWrapping="Wrap" Margin="8,0,0,0">
                                                                 <Run Text="6."/>
-                                                                <Run Text=" (Optional) DeviceManagementRBAC.Read.All — required for RBAC scope tag selection"/>
+                                                                <Run Text=" (Optional) DeviceManagementRBAC.Read.All &#x2014; required for RBAC scope tag selection"/>
                                                             </TextBlock>
                                                         </StackPanel>
                                                     </Border>
@@ -4987,6 +5000,7 @@
                                 </ComboBox>
                                 <ComboBox x:Name="cmb_IntunePkgOS" Grid.Column="1" Grid.Row="1" Margin="8,0,0,0" Height="34">
                                     <ComboBoxItem Content="All" IsSelected="True"/>
+                                    <ComboBoxItem Content="Windows 11 26H1"/>
                                     <ComboBoxItem Content="Windows 11 25H2"/>
                                     <ComboBoxItem Content="Windows 11 24H2"/>
                                     <ComboBoxItem Content="Windows 11 23H2"/>
@@ -5754,7 +5768,7 @@
                                             </TextBlock>
 
                                             <TextBlock FontSize="11" Foreground="{DynamicResource InputPlaceholder}" Margin="0,0,0,4">
-                                                <Run Text="Temporary Storage Path" FontWeight="SemiBold"/><Run Text=" — This is a local path used for downloading and creating packages"/>
+                                                <Run Text="Temporary Storage Path" FontWeight="SemiBold"/><Run Text=" &#x2014; This is a local path used for downloading and creating packages"/>
                                             </TextBlock>
                                             <Grid>
                                                 <Grid.ColumnDefinitions>
@@ -6835,6 +6849,7 @@
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="Auto"/>
                                     <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="Auto"/>
                                     <ColumnDefinition Width="*"/>
                                     <ColumnDefinition Width="Auto"/>
                                 </Grid.ColumnDefinitions>
@@ -6846,7 +6861,15 @@
                                         Style="{StaticResource SecondaryButton}" Height="34" Margin="8,0,0,0">
                                     <TextBlock><Run Text="&#xE72C;" FontFamily="Segoe MDL2 Assets"/><Run Text="  Refresh"/></TextBlock>
                                 </Button>
-                                <StackPanel Grid.Column="3" Orientation="Horizontal" VerticalAlignment="Center">
+                                <Button x:Name="btn_LogFollow" Grid.Column="2"
+                                        Style="{StaticResource SecondaryButton}" Height="34" Margin="8,0,0,0"
+                                        ToolTip="Pause live log updates">
+                                    <StackPanel Orientation="Horizontal">
+                                        <TextBlock x:Name="txt_LogFollowIcon" Text="&#xE769;" FontFamily="Segoe MDL2 Assets" VerticalAlignment="Center"/>
+                                        <TextBlock x:Name="txt_LogFollowLabel" Text="  Pause" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </Button>
+                                <StackPanel Grid.Column="4" Orientation="Horizontal" VerticalAlignment="Center">
                                     <TextBlock x:Name="txt_LogStats" FontSize="11"
                                                Foreground="{DynamicResource InputPlaceholder}"
                                                VerticalAlignment="Center"/>
@@ -7064,6 +7087,7 @@
                                                 <TextBlock Grid.Column="4" Grid.Row="0" Text="Windows Version" FontSize="12"
                                                            Foreground="{DynamicResource WindowForeground}" Margin="10,0,0,6"/>
                                                 <ComboBox x:Name="cmb_CustomOS" Grid.Column="4" Grid.Row="1" Height="34">
+                                                    <ComboBoxItem Content="Windows 11 26H1"/>
                                                     <ComboBoxItem Content="Windows 11 25H2" IsSelected="True"/>
                                                     <ComboBoxItem Content="Windows 11 24H2"/>
                                                     <ComboBoxItem Content="Windows 11 23H2"/>
@@ -7215,13 +7239,13 @@
                                                        Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,6"/>
                                             <StackPanel Margin="8,0,0,12">
                                                 <TextBlock TextWrapping="Wrap" FontSize="12" Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,4">
-                                                    <Run FontWeight="SemiBold" Text="1. Create Packages"/> — Use the Driver Automation Tool to download and create ConfigMgr Standard Packages for each model. Distribute content to your distribution points.
+                                                    <Run FontWeight="SemiBold" Text="1. Create Packages"/> &#x2014; Use the Driver Automation Tool to download and create ConfigMgr Standard Packages for each model. Distribute content to your distribution points.
                                                 </TextBlock>
                                                 <TextBlock TextWrapping="Wrap" FontSize="12" Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,4">
-                                                    <Run FontWeight="SemiBold" Text="2. Configure AdminService"/> — Set up a service account with Read-Only Analyst permissions in ConfigMgr. The AdminService REST API provides the interface for dynamic package lookup.
+                                                    <Run FontWeight="SemiBold" Text="2. Configure AdminService"/> &#x2014; Set up a service account with Read-Only Analyst permissions in ConfigMgr. The AdminService REST API provides the interface for dynamic package lookup.
                                                 </TextBlock>
                                                 <TextBlock TextWrapping="Wrap" FontSize="12" Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,4">
-                                                    <Run FontWeight="SemiBold" Text="3. Task Sequence Integration"/> — Add a "Set Dynamic Variables" step to store authentication values, then a "Run PowerShell Script" step invoking Invoke-CMApplyDriverPackage.ps1. The script auto-detects manufacturer, model, and SKU to find the matching driver package.
+                                                    <Run FontWeight="SemiBold" Text="3. Task Sequence Integration"/> &#x2014; Add a "Set Dynamic Variables" step to store authentication values, then a "Run PowerShell Script" step invoking Invoke-CMApplyDriverPackage.ps1. The script auto-detects manufacturer, model, and SKU to find the matching driver package.
                                                 </TextBlock>
                                             </StackPanel>
 
@@ -7236,7 +7260,7 @@
                                             </StackPanel>
 
                                             <Button x:Name="btn_MDMLink" Style="{StaticResource RoundedButton}" HorizontalAlignment="Left" Height="34" Margin="0,0,0,0" Cursor="Hand">
-                                                <TextBlock><Run Text="&#xE71B;" FontFamily="Segoe MDL2 Assets"/><Run Text="  Learn More — Modern Driver Management"/></TextBlock>
+                                                <TextBlock><Run Text="&#xE71B;" FontFamily="Segoe MDL2 Assets"/><Run Text="  Learn More &#x2014; Modern Driver Management"/></TextBlock>
                                             </Button>
                                         </StackPanel>
                                     </Border>
@@ -7255,28 +7279,28 @@
                                                        Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,6"/>
                                             <StackPanel Margin="8,0,0,12">
                                                 <TextBlock TextWrapping="Wrap" FontSize="12" Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,4">
-                                                    <Run FontWeight="SemiBold" Text="1. Create BIOS Packages"/> — In the Driver Automation Tool, select ConfigMgr Standard Pkg as the deployment platform, choose BIOS as the download type, then select your models and build packages.
+                                                    <Run FontWeight="SemiBold" Text="1. Create BIOS Packages"/> &#x2014; In the Driver Automation Tool, select ConfigMgr Standard Pkg as the deployment platform, choose BIOS as the download type, then select your models and build packages.
                                                 </TextBlock>
                                                 <TextBlock TextWrapping="Wrap" FontSize="12" Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,4">
-                                                    <Run FontWeight="SemiBold" Text="2. Download BIOS Script"/> — The Invoke-CMDownloadBIOSPackage.ps1 script detects manufacturer, SystemSKU, OS version, and architecture to match the correct BIOS package. A task sequence variable (NewBIOSAvailable) is set to True when an update is found.
+                                                    <Run FontWeight="SemiBold" Text="2. Download BIOS Script"/> &#x2014; The Invoke-CMDownloadBIOSPackage.ps1 script detects manufacturer, SystemSKU, OS version, and architecture to match the correct BIOS package. A task sequence variable (NewBIOSAvailable) is set to True when an update is found.
                                                 </TextBlock>
                                                 <TextBlock TextWrapping="Wrap" FontSize="12" Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,4">
-                                                    <Run FontWeight="SemiBold" Text="3. Apply BIOS Update"/> — Manufacturer-specific scripts (Invoke-DellBIOSUpdate.ps1, Invoke-HPBIOSUpdate.ps1, Invoke-LenovoBIOSUpdate.ps1, Invoke-MicrosoftBIOSUpdate.ps1) handle the actual BIOS flash process within the task sequence.
+                                                    <Run FontWeight="SemiBold" Text="3. Apply BIOS Update"/> &#x2014; Manufacturer-specific scripts (Invoke-DellBIOSUpdate.ps1, Invoke-HPBIOSUpdate.ps1, Invoke-LenovoBIOSUpdate.ps1, Invoke-MicrosoftBIOSUpdate.ps1) handle the actual BIOS flash process within the task sequence.
                                                 </TextBlock>
                                             </StackPanel>
 
                                             <TextBlock Text="Manufacturer Scripts" FontSize="14" FontWeight="SemiBold"
                                                        Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,6"/>
                                             <StackPanel Margin="8,0,0,12">
-                                                <TextBlock FontSize="12" Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,3" Text="&#x2022;  Invoke-CMDownloadBIOSPackage.ps1 — Dynamic BIOS package matching"/>
-                                                <TextBlock FontSize="12" Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,3" Text="&#x2022;  Invoke-DellBIOSUpdate.ps1 — Dell BIOS update handler"/>
-                                                <TextBlock FontSize="12" Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,3" Text="&#x2022;  Invoke-HPBIOSUpdate.ps1 — HP BIOS update handler"/>
-                                                <TextBlock FontSize="12" Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,3" Text="&#x2022;  Invoke-LenovoBIOSUpdate.ps1 — Lenovo BIOS update handler"/>
-                                                <TextBlock FontSize="12" Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,3" Text="&#x2022;  Invoke-MicrosoftBIOSUpdate.ps1 — Microsoft Surface BIOS update handler"/>
+                                                <TextBlock FontSize="12" Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,3" Text="&#x2022;  Invoke-CMDownloadBIOSPackage.ps1 &#x2014; Dynamic BIOS package matching"/>
+                                                <TextBlock FontSize="12" Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,3" Text="&#x2022;  Invoke-DellBIOSUpdate.ps1 &#x2014; Dell BIOS update handler"/>
+                                                <TextBlock FontSize="12" Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,3" Text="&#x2022;  Invoke-HPBIOSUpdate.ps1 &#x2014; HP BIOS update handler"/>
+                                                <TextBlock FontSize="12" Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,3" Text="&#x2022;  Invoke-LenovoBIOSUpdate.ps1 &#x2014; Lenovo BIOS update handler"/>
+                                                <TextBlock FontSize="12" Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,3" Text="&#x2022;  Invoke-MicrosoftBIOSUpdate.ps1 &#x2014; Microsoft Surface BIOS update handler"/>
                                             </StackPanel>
 
                                             <Button x:Name="btn_MBMLink" Style="{StaticResource RoundedButton}" HorizontalAlignment="Left" Height="34" Margin="0,0,0,0" Cursor="Hand">
-                                                <TextBlock><Run Text="&#xE71B;" FontFamily="Segoe MDL2 Assets"/><Run Text="  Learn More — Modern BIOS Management"/></TextBlock>
+                                                <TextBlock><Run Text="&#xE71B;" FontFamily="Segoe MDL2 Assets"/><Run Text="  Learn More &#x2014; Modern BIOS Management"/></TextBlock>
                                             </Button>
                                         </StackPanel>
                                     </Border>
@@ -7327,7 +7351,7 @@
                                     <StackPanel>
                                         <TextBlock Text="Driver Automation Tool" FontSize="22" FontWeight="Bold"
                                                    Foreground="{DynamicResource AccentColor}" Margin="0,0,0,4"/>
-                                        <TextBlock x:Name="txt_AboutVersion" Text="Version 10.2.5" FontSize="14"
+                                        <TextBlock x:Name="txt_AboutVersion" Text="Version 10.2.6" FontSize="14"
                                                    Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,16"/>
 
                                         <TextBlock TextWrapping="Wrap" FontSize="13"

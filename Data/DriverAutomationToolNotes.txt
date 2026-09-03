@@ -3,6 +3,23 @@ Release Notes
 IMPORTANT
 ** DAT Downloads have been moved to GitHub - https://github.com/maurice-daly/DriverAutomationTool **
 
+Version 10.2.6
+What's New & Fixed
+
+- Windows 11 26H1 — added 26H1 (build 28000) as a target release for driver and BIOS packages, including Modern Driver/BIOS Management support for the Arm64 devices it ships on.
+- Latest Drivers reliability — a Dell or Lenovo component that downloads but extracts no drivers is now reported in View Failures with the reason from the vendor package, instead of being dropped silently; the build warns that the package is incomplete and the next run rebuilds it rather than treating the set as current. (#936)
+- Latest Drivers extraction — a component that refuses the staging path is retried through a short working path, and staging folder names are shortened so deeply nested payloads such as NVIDIA graphics stay inside the Windows path limit. (#936)
+- Extended log viewer — the log now lists the newest entries first, follows new entries live while a build runs, and can be paused and resumed from the toolbar.
+- Model search — searching the model grid is debounced and filtered in place so large catalogues stay responsive, and punctuation such as [ or ] no longer breaks the filter.
+- Dell Latest Drivers versions — Dell Command | Update packages now show their build date as the version in the model list, matching how HP SoftPaq packages are shown; ConfigMgr driver pack mode still shows the enterprise catalog version. (#931)
+- Driver package build type — switching between SCCM driver pack and Latest Drivers now refreshes the model list automatically instead of leaving the previous source versions on screen.
+- AdminService authentication — service accounts supplied as a bare user name work again after the ConfigMgr 2603 security changes tightened authentication.
+- Modern BIOS Management — Invoke-CMDownloadBIOSPackage.ps1 can once again run in XML (webservice-less) mode, via the restored XMLPackage parameter set. (MSEndpointMgr/ModernBIOSManagement#32)
+- Package selection — "latest by creation date" now compares real dates rather than text, so the newest matching driver or BIOS package is chosen correctly.
+- Intune requirement script — no longer emits registry errors when it runs outside the SYSTEM context.
+- Interface text — fixed mis-rendered characters in Common Settings and other on-screen descriptions under PowerShell 5.1.
+- What's New dialog — now shows the notes for the release you are running rather than the previous one.
+
 Version 10.2.5
 What's New & Fixed
 

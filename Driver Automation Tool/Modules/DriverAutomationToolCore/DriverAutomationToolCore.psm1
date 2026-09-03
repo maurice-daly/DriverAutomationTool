@@ -4,7 +4,7 @@
      Organization:  MSEndpointMgr / Patch My PC
      Filename:      DriverAutomationToolCore.psm1
      Purpose:       Core functions for Driver Automation Tool v2.0
-     Version:       10.2.5.0
+     Version:       10.2.6.0
     ===========================================================================
 #>
 
@@ -37,7 +37,7 @@ if ($PSVersionTable.PSVersion.Major -le 5) {
 
 #region Variables
 
-[version]$global:ScriptRelease = "10.2.5.0"
+[version]$global:ScriptRelease = "10.2.6.0"
 $global:ScriptBuildDate = "25-08-2026"
 $global:ReleaseNotesURL = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/DriverAutomationToolNotes.txt"
 $global:DATConfigUrl = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/refs/heads/master/Data/DATAPIConfig.json"
@@ -1753,6 +1753,37 @@ function Test-DATLongPathsEnabled {
     }
 }
 
+function Get-DATEffectiveWimEngine {
+    <#
+    .SYNOPSIS
+        Resolves the WIM engine that will actually be used for a build: 'dism', 'wimlib' or '7zip'.
+    .DESCRIPTION
+        Reads the WimEngine registry preference, defaults to the bundled wimlib when present, and
+        falls back to 'dism' when the chosen engine's executable is unavailable -- mirroring the
+        resolution performed at WIM-creation time so pre-creation checks (e.g. the MAX_PATH scan)
+        can reason about the real engine. Only DISM is affected by the 260-character limit; wimlib
+        and 7-Zip open files via the \\?\ extended-length API and capture long paths regardless.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param ()
+    $engine = (Get-ItemProperty -Path $global:RegPath -Name 'WimEngine' -ErrorAction SilentlyContinue).WimEngine
+    $bundledWimlib = Join-Path $global:ToolsDirectory 'Wimlib\wimlib-imagex.exe'
+    if ([string]::IsNullOrEmpty($engine) -or $engine -notin @('dism', 'wimlib', '7zip')) {
+        $engine = if (Test-Path $bundledWimlib) { 'wimlib' } else { 'dism' }
+    }
+    if ($engine -eq 'wimlib' -and -not (Test-Path $bundledWimlib)) { $engine = 'dism' }
+    if ($engine -eq '7zip') {
+        $sevenZip = $null
+        foreach ($candidate in @((Join-Path $env:ProgramFiles '7-Zip\7z.exe'), (Join-Path ${env:ProgramFiles(x86)} '7-Zip\7z.exe'))) {
+            if (Test-Path $candidate) { $sevenZip = $candidate; break }
+        }
+        if (-not $sevenZip) { try { $sevenZip = (Get-Command '7z.exe' -ErrorAction Stop).Source } catch { } }
+        if (-not $sevenZip) { $engine = 'dism' }
+    }
+    return $engine
+}
+
 function Get-DATHPMetaValue {
     <#
     .SYNOPSIS
@@ -2270,25 +2301,35 @@ function Invoke-DATDriverFilePackaging {
         throw $errorMsg
     }
 
-    # MAX_PATH validation -- files whose full path exceeds the Windows 260-character limit
-    # are silently omitted by DISM /Capture-Image and wimlib during WIM creation, producing
-    # a near-empty WIM. Acer packs are especially prone because each nested cabinet is
-    # expanded into a sub-folder named after itself, deepening the tree on every pass. Fail
-    # loudly with the offending paths instead of shipping an incomplete driver package.
+    # MAX_PATH validation -- files whose full path exceeds the Windows 260-character limit.
+    # Only the DISM capture engine (dism.exe / New-WindowsImage) silently omits these files, and
+    # only when Win32 long-path support is NOT enabled. wimlib and 7-Zip open files through the
+    # \\?\ extended-length API and capture long paths correctly, as does DISM when LongPathsEnabled
+    # is set (issue #927). So fail the build only in the genuinely-broken case -- the DISM engine
+    # without long-path support -- and otherwise log the long paths for reference and continue.
     if ($longPathFiles.Count -gt 0) {
-        Write-DATLogEntry -Value "[Error] - $($longPathFiles.Count) extracted file(s) exceed the 260-character Windows path limit for $OEM $Model. DISM and wimlib silently omit these files, producing an incomplete (near-empty) WIM. Source: $FilePath" -Severity 3 -UpdateUI
+        $effectiveWimEngine = Get-DATEffectiveWimEngine
+        $longPathsHandled = ($effectiveWimEngine -ne 'dism') -or (Test-DATLongPathsEnabled)
+
         $sampleMax = [math]::Min(5, $longPathFiles.Count)
         for ($i = 0; $i -lt $sampleMax; $i++) {
             $lp = $longPathFiles[$i]
             Write-DATLogEntry -Value "[$OEM] Long path ($($lp.Length) chars): $lp" -Severity 2
         }
         if ($longPathFiles.Count -gt $sampleMax) {
-            Write-DATLogEntry -Value "[$OEM] ... and $($longPathFiles.Count - $sampleMax) more file(s) over the path limit" -Severity 2
+            Write-DATLogEntry -Value "[$OEM] ... and $($longPathFiles.Count - $sampleMax) more file(s) over the 260-character path limit" -Severity 2
         }
-        $errorMsg = "Extracted driver files for $OEM $Model exceed the 260-character path limit ($($longPathFiles.Count) file(s)). The WIM cannot be built reliably. Shorten the Temp / Package storage path or enable Win32 long paths (LongPathsEnabled), then rebuild."
-        Set-DATRegistryValue -Name "RunningState" -Value "Error" -Type String
-        Set-DATRegistryValue -Name "RunningMessage" -Value "$errorMsg" -Type String
-        throw $errorMsg
+
+        if ($longPathsHandled) {
+            $why = if ($effectiveWimEngine -eq 'dism') { "the DISM engine with LongPathsEnabled" } else { "the '$effectiveWimEngine' engine" }
+            Write-DATLogEntry -Value "[$OEM] $($longPathFiles.Count) extracted file(s) exceed the 260-character path limit, but $why captures long paths via the \\?\ extended-length API -- continuing with WIM creation." -Severity 2
+        } else {
+            Write-DATLogEntry -Value "[Error] - $($longPathFiles.Count) extracted file(s) exceed the 260-character Windows path limit for $OEM $Model. The DISM capture engine omits these files without Win32 long-path support, producing an incomplete (near-empty) WIM. Source: $FilePath" -Severity 3 -UpdateUI
+            $errorMsg = "Extracted driver files for $OEM $Model exceed the 260-character path limit ($($longPathFiles.Count) file(s)) and the DISM engine cannot capture them. Enable Win32 long paths (LongPathsEnabled), switch the WIM engine to wimlib, or shorten the Temp / Package storage path, then rebuild."
+            Set-DATRegistryValue -Name "RunningState" -Value "Error" -Type String
+            Set-DATRegistryValue -Name "RunningMessage" -Value "$errorMsg" -Type String
+            throw $errorMsg
+        }
     }
 
     # Inject custom drivers into the extraction folder before WIM creation
@@ -2442,16 +2483,10 @@ function Invoke-DATDriverFilePackaging {
             $WimDescription = "$OEM $Model $OS Driver Package"
             $WimFile = Join-Path -Path $DriverMountFolder -ChildPath "DriverPackage.wim"
 
-            # Determine WIM engine preference early so we can skip DISM-specific cleanup for wimlib
-            $wimEngine = (Get-ItemProperty -Path $global:RegPath -Name 'WimEngine' -ErrorAction SilentlyContinue).WimEngine
-            if ([string]::IsNullOrEmpty($wimEngine) -or $wimEngine -notin @('dism','wimlib','7zip')) {
-                # No explicit choice: prefer the bundled wimlib engine when present. wimlib is
-                # self-contained (no dismhost worker, no DISM provider DLLs) and avoids the
-                # "DISM hangs at init right after the banner" failures seen on some machines.
-                # Fall back to DISM only when wimlib is not bundled.
-                $bundledWimlib = Join-Path $global:ToolsDirectory 'Wimlib\wimlib-imagex.exe'
-                $wimEngine = if (Test-Path $bundledWimlib) { 'wimlib' } else { 'dism' }
-            }
+            # Determine WIM engine preference early so we can skip DISM-specific cleanup for wimlib.
+            # Uses the shared resolver (registry preference -> bundled wimlib -> dism, with an
+            # availability fallback) so this matches the engine the MAX_PATH pre-check reasoned about.
+            $wimEngine = Get-DATEffectiveWimEngine
 
             # Validate wimlib availability -- fall back to DISM if not found
             $wimlibExe = $null
@@ -3403,6 +3438,36 @@ function Get-DATConfigMgrKnownModels {
     }
 }
 
+function Measure-DATInventoryRows {
+    <#
+    .SYNOPSIS
+        Counts total rows and rows whose named property holds a non-empty value.
+    .DESCRIPTION
+        Uses plain iteration rather than a pipeline "Where-Object { ... }" scriptblock so it is safe
+        inside a PowerShell 5.1 background runspace, where the pipeline/comparer path can throw
+        "Argument types do not match" (issue #926, same 5.1 reentrancy family as #913). Multivalued
+        CIM properties are flattened before the empty check so an array value never reaches a
+        comparison that could type-mismatch.
+    #>
+    [CmdletBinding()]
+    param (
+        [object[]]$Rows,
+        [Parameter(Mandatory = $true)][string]$Property
+    )
+    $total = 0
+    $withValue = 0
+    if ($null -ne $Rows) {
+        foreach ($row in $Rows) {
+            $total++
+            $val = $null
+            try { $val = $row.$Property } catch { $val = $null }
+            if ($val -is [System.Array]) { $val = ($val -join '') }
+            if (-not [string]::IsNullOrWhiteSpace([string]$val)) { $withValue++ }
+        }
+    }
+    return [PSCustomObject]@{ Total = $total; WithValue = $withValue }
+}
+
 function Test-DATConfigMgrInventoryClasses {
     <#
     .SYNOPSIS
@@ -3438,6 +3503,7 @@ function Test-DATConfigMgrInventoryClasses {
 
     $cimSession = $null
     $results = New-Object System.Collections.Generic.List[object]
+    $checkError = $null
 
     try {
         if ($OnProgress) { & $OnProgress "Connecting to $SiteServer..." }
@@ -3451,8 +3517,9 @@ function Test-DATConfigMgrInventoryClasses {
             try {
                 $rows = @(Invoke-DATRemoteQuery -CimSession $cimSession -ComputerName $SiteServer -Namespace $namespace `
                         -Query "SELECT $($class.Property) FROM $($class.View)")
-                $total = $rows.Count
-                $withValue = @($rows | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_.$($class.Property)) }).Count
+                $measured = Measure-DATInventoryRows -Rows $rows -Property $class.Property
+                $total = $measured.Total
+                $withValue = $measured.WithValue
 
                 if ($total -eq 0) {
                     $status = 'NoData'
@@ -3494,8 +3561,12 @@ function Test-DATConfigMgrInventoryClasses {
         }
     }
     catch {
-        Write-DATLogEntry -Value "[Inventory Classes] CIM session failed: $($_.Exception.Message)" -Severity 3
-        throw
+        # This is a read-only diagnostic the tool does not depend on -- never surface an unexpected
+        # error as a hard failure. Record it and return whatever was gathered so the UI can show a
+        # soft advisory instead of a scary "check failed" dialog (issue #926). Genuine "couldn't
+        # gather anything" cases are still evident because Classes is empty and Error is populated.
+        $checkError = $_.Exception.Message
+        Write-DATLogEntry -Value "[Inventory Classes] Check could not be completed: $checkError" -Severity 2
     }
     finally {
         if ($cimSession) {
@@ -3504,16 +3575,21 @@ function Test-DATConfigMgrInventoryClasses {
     }
 
     $classArray = @($results)
-    $allOk = ($classArray.Count -gt 0) -and (@($classArray | Where-Object { $_.Status -ne 'Ok' }).Count -eq 0)
+    # Compute AllOk with plain iteration (not a pipeline Where-Object scriptblock) -- the pipeline
+    # path can throw "Argument types do not match" in a PowerShell 5.1 background runspace (#926).
+    $allOk = $classArray.Count -gt 0
+    foreach ($c in $classArray) { if ($c.Status -ne 'Ok') { $allOk = $false; break } }
 
     if ($OnProgress) {
         if ($allOk) { & $OnProgress "All required inventory classes are enabled and reporting." }
+        elseif ($checkError) { & $OnProgress "Inventory class check could not be completed." }
         else { & $OnProgress "One or more required inventory classes need attention." }
     }
 
     return [PSCustomObject]@{
         Classes = $classArray
         AllOk   = $allOk
+        Error   = $checkError
     }
 }
 
@@ -3755,14 +3831,21 @@ function New-DATConfigMgrPkg {
                 foreach ($dpServer in $DistributionPoints) {
                     try {
                         Write-DATLogEntry -Value "- [ConfigMgr] Redistributing package $pkgId to DP: $dpServer" -Severity 1
-                        $dpNalPath = Invoke-DATRemoteQuery -CimSession $cimSess -ComputerName $SiteServer -Namespace $smsNamespace `
-                            -Query "SELECT NALPath FROM SMS_DistributionPointInfo WHERE ServerName = '$($dpServer -replace "'","''")'" |
-                            Select-Object -First 1 -ExpandProperty NALPath
-                        if ($dpNalPath) {
+                        $dpInfo = Invoke-DATRemoteQuery -CimSession $cimSess -ComputerName $SiteServer -Namespace $smsNamespace `
+                            -Query "SELECT NALPath, SiteCode FROM SMS_DistributionPointInfo WHERE ServerName = '$($dpServer -replace "'","''")'" |
+                            Select-Object -First 1
+                        if ($dpInfo -and $dpInfo.NALPath) {
+                            # A DP owned by a secondary site must be stamped with that site's code.
+                            # Using the connection (primary) site code creates a mismatched
+                            # SMS_DistributionPoint row and the distribution fails with status 2302.
+                            $dpSiteCode = if ([string]::IsNullOrWhiteSpace($dpInfo.SiteCode)) { $SiteCode } else { $dpInfo.SiteCode }
+                            if ($dpSiteCode -ne $SiteCode) {
+                                Write-DATLogEntry -Value "- [ConfigMgr] DP $dpServer is owned by secondary site $dpSiteCode" -Severity 1
+                            }
                             $newDP = ([WmiClass]"\\$SiteServer\$($smsNamespace):SMS_DistributionPoint").CreateInstance()
                             $newDP.PackageID = $pkgId
-                            $newDP.ServerNALPath = $dpNalPath
-                            $newDP.SiteCode = $SiteCode
+                            $newDP.ServerNALPath = $dpInfo.NALPath
+                            $newDP.SiteCode = $dpSiteCode
                             $newDP.Put() | Out-Null
                             Write-DATLogEntry -Value "- [ConfigMgr] Content redistributed to DP $dpServer" -Severity 1
                         } else {
@@ -3932,14 +4015,21 @@ function New-DATConfigMgrPkg {
             foreach ($dpServer in $DistributionPoints) {
                 try {
                     Write-DATLogEntry -Value "- [ConfigMgr] Distributing package $packageId to DP: $dpServer" -Severity 1
-                    $dpNalPath = Invoke-DATRemoteQuery -CimSession $cimSess -ComputerName $SiteServer -Namespace $smsNamespace `
-                        -Query "SELECT NALPath FROM SMS_DistributionPointInfo WHERE ServerName = '$($dpServer -replace "'","''")'" |
-                        Select-Object -First 1 -ExpandProperty NALPath
-                    if ($dpNalPath) {
+                    $dpInfo = Invoke-DATRemoteQuery -CimSession $cimSess -ComputerName $SiteServer -Namespace $smsNamespace `
+                        -Query "SELECT NALPath, SiteCode FROM SMS_DistributionPointInfo WHERE ServerName = '$($dpServer -replace "'","''")'" |
+                        Select-Object -First 1
+                    if ($dpInfo -and $dpInfo.NALPath) {
+                        # A DP owned by a secondary site must be stamped with that site's code.
+                        # Using the connection (primary) site code creates a mismatched
+                        # SMS_DistributionPoint row and the distribution fails with status 2302.
+                        $dpSiteCode = if ([string]::IsNullOrWhiteSpace($dpInfo.SiteCode)) { $SiteCode } else { $dpInfo.SiteCode }
+                        if ($dpSiteCode -ne $SiteCode) {
+                            Write-DATLogEntry -Value "- [ConfigMgr] DP $dpServer is owned by secondary site $dpSiteCode" -Severity 1
+                        }
                         $newDP = ([WmiClass]"\\$SiteServer\$($smsNamespace):SMS_DistributionPoint").CreateInstance()
                         $newDP.PackageID = $packageId
-                        $newDP.ServerNALPath = $dpNalPath
-                        $newDP.SiteCode = $SiteCode
+                        $newDP.ServerNALPath = $dpInfo.NALPath
+                        $newDP.SiteCode = $dpSiteCode
                         $newDP.Put() | Out-Null
                         Write-DATLogEntry -Value "- [ConfigMgr] Content distributed to DP $dpServer" -Severity 1
                     } else {
@@ -4116,11 +4206,14 @@ function New-DATXmlLogicPackage {
             $xmlWriter.WriteAttributeString('xmlns', 'https://www.driverautomationtool.com')
 
             foreach ($pkg in ($sourcePackages | Sort-Object -Property Name)) {
-                # SourceDate may arrive as a DMTF string (Get-WmiObject) or DateTime (CIM); normalise to string
-                $sourceDate = $pkg.SourceDate
-                if ($sourceDate -is [string] -and $sourceDate -match '^\d{14}') {
-                    try { $sourceDate = [System.Management.ManagementDateTimeConverter]::ToDateTime($sourceDate) } catch { }
-                }
+                # SourceDate may arrive as a DMTF string (Get-WmiObject) or DateTime (CIM). Normalise it
+                # to a culture-invariant, lexically sortable ISO 8601 stamp: the deployment scripts pick
+                # the newest package by sorting on this value, and a culture formatted stamp (e.g.
+                # "03/09/2026 12:00:00") both sorts wrongly as text and is ambiguous when parsed on a host
+                # with a different culture, such as WinPE. An unparsable value is written as an empty
+                # element so the consumer treats it as "no date" and sorts the package last.
+                $sourceDateValue = ConvertTo-DATPackageDate $pkg.SourceDate
+                $sourceDate = if ($sourceDateValue -eq [datetime]::MinValue) { '' } else { $sourceDateValue.ToString('s', [System.Globalization.CultureInfo]::InvariantCulture) }
                 $xmlWriter.WriteStartElement('CMPackage')
                 $xmlWriter.WriteElementString('Name', [string]$pkg.Name)
                 $xmlWriter.WriteElementString('PackageID', [string]$pkg.PackageID)
@@ -4258,14 +4351,21 @@ function New-DATXmlLogicPackage {
             if ($DistributionPoints -and $DistributionPoints.Count -gt 0) {
                 foreach ($dpServer in $DistributionPoints) {
                     try {
-                        $dpNalPath = Invoke-DATRemoteQuery -CimSession $cimSess -ComputerName $SiteServer -Namespace $smsNamespace `
-                            -Query "SELECT NALPath FROM SMS_DistributionPointInfo WHERE ServerName = '$($dpServer -replace "'","''")'" |
-                            Select-Object -First 1 -ExpandProperty NALPath
-                        if ($dpNalPath) {
+                        $dpInfo = Invoke-DATRemoteQuery -CimSession $cimSess -ComputerName $SiteServer -Namespace $smsNamespace `
+                            -Query "SELECT NALPath, SiteCode FROM SMS_DistributionPointInfo WHERE ServerName = '$($dpServer -replace "'","''")'" |
+                            Select-Object -First 1
+                        if ($dpInfo -and $dpInfo.NALPath) {
+                            # A DP owned by a secondary site must be stamped with that site's code.
+                            # Using the connection (primary) site code creates a mismatched
+                            # SMS_DistributionPoint row and the distribution fails with status 2302.
+                            $dpSiteCode = if ([string]::IsNullOrWhiteSpace($dpInfo.SiteCode)) { $SiteCode } else { $dpInfo.SiteCode }
+                            if ($dpSiteCode -ne $SiteCode) {
+                                & $emit "XML Logic Package: DP $dpServer is owned by secondary site $dpSiteCode" 1
+                            }
                             $newDP = ([WmiClass]"\\$SiteServer\$($smsNamespace):SMS_DistributionPoint").CreateInstance()
                             $newDP.PackageID = $pkgId
-                            $newDP.ServerNALPath = $dpNalPath
-                            $newDP.SiteCode = $SiteCode
+                            $newDP.ServerNALPath = $dpInfo.NALPath
+                            $newDP.SiteCode = $dpSiteCode
                             $newDP.Put() | Out-Null
                             & $emit "XML Logic Package: Content distributed to DP $dpServer" 1
                         } else {
@@ -4347,7 +4447,7 @@ function Install-DATDriverPackage {
     [CmdletBinding()]
     param (
         [Parameter(Mandatory)][ValidateSet('Windows 10', 'Windows 11')][string]$TargetOS,
-        [Parameter(Mandatory)][ValidateSet('21H2', '22H2', '23H2', '24H2', '25H2')][string]$TargetOSBuild,
+        [Parameter(Mandatory)][ValidateSet('21H2', '22H2', '23H2', '24H2', '25H2', '26H1')][string]$TargetOSBuild,
         [Parameter(Mandatory)][ValidatePattern('^[A-Z]:$')][string]$TargetDrive
     )
     Write-DATLogEntry -Value "[Driver Install] - $TargetOS $TargetOSBuild on $TargetDrive" -Severity 1
@@ -6703,7 +6803,7 @@ function Test-DATHPCMSLReady {
             }
             $galleryModule = Find-Module -Name HPCMSL -Repository PSGallery -ErrorAction Stop
             if ($galleryModule.Version -gt $hpModule.Version) {
-                Write-DATLogEntry -Value "[HP] HPCMSL update available: v$($hpModule.Version) → v$($galleryModule.Version) -- updating..." -Severity 1
+                Write-DATLogEntry -Value "[HP] HPCMSL update available: v$($hpModule.Version) -> v$($galleryModule.Version) -- updating..." -Severity 1
                 Install-Module -Name HPCMSL -Force -AllowClobber -SkipPublisherCheck -Scope AllUsers -ErrorAction Stop
                 $hpModule = Get-Module -ListAvailable -Name HPCMSL -ErrorAction SilentlyContinue | Sort-Object Version -Descending | Select-Object -First 1
                 $result.Version = $hpModule.Version
@@ -6963,6 +7063,208 @@ function Get-DcuNameSignature {
         if ($vendor) { return "$vendor graphics" }
     }
     return ($toks -join ' ')
+}
+
+function Get-DATLatestStagingName {
+    <#
+    .SYNOPSIS
+        Builds a short, collision-free staging folder name for a downloaded OEM driver package.
+
+    .DESCRIPTION
+        Latest Drivers staging folders used to be named after the whole package file name -- Dell
+        DUP names run past 80 characters (e.g.
+        Intel-HD-UHD-Iris-Iris-Pro-Iris-Plus-Graphics-Driver_6JMXK_WIN64_31.0.101.2141_A19). Added
+        to a deeply nested payload such as NVIDIA's "14393\Drivers\NV\Display.Driver\...", that
+        pushes files past the 260-character MAX_PATH limit during extraction and again during WIM
+        capture on hosts without LongPathsEnabled (#936).
+
+        The name is truncated to 40 characters and suffixed with a short hash of the original file
+        name, so packages sharing a long prefix still land in separate folders.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param (
+        [Parameter(Mandatory)][AllowEmptyString()][string]$FileName
+    )
+
+    $stub = [IO.Path]::GetFileNameWithoutExtension("$FileName")
+    if ([string]::IsNullOrWhiteSpace($stub)) { $stub = 'package' }
+
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $bytes = [System.Text.Encoding]::UTF8.GetBytes($stub.ToLowerInvariant())
+        $suffix = [BitConverter]::ToString($sha.ComputeHash($bytes)).Replace('-', '').Substring(0, 6).ToLowerInvariant()
+    } finally {
+        $sha.Dispose()
+    }
+
+    $clean = ($stub -replace '[^A-Za-z0-9\.\-_]', '-')
+    if ($clean.Length -gt 40) { $clean = $clean.Substring(0, 40) }
+    $clean = $clean.TrimEnd('-', '.', '_')
+    if ([string]::IsNullOrWhiteSpace($clean)) { $clean = 'package' }
+
+    return "${clean}_$suffix"
+}
+
+function Get-DATExtractLogTail {
+    <#
+    .SYNOPSIS
+        Returns the last few meaningful lines of a vendor extraction log as a single line.
+
+    .DESCRIPTION
+        Dell DUPs write their own log via /l=<path> in UTF-16 with a timestamp prefix per line.
+        When an extraction produces no drivers that log holds the real reason (blocked 7-Zip
+        helper, failed write-access pre-check, de-escalation failure), so it is folded into the
+        DAT log rather than discarded (#936). Returns an empty string when nothing is readable.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param (
+        [Parameter(Mandatory)][AllowEmptyString()][string]$LogPath,
+        [int]$Lines = 4,
+        [int]$MaxLength = 400
+    )
+
+    if ([string]::IsNullOrWhiteSpace($LogPath) -or -not (Test-Path -LiteralPath $LogPath)) { return '' }
+
+    try {
+        # ReadAllText detects the byte order mark, so UTF-16 DUP logs decode correctly on 5.1.
+        $raw = [System.IO.File]::ReadAllText($LogPath)
+    } catch {
+        return ''
+    }
+
+    $meaningful = @($raw -split "`r?`n" |
+        ForEach-Object { ($_ -replace '^\[[^\]]+\]\s*', '').Trim() } |
+        Where-Object { $_ -and $_ -ne '######' })
+
+    if ($meaningful.Count -eq 0) { return '' }
+
+    $take = @($meaningful | Select-Object -Last $Lines)
+    $tail = ($take -join ' | ')
+    if ($tail.Length -gt $MaxLength) { $tail = $tail.Substring(0, $MaxLength) + '...' }
+
+    return $tail
+}
+
+function Invoke-DATLatestDriverExtract {
+    <#
+    .SYNOPSIS
+        Extracts a downloaded OEM driver package to raw INF payloads and reports why an extraction
+        produced no drivers.
+
+    .DESCRIPTION
+        Runs the package's own silent-extract switches, then verifies that INF files actually
+        landed -- a package can return a success exit code and stage nothing.
+
+        When the first pass yields no INF, the extraction is retried once through a short,
+        space-free working folder under %SystemRoot%\Temp, then the payload is moved into the
+        staging folder. That covers the two ways a modern package refuses the staging path: a
+        payload that would cross MAX_PATH, and Dell's newer extract-only flow, which drops
+        privileges to run a bundled 7-Zip and pre-checks that the de-escalated context can write
+        to the target (#936).
+
+        Returns InfCount / FileCount / ExitCode / UsedFallback / Reason. Reason is populated only
+        when nothing extracted, and is safe to surface in the post-build failure report.
+
+    .PARAMETER ArgumentTemplate
+        Command line for the package, with {TARGET} standing in for the extraction folder and an
+        optional {LOG} for the vendor log path. Both are substituted already quoted by the caller,
+        e.g. '/s /e="{TARGET}" /l="{LOG}"'.
+    #>
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory)][AllowEmptyString()][string]$OEM,
+        [Parameter(Mandatory)][AllowEmptyString()][string]$PackagePath,
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Destination,
+        [Parameter(Mandatory)][AllowEmptyString()][string]$ArgumentTemplate,
+        [AllowEmptyString()][string]$LogPath = ''
+    )
+
+    $result = [PSCustomObject]@{
+        InfCount     = 0
+        FileCount    = 0
+        ExitCode     = $null
+        UsedFallback = $false
+        Reason       = ''
+    }
+
+    if (-not (Test-Path -LiteralPath $Destination)) {
+        New-Item -Path $Destination -ItemType Directory -Force | Out-Null
+    }
+
+    $startError = ''
+    $moveError  = ''
+
+    # -- Pass 1: extract straight into the staging folder --
+    $argLine = $ArgumentTemplate.Replace('{TARGET}', $Destination).Replace('{LOG}', $LogPath)
+    try {
+        $proc = Start-Process -FilePath $PackagePath -ArgumentList $argLine -Wait -PassThru -WindowStyle Hidden
+        $result.ExitCode = $proc.ExitCode
+    } catch {
+        $startError = $_.Exception.Message
+    }
+    $result.InfCount = @(Get-ChildItem -LiteralPath $Destination -Recurse -Filter *.inf -ErrorAction SilentlyContinue).Count
+
+    # -- Pass 2: short, space-free working path --
+    if ($result.InfCount -eq 0 -and [string]::IsNullOrEmpty($startError)) {
+        $workRoot = Join-Path $env:SystemRoot 'Temp\DATx'
+        $work = Join-Path $workRoot ([guid]::NewGuid().ToString('N').Substring(0, 6))
+        $workReady = $true
+        try {
+            New-Item -Path $work -ItemType Directory -Force | Out-Null
+        } catch {
+            $workReady = $false
+        }
+
+        if ($workReady) {
+            $retryLine = $ArgumentTemplate.Replace('{TARGET}', $work).Replace('{LOG}', $LogPath)
+            try {
+                $retryProc = Start-Process -FilePath $PackagePath -ArgumentList $retryLine -Wait -PassThru -WindowStyle Hidden
+                $result.ExitCode = $retryProc.ExitCode
+            } catch {
+                $startError = $_.Exception.Message
+            }
+
+            $retryInf = @(Get-ChildItem -LiteralPath $work -Recurse -Filter *.inf -ErrorAction SilentlyContinue).Count
+            if ($retryInf -gt 0) {
+                $result.UsedFallback = $true
+                try {
+                    foreach ($item in @(Get-ChildItem -LiteralPath $work -Force -ErrorAction Stop)) {
+                        Move-Item -LiteralPath $item.FullName -Destination $Destination -Force -ErrorAction Stop
+                    }
+                } catch {
+                    $moveError = $_.Exception.Message
+                }
+            }
+
+            Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
+        }
+
+        $result.InfCount = @(Get-ChildItem -LiteralPath $Destination -Recurse -Filter *.inf -ErrorAction SilentlyContinue).Count
+    }
+
+    $result.FileCount = @(Get-ChildItem -LiteralPath $Destination -Recurse -File -ErrorAction SilentlyContinue).Count
+
+    if ($result.InfCount -gt 0) { return $result }
+
+    # Nothing staged -- assemble the most useful reason available for the failure report.
+    $parts = New-Object System.Collections.Generic.List[string]
+    if (-not [string]::IsNullOrEmpty($startError)) { $parts.Add("the extractor could not be started: $startError") }
+    if (-not [string]::IsNullOrEmpty($moveError))  { $parts.Add("the extracted payload could not be moved into staging: $moveError") }
+
+    $logTail = Get-DATExtractLogTail -LogPath $LogPath
+    if (-not [string]::IsNullOrEmpty($logTail)) { $parts.Add("package log: $logTail") }
+
+    if ($parts.Count -eq 0) {
+        $parts.Add('the package reported no error but staged no INF files')
+    }
+    if (-not (Test-DATLongPathsEnabled)) {
+        $parts.Add('Windows long path support (LongPathsEnabled) is disabled, which blocks deeply nested payloads')
+    }
+
+    $result.Reason = ($parts -join '; ')
+    return $result
 }
 
 function Invoke-DATDellLatestDriverPackage {
@@ -7287,6 +7589,9 @@ function Invoke-DATDellLatestDriverPackage {
         Set-DATRegistryValue -Name "LatestDownloadsExtra" -Value "$($prevExtra + ($total - 1))" -Type String
     }
     $dellComponents = New-Object System.Collections.Generic.List[object]
+    # Identifiers of the DUPs that actually staged drivers -- the manifest is fingerprinted from
+    # these, so a partial build is retried next run instead of being treated as up to date (#936).
+    $extractedIdentifiers = New-Object System.Collections.Generic.List[string]
     Set-DATRegistryValue -Name "DownloadBytes" -Value "$total" -Type String
     Set-DATRegistryValue -Name "BytesTransferred" -Value "0" -Type String
     Set-DATRegistryValue -Name "RunningMode" -Value "Download" -Type String
@@ -7320,21 +7625,32 @@ function Invoke-DATDellLatestDriverPackage {
             }
         }
 
-        # Extract the driver DUP to raw INF payloads (Dell DUP switches: /s /e=<folder>).
-        $outDir = Join-Path $stagingDir ([IO.Path]::GetFileNameWithoutExtension($dup.FileName))
-        if (-not (Test-Path $outDir)) { New-Item -Path $outDir -ItemType Directory -Force | Out-Null }
-        try {
-            $exProc = Start-Process -FilePath $dupFile -ArgumentList "/s", "/e=`"$outDir`"" -Wait -PassThru -WindowStyle Hidden
-            $infCount = @(Get-ChildItem -Path $outDir -Recurse -Filter *.inf -ErrorAction SilentlyContinue).Count
-            if ($infCount -eq 0) {
-                Write-DATLogEntry -Value "[Dell] $($dup.FileName) extracted no INF files (exit $($exProc.ExitCode)) -- component may not be a driver DUP" -Severity 2
-            }
-        } catch {
-            Write-DATLogEntry -Value "[Dell] Extraction failed for $($dup.FileName): $($_.Exception.Message)" -Severity 3
-            Add-DATDriverDownloadFailure -OEM 'Dell' -Model $Model -Driver "$($dup.Name)" -Reason "Extraction failed: $($_.Exception.Message)"
+        # Extract the driver DUP to raw INF payloads (Dell DUP switches: /s /e=<folder>, /l=<log>).
+        # The DUP's own log lands beside the download rather than inside staging, so it reports the
+        # real reason for a failed extraction without being captured into the WIM (#936).
+        $stageName = Get-DATLatestStagingName -FileName $dup.FileName
+        $outDir = Join-Path $stagingDir $stageName
+        $dupLog = Join-Path $dupDir "$stageName.duplog.txt"
+        Remove-Item -LiteralPath $dupLog -Force -ErrorAction SilentlyContinue
+
+        $extract = Invoke-DATLatestDriverExtract -OEM 'Dell' -PackagePath $dupFile -Destination $outDir `
+            -ArgumentTemplate '/s /e="{TARGET}" /l="{LOG}"' -LogPath $dupLog
+
+        if ($extract.InfCount -eq 0) {
+            # A DUP that stages no driver is a build failure, not a note: dropping it silently
+            # shipped packages missing network and graphics drivers with a success result (#936).
+            Write-DATLogEntry -Value "[Dell] $($dup.FileName) staged no driver files (exit $($extract.ExitCode)) -- $($extract.Reason)" -Severity 3
+            Add-DATDriverDownloadFailure -OEM 'Dell' -Model $Model -Driver "$($dup.Name)" `
+                -Reason "Extraction staged no drivers (exit $($extract.ExitCode)): $($extract.Reason)"
+            Remove-Item -LiteralPath $outDir -Recurse -Force -ErrorAction SilentlyContinue
             continue
         }
 
+        if ($extract.UsedFallback) {
+            Write-DATLogEntry -Value "[Dell] $($dup.FileName) needed a short-path retry to extract ($($extract.InfCount) INF file(s))" -Severity 2
+        }
+
+        $extractedIdentifiers.Add($(if ($dup.Identifier) { "$($dup.Identifier)" } else { "$($dup.FileName)" }))
         $dellComponents.Add([ordered]@{
             id          = $dup.Identifier
             name        = $dup.Name
@@ -7347,9 +7663,12 @@ function Invoke-DATDellLatestDriverPackage {
     }
 
     $stagedFiles = @(Get-ChildItem -Path $stagingDir -Recurse -File -ErrorAction SilentlyContinue).Count
-    Write-DATLogEntry -Value "[Dell] Extraction complete: $stagedFiles driver files staged from $($dellComponents.Count) component(s)" -Severity 1
+    Write-DATLogEntry -Value "[Dell] Extraction complete: $stagedFiles driver files staged from $($dellComponents.Count) of $total component(s)" -Severity 1
     if ($stagedFiles -eq 0) {
         throw "No Dell driver files were extracted from the DCU catalog for $Model"
+    }
+    if ($dellComponents.Count -lt $total) {
+        Write-DATLogEntry -Value "[Dell] [Warning] - $($total - $dellComponents.Count) of $total component(s) staged no drivers for $Model -- the package is incomplete. See View Failures for the affected drivers; the next run will rebuild rather than treat this set as current." -Severity 2 -UpdateUI
     }
 
     # -- 6. Package via the common WIM pipeline (embeds DATDriverManifest.json) --
@@ -7371,14 +7690,18 @@ function Invoke-DATDellLatestDriverPackage {
     Set-DATRegistryValue -Name "RunningMode" -Value "Download Completed" -Type String
     Write-DATLogEntry -Value "[Dell] Latest Drivers package process completed successfully" -Severity 1 -UpdateUI
 
-    # Persist the manifest so an unchanged DUP set skips rebuild next time.
+    # Persist the manifest so an unchanged DUP set skips rebuild next time. Record only the DUPs
+    # that actually staged drivers: a partial build then fingerprints differently from the selected
+    # set, so the next run rebuilds and retries the components that failed to extract (#936).
     try {
+        $builtIdentifiers = @($extractedIdentifiers)
+        $builtFingerprint = Get-DATDellDUPFingerprint -Identifiers $builtIdentifiers
         $manifestSave = Get-DATDellLatestManifest
         $existingRef = $manifestSave[$manifestKey]
         $manifestSave[$manifestKey] = [PSCustomObject]@{
             systemSku          = "$SystemSKU"
-            componentIds       = @($identifiers | Sort-Object)
-            fingerprint        = $fingerprint
+            componentIds       = @($builtIdentifiers | Sort-Object)
+            fingerprint        = $builtFingerprint
             version            = $buildVersion
             lastBuilt          = (Get-Date -Format 'o')
             lastChecked        = (Get-Date -Format 'o')
@@ -7469,7 +7792,7 @@ function Invoke-DATLenovoLatestDriverPackage {
 
     # Windows feature-update -> build number, for evaluating package <_WindowsBuildVersion> conditions.
     $winBuildMap = @{
-        'Win11' = @{ '21H2' = 22000; '22H2' = 22621; '23H2' = 22631; '24H2' = 26100; '25H2' = 26200 }
+        'Win11' = @{ '21H2' = 22000; '22H2' = 22621; '23H2' = 22631; '24H2' = 26100; '25H2' = 26200; '26H1' = 28000 }
         'Win10' = @{ '20H2' = 19042; '21H1' = 19043; '21H2' = 19044; '22H2' = 19045 }
     }
     $osMajor = if ($WindowsVersion -match '10') { '10' } else { '11' }
@@ -7640,6 +7963,8 @@ function Invoke-DATLenovoLatestDriverPackage {
         Set-DATRegistryValue -Name "LatestDownloadsExtra" -Value "$($prevExtra + ($total - 1))" -Type String
     }
     $lnvComponents = New-Object System.Collections.Generic.List[object]
+    # Identifiers of the packages that actually staged drivers -- see the Dell path (#936).
+    $extractedIdentifiers = New-Object System.Collections.Generic.List[string]
     Set-DATRegistryValue -Name "DownloadBytes" -Value "$total" -Type String
     Set-DATRegistryValue -Name "BytesTransferred" -Value "0" -Type String
     Set-DATRegistryValue -Name "RunningMode" -Value "Download" -Type String
@@ -7673,22 +7998,28 @@ function Invoke-DATLenovoLatestDriverPackage {
         }
 
         # Extract via the package's own ExtractCommand (Inno Setup: /VERYSILENT /DIR=%PACKAGEPATH% /EXTRACT=YES).
-        $outDir = Join-Path $stagingDir ([IO.Path]::GetFileNameWithoutExtension($pkg.FileName))
-        if (-not (Test-Path $outDir)) { New-Item -Path $outDir -ItemType Directory -Force | Out-Null }
+        $outDir = Join-Path $stagingDir (Get-DATLatestStagingName -FileName $pkg.FileName)
         # Quote the substituted path -- Lenovo ExtractCommands use an unquoted /DIR=%PACKAGEPATH%,
         # which Inno Setup truncates at the first space (temp paths like "C:\DAT Testing\..." extract nothing).
-        $extractArgs = ($pkg.ExtractCmd -replace '(?i)^\s*\S+\.exe\s*', '') -replace '"?%PACKAGEPATH%"?', "`"$outDir`""
-        if ([string]::IsNullOrWhiteSpace($extractArgs)) { $extractArgs = "/VERYSILENT /DIR=`"$outDir`" /EXTRACT=`"YES`"" }
-        try {
-            $exProc = Start-Process -FilePath $pkgFile -ArgumentList $extractArgs -Wait -PassThru -WindowStyle Hidden
-            $infCount = @(Get-ChildItem -Path $outDir -Recurse -Filter *.inf -ErrorAction SilentlyContinue).Count
-            if ($infCount -eq 0) { Write-DATLogEntry -Value "[Lenovo] $($pkg.FileName) extracted no INF (exit $($exProc.ExitCode)) -- switches vary by package" -Severity 2 }
-        } catch {
-            Write-DATLogEntry -Value "[Lenovo] Extraction failed for $($pkg.FileName): $($_.Exception.Message)" -Severity 3
-            Add-DATDriverDownloadFailure -OEM 'Lenovo' -Model $Model -Driver "$($pkg.Title)" -Reason "Extraction failed: $($_.Exception.Message)"
+        $extractArgs = ($pkg.ExtractCmd -replace '(?i)^\s*\S+\.exe\s*', '') -replace '"?%PACKAGEPATH%"?', '"{TARGET}"'
+        if ([string]::IsNullOrWhiteSpace($extractArgs)) { $extractArgs = '/VERYSILENT /DIR="{TARGET}" /EXTRACT="YES"' }
+
+        $extract = Invoke-DATLatestDriverExtract -OEM 'Lenovo' -PackagePath $pkgFile -Destination $outDir `
+            -ArgumentTemplate $extractArgs
+
+        if ($extract.InfCount -eq 0) {
+            Write-DATLogEntry -Value "[Lenovo] $($pkg.FileName) staged no driver files (exit $($extract.ExitCode)) -- $($extract.Reason)" -Severity 3
+            Add-DATDriverDownloadFailure -OEM 'Lenovo' -Model $Model -Driver "$($pkg.Title)" `
+                -Reason "Extraction staged no drivers (exit $($extract.ExitCode)): $($extract.Reason)"
+            Remove-Item -LiteralPath $outDir -Recurse -Force -ErrorAction SilentlyContinue
             continue
         }
 
+        if ($extract.UsedFallback) {
+            Write-DATLogEntry -Value "[Lenovo] $($pkg.FileName) needed a short-path retry to extract ($($extract.InfCount) INF file(s))" -Severity 2
+        }
+
+        $extractedIdentifiers.Add("$($pkg.Id)|$($pkg.Version)")
         $lnvComponents.Add([ordered]@{
             id          = $pkg.Id
             name        = $pkg.Title
@@ -7701,8 +8032,11 @@ function Invoke-DATLenovoLatestDriverPackage {
     }
 
     $stagedFiles = @(Get-ChildItem -Path $stagingDir -Recurse -File -ErrorAction SilentlyContinue).Count
-    Write-DATLogEntry -Value "[Lenovo] Extraction complete: $stagedFiles driver files staged from $($lnvComponents.Count) package(s)" -Severity 1
+    Write-DATLogEntry -Value "[Lenovo] Extraction complete: $stagedFiles driver files staged from $($lnvComponents.Count) of $total package(s)" -Severity 1
     if ($stagedFiles -eq 0) { throw "No Lenovo driver files were extracted from the Model-XML catalog for $Model" }
+    if ($lnvComponents.Count -lt $total) {
+        Write-DATLogEntry -Value "[Lenovo] [Warning] - $($total - $lnvComponents.Count) of $total package(s) staged no drivers for $Model -- the package is incomplete. See View Failures for the affected drivers; the next run will rebuild rather than treat this set as current." -Severity 2 -UpdateUI
+    }
 
     # -- 5. Package via the common WIM pipeline (embeds DATDriverManifest.json) --
     if ($RunningMode -ne "Download Only" -or $ExtractDownloadOnlyContent) {
@@ -7723,15 +8057,18 @@ function Invoke-DATLenovoLatestDriverPackage {
     Set-DATRegistryValue -Name "RunningMode" -Value "Download Completed" -Type String
     Write-DATLogEntry -Value "[Lenovo] Latest Drivers package process completed successfully" -Severity 1 -UpdateUI
 
-    # Persist the tracking manifest (fingerprint + cadence timestamps).
+    # Persist the tracking manifest (fingerprint + cadence timestamps). Only the packages that
+    # staged drivers are recorded, so a partial build is retried next run (#936).
     try {
+        $builtIdentifiers = @($extractedIdentifiers)
+        $builtFingerprint = Get-DATLenovoPackageFingerprint -Identifiers $builtIdentifiers
         $manifestSave = Get-DATLenovoLatestManifest
         $existingRef = $manifestSave[$manifestKey]
         $nowIso = (Get-Date -Format 'o')
         $manifestSave[$manifestKey] = [PSCustomObject]@{
             machineType        = "$usedMt"
-            componentIds       = @($identifiers | Sort-Object)
-            fingerprint        = $fingerprint
+            componentIds       = @($builtIdentifiers | Sort-Object)
+            fingerprint        = $builtFingerprint
             version            = $buildVersion
             lastBuilt          = $nowIso
             lastChecked        = $nowIso
@@ -9441,6 +9778,9 @@ function ConvertTo-DATIntuneMinimumOS {
     # OS format: "Windows 10 22H2", "Windows 11 24H2", etc.
     $mapped = switch -Regex ($OS) {
         'Windows\s+11.*26H2' { 'v11_26H2'; break }
+        # 26H1 must be tested before 25H2 -- it is the newer release (build 28000 vs 26200)
+        # despite the lower H number, so ordering by label alone would misclassify it.
+        'Windows\s+11.*26H1' { 'v11_26H1'; break }
         'Windows\s+11.*25H2' { 'v11_25H2'; break }
         'Windows\s+11.*24H2' { 'v11_24H2'; break }
         'Windows\s+11.*23H2' { 'v11_23H2'; break }
@@ -13495,7 +13835,7 @@ function New-DATIntuneRequirementScript {
     `$cvKey = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion' -ErrorAction Stop
     `$deviceFeatureUpdate = `$cvKey.DisplayVersion
     if ([string]::IsNullOrWhiteSpace(`$deviceFeatureUpdate)) {
-        `$fuMap = @{ '19044'='21H2'; '19045'='22H2'; '22000'='21H2'; '22621'='22H2'; '22631'='23H2'; '26100'='24H2'; '26200'='25H2' }
+        `$fuMap = @{ '19044'='21H2'; '19045'='22H2'; '22000'='21H2'; '22621'='22H2'; '22631'='23H2'; '26100'='24H2'; '26200'='25H2'; '28000'='26H1' }
         `$deviceFeatureUpdate = `$fuMap["`$(`$cvKey.CurrentBuildNumber)"]
         if (-not `$deviceFeatureUpdate) { `$deviceFeatureUpdate = "Build`$(`$cvKey.CurrentBuildNumber)" }
     }
@@ -13629,10 +13969,13 @@ function New-DATIntuneRequirementScript {
 function Set-DATApplicability {
     param([Parameter(Mandatory)][string]`$Result, [string]`$Reason = '')
     try {
-        if (-not (Test-Path `$datReqRegPath)) { New-Item -Path `$datReqRegPath -Force | Out-Null }
-        Set-ItemProperty -Path `$datReqRegPath -Name 'ApplicabilityResult'     -Value `$Result -Force
-        Set-ItemProperty -Path `$datReqRegPath -Name 'ApplicabilityReason'     -Value `$Reason -Force
-        Set-ItemProperty -Path `$datReqRegPath -Name 'ApplicabilityCheckedUtc' -Value ((Get-Date).ToUniversalTime().ToString('o')) -Force
+        # -ErrorAction Stop on every write: HKLM access failures are non-terminating by default, so
+        # without it the catch never fires and the error records leak into the rule's output stream
+        # (visible whenever the script is run outside SYSTEM, e.g. an operator testing it by hand).
+        if (-not (Test-Path `$datReqRegPath)) { New-Item -Path `$datReqRegPath -Force -ErrorAction Stop | Out-Null }
+        Set-ItemProperty -Path `$datReqRegPath -Name 'ApplicabilityResult'     -Value `$Result -Force -ErrorAction Stop
+        Set-ItemProperty -Path `$datReqRegPath -Name 'ApplicabilityReason'     -Value `$Reason -Force -ErrorAction Stop
+        Set-ItemProperty -Path `$datReqRegPath -Name 'ApplicabilityCheckedUtc' -Value ((Get-Date).ToUniversalTime().ToString('o')) -Force -ErrorAction Stop
     } catch { }
 }
 "@
@@ -13787,7 +14130,7 @@ function New-DATIntuneDetectionScript {
     `$cvKey = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion' -ErrorAction Stop
     `$deviceFeatureUpdate = `$cvKey.DisplayVersion
     if ([string]::IsNullOrWhiteSpace(`$deviceFeatureUpdate)) {
-        `$fuMap = @{ '19044'='21H2'; '19045'='22H2'; '22000'='21H2'; '22621'='22H2'; '22631'='23H2'; '26100'='24H2'; '26200'='25H2' }
+        `$fuMap = @{ '19044'='21H2'; '19045'='22H2'; '22000'='21H2'; '22621'='22H2'; '22631'='23H2'; '26100'='24H2'; '26200'='25H2'; '28000'='26H1' }
         `$deviceFeatureUpdate = `$fuMap["`$(`$cvKey.CurrentBuildNumber)"]
         if (-not `$deviceFeatureUpdate) { `$deviceFeatureUpdate = "Build`$(`$cvKey.CurrentBuildNumber)" }
     }
@@ -18719,6 +19062,29 @@ function Repair-DATBiosPackageNames {
     return $results
 }
 
+function Test-DATIsAccessDeniedError {
+    <#
+    .SYNOPSIS
+        Returns $true when an error record represents a Windows/WMI "access denied" condition.
+        Locale-independent (matches e.g. the French "Accès refusé") so bulk ConfigMgr maintenance
+        writes can stop after the first denial instead of logging a warning for every package when
+        the running account lacks write rights (issue #915).
+    #>
+    param($ErrorRecord)
+    if ($null -eq $ErrorRecord) { return $false }
+    try {
+        if ($ErrorRecord.CategoryInfo -and $ErrorRecord.CategoryInfo.Category -eq 'PermissionDenied') { return $true }
+        $ex = $ErrorRecord.Exception; $depth = 0
+        while ($ex -and $depth -lt 5) {
+            # 0x80070005 E_ACCESSDENIED, 0x80041003 WBEM_E_ACCESS_DENIED
+            if ($ex.HResult -eq -2147024891 -or $ex.HResult -eq -2147217405) { return $true }
+            $ex = $ex.InnerException; $depth++
+        }
+        if ("$($ErrorRecord.Exception.Message)" -match '(?i)access is denied|access denied|unauthorized|\brefus|denegado|verweigert|\bnegato\b|0x80070005|0x80041003') { return $true }
+    } catch { }
+    return $false
+}
+
 function Remove-DATBiosDuplicatePackages {
     <#
     .SYNOPSIS
@@ -18786,7 +19152,7 @@ function Remove-DATBiosDuplicatePackages {
 
         # Find and resolve duplicates: any model with more than one package (regardless of naming style)
         $duplicatesFound = $false
-        foreach ($modelKey in $grouped.Keys) {
+        :biosModelLoop foreach ($modelKey in $grouped.Keys) {
             $entries = $grouped[$modelKey]
 
             # Only act when there are duplicates for this model
@@ -18910,6 +19276,14 @@ function Remove-DATBiosDuplicatePackages {
                         [void]$ProgressQueue.Enqueue([PSCustomObject]@{ Status = 'Removed'; OldName = $oldName; Platform = 'ConfigMgr' })
                     }
                 } catch {
+                    if (Test-DATIsAccessDeniedError -ErrorRecord $_) {
+                        # Read-only / non-site-admin account cannot remove packages; log once and stop
+                        # rather than warning per package (issue #915).
+                        Write-DATLogEntry -Value "[BIOS Duplicate Removal] Insufficient rights to remove ConfigMgr packages (account lacks write access) -- skipping duplicate removal." -Severity 2
+                        [void]$results.Add([PSCustomObject]@{ OldName = $oldPkg.Name; Platform = 'ConfigMgr'; Status = 'SkippedAccessDenied'; Error = $_.Exception.Message })
+                        if ($ProgressQueue) { [void]$ProgressQueue.Enqueue([PSCustomObject]@{ Status = 'Skipped'; OldName = $oldPkg.Name; Platform = 'ConfigMgr'; Error = 'Access denied' }) }
+                        break biosModelLoop
+                    }
                     Write-DATLogEntry -Value "[BIOS Duplicate Removal] Failed to remove duplicate: $($_.Exception.Message)" -Severity 3
                     [void]$results.Add([PSCustomObject]@{
                         OldName  = $oldPkg.Name
@@ -19160,6 +19534,16 @@ function Repair-DATDriverPackageNames {
                         [void]$ProgressQueue.Enqueue([PSCustomObject]@{ Status = 'Renamed'; OldName = $oldName; NewName = $newName; Platform = 'ConfigMgr' })
                     }
                 } catch {
+                    if (Test-DATIsAccessDeniedError -ErrorRecord $_) {
+                        # A read-only / non-site-admin account cannot rename packages. One denied write
+                        # is enough to know the rest will fail too, so log ONCE (file only, Severity 2)
+                        # and stop -- rather than emitting an "Access denied" console warning for every
+                        # package on every connect (issue #915).
+                        Write-DATLogEntry -Value "[Driver Repair] Insufficient rights to rename ConfigMgr driver packages (account lacks write access) -- skipping automatic package-name repair; $($packagesToFix.Count) package(s) left unchanged." -Severity 2
+                        [void]$results.Add([PSCustomObject]@{ OldName = $oldName; NewName = $newName; Platform = 'ConfigMgr'; Status = 'SkippedAccessDenied'; Error = $_.Exception.Message })
+                        if ($ProgressQueue) { [void]$ProgressQueue.Enqueue([PSCustomObject]@{ Status = 'Skipped'; OldName = $oldName; NewName = $newName; Platform = 'ConfigMgr'; Error = 'Access denied' }) }
+                        break
+                    }
                     Write-DATLogEntry -Value "[Driver Repair] Failed to rename '$oldName': $($_.Exception.Message)" -Severity 3
                     [void]$results.Add([PSCustomObject]@{
                         OldName  = $oldName

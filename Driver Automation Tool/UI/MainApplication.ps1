@@ -28,10 +28,10 @@ Add-Type -AssemblyName System.Windows.Forms
 # ModelItem implements INotifyPropertyChanged so that WPF bindings update automatically
 # when Selected changes -- no manual visual-tree walking required.
 $_existingType = ([System.Management.Automation.PSTypeName]'ModelItem').Type
-$_needsCompile = (-not $_existingType) -or (-not $_existingType.GetProperty('BIOSVersion')) -or (-not $_existingType.GetProperty('DriverStatus'))
+$_needsCompile = (-not $_existingType) -or (-not $_existingType.GetProperty('BIOSVersion')) -or (-not $_existingType.GetProperty('DriverStatus')) -or (-not $_existingType.GetProperty('SearchText'))
 if ($_needsCompile) {
     if ($_existingType) {
-        Write-Warning "ModelItem type is stale (missing BIOSVersion). Recompiling with a new name is not possible in the same AppDomain. BIOSVersion column may be empty until a fresh PowerShell process is used."
+        Write-Warning "ModelItem type is stale (missing BIOSVersion, DriverStatus or SearchText). Recompiling with a new name is not possible in the same AppDomain. Affected columns may be empty, and model search falls back to a slower per-field match, until a fresh PowerShell process is used."
     }
     try {
     Add-Type -ReferencedAssemblies @('System.ComponentModel', 'System.ObjectModel', 'System.Runtime') -TypeDefinition @'
@@ -49,12 +49,29 @@ public class ModelItem : INotifyPropertyChanged {
             }
         }
     }
-    public string OEM        { get; set; }
-    public string Model      { get; set; }
+    // OEM/Model/Baseboards are backed so they can invalidate the cached SearchText blob below.
+    private string _oem;
+    public string OEM { get { return _oem; } set { _oem = value; _searchText = null; } }
+    private string _model;
+    public string Model { get { return _model; } set { _model = value; _searchText = null; } }
     public string OS         { get; set; }
     public string Architecture { get; set; }
     public string Build      { get; set; }
-    public string Baseboards { get; set; }
+    private string _baseboards;
+    public string Baseboards { get { return _baseboards; } set { _baseboards = value; _searchText = null; } }
+
+    // Lowercased "OEM Model Baseboards" blob, built once per row and reused by the model
+    // search filter, so a keystroke costs one ordinal IndexOf per row rather than three
+    // wildcard matches across three properties. Rebuilt lazily if any source field changes.
+    private string _searchText;
+    public string SearchText {
+        get {
+            if (_searchText == null) {
+                _searchText = ((_oem ?? "") + " " + (_model ?? "") + " " + (_baseboards ?? "")).ToLowerInvariant();
+            }
+            return _searchText;
+        }
+    }
     public bool   HasGFX     { get; set; }
     public string GFXBrand   { get; set; }
     public string CustomDriverPath { get; set; }
@@ -183,8 +200,12 @@ if (-not (Test-Path $ThemePath)) {
 . $ThemePath
 
 # Load XAML (#1 -- XAML parse failure)
+# Read as UTF-8 explicitly. Get-Content without -Encoding uses the ANSI code page on PS 5.1, which
+# decodes every multi-byte character in the markup as mojibake -- an em dash in a label rendered as
+# "a??" in the UI. -Encoding UTF8 is used rather than [IO.File]::ReadAllText so path resolution
+# stays PowerShell's, which matters on hosts where the app runs from a mapped or UNC location.
 $XamlPath = Join-Path $UIPath "MainWindow.xaml"
-[xml]$Xaml = Get-Content $XamlPath -Raw -ErrorAction Stop
+[xml]$Xaml = Get-Content $XamlPath -Raw -Encoding UTF8 -ErrorAction Stop
 
 # Create XmlNodeReader and load window
 $Reader = New-Object System.Xml.XmlNodeReader $Xaml
@@ -7567,6 +7588,7 @@ $btn_OSToggle = $Window.FindName('btn_OSToggle')
 $txt_OSDisplay = $Window.FindName('txt_OSDisplay')
 $popup_OS = $Window.FindName('popup_OS')
 $script:OSCheckboxes = [ordered]@{
+    'Windows 11 26H1' = $Window.FindName('chk_OS_Win11_26H1')
     'Windows 11 25H2' = $Window.FindName('chk_OS_Win11_25H2')
     'Windows 11 24H2' = $Window.FindName('chk_OS_Win11_24H2')
     'Windows 11 23H2' = $Window.FindName('chk_OS_Win11_23H2')
@@ -7576,6 +7598,7 @@ $script:OSCheckboxes = [ordered]@{
     'Windows 10 21H2' = $Window.FindName('chk_OS_Win10_21H2')
 }
 $script:OSBorders = [ordered]@{
+    'Windows 11 26H1' = $Window.FindName('border_OS_Win11_26H1')
     'Windows 11 25H2' = $Window.FindName('border_OS_Win11_25H2')
     'Windows 11 24H2' = $Window.FindName('border_OS_Win11_24H2')
     'Windows 11 23H2' = $Window.FindName('border_OS_Win11_23H2')
@@ -8185,8 +8208,13 @@ $btn_RefreshModels.Add_Click({
                             # Dell is build-agnostic -- single row with Build='All'
                             if ($entry.Manufacturer -eq 'Dell') {
                                 $firstOS = ($OSList | Select-Object -First 1).Split(" ")
+                                # Dell Latest Drivers (DCU) packages are stamped with a build date --
+                                # their definitive version is DUP-fingerprint based -- so the model list
+                                # shows that date rather than the enterprise catalog dellVersion, matching
+                                # the HP SoftPaq convention. SCCM pack mode keeps the catalog version. (#931)
                                 $dellVer = ''
-                                if (-not [string]::IsNullOrEmpty($entry.Version) -and $entry.Version -notmatch '^\d+H\d+$') { $dellVer = $entry.Version }
+                                if ($HPDriverPackSource -eq 'SoftPaqs') { $dellVer = (Get-Date -Format 'ddMMyyyy') }
+                                elseif (-not [string]::IsNullOrEmpty($entry.Version) -and $entry.Version -notmatch '^\d+H\d+$') { $dellVer = $entry.Version }
                                 elseif (-not [string]::IsNullOrEmpty($entry.ReleaseDate)) { $dellVer = $entry.ReleaseDate }
                                 $OEMSupportedModels += [PSCustomObject]@{
                                     OEM        = 'Dell'
@@ -8294,8 +8322,12 @@ $btn_RefreshModels.Add_Click({
                         # Dell: emit a single build-agnostic row after the OS loop
                         if ($entry.Manufacturer -eq 'Dell' -and $matched) {
                             $firstOS = ($OSList | Select-Object -First 1).Split(" ")
+                            # Latest Drivers (DCU) builds are date-stamped; SCCM pack mode shows the
+                            # enterprise catalog version. Mirrors the HP SoftPaq convention. (#931)
                             $dellDisplayVersion = ''
-                            if (-not [string]::IsNullOrEmpty($entry.Version) -and $entry.Version -notmatch '^\d+H\d+$') {
+                            if ($HPDriverPackSource -eq 'SoftPaqs') {
+                                $dellDisplayVersion = (Get-Date -Format 'ddMMyyyy')
+                            } elseif (-not [string]::IsNullOrEmpty($entry.Version) -and $entry.Version -notmatch '^\d+H\d+$') {
                                 $dellDisplayVersion = $entry.Version
                             } elseif (-not [string]::IsNullOrEmpty($entry.ReleaseDate)) {
                                 $dellDisplayVersion = $entry.ReleaseDate
@@ -8630,7 +8662,9 @@ $btn_RefreshModels.Add_Click({
                                     Baseboards = $(if ($sysIds) { $sysIds -join "," } else { "" })
                                     OS         = $WindowsVersion
                                     'OS Build' = 'All'
-                                    Version    = $Model.DellVersion
+                                    # Latest Drivers (DCU) builds are date-stamped; SCCM pack mode
+                                    # shows the enterprise catalog dellVersion. (#931)
+                                    Version    = $(if ($HPDriverPackSource -eq 'SoftPaqs') { (Get-Date -Format 'ddMMyyyy') } else { $Model.DellVersion })
                                 }
                             }
                         $uniqueCount = @($OEMSupportedModels | Where-Object { $_.OEM -eq 'Dell' } | Select-Object -Property Model -Unique).Count
@@ -9372,21 +9406,58 @@ $btn_RefreshModels.Add_Click({
 })
 
 # Model search filter - uses CollectionView to preserve sort state
-$txt_ModelSearch.Add_TextChanged({
+# Model search. Three things keep this responsive on large catalogues:
+#  1. Typing is debounced, so a model name costs one filter pass rather than one per character.
+#  2. ItemsSource is never reassigned. The grid is bound to $script:ModelData (see above), so its
+#     default view is the one on screen and setting Filter refreshes it in place -- the same way
+#     the Sorting handler works. Reassigning ItemsSource rebuilt the binding and its row
+#     containers on every keystroke.
+#  3. The predicate does one ordinal IndexOf against ModelItem.SearchText (a precomputed
+#     lowercase OEM/Model/Baseboards blob) instead of three wildcard matches. Ordinal comparison
+#     also removes the need to escape wildcard metacharacters, so a partially typed pattern such
+#     as "p[" is matched literally by construction.
+$script:ModelItemType = ([System.Management.Automation.PSTypeName]'ModelItem').Type
+$script:ModelSearchHasSearchText = ($null -ne $script:ModelItemType) -and ($null -ne $script:ModelItemType.GetProperty('SearchText'))
+
+function Update-DATModelSearchFilter {
     $searchText = $txt_ModelSearch.Text
     $view = [System.Windows.Data.CollectionViewSource]::GetDefaultView($script:ModelData)
+    if ($null -eq $view) { return }
+
     if ([string]::IsNullOrEmpty($searchText)) {
         $view.Filter = $null
-    } else {
-        # Escape wildcard metacharacters (* ? [ ]) so a partially typed pattern such as
-        # "p[" is matched literally instead of throwing "invalid wildcard pattern".
-        $escapedSearch = [System.Management.Automation.WildcardPattern]::Escape($searchText)
+        return
+    }
+
+    $term = $searchText.ToLowerInvariant()
+    if ($script:ModelSearchHasSearchText) {
         $view.Filter = [System.Predicate[object]]{
             param($item)
-            $item.Model -like "*$escapedSearch*" -or $item.OEM -like "*$escapedSearch*" -or $item.Baseboards -like "*$escapedSearch*"
+            $item.SearchText.IndexOf($term, [System.StringComparison]::Ordinal) -ge 0
+        }
+    } else {
+        # Stale in-process ModelItem type without SearchText (see the recompile warning at the
+        # top of this script) -- fall back to comparing the fields directly.
+        $view.Filter = [System.Predicate[object]]{
+            param($item)
+            ($item.Model -and $item.Model.IndexOf($term, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) -or
+            ($item.OEM -and $item.OEM.IndexOf($term, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) -or
+            ($item.Baseboards -and $item.Baseboards.IndexOf($term, [System.StringComparison]::OrdinalIgnoreCase) -ge 0)
         }
     }
-    $grid_Models.ItemsSource = $view
+}
+
+$script:ModelSearchTimer = New-Object System.Windows.Threading.DispatcherTimer
+$script:ModelSearchTimer.Interval = [TimeSpan]::FromMilliseconds(200)
+$script:ModelSearchTimer.Add_Tick({
+    $script:ModelSearchTimer.Stop()
+    Update-DATModelSearchFilter
+})
+
+$txt_ModelSearch.Add_TextChanged({
+    # Restart the debounce window; the filter runs once the user pauses.
+    $script:ModelSearchTimer.Stop()
+    $script:ModelSearchTimer.Start()
 })
 
 $btn_SelectKnownModels = $Window.FindName('btn_SelectKnownModels')
@@ -9525,9 +9596,37 @@ $script:DeployedVersionsFetched = $false
 $script:LastDriverUpdateCount = 0
 $script:LastBiosUpdateCount = 0
 
+function Get-DATDeployedOSKeySegment {
+    # Reduces a package-name OS segment to the Windows major ("Windows 11" / "Windows 10") that the
+    # model grid keys on. Deployed package names have used several forms over time -- "Windows 11 x64",
+    # "Windows 11 25H2 x64", or a semicolon build list "Windows 11 25H2;Windows 11 24H2 x64" -- while
+    # the grid tracks the build separately, so its key uses the OS name only. Collapsing to the major
+    # here makes the deployed key match the grid regardless of whether the name embeds a build.
+    param([string]$OSSegment)
+    if ([string]::IsNullOrWhiteSpace($OSSegment)) { return '' }
+    $s = ($OSSegment.Trim() -replace '\s+(x64|arm64|x86)$', '').Trim()
+    if ($s -match '(?i)windows\s*1[01]') { return $Matches[0] -replace '(?i)windows\s*', 'Windows ' }
+    if ($s -match '(?i)windows\s*server[^;]*') { return $Matches[0].Trim() }
+    if ($s -match '(?i)windows\s*[78][^;]*') { return ($Matches[0] -split ';')[0].Trim() }
+    return ($s -split ';')[0].Trim()
+}
+
+function Get-DATVersionMatchKey {
+    # Normalises a version for comparison. Deployed and catalog versions occasionally differ only by
+    # a trailing ".0" on dotted-numeric values (e.g. "26.044.42206.0" vs "26.044.42206"), which broke
+    # the exact match and left an up-to-date model flagged as needing an update. Only purely
+    # dotted-numeric versions are collapsed; OEM formats like "A14", "2.00 A 1" or "18082026" are
+    # compared verbatim (case-insensitive).
+    param([string]$Version)
+    if ([string]::IsNullOrWhiteSpace($Version)) { return '' }
+    $t = $Version.Trim()
+    if ($t -match '^\d+(\.\d+)+$') { $t = $t -replace '(\.0)+$', '' }
+    return $t.ToLowerInvariant()
+}
+
 function Add-DATDeployedVersionEntry {
     # Parses a deployed package name into a lookup key and records its version. Package names:
-    #   "Drivers - <OEM> <Model> - <OS> <Arch>"      -> key "DRIVER|<oem> <model>|<os>"
+    #   "Drivers - <OEM> <Model> - <OS> <Arch>"      -> key "DRIVER|<oem> <model>|<os major>"
     #   "BIOS - <OEM> <Model>" / "BIOS Update - ..."  -> key "BIOS|<oem> <model>"
     param([hashtable]$Map, [string]$Name, [string]$Version)
     if ([string]::IsNullOrEmpty($Name)) { return }
@@ -9539,7 +9638,7 @@ function Add-DATDeployedVersionEntry {
     if ($type -like 'Drivers*') {
         $os = ''
         if ($parts.Count -ge 3) {
-            $os = ($parts[2].Trim() -replace '\s+(x64|arm64|x86)$', '').Trim()
+            $os = Get-DATDeployedOSKeySegment -OSSegment $parts[2]
         }
         $key = "DRIVER|$makeModel|$os".ToLowerInvariant()
     } elseif ($type -like 'BIOS*') {
@@ -9614,11 +9713,12 @@ function Update-DATModelUpdateStatus {
     foreach ($item in $script:ModelData) {
         # ----- Driver -----
         if (-not $item.BIOSOnly -and -not [string]::IsNullOrEmpty($item.Version)) {
-            $dKey = "DRIVER|$($item.OEM) $($item.Model)|$($item.OS)".ToLowerInvariant()
+            $dKey = "DRIVER|$($item.OEM) $($item.Model)|$(Get-DATDeployedOSKeySegment -OSSegment $item.OS)".ToLowerInvariant()
             if ($map.ContainsKey($dKey)) {
                 $deployed = @($map[$dKey])
                 $item.DeployedDriverVersion = ($deployed -join ', ')
-                if ($deployed -contains $item.Version) {
+                $deployedKeys = @($deployed | ForEach-Object { Get-DATVersionMatchKey $_ })
+                if ($deployedKeys -contains (Get-DATVersionMatchKey $item.Version)) {
                     $item.DriverStatus  = 'Current'
                     $item.DriverTooltip = "Driver deployed and current (v$($item.Version))"
                 } else {
@@ -9642,7 +9742,8 @@ function Update-DATModelUpdateStatus {
             if ($map.ContainsKey($bKey)) {
                 $deployed = @($map[$bKey])
                 $item.DeployedBIOSVersion = ($deployed -join ', ')
-                if ($deployed -contains $item.BIOSVersion) {
+                $deployedKeys = @($deployed | ForEach-Object { Get-DATVersionMatchKey $_ })
+                if ($deployedKeys -contains (Get-DATVersionMatchKey $item.BIOSVersion)) {
                     $item.BIOSStatus  = 'Current'
                     $item.BIOSTooltip = "BIOS deployed and current (v$($item.BIOSVersion))"
                 } else {
@@ -12588,16 +12689,33 @@ function Invoke-DATInventoryClassCheck {
                 $result = $state.Result
                 Show-DATInventoryClassResults -Result $result
 
-                $colorKey = if ($result.AllOk) { 'StatusSuccess' } else { 'StatusWarning' }
-                $txt_InventoryClassSummary.Foreground = [System.Windows.Media.SolidColorBrush]::new(
-                    [System.Windows.Media.ColorConverter]::ConvertFromString(
-                        (Get-DATTheme -ThemeName $script:CurrentTheme)[$colorKey]))
-                $txt_InventoryClassSummary.Text = if ($result.AllOk) {
-                    'All required inventory classes are enabled and reporting.'
+                $resultError = $null
+                try { $resultError = $result.Error } catch { $resultError = $null }
+                if (-not [string]::IsNullOrEmpty($resultError)) {
+                    # The check is a read-only diagnostic the tool does not depend on. If it could not
+                    # fully complete (e.g. a provider/type edge on PowerShell 5.1), show a soft
+                    # advisory rather than a hard error -- model discovery is unaffected (#926).
+                    $txt_InventoryClassSummary.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+                        [System.Windows.Media.ColorConverter]::ConvertFromString(
+                            (Get-DATTheme -ThemeName $script:CurrentTheme)['StatusWarning']))
+                    $txt_InventoryClassSummary.Text = if (@($result.Classes).Count -gt 0) {
+                        'Inventory class check completed with limited results -- some classes could not be verified. Model discovery is unaffected.'
+                    } else {
+                        'Inventory class check could not be completed. This is informational only -- model discovery is unaffected.'
+                    }
+                    Write-DATActivityLog "Hardware inventory class check incomplete: $resultError" -Level Warn
                 } else {
-                    'One or more required inventory classes need attention (see below).'
+                    $colorKey = if ($result.AllOk) { 'StatusSuccess' } else { 'StatusWarning' }
+                    $txt_InventoryClassSummary.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+                        [System.Windows.Media.ColorConverter]::ConvertFromString(
+                            (Get-DATTheme -ThemeName $script:CurrentTheme)[$colorKey]))
+                    $txt_InventoryClassSummary.Text = if ($result.AllOk) {
+                        'All required inventory classes are enabled and reporting.'
+                    } else {
+                        'One or more required inventory classes need attention (see below).'
+                    }
+                    Write-DATActivityLog "Hardware inventory class check complete (AllOk = $($result.AllOk))" -Level Success
                 }
-                Write-DATActivityLog "Hardware inventory class check complete (AllOk = $($result.AllOk))" -Level Success
                 foreach ($c in $result.Classes) {
                     Write-DATActivityLog "  $($c.DisplayName) [$($c.View)]: $($c.Status) -- $($c.Detail)" -Level Info
                 }
@@ -14386,7 +14504,7 @@ function Invoke-DATPackageRefresh {
                     Update-DATPackageRowHighlighting -DataGrid $grid_Packages -ItemsSource $script:PackageData -MakeProperty 'Manufacturer' -ModelProperty 'Model' -VersionProperty 'Version'
 
                     # Populate the OS filter dropdown: merge static builds with distinct values from loaded data
-                    $staticBuilds = @('Windows 11 25H2', 'Windows 11 24H2', 'Windows 11 23H2', 'Windows 11 22H2', 'Windows 11 21H2')
+                    $staticBuilds = @('Windows 11 26H1', 'Windows 11 25H2', 'Windows 11 24H2', 'Windows 11 23H2', 'Windows 11 22H2', 'Windows 11 21H2')
                     $packageOSValues = $script:PackageData | Where-Object { -not [string]::IsNullOrEmpty($_.OperatingSystem) } |
                         Select-Object -ExpandProperty OperatingSystem -Unique
                     $allOSValues = @($staticBuilds) + @($packageOSValues) | Select-Object -Unique | Sort-Object
@@ -15248,6 +15366,7 @@ function Show-DATChangeOSTargetDialog {
             </Setter>
         </Style>
     </ComboBox.ItemContainerStyle>
+    <ComboBoxItem Content="Windows 11 26H1"/>
     <ComboBoxItem Content="Windows 11 25H2"/>
     <ComboBoxItem Content="Windows 11 24H2"/>
     <ComboBoxItem Content="Windows 11 23H2"/>
@@ -17351,7 +17470,7 @@ $btn_CustomBuild.Add_Click({
     $txt_CustomBuildElapsed.Text = "00:00:00"
     $txt_CustomBuildElapsed.Visibility = 'Visible'
 
-    Write-DATActivityLog "Custom Driver Pack: Starting build -- $make $model ($baseBoard) → $platform [Method: $method]" -Level Info
+    Write-DATActivityLog "Custom Driver Pack: Starting build -- $make $model ($baseBoard) -> $platform [Method: $method]" -Level Info
 
     # Read paths from registry
     $regConfig = Get-ItemProperty -Path $global:RegPath -ErrorAction SilentlyContinue
@@ -18069,7 +18188,7 @@ $btn_CustomBuild.Add_Click({
                     $txt_CustomBuildPercent.Text = "100%"
                     $txt_CustomBuildStatus.Text = "Complete"
                     $txt_CustomBuildStep.Text = ""
-                    $txt_CustomDriverCount.Text = "$($output.DriverCount) drivers exported  ·  WIM: $($output.WimSize) MB  ·  Version: $($output.Version)"
+                    $txt_CustomDriverCount.Text = "$($output.DriverCount) drivers exported  |  WIM: $($output.WimSize) MB  |  Version: $($output.Version)"
                     $txt_CustomDriverCount.Visibility = 'Visible'
                     if ($output.WimPath) {
                         $txt_CustomPackagePath.Text = "WIM: $($output.WimPath)"
@@ -18081,7 +18200,7 @@ $btn_CustomBuild.Add_Click({
                     $txt_CustomStatus.Foreground = [System.Windows.Media.SolidColorBrush]::new(
                         [System.Windows.Media.ColorConverter]::ConvertFromString(
                             (Get-DATTheme -ThemeName $script:CurrentTheme)['StatusSuccess']))
-                    Write-DATActivityLog "Custom Driver Pack: $($output.DriverCount) drivers → $($output.PackagePath) (v$($output.Version), $($output.Platform))" -Level Info
+                    Write-DATActivityLog "Custom Driver Pack: $($output.DriverCount) drivers -> $($output.PackagePath) (v$($output.Version), $($output.Platform))" -Level Info
                     Show-DATCustomBuildCompleteDialog -DriverCount $output.DriverCount -WimSize $output.WimSize -PackagePath $output.PackagePath
                 } else {
                     $txt_CustomBuildStatus.Text = $output.Message
@@ -19582,6 +19701,17 @@ $cmb_HPDriverPackSource.Add_SelectionChanged({
             if ($updated -gt 0) {
                 Write-DATActivityLog "Updated driver version for $updated HP model(s) to reflect $val source." -Level Info
             }
+        }
+
+        # Dell and Lenovo rows carry source-specific versions too (SCCM pack version vs a Latest
+        # Drivers date stamp), and the model set itself can differ between the two catalogs, so
+        # re-run the refresh the same way an Architecture change does. Without this the grid keeps
+        # showing the previous source until the user presses Refresh by hand.
+        if (-not $script:SuppressModelRefresh -and
+            (Get-DATSelectedOEMs).Count -gt 0 -and (Get-DATSelectedOSes).Count -gt 0) {
+            if ($script:ModelData.Count -gt 0) { Save-DATModelSelections }
+            Write-DATActivityLog "Driver package build type changed -- refreshing the model list to match." -Level Info
+            Invoke-DATRefreshModelsClick
         }
     }
 })
@@ -24969,36 +25099,43 @@ function Restore-DATMaintenanceWindowSettings {
 
 #region Log Viewer
 
-function Import-DATLogEntries {
-    $logPath = Join-Path -Path $global:LogDirectory -ChildPath "$global:ProductName.log"
+# The log view lists newest entries first and, while Follow is on, tails the log file on a
+# DispatcherTimer: each poll reads only the bytes appended since the last one, inserts the new
+# entries at the top of the bound collection and pins the view there. Pause freezes the list so it
+# can be read without moving; resuming catches up from the offset where the tail stopped.
+$script:LogCmtracePattern = '<!\[LOG\[(?<msg>.*?)\]LOG\]!><time="(?<time>[^"]*)" date="(?<date>[^"]*)".*?type="(?<type>\d)"'
+$script:LogEntries       = $null
+$script:LogTailOffset    = [int64]0
+$script:LogInfoCount     = 0
+$script:LogWarnCount     = 0
+$script:LogErrorCount    = 0
+$script:LogFollowEnabled = $true
+$script:LogRender        = $null
+$script:LogRenderTheme   = ''
 
-    if (-not (Test-Path $logPath)) {
-        $lst_LogEntries.ItemsSource = $null
-        $txt_LogStats.Text = "No log file found."
-        return
+function Get-DATLogFilePath {
+    return (Join-Path -Path $global:LogDirectory -ChildPath "$global:ProductName.log")
+}
+
+function Get-DATLogRenderContext {
+    <#
+        Frozen brushes and severity glyphs for the log rows, cached per theme so a tail poll does
+        not rebuild them on every tick.
+    #>
+    if ($null -ne $script:LogRender -and $script:LogRenderTheme -eq $script:CurrentTheme) {
+        return $script:LogRender
     }
 
-    $rawLines = Get-Content -Path $logPath -ErrorAction SilentlyContinue
-    if ($null -eq $rawLines -or $rawLines.Count -eq 0) {
-        $lst_LogEntries.ItemsSource = $null
-        $txt_LogStats.Text = "Log file is empty."
-        return
-    }
-
-    $infoCount = 0; $warnCount = 0; $errorCount = 0
-    $cmtracePattern = '<!\[LOG\[(?<msg>.*?)\]LOG\]!><time="(?<time>[^"]*)" date="(?<date>[^"]*)".*?type="(?<type>\d)"'
-
-    # Get theme colors
     $themeColors = Get-DATTheme -ThemeName $script:CurrentTheme
-    $infoColor = [System.Windows.Media.ColorConverter]::ConvertFromString($themeColors['SidebarForeground'])
-    $warnColor = [System.Windows.Media.ColorConverter]::ConvertFromString($themeColors['StatusWarning'])
+    $infoColor  = [System.Windows.Media.ColorConverter]::ConvertFromString($themeColors['SidebarForeground'])
+    $warnColor  = [System.Windows.Media.ColorConverter]::ConvertFromString($themeColors['StatusWarning'])
     $errorColor = [System.Windows.Media.ColorConverter]::ConvertFromString($themeColors['StatusError'])
-    $infoBg = [System.Windows.Media.ColorConverter]::ConvertFromString($themeColors['SidebarBackground'])
-    $warnBg = [System.Windows.Media.ColorConverter]::ConvertFromString("#2D2A1A")
-    $errorBg = [System.Windows.Media.ColorConverter]::ConvertFromString("#2D1A1E")
+    $infoBg     = [System.Windows.Media.ColorConverter]::ConvertFromString($themeColors['SidebarBackground'])
+    $warnBg     = [System.Windows.Media.ColorConverter]::ConvertFromString("#2D2A1A")
+    $errorBg    = [System.Windows.Media.ColorConverter]::ConvertFromString("#2D1A1E")
 
     if ($script:CurrentTheme -eq 'Light') {
-        $warnBg = [System.Windows.Media.ColorConverter]::ConvertFromString("#FFF8E1")
+        $warnBg  = [System.Windows.Media.ColorConverter]::ConvertFromString("#FFF8E1")
         $errorBg = [System.Windows.Media.ColorConverter]::ConvertFromString("#FFEBEE")
     }
 
@@ -25009,7 +25146,6 @@ function Import-DATLogEntries {
     $warnFgBrush = [System.Windows.Media.SolidColorBrush]::new($warnColor); $warnFgBrush.Freeze()
     $errorFgBrush = [System.Windows.Media.SolidColorBrush]::new($errorColor); $errorFgBrush.Freeze()
 
-    # Severity icon brushes
     $infoIconBrush = [System.Windows.Media.SolidColorBrush]::new(
         [System.Windows.Media.ColorConverter]::ConvertFromString($themeColors['StatusInfo']))
     $infoIconBrush.Freeze()
@@ -25020,25 +25156,84 @@ function Import-DATLogEntries {
         [System.Windows.Media.ColorConverter]::ConvertFromString($themeColors['StatusError']))
     $errorIconBrush.Freeze()
 
-    $infoIcon = [string][char]0xE946
-    $warnIcon = [string][char]0xE7BA
-    $errorIcon = [string][char]0xEA39
+    $script:LogRender = [PSCustomObject]@{
+        InfoFg     = $infoFgBrush;  InfoBg  = $infoBrush;  InfoIcon  = [string][char]0xE946; InfoIconBrush  = $infoIconBrush
+        WarnFg     = $warnFgBrush;  WarnBg  = $warnBrush;  WarnIcon  = [string][char]0xE7BA; WarnIconBrush  = $warnIconBrush
+        ErrorFg    = $errorFgBrush; ErrorBg = $errorBrush; ErrorIcon = [string][char]0xEA39; ErrorIconBrush = $errorIconBrush
+    }
+    $script:LogRenderTheme = $script:CurrentTheme
+    return $script:LogRender
+}
 
-    # Build lightweight data objects; the virtualized ListBox realizes only visible rows.
+function Read-DATLogAppendedText {
+    <#
+        Returns the text appended to the log since the last poll and advances the tail offset.
+        Only whole lines are consumed, so a half-written entry is picked up next time. A file that
+        has shrunk (purged or rotated) is reported as Rotated so the caller reloads from scratch.
+    #>
+    param ([Parameter(Mandatory)][AllowEmptyString()][string]$Path)
+
+    $result = [PSCustomObject]@{ Text = ''; Rotated = $false }
+    if (-not (Test-Path -LiteralPath $Path)) { return $result }
+
+    try {
+        $fs = [System.IO.FileStream]::new($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+    } catch {
+        return $result
+    }
+
+    try {
+        if ($fs.Length -lt $script:LogTailOffset) {
+            $script:LogTailOffset = [int64]0
+            $result.Rotated = $true
+        }
+        $pending = $fs.Length - $script:LogTailOffset
+        if ($pending -le 0) { return $result }
+
+        [void]$fs.Seek($script:LogTailOffset, [System.IO.SeekOrigin]::Begin)
+        $buffer = New-Object byte[] ([int]$pending)
+        $read = $fs.Read($buffer, 0, $buffer.Length)
+        if ($read -le 0) { return $result }
+
+        # Write-DATLogEntry writes with [Text.Encoding]::Default, so decode with the same encoding
+        # and measure the consumed bytes with it -- that keeps the offset exact on both engines.
+        $text = [System.Text.Encoding]::Default.GetString($buffer, 0, $read)
+        $lastBreak = $text.LastIndexOf("`n")
+        if ($lastBreak -lt 0) { return $result }
+
+        $consumed = $text.Substring(0, $lastBreak + 1)
+        $script:LogTailOffset += [System.Text.Encoding]::Default.GetByteCount($consumed)
+        $result.Text = $consumed
+    } catch {
+        return $result
+    } finally {
+        $fs.Dispose()
+    }
+
+    return $result
+}
+
+function ConvertTo-DATLogEntries {
+    <#
+        Parses CMTrace lines into the lightweight row objects the virtualized ListBox binds to,
+        in file order (oldest first), and tallies the severity counters.
+    #>
+    param ([Parameter(Mandatory)][AllowEmptyString()][string]$Text)
+
     $entries = [System.Collections.Generic.List[object]]::new()
-    foreach ($line in $rawLines) {
-        if ($line -match $cmtracePattern) {
-            $timeRaw = $Matches['time']
-            $severity = $Matches['type']
+    if ([string]::IsNullOrEmpty($Text)) { return $entries }
 
-            # Parse time (take HH:mm:ss)
-            $timePart = $timeRaw.Split('.')[0]
+    $render = Get-DATLogRenderContext
+
+    foreach ($line in ($Text -split "`r?`n")) {
+        if ($line -match $script:LogCmtracePattern) {
+            $timePart = $Matches['time'].Split('.')[0]
             if ($timePart.Length -gt 8) { $timePart = $timePart.Substring(0, 8) }
 
-            switch ($severity) {
-                '2'     { $fgBrush = $warnFgBrush;  $bgBrush = $warnBrush;  $iconChar = $warnIcon;  $iconBrush = $warnIconBrush;  $warnCount++ }
-                '3'     { $fgBrush = $errorFgBrush; $bgBrush = $errorBrush; $iconChar = $errorIcon; $iconBrush = $errorIconBrush; $errorCount++ }
-                default { $fgBrush = $infoFgBrush;  $bgBrush = $infoBrush;  $iconChar = $infoIcon;  $iconBrush = $infoIconBrush;  $infoCount++ }
+            switch ($Matches['type']) {
+                '2'     { $fgBrush = $render.WarnFg;  $bgBrush = $render.WarnBg;  $iconChar = $render.WarnIcon;  $iconBrush = $render.WarnIconBrush;  $script:LogWarnCount++ }
+                '3'     { $fgBrush = $render.ErrorFg; $bgBrush = $render.ErrorBg; $iconChar = $render.ErrorIcon; $iconBrush = $render.ErrorIconBrush; $script:LogErrorCount++ }
+                default { $fgBrush = $render.InfoFg;  $bgBrush = $render.InfoBg;  $iconChar = $render.InfoIcon;  $iconBrush = $render.InfoIconBrush;  $script:LogInfoCount++ }
             }
 
             $entries.Add([PSCustomObject]@{
@@ -25053,17 +25248,99 @@ function Import-DATLogEntries {
         }
     }
 
-    $lst_LogEntries.ItemsSource = $entries
-    $txt_LogStats.Text = "$($entries.Count) entries  |  $infoCount info  |  $warnCount warnings  |  $errorCount errors"
+    # Comma-wrap the list: returning it bare lets PowerShell unroll it into an Object[], which has
+    # no instance Reverse() and no Count on a single row, so the caller silently loses the list.
+    return ,$entries
+}
 
-    # Scroll to bottom (newest)
-    if ($entries.Count -gt 0) {
-        $lst_LogEntries.ScrollIntoView($entries[$entries.Count - 1])
+function Update-DATLogStats {
+    $count = if ($null -ne $script:LogEntries) { $script:LogEntries.Count } else { 0 }
+    $txt_LogStats.Text = "$count entries  |  $($script:LogInfoCount) info  |  $($script:LogWarnCount) warnings  |  $($script:LogErrorCount) errors"
+}
+
+function Show-DATLatestLogEntry {
+    # Newest sits at index 0, so following the log means holding the view at the top.
+    if ($null -ne $script:LogEntries -and $script:LogEntries.Count -gt 0) {
+        try { $lst_LogEntries.ScrollIntoView($script:LogEntries[0]) } catch { }
     }
 }
 
+function Update-DATLogFollowButton {
+    if ($null -eq $txt_LogFollowIcon) { return }
+    if ($script:LogFollowEnabled) {
+        $txt_LogFollowIcon.Text  = [string][char]0xE769   # Pause
+        $txt_LogFollowLabel.Text = "  Pause"
+        $btn_LogFollow.ToolTip   = "Pause live log updates"
+    } else {
+        $txt_LogFollowIcon.Text  = [string][char]0xE768   # Play
+        $txt_LogFollowLabel.Text = "  Resume"
+        $btn_LogFollow.ToolTip   = "Resume live log updates"
+    }
+}
+
+function Import-DATLogEntries {
+    $logPath = Get-DATLogFilePath
+
+    $script:LogTailOffset = [int64]0
+    $script:LogInfoCount = 0; $script:LogWarnCount = 0; $script:LogErrorCount = 0
+
+    if (-not (Test-Path $logPath)) {
+        $script:LogEntries = $null
+        $lst_LogEntries.ItemsSource = $null
+        $txt_LogStats.Text = "No log file found."
+        return
+    }
+
+    # Anything that goes wrong below is reported in the stats line. Without this the view just
+    # renders empty and the only clue is a warning in the host console.
+    try {
+        $appended = Read-DATLogAppendedText -Path $logPath
+        $entries = ConvertTo-DATLogEntries -Text $appended.Text
+
+        if ($entries.Count -eq 0) {
+            $script:LogEntries = $null
+            $lst_LogEntries.ItemsSource = $null
+            $txt_LogStats.Text = "Log file is empty."
+            return
+        }
+
+        # Newest first. Building the collection from a reversed list keeps this to a single
+        # collection change notification rather than one per row.
+        $entries.Reverse()
+        $script:LogEntries = [System.Collections.ObjectModel.ObservableCollection[object]]::new($entries)
+        $lst_LogEntries.ItemsSource = $script:LogEntries
+
+        Update-DATLogStats
+        Show-DATLatestLogEntry
+    } catch {
+        $script:LogEntries = $null
+        $lst_LogEntries.ItemsSource = $null
+        $txt_LogStats.Text = "Unable to read the log: $($_.Exception.Message)"
+        Write-DATActivityLog "Log viewer failed to load $logPath -- $($_.Exception.Message)" -Level Warn
+    }
+}
+
+function Update-DATLogTail {
+    if (-not $script:LogFollowEnabled) { return }
+    if ($null -eq $view_Log -or $view_Log.Visibility -ne 'Visible') { return }
+    if ($null -eq $script:LogEntries) { Import-DATLogEntries; return }
+
+    $appended = Read-DATLogAppendedText -Path (Get-DATLogFilePath)
+    if ($appended.Rotated) { Import-DATLogEntries; return }
+    if ([string]::IsNullOrEmpty($appended.Text)) { return }
+
+    $new = ConvertTo-DATLogEntries -Text $appended.Text
+    if ($new.Count -eq 0) { return }
+
+    # Inserted in file order at index 0, so the newest line ends up on top.
+    foreach ($entry in $new) { $script:LogEntries.Insert(0, $entry) }
+
+    Update-DATLogStats
+    Show-DATLatestLogEntry
+}
+
 $btn_OpenLogFile.Add_Click({
-    $logPath = Join-Path -Path $global:LogDirectory -ChildPath "$global:ProductName.log"
+    $logPath = Get-DATLogFilePath
     if (Test-Path $logPath) {
         Invoke-Item -Path $logPath
     } else {
@@ -25074,6 +25351,36 @@ $btn_OpenLogFile.Add_Click({
 $btn_RefreshLog.Add_Click({
     Import-DATLogEntries
 })
+
+$btn_LogFollow.Add_Click({
+    $script:LogFollowEnabled = -not $script:LogFollowEnabled
+    Update-DATLogFollowButton
+    # Resuming catches up on everything written while paused, then returns to the top. The timer is
+    # restarted explicitly because a failed tick stops it (see the Tick handler).
+    if ($script:LogFollowEnabled) {
+        if ($null -ne $script:LogTailTimer -and -not $script:LogTailTimer.IsEnabled) { $script:LogTailTimer.Start() }
+        Update-DATLogTail
+    }
+})
+
+# Poll for appended entries. The tick is a no-op unless the log view is on screen and Follow is on.
+$script:LogTailTimer = New-Object System.Windows.Threading.DispatcherTimer
+$script:LogTailTimer.Interval = [TimeSpan]::FromMilliseconds(1500)
+$script:LogTailTimer.Add_Tick({
+    # A throwing tick would otherwise repeat its warning every 1.5 seconds for the life of the
+    # session. Report the first failure, then stop following so the log stays readable.
+    try {
+        Update-DATLogTail
+    } catch {
+        $script:LogTailTimer.Stop()
+        $script:LogFollowEnabled = $false
+        Update-DATLogFollowButton
+        Write-DATActivityLog "Live log updates stopped after an error: $($_.Exception.Message)" -Level Warn
+    }
+})
+$script:LogTailTimer.Start()
+
+Update-DATLogFollowButton
 
 # Load log content when navigating to log view
 $script:OriginalNavLogClick = $null
@@ -26116,6 +26423,22 @@ try {
         Write-Host ""
         Write-Host "  Version       : " -NoNewline -ForegroundColor DarkGray
         Write-Host $global:ScriptRelease.ToString(3) -ForegroundColor Cyan
+        # Build stamp of the UI file this session actually loaded. A running instance keeps the
+        # code it started with, so this is the only reliable way to tell from a console window or a
+        # screenshot whether a session predates a change on disk.
+        Write-Host "  UI Build      : " -NoNewline -ForegroundColor DarkGray
+        try {
+            $uiFile = $MyInvocation.MyCommand.Path
+            if ([string]::IsNullOrEmpty($uiFile)) { $uiFile = Join-Path $UIPath 'MainApplication.ps1' }
+            $uiInfo = Get-Item -LiteralPath $uiFile -ErrorAction Stop
+            $uiHash = (Get-FileHash -LiteralPath $uiFile -Algorithm SHA256 -ErrorAction Stop).Hash.Substring(0, 8).ToLowerInvariant()
+            $uiStamp = "$($uiInfo.LastWriteTime.ToString('yyyy-MM-dd HH:mm:ss')) ($uiHash)"
+            Write-Host $uiStamp -ForegroundColor White
+            # Also recorded in the log so a support request shows which build the session ran.
+            try { Write-DATLogEntry -Value "[UI] Session started from MainApplication.ps1 build $uiStamp" -Severity 1 } catch { }
+        } catch {
+            Write-Host "unavailable" -ForegroundColor DarkYellow
+        }
         Write-Host "  Registry Path : " -NoNewline -ForegroundColor DarkGray
         Write-Host $global:RegPath -ForegroundColor White
 
@@ -27211,7 +27534,7 @@ if (Test-Path $logoPath) {
 
 # Read version from module manifest
 $manifestPath = Join-Path $AppRoot "Modules\DriverAutomationToolCore\DriverAutomationToolCore.psd1"
-$script:versionString = "v10.2.5"
+$script:versionString = "v10.2.6"
 if (Test-Path $manifestPath) {
     $manifestData = Import-PowerShellDataFile $manifestPath
     $ver = [version]$manifestData.ModuleVersion
@@ -28619,11 +28942,17 @@ try { Initialize-DATWhatsNew } catch { Write-DATActivityLog "What's New init fai
 # Shown once per version after an upgrade. Update this list each release, aligned with the
 # "What's New & Fixed" changelog. Each entry renders as a bold category lead-in plus a description
 # (no bullets), spaced apart.
+#
+# WhatsNewReleaseVersion is the release these notes describe, and must be bumped with the notes
+# (the IncrementVersion skill covers it, and Tests\UIApplication.Tests.ps1 asserts it matches the
+# module manifest). The modal is suppressed when it does not match the running build, so a missed
+# changelog update shows nothing rather than the previous release's features.
+$script:WhatsNewReleaseVersion = '10.2.6.0'
 $script:WhatsNewReleaseItems = @(
-    [pscustomobject]@{ Category = 'OEM Selections';            Text = 'Restrict the tool to specific manufacturers from Common Settings. Turn on "Restrict to selected OEMs" and tick the vendors you support -- the model grid, manufacturer selector and pre-flight checks then show only those OEMs. Off by default (all OEMs available).' }
-    [pscustomobject]@{ Category = 'Interface Scale';           Text = 'Resize the whole application from Common Settings. Use auto-fit to scale to smaller or high-DPI screens automatically, or set a custom 75-150% scale with the slider.' }
-    [pscustomobject]@{ Category = 'More Manufacturers';        Text = 'ASUS, Panasonic and Fujitsu commercial models are now supported alongside Dell, HP, Lenovo, Microsoft and Acer -- select them from the OEM dropdown on the Model Selection page.' }
-    [pscustomobject]@{ Category = 'Intune Package Management'; Text = 'A dedicated Intune Package Management view lists your published driver and BIOS packages and lets you review and remove them without leaving the tool.' }
+    [pscustomobject]@{ Category = 'Windows 11 26H1';            Text = 'Windows 11 26H1 (build 28000) can now be selected as a target release for driver and BIOS packages, and the Modern Driver/BIOS Management scripts recognise it during deployment. 26H1 ships on new devices only, so it is offered alongside 25H2 rather than replacing it.' }
+    [pscustomobject]@{ Category = 'Faster Model Search';        Text = 'Searching the model grid stays responsive on large catalogues. Typing is debounced and the grid is filtered in place rather than rebuilt on every keystroke, and searches now match literally, so punctuation such as [ or ] no longer breaks the filter.' }
+    [pscustomobject]@{ Category = 'Dell Latest Drivers Version'; Text = 'Dell Latest Drivers (DCU) packages now show their build date as the version in the model list, matching how HP SoftPaq packages are displayed. ConfigMgr driver pack mode continues to show the enterprise catalog version.' }
+    [pscustomobject]@{ Category = 'Incomplete Package Reporting'; Text = 'A Latest Drivers component that downloads but stages no drivers is now reported in View Failures with the reason from the vendor package, instead of being dropped silently. The build warns that the package is incomplete and the next run rebuilds it rather than treating the set as current.' }
 )
 
 function Get-DATWhatsNewModalShownVersion {
@@ -28672,6 +29001,12 @@ function Show-DATWhatsNewModal {
 }
 
 function Show-DATWhatsNewModalIfUpgraded {
+    if ([string]$script:WhatsNewReleaseVersion -ne [string]$global:ScriptRelease) {
+        # Notes were not refreshed for this build -- showing the previous release's features under
+        # the new version number is worse than showing nothing.
+        Write-DATActivityLog "What's New notes describe $($script:WhatsNewReleaseVersion), not $($global:ScriptRelease) -- modal suppressed" -Level Warn
+        return
+    }
     if ([string](Get-DATWhatsNewModalShownVersion) -ne [string]$global:ScriptRelease) {
         Show-DATWhatsNewModal
     }
