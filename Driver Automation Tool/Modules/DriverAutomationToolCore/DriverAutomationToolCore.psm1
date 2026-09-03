@@ -3574,7 +3574,13 @@ function Test-DATConfigMgrInventoryClasses {
         }
     }
 
-    $classArray = @($results)
+    # Materialise as a plain object array via ToArray(). Returning a
+    # System.Collections.Generic.List (or an @()-wrap of one) from a module function to a caller
+    # running in a PowerShell 5.1 background runspace throws "Argument types do not match" at the
+    # call site, after the function body has completed -- which surfaced as "Failed: Argument types
+    # do not match" on the Check Inventory Classes button (#926). @() does not avoid it; ToArray()
+    # does, because the returned value no longer references the module's collection.
+    $classArray = if ($results.Count -gt 0) { [object[]]$results.ToArray() } else { @() }
     # Compute AllOk with plain iteration (not a pipeline Where-Object scriptblock) -- the pipeline
     # path can throw "Argument types do not match" in a PowerShell 5.1 background runspace (#926).
     $allOk = $classArray.Count -gt 0

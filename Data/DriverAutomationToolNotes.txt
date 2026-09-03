@@ -17,6 +17,7 @@ What's New & Fixed
 - Modern BIOS Management — Invoke-CMDownloadBIOSPackage.ps1 can once again run in XML (webservice-less) mode, via the restored XMLPackage parameter set. (MSEndpointMgr/ModernBIOSManagement#32)
 - Package selection — "latest by creation date" now compares real dates rather than text, so the newest matching driver or BIOS package is chosen correctly.
 - Intune requirement script — no longer emits registry errors when it runs outside the SYSTEM context.
+- Hardware inventory class check — the Check Inventory Classes button no longer reports "Argument types do not match" under PowerShell 5.1; the check now returns its per-class results correctly. (#926)
 - Interface text — fixed mis-rendered characters in Common Settings and other on-screen descriptions under PowerShell 5.1.
 - What's New dialog — now shows the notes for the release you are running rather than the previous one.
 
