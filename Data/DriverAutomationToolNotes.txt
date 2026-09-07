@@ -3,6 +3,16 @@ Release Notes
 IMPORTANT
 ** DAT Downloads have been moved to GitHub - https://github.com/maurice-daly/DriverAutomationTool **
 
+Version 10.2.7
+What's New & Fixed
+
+- BIOS automatic restart — the post-flash restart was suppressed on effectively every deployment because the Focus Assist check misread the SYSTEM session as "do not disturb", leaving BIOS updates staged but never applied and BitLocker suspended until someone rebooted manually; the notification state is now only acted on when it was measured inside a real user session, and Critical Notification genuinely bypasses it. Existing packages carry the old logic and must be recreated and redeployed.
+- ConfigMgr package source path — a local package storage path is now converted to a UNC path against the machine that actually holds the content, matching its real shares first and falling back to its admin share, instead of assuming the tool runs on the primary site server; fixes content distribution failing in split hierarchies. (#934)
+- Package Storage Path — Common Settings now shows the exact UNC source path ConfigMgr will be given, and the Browse dialog notes that a UNC path can be entered for content hosted elsewhere. (#934)
+- Startup connectivity check — the pre-flight probe now only tests the vendor hosts for manufacturers enabled under OEM Selections, so a disabled OEM no longer raises "required URLs could not be reached" warnings at every launch. (#937)
+- Shutdown cleanup window — the cleanup dialog shown while the application closes no longer floats above every other application, and now appears in the taskbar so it stays reachable during long cleanups. (#938)
+- Dell Latest Drivers diagnostics — the Dell Command | Update stage now logs components skipped by component type, OS/architecture and SystemID plus the category breakdown of the selected set; investigation confirmed the reported missing Intel Chipset Device Software is absent from Dell's DCU catalog rather than filtered out by the tool. (#940)
+
 Version 10.2.6
 What's New & Fixed
 

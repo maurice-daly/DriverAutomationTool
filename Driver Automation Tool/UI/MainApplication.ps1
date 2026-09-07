@@ -1570,11 +1570,16 @@ function Test-DATConnectivity {
     .PARAMETER OnProgress
         Optional scriptblock called after each endpoint test with params:
         (int $current, int $total, string $url, bool $reachable)
+    .PARAMETER AllowedOEMs
+        Manufacturers the user has enabled. Endpoints tagged with an OEM outside this set are
+        skipped, so disabling a vendor also stops its catalog host being probed (#937). Omit to
+        probe every endpoint (fail-open, matching the behaviour before OEM restriction existed).
     #>
     [OutputType([PSCustomObject[]])]
     param(
         [scriptblock]$OnProgress,
-        [int]$MaxAttempts = 3
+        [int]$MaxAttempts = 3,
+        [string[]]$AllowedOEMs
     )
 
     # Ensure TLS 1.2 is available (PS 5.1 defaults to TLS 1.0)
@@ -1582,18 +1587,26 @@ function Test-DATConnectivity {
         [System.Net.ServicePointManager]::SecurityProtocol -bor [System.Net.SecurityProtocolType]::Tls12
 
     $intuneEnvironment = Get-DATIntuneEnvironment
+    # OEM = the manufacturer whose catalog lives on this host; $null marks shared infrastructure
+    # that is required no matter which vendors are enabled.
     $endpoints = @(
-        @{ URL = 'https://raw.githubusercontent.com'; Description = 'GitHub Raw Content (OEM catalogs, updates, release notes)' }
-        @{ URL = 'https://github.com';                Description = 'GitHub (self-update, Intune packaging tools)' }
-        @{ URL = 'https://api.driverautomationtool.com'; Description = 'DAT API (BIOS catalog, health checks)' }
-        @{ URL = 'https://downloads.dell.com';         Description = 'Dell driver downloads' }
-        @{ URL = 'https://dl.dell.com';                Description = 'Dell BIOS utilities' }
-        @{ URL = 'https://ftp.hp.com';                 Description = 'HP driver catalog and SoftPaqs' }
-        @{ URL = 'https://download.lenovo.com';        Description = 'Lenovo driver catalog' }
-        @{ URL = 'https://global-download.acer.com';   Description = 'Acer driver and BIOS catalog' }
-        @{ URL = $intuneEnvironment.AuthorityHost;     Description = 'Microsoft Entra ID (Intune authentication)' }
-        @{ URL = $intuneEnvironment.GraphResource;     Description = 'Microsoft Graph API (Intune management)' }
+        @{ URL = 'https://raw.githubusercontent.com'; Description = 'GitHub Raw Content (OEM catalogs, updates, release notes)'; OEM = $null }
+        @{ URL = 'https://github.com';                Description = 'GitHub (self-update, Intune packaging tools)'; OEM = $null }
+        @{ URL = 'https://api.driverautomationtool.com'; Description = 'DAT API (BIOS catalog, health checks)'; OEM = $null }
+        @{ URL = 'https://downloads.dell.com';         Description = 'Dell driver downloads'; OEM = 'Dell' }
+        @{ URL = 'https://dl.dell.com';                Description = 'Dell BIOS utilities'; OEM = 'Dell' }
+        @{ URL = 'https://ftp.hp.com';                 Description = 'HP driver catalog and SoftPaqs'; OEM = 'HP' }
+        @{ URL = 'https://download.lenovo.com';        Description = 'Lenovo driver catalog'; OEM = 'Lenovo' }
+        @{ URL = 'https://global-download.acer.com';   Description = 'Acer driver and BIOS catalog'; OEM = 'Acer' }
+        @{ URL = $intuneEnvironment.AuthorityHost;     Description = 'Microsoft Entra ID (Intune authentication)'; OEM = $null }
+        @{ URL = $intuneEnvironment.GraphResource;     Description = 'Microsoft Graph API (Intune management)'; OEM = $null }
     )
+
+    # Drop vendor endpoints for manufacturers the user has switched off. Untagged (shared)
+    # endpoints always stay.
+    if ($PSBoundParameters.ContainsKey('AllowedOEMs') -and $null -ne $AllowedOEMs) {
+        $endpoints = @($endpoints | Where-Object { -not $_.OEM -or $AllowedOEMs -contains $_.OEM })
+    }
 
     if ($MaxAttempts -lt 1) { $MaxAttempts = 1 }
 
@@ -15728,13 +15741,55 @@ $btn_BrowseTemp.Add_Click({
     }
 })
 
+$script:txt_PackageSourceHint = $Window.FindName('txt_PackageSourceHint')
+
+function Update-DATPackageSourceHint {
+    <#
+        Shows the UNC path ConfigMgr will be given as the package source. A local path is served
+        from THIS machine (its share, or the drive's admin share) -- it is never rewritten to the
+        site server, which in a multi-server hierarchy holds no content (#934). Surfacing the
+        resolved path here makes that visible before a build rather than after distribution fails.
+    #>
+    param ([string]$Path)
+
+    if ($null -eq $script:txt_PackageSourceHint) { return }
+
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        $script:txt_PackageSourceHint.Visibility = 'Collapsed'
+        return
+    }
+
+    try {
+        if ($Path -match '^\\\\') {
+            $script:txt_PackageSourceHint.Text = "ConfigMgr package source: $Path"
+        } else {
+            $resolved = ConvertTo-DATPackageSourcePath -Path $Path
+            $script:txt_PackageSourceHint.Text = if ($resolved) {
+                "ConfigMgr package source: $resolved  --  served from this server. Enter a UNC path instead if the content is hosted elsewhere."
+            } else {
+                "This path cannot be converted to a UNC package source. Enter a local drive path (G:\...) or a full UNC path (\\server\share\...)."
+            }
+        }
+        $script:txt_PackageSourceHint.Visibility = 'Visible'
+    } catch {
+        $script:txt_PackageSourceHint.Visibility = 'Collapsed'
+    }
+}
+
 $btn_BrowsePackage.Add_Click({
     $dialog = New-Object System.Windows.Forms.FolderBrowserDialog
-    $dialog.Description = "Select Package Storage Path"
+    $dialog.Description = "Select Package Storage Path -- pick a local folder, or type a UNC path (\\server\share\folder) if the content is hosted on another server"
+    # Show the address/edit box so a UNC path can be typed directly; the tree alone only offers
+    # local folders, which is what led admins to configure a path on the wrong server (#934).
+    $dialog.ShowNewFolderButton = $true
+    if (-not [string]::IsNullOrWhiteSpace($txt_PackageStorage.Text)) {
+        try { $dialog.SelectedPath = $txt_PackageStorage.Text } catch { }
+    }
     if ($dialog.ShowDialog() -eq 'OK') {
         $txt_PackageStorage.Text = $dialog.SelectedPath
         Set-DATRegistryValue -Name "PackageStoragePath" -Value $dialog.SelectedPath -Type String
         Update-DATDiskFreeSpace -Path $dialog.SelectedPath -ProgressBar $progress_PackageFreeSpace -Label $txt_PackageFreeSpace -Container $grid_PackageFreeSpace
+        Update-DATPackageSourceHint -Path $dialog.SelectedPath
     }
 })
 
@@ -15759,6 +15814,7 @@ $txt_PackageStorage.Add_LostFocus({
         Set-DATRegistryValue -Name "PackageStoragePath" -Value $path -Type String
     }
     Update-DATDiskFreeSpace -Path $path -ProgressBar $progress_PackageFreeSpace -Label $txt_PackageFreeSpace -Container $grid_PackageFreeSpace
+    Update-DATPackageSourceHint -Path $path
 })
 
 $chk_TelemetryOptOut.Add_Checked({
@@ -26480,6 +26536,7 @@ try {
             Write-Host $savedConfig.PackageStoragePath -ForegroundColor White
             $txt_PackageStorage.Text = $savedConfig.PackageStoragePath
             Update-DATDiskFreeSpace -Path $savedConfig.PackageStoragePath -ProgressBar $progress_PackageFreeSpace -Label $txt_PackageFreeSpace -Container $grid_PackageFreeSpace
+            Update-DATPackageSourceHint -Path $savedConfig.PackageStoragePath
         } else {
             Write-Host "  Pkg Storage   : " -NoNewline -ForegroundColor DarkGray
             Write-Host "(not configured)" -ForegroundColor DarkYellow
@@ -27534,7 +27591,7 @@ if (Test-Path $logoPath) {
 
 # Read version from module manifest
 $manifestPath = Join-Path $AppRoot "Modules\DriverAutomationToolCore\DriverAutomationToolCore.psd1"
-$script:versionString = "v10.2.6"
+$script:versionString = "v10.2.7"
 if (Test-Path $manifestPath) {
     $manifestData = Import-PowerShellDataFile $manifestPath
     $ver = [version]$manifestData.ModuleVersion
@@ -28338,9 +28395,13 @@ $Window.Add_Closing({
     $shutdownWin.WindowStartupLocation = 'CenterScreen'
     $shutdownWin.Width = 460
     $shutdownWin.Height = 300
-    $shutdownWin.Topmost = $true
+    # Not Topmost: cleanup after a large build can run for minutes, and floating this over every
+    # other application on the desktop (not just DAT) blocks unrelated work (#938). It is shown in
+    # the taskbar instead so it can still be brought back to the front once it loses focus -- the
+    # main window is already closing by this point, so an Owner cannot keep it discoverable.
+    $shutdownWin.Topmost = $false
     $shutdownWin.ResizeMode = 'NoResize'
-    $shutdownWin.ShowInTaskbar = $false
+    $shutdownWin.ShowInTaskbar = $true
 
     $sdBorder = [System.Windows.Controls.Border]::new()
     $sdBorder.Background = [System.Windows.Media.SolidColorBrush]::new(
@@ -28672,22 +28733,31 @@ $Window.Add_ContentRendered({
         $connPS.Runspace = $connRunspace
         $intuneConnectivityEnvironment = Get-DATIntuneEnvironment
         [void]$connPS.AddScript({
-            param ($AuthorityHost, $GraphResource)
+            param ($AuthorityHost, $GraphResource, $AllowedOEMs)
             [System.Net.ServicePointManager]::SecurityProtocol =
                 [System.Net.ServicePointManager]::SecurityProtocol -bor [System.Net.SecurityProtocolType]::Tls12
 
+            # OEM = the manufacturer whose catalog lives on this host; $null marks shared
+            # infrastructure that is required no matter which vendors are enabled.
             $endpoints = @(
-                @{ URL = 'https://raw.githubusercontent.com'; Description = 'GitHub Raw Content (OEM catalogs, updates, release notes)' }
-                @{ URL = 'https://github.com';                Description = 'GitHub (self-update, Intune packaging tools)' }
-                @{ URL = 'https://api.driverautomationtool.com'; Description = 'DAT API (BIOS catalog, health checks)' }
-                @{ URL = 'https://downloads.dell.com';         Description = 'Dell driver downloads' }
-                @{ URL = 'https://dl.dell.com';                Description = 'Dell BIOS utilities' }
-                @{ URL = 'https://ftp.hp.com';                 Description = 'HP driver catalog and SoftPaqs' }
-                @{ URL = 'https://download.lenovo.com';        Description = 'Lenovo driver catalog' }
-                @{ URL = 'https://global-download.acer.com';   Description = 'Acer driver and BIOS catalog' }
-                @{ URL = $AuthorityHost;                       Description = 'Microsoft Entra ID (Intune authentication)' }
-                @{ URL = $GraphResource;                       Description = 'Microsoft Graph API (Intune management)' }
+                @{ URL = 'https://raw.githubusercontent.com'; Description = 'GitHub Raw Content (OEM catalogs, updates, release notes)'; OEM = $null }
+                @{ URL = 'https://github.com';                Description = 'GitHub (self-update, Intune packaging tools)'; OEM = $null }
+                @{ URL = 'https://api.driverautomationtool.com'; Description = 'DAT API (BIOS catalog, health checks)'; OEM = $null }
+                @{ URL = 'https://downloads.dell.com';         Description = 'Dell driver downloads'; OEM = 'Dell' }
+                @{ URL = 'https://dl.dell.com';                Description = 'Dell BIOS utilities'; OEM = 'Dell' }
+                @{ URL = 'https://ftp.hp.com';                 Description = 'HP driver catalog and SoftPaqs'; OEM = 'HP' }
+                @{ URL = 'https://download.lenovo.com';        Description = 'Lenovo driver catalog'; OEM = 'Lenovo' }
+                @{ URL = 'https://global-download.acer.com';   Description = 'Acer driver and BIOS catalog'; OEM = 'Acer' }
+                @{ URL = $AuthorityHost;                       Description = 'Microsoft Entra ID (Intune authentication)'; OEM = $null }
+                @{ URL = $GraphResource;                       Description = 'Microsoft Graph API (Intune management)'; OEM = $null }
             )
+
+            # Skip catalog hosts for manufacturers the user has switched off, so a disabled vendor
+            # is not probed and cannot raise an unreachable-URL warning (#937). Shared endpoints
+            # are always probed; an empty/absent list is fail-open.
+            if ($null -ne $AllowedOEMs -and @($AllowedOEMs).Count -gt 0) {
+                $endpoints = @($endpoints | Where-Object { -not $_.OEM -or $AllowedOEMs -contains $_.OEM })
+            }
             $ConnState.Total = $endpoints.Count
             # One retry (2 attempts) clears the common cold-start timeout without dragging startup
             # out. Only endpoints that fail the first attempt pay for the retry.
@@ -28732,6 +28802,9 @@ $Window.Add_ContentRendered({
         })
         [void]$connPS.AddArgument($intuneConnectivityEnvironment.AuthorityHost)
         [void]$connPS.AddArgument($intuneConnectivityEnvironment.GraphResource)
+        # Resolve the enabled manufacturers HERE, on the UI thread -- Get-DATAllowedOEMs reads WPF
+        # checkboxes, which the background runspace cannot touch.
+        [void]$connPS.AddArgument(@(Get-DATAllowedOEMs))
         $connAsync = $connPS.BeginInvoke()
 
         # DispatcherFrame keeps the UI pumping; the timer ends the frame when the probe finishes.
@@ -28947,12 +29020,15 @@ try { Initialize-DATWhatsNew } catch { Write-DATActivityLog "What's New init fai
 # (the IncrementVersion skill covers it, and Tests\UIApplication.Tests.ps1 asserts it matches the
 # module manifest). The modal is suppressed when it does not match the running build, so a missed
 # changelog update shows nothing rather than the previous release's features.
-$script:WhatsNewReleaseVersion = '10.2.6.0'
+$script:WhatsNewReleaseVersion = '10.2.7.0'
 $script:WhatsNewReleaseItems = @(
     [pscustomobject]@{ Category = 'Windows 11 26H1';            Text = 'Windows 11 26H1 (build 28000) can now be selected as a target release for driver and BIOS packages, and the Modern Driver/BIOS Management scripts recognise it during deployment. 26H1 ships on new devices only, so it is offered alongside 25H2 rather than replacing it.' }
     [pscustomobject]@{ Category = 'Faster Model Search';        Text = 'Searching the model grid stays responsive on large catalogues. Typing is debounced and the grid is filtered in place rather than rebuilt on every keystroke, and searches now match literally, so punctuation such as [ or ] no longer breaks the filter.' }
     [pscustomobject]@{ Category = 'Dell Latest Drivers Version'; Text = 'Dell Latest Drivers (DCU) packages now show their build date as the version in the model list, matching how HP SoftPaq packages are displayed. ConfigMgr driver pack mode continues to show the enterprise catalog version.' }
     [pscustomobject]@{ Category = 'Incomplete Package Reporting'; Text = 'A Latest Drivers component that downloads but stages no drivers is now reported in View Failures with the reason from the vendor package, instead of being dropped silently. The build warns that the package is incomplete and the next run rebuilds it rather than treating the set as current.' }
+    [pscustomobject]@{ Category = 'ConfigMgr Package Source Path'; Text = 'A local package storage path is now published from the server actually holding the content, using a real file share where one exists, rather than assuming the content sits on the primary site server. Multi-server hierarchies no longer receive a source path pointing at the wrong machine. Common Settings shows the exact UNC path ConfigMgr will be given before a build starts.' }
+    [pscustomobject]@{ Category = 'Vendor Selection Respected';   Text = 'The startup connectivity check no longer probes catalog servers for manufacturers you have switched off in OEM Selections, so disabled vendors stop raising unreachable-URL warnings at launch. Shared services such as GitHub and the DAT API are always checked.' }
+    [pscustomobject]@{ Category = 'Closing Window';               Text = 'The cleanup window shown while the application closes no longer floats above every other application on the desktop. It appears in the taskbar instead, so a long cleanup after a large build no longer blocks unrelated work.' }
 )
 
 function Get-DATWhatsNewModalShownVersion {

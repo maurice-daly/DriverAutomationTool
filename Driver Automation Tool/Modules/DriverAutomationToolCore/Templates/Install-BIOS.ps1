@@ -1002,43 +1002,95 @@ try {
             }
 
             # -- Focus Assist / DND Check Before Restart --
-            # If a user is actively working with Focus Assist (Do Not Disturb) engaged, we must
-            # NOT restart the device regardless of deferral count. The BIOS update is already
-            # prestaged and will apply on the next natural reboot.
+            # If the signed-in user genuinely has Focus Assist / Do Not Disturb engaged we do
+            # not restart, regardless of deferral count. The BIOS update is already prestaged
+            # and will apply on the next natural reboot.
             #
-            # IMPORTANT: this script normally runs as SYSTEM in session 0 (Intune Win32 app
-            # default, and required for BIOS flashing). In that context there is no interactive
-            # desktop to query, so SHQueryUserNotificationState returns QUNS_NOT_PRESENT (1).
-            # That is NOT a Do-Not-Disturb condition -- it means no user is present, which is the
-            # SAFEST time to reboot. Only the genuine "user is present but busy" states
-            # (QUNS_BUSY, full-screen D3D, presentation mode, quiet time, running app) should
-            # suppress the restart. Treating state 1 as blocking (the previous behaviour) caused
-            # the automatic reboot to be silently skipped on virtually every unattended/SYSTEM
-            # run, leaving the BIOS prestaged but never applied.
+            # IMPORTANT: SHQueryUserNotificationState reports the notification state of the
+            # window station the CALLING process is attached to -- NOT the state of the console
+            # user's desktop. This script normally runs as SYSTEM in session 0 (Intune Win32
+            # default, and required for BIOS flashing), where it is attached to the
+            # non-interactive service window station with no shell to query, and the API
+            # reports QUNS_BUSY (2). That is an artefact of the calling context, not a user who
+            # has switched on Do Not Disturb. Acting on it suppressed the automatic restart on
+            # effectively every SYSTEM run, leaving the BIOS prestaged but never applied, while
+            # the toast -- running in the user's real session moments earlier -- correctly
+            # reported QUNS_ACCEPTS_NOTIFICATIONS (5) on the same machine.
+            #
+            # So the state is only ever acted on when it was measured inside a real user
+            # session: either because this script is itself running interactively, or via the
+            # reading the toast recorded for us in DAT_FocusState.txt.
+            $CriticalNotification = {{ALARM_MODE}}
             $focusAssistBlocking = $false
-            try {
-                $focusAssistCSharp = 'using System; using System.Runtime.InteropServices; public class DATFocusAssistRestart { [DllImport("shell32.dll")] public static extern int SHQueryUserNotificationState(out int state); }'
-                Add-Type -TypeDefinition $focusAssistCSharp -ErrorAction SilentlyContinue
-                $focusState = 0
-                [void][DATFocusAssistRestart]::SHQueryUserNotificationState([ref]$focusState)
-                $focusStateNames = @{
-                    1 = 'QUNS_NOT_PRESENT'; 2 = 'QUNS_BUSY'; 3 = 'QUNS_RUNNING_D3D_FULL_SCREEN'
-                    4 = 'QUNS_PRESENTATION_MODE'; 5 = 'QUNS_ACCEPTS_NOTIFICATIONS'
-                    6 = 'QUNS_QUIET_TIME'; 7 = 'QUNS_APP'
-                }
-                $focusStateName = if ($focusStateNames.ContainsKey($focusState)) { $focusStateNames[$focusState] } else { "Unknown ($focusState)" }
-                Write-CMTraceLog "[FocusAssist] SHQueryUserNotificationState returned: $focusState ($focusStateName)"
-                # Only these states represent an interactive user we should not interrupt.
-                # QUNS_NOT_PRESENT (1) and QUNS_ACCEPTS_NOTIFICATIONS (5) both permit the restart.
-                $focusBlockingStates = @(2, 3, 4, 6, 7)
-                if ($focusState -in $focusBlockingStates) {
-                    $focusAssistBlocking = $true
-                    Write-CMTraceLog "[FocusAssist] Focus Assist / DND is active ($focusStateName) -- suppressing automatic restart to avoid interrupting the user" -Severity 2
+            # QUNS_NOT_PRESENT (1) and QUNS_ACCEPTS_NOTIFICATIONS (5) both permit the restart.
+            $focusBlockingStates = @(2, 3, 4, 6, 7)
+            $focusStateNames = @{
+                1 = 'QUNS_NOT_PRESENT'; 2 = 'QUNS_BUSY'; 3 = 'QUNS_RUNNING_D3D_FULL_SCREEN'
+                4 = 'QUNS_PRESENTATION_MODE'; 5 = 'QUNS_ACCEPTS_NOTIFICATIONS'
+                6 = 'QUNS_QUIET_TIME'; 7 = 'QUNS_APP'
+            }
+
+            if ($CriticalNotification) {
+                Write-CMTraceLog "[FocusAssist] Update is flagged as a critical notification (bypass Focus Assist) -- DND will not suppress the restart"
+            } else {
+                $focusState  = $null
+                $focusSource = ''
+                $sessionId   = 0
+                try { $sessionId = [System.Diagnostics.Process]::GetCurrentProcess().SessionId } catch { }
+
+                if ($sessionId -ne 0) {
+                    # Running in an interactive session -- the API result describes the real desktop.
+                    try {
+                        $focusAssistCSharp = 'using System; using System.Runtime.InteropServices; public class DATFocusAssistRestart { [DllImport("shell32.dll")] public static extern int SHQueryUserNotificationState(out int state); }'
+                        Add-Type -TypeDefinition $focusAssistCSharp -ErrorAction SilentlyContinue
+                        $queriedState = 0
+                        [void][DATFocusAssistRestart]::SHQueryUserNotificationState([ref]$queriedState)
+                        $focusState  = $queriedState
+                        $focusSource = "queried directly in session $sessionId"
+                    } catch {
+                        Write-CMTraceLog "[FocusAssist] Check failed: $($_.Exception.Message) -- proceeding with restart" -Severity 2
+                    }
                 } else {
-                    Write-CMTraceLog "[FocusAssist] State $focusStateName does not block restart -- proceeding with automatic restart"
+                    # Session 0: querying here would always report QUNS_BUSY. Use the reading the
+                    # toast took in the user's session instead (written seconds ago, just before
+                    # this restart decision). Timestamp is round-trip 'o' format and parsed with
+                    # InvariantCulture so it is unaffected by the device's regional settings.
+                    Write-CMTraceLog "[FocusAssist] Running in session 0 (SYSTEM) -- a direct query here cannot see the user's desktop; using the state recorded by the toast"
+                    $focusStatePath = Join-Path $env:ProgramData 'DriverAutomationTool\DAT_FocusState.txt'
+                    if (Test-Path $focusStatePath) {
+                        try {
+                            $focusRaw   = ((Get-Content -Path $focusStatePath -TotalCount 1 -ErrorAction Stop) -join '').Trim()
+                            $focusParts = $focusRaw -split '\|'
+                            if ($focusParts.Count -eq 2) {
+                                $focusStamp = [datetime]::Parse($focusParts[0], [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::RoundtripKind)
+                                $focusAgeMinutes = ((Get-Date) - $focusStamp).TotalMinutes
+                                if ($focusAgeMinutes -ge 0 -and $focusAgeMinutes -le 15) {
+                                    $focusState  = [int]$focusParts[1]
+                                    $focusSource = "recorded by the toast $([math]::Round($focusAgeMinutes, 1)) minute(s) ago"
+                                } else {
+                                    Write-CMTraceLog "[FocusAssist] Recorded user-session state is stale ($([math]::Round($focusAgeMinutes, 1)) minutes old) -- ignoring it and proceeding with restart" -Severity 2
+                                }
+                            } else {
+                                Write-CMTraceLog "[FocusAssist] Recorded user-session state is malformed -- ignoring it and proceeding with restart" -Severity 2
+                            }
+                        } catch {
+                            Write-CMTraceLog "[FocusAssist] Could not read recorded user-session state: $($_.Exception.Message) -- proceeding with restart" -Severity 2
+                        }
+                    } else {
+                        Write-CMTraceLog "[FocusAssist] No user-session state recorded (toast disabled or no user signed in) -- proceeding with restart"
+                    }
                 }
-            } catch {
-                Write-CMTraceLog "[FocusAssist] Check failed: $($_.Exception.Message) -- proceeding with restart" -Severity 2
+
+                if ($null -ne $focusState) {
+                    $focusStateName = if ($focusStateNames.ContainsKey($focusState)) { $focusStateNames[$focusState] } else { "Unknown ($focusState)" }
+                    Write-CMTraceLog "[FocusAssist] User notification state: $focusState ($focusStateName) -- $focusSource"
+                    if ($focusBlockingStates -contains $focusState) {
+                        $focusAssistBlocking = $true
+                        Write-CMTraceLog "[FocusAssist] Focus Assist / DND is active ($focusStateName) -- suppressing automatic restart to avoid interrupting the user" -Severity 2
+                    } else {
+                        Write-CMTraceLog "[FocusAssist] State $focusStateName does not block restart -- proceeding with automatic restart"
+                    }
+                }
             }
 
             if ($focusAssistBlocking) {

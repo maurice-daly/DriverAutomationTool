@@ -4,7 +4,7 @@
      Organization:  MSEndpointMgr / Patch My PC
      Filename:      DriverAutomationToolCore.psm1
      Purpose:       Core functions for Driver Automation Tool v2.0
-     Version:       10.2.6.0
+     Version:       10.2.7.0
     ===========================================================================
 #>
 
@@ -37,7 +37,7 @@ if ($PSVersionTable.PSVersion.Major -le 5) {
 
 #region Variables
 
-[version]$global:ScriptRelease = "10.2.6.0"
+[version]$global:ScriptRelease = "10.2.7.0"
 $global:ScriptBuildDate = "25-08-2026"
 $global:ReleaseNotesURL = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/DriverAutomationToolNotes.txt"
 $global:DATConfigUrl = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/refs/heads/master/Data/DATAPIConfig.json"
@@ -3656,6 +3656,83 @@ function ConvertTo-DATSafePathSegment {
     return $clean.TrimEnd([char]'.', [char]' ')
 }
 
+function ConvertTo-DATPackageSourcePath {
+    <#
+    .SYNOPSIS
+        Converts a local package folder into the UNC path ConfigMgr should store as
+        SMS_Package.PkgSourcePath.
+    .DESCRIPTION
+        ConfigMgr needs a UNC source path, otherwise the console displays the package source as
+        "<Directory on site server>". The content is written by this process, so it lives on the
+        machine DAT is running on -- NOT necessarily the site server.
+
+        Earlier builds synthesised the UNC from the site server name plus the drive's admin share
+        ("\\<SiteServer>\G$\..."). In a multi-server hierarchy -- for example DAT and the data
+        drives on the distribution/SUP server while the primary site lives elsewhere -- that names
+        a machine which has no such content, and distribution fails (issue #934).
+
+        Resolution order:
+          1. Already a UNC path -- returned unchanged.
+          2. A real (non-admin) SMB share on this machine that contains the path, longest match
+             first, so "G:\repo" shared as "repoWindows" yields "\\<ThisMachine>\repoWindows\...".
+          3. The admin share on THIS machine ("\\<ThisMachine>\G$\...") -- correct for the
+             single-server case and still resolvable for an admin account.
+        Returns $null when the path is not rooted on a drive letter and cannot be converted, so
+        the caller can keep the original value rather than emit a malformed path.
+    .PARAMETER Path
+        The local (or UNC) folder holding the package content.
+    .PARAMETER ComputerName
+        Machine that hosts the content. Defaults to the local computer, which is where DAT has
+        just written it; overridable for testing.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param (
+        [Parameter(Mandatory)][string]$Path,
+        [string]$ComputerName = $env:COMPUTERNAME
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Path)) { return $null }
+
+    # Already UNC -- the admin explicitly specified where the content lives; never rewrite it.
+    if ($Path -match '^\\\\') { return $Path }
+
+    # Must be a local drive-letter path ("G:\...") to have a share or admin share equivalent.
+    if ($Path -notmatch '^[A-Za-z]:\\') { return $null }
+
+    $driveLetter = $Path.Substring(0, 1)
+    $remainder = $Path.Substring(3)
+
+    # Prefer a real file share over the admin share: it is what the environment is actually set up
+    # to serve, and it does not require local-admin rights on the content host to reach.
+    try {
+        $shares = @(Get-CimInstance -ClassName Win32_Share -ErrorAction Stop |
+            Where-Object { $_.Type -eq 0 -and -not [string]::IsNullOrWhiteSpace($_.Path) })
+
+        # Longest path first so a nested share wins over its parent.
+        foreach ($share in ($shares | Sort-Object { $_.Path.Length } -Descending)) {
+            $sharePath = $share.Path.TrimEnd('\')
+            if ([string]::IsNullOrWhiteSpace($sharePath)) { continue }
+
+            # Exact match: the package folder is the share root.
+            if ($Path.TrimEnd('\') -ieq $sharePath) {
+                return "\\$ComputerName\$($share.Name)"
+            }
+            # Match only on a separator boundary so "G:\data" does not match "G:\database".
+            if ($Path -ilike "$sharePath\*") {
+                $relative = $Path.Substring($sharePath.Length).TrimStart('\')
+                return "\\$ComputerName\$($share.Name)\$relative"
+            }
+        }
+    } catch {
+        # Share enumeration is best-effort (remote/registry restrictions, WMI disabled); fall
+        # through to the admin share so package creation still succeeds.
+        Write-DATLogEntry -Value "- [ConfigMgr] Could not enumerate shares on $ComputerName ($($_.Exception.Message)) -- using the admin share for the package source path" -Severity 2
+    }
+
+    return "\\$ComputerName\${driveLetter}`$\$remainder"
+}
+
 function New-DATConfigMgrPkg {
     [CmdletBinding()]
     param (
@@ -3887,13 +3964,19 @@ function New-DATConfigMgrPkg {
         # --- Stage 3: Create package via WMI ---
         Write-DATLogEntry -Value "- [ConfigMgr] Creating new package: $CMPackage" -Severity 1
 
-        # Convert local drive paths to UNC admin-share paths so ConfigMgr stores a UNC source path
-        # and the console does not show "<Directory on site server>" as a prefix.
+        # Convert local drive paths to a UNC path so ConfigMgr stores a UNC source path and the
+        # console does not show "<Directory on site server>" as a prefix. The content was written
+        # by this process, so it is resolved against THIS machine's shares -- not the site server,
+        # which may be a different box entirely (#934).
         $pkgSourcePath = $DestPath
-        if ($DestPath -notmatch '^\\\\' -and -not [string]::IsNullOrEmpty($SiteServer)) {
-            $driveLetter = $DestPath[0]
-            $pkgSourcePath = "\\$SiteServer\${driveLetter}`$\$($DestPath.Substring(3))"
-            Write-DATLogEntry -Value "- [ConfigMgr] Local path converted to UNC for package source: $pkgSourcePath" -Severity 1
+        if ($DestPath -notmatch '^\\\\') {
+            $resolvedSource = ConvertTo-DATPackageSourcePath -Path $DestPath
+            if ($resolvedSource) {
+                $pkgSourcePath = $resolvedSource
+                Write-DATLogEntry -Value "- [ConfigMgr] Local path converted to UNC for package source: $pkgSourcePath" -Severity 1
+            } else {
+                Write-DATLogEntry -Value "- [ConfigMgr] Could not convert '$DestPath' to a UNC package source path -- storing it unchanged. Set the package storage path to a UNC path if distribution fails." -Severity 2
+            }
         }
 
         $newPkg = ([WmiClass]"\\$SiteServer\$($smsNamespace):SMS_Package").CreateInstance()
@@ -4246,11 +4329,12 @@ function New-DATXmlLogicPackage {
             $xmlPackageName = 'Driver Automation Tool XML Package'
             $xmlPackageVersion = Get-Date -Format 'yyyyMMdd'
 
-            # Convert the local folder path to a UNC admin-share path for the package source
+            # Convert the local folder path to a UNC path for the package source. Resolved against
+            # this machine's shares -- the content is local to DAT, not to the site server (#934).
             $pkgSourcePath = $logicPackagePath
-            if ($logicPackagePath -notmatch '^\\\\' -and -not [string]::IsNullOrEmpty($SiteServer)) {
-                $driveLetter = $logicPackagePath[0]
-                $pkgSourcePath = "\\$SiteServer\${driveLetter}`$\$($logicPackagePath.Substring(3))"
+            if ($logicPackagePath -notmatch '^\\\\') {
+                $resolvedLogicSource = ConvertTo-DATPackageSourcePath -Path $logicPackagePath
+                if ($resolvedLogicSource) { $pkgSourcePath = $resolvedLogicSource }
             }
 
             $existing = Invoke-DATRemoteQuery -CimSession $cimSess -ComputerName $SiteServer -Namespace $smsNamespace `
@@ -7448,10 +7532,21 @@ function Invoke-DATDellLatestDriverPackage {
     Write-DATLogEntry -Value "[Dell] DCU model catalog contains $($components.Count) software components" -Severity 1
 
     # -- 3. Filter to applicable driver DUPs (componentType DRVR, matching OS/arch) --
+    # Tally what gets discarded so "why is driver X missing from my package?" is answerable from
+    # the log alone (#940). A DUP absent from Dell's per-model slice cannot be downloaded at all,
+    # and that is indistinguishable from a filtering bug without this breakdown.
+    $skippedByType = @{}
+    $skippedOsArch = 0
+    $skippedSku = 0
     $applicable = foreach ($c in $components) {
         $ctype = Get-DcuAttr -Node $c.ComponentType -Names @('value', 'Value')
         if (-not $ctype) { $ctype = Get-DcuAttr -Node $c -Names @('componentType', 'ComponentType') }
-        if (-not $ctype -or $ctype.ToUpperInvariant() -ne 'DRVR') { continue }
+        if (-not $ctype -or $ctype.ToUpperInvariant() -ne 'DRVR') {
+            $typeKey = if ($ctype) { $ctype.ToUpperInvariant() } else { '(untyped)' }
+            if (-not $skippedByType.ContainsKey($typeKey)) { $skippedByType[$typeKey] = 0 }
+            $skippedByType[$typeKey]++
+            continue
+        }
 
         $osNodes = @($c.SupportedOperatingSystems.OperatingSystem)
         if ($osNodes.Count -gt 0) {
@@ -7464,12 +7559,12 @@ function Invoke-DATDellLatestDriverPackage {
                 foreach ($p in $osPrefixes) { if ($osCodeVal -like "$p*") { $osOk = $true; break } }
                 if ($osOk) { break }
             }
-            if (-not $osOk) { continue }
+            if (-not $osOk) { $skippedOsArch++; continue }
         }
 
         if ($systemSKUs.Count -gt 0) {
             $compSysIds = @($c.SupportedSystems.Brand.Model | ForEach-Object { Get-DcuAttr -Node $_ -Names @('systemID', 'SystemID', 'systemId') }) | Where-Object { $_ }
-            if ($compSysIds.Count -gt 0 -and -not ($compSysIds | Where-Object { $systemSKUs -contains $_ })) { continue }
+            if ($compSysIds.Count -gt 0 -and -not ($compSysIds | Where-Object { $systemSKUs -contains $_ })) { $skippedSku++; continue }
         }
 
         $path = Get-DcuAttr -Node $c -Names @('path', 'Path')
@@ -7523,6 +7618,23 @@ function Invoke-DATDellLatestDriverPackage {
         Sort-Object Category, Name
     $selected = @($selected)
     Write-DATLogEntry -Value "[Dell] Selected $($selected.Count) driver component(s) (newest per driver, collapsed from $($applicable.Count) applicable DUPs)" -Severity 1
+
+    # Record why the remaining components were left out. Dell's per-model DCU slice does not always
+    # carry every DUP shown on the model's support page -- the Intel Chipset Device Software is one
+    # such gap (#940) -- so an empty category here is evidence the catalog lacks it rather than
+    # evidence DAT discarded it.
+    if ($skippedByType.Count -gt 0) {
+        $typeBreakdown = (($skippedByType.GetEnumerator() | Sort-Object Name | ForEach-Object { "$($_.Key)=$($_.Value)" }) -join ', ')
+        Write-DATLogEntry -Value "[Dell] DCU components skipped -- non-driver componentType: $typeBreakdown" -Severity 1
+    }
+    if ($skippedOsArch -gt 0) {
+        Write-DATLogEntry -Value "[Dell] DCU components skipped -- no $WindowsVersion/$Architecture support: $skippedOsArch" -Severity 1
+    }
+    if ($skippedSku -gt 0) {
+        Write-DATLogEntry -Value "[Dell] DCU components skipped -- SystemID not matching $($systemSKUs -join '/'): $skippedSku" -Severity 1
+    }
+    $selectedCategories = (($selected | Group-Object Category | Sort-Object Name | ForEach-Object { "$($_.Name)=$($_.Count)" }) -join ', ')
+    Write-DATLogEntry -Value "[Dell] Selected driver categories: $selectedCategories" -Severity 1
 
     # -- 4. Fingerprint the DUP set; skip rebuild when unchanged --
     $manifestKey = Get-DATDellLatestManifestKey -Model $Model -OSVersion $WindowsVersion -Build $WindowsBuild -Architecture $Architecture
@@ -12695,6 +12807,21 @@ try {
     $focusStateName = if ($focusStateNames.ContainsKey($focusState)) { $focusStateNames[$focusState] } else { "Unknown ($focusState)" }
     Write-ToastLog "[FocusAssist] SHQueryUserNotificationState returned: $focusState ($focusStateName)"
 
+    # Relay the reading to the SYSTEM-context install script. That script runs in session 0,
+    # where SHQueryUserNotificationState is attached to the non-interactive service window
+    # station and always reports QUNS_BUSY -- so this file is the only trustworthy measurement
+    # of the signed-in user's real notification state, and the restart decision is based on it.
+    # Round-trip 'o' timestamp keeps the freshness check independent of the device's locale.
+    try {
+        $focusStatePath = Join-Path $env:ProgramData 'DriverAutomationTool\DAT_FocusState.txt'
+        $focusStateDir = Split-Path $focusStatePath -Parent
+        if (-not (Test-Path $focusStateDir)) { New-Item -Path $focusStateDir -ItemType Directory -Force | Out-Null }
+        "$((Get-Date).ToString('o'))|$focusState" | Out-File -FilePath $focusStatePath -Encoding UTF8 -Force
+        Write-ToastLog "[FocusAssist] Recorded user-session state $focusState for the install script's restart decision"
+    } catch {
+        Write-ToastLog "[FocusAssist] Failed to record user-session state: $($_.Exception.Message)" 'WARN'
+    }
+
     if ($focusState -ne 5) {
         if ($DATToastAlarmMode -eq 'True' -and $DATToastType -in @('Drivers','BIOS','BIOSFinalNotice')) {
             # Critical / alarm mode -- override the user's DND preference for forced-update scenarios
@@ -13237,6 +13364,9 @@ function New-DATIntuneInstallScript {
         [ValidateSet('Drivers','BIOS')][string]$UpdateType = 'Drivers',
         [switch]$DisableToast,
         [switch]$DisableRestart,
+        # Critical Notification (bypass Focus Assist). Mirrors the toast-side switch: when set,
+        # a Focus Assist / DND state must not suppress the post-flash automatic restart either.
+        [switch]$AlarmMode,
         [ValidateSet('RemindMeLater','InstallNow')][string]$ToastTimeoutAction = 'RemindMeLater',
         [int]$MaxDeferrals = 0,
         [int]$RestartDelaySeconds = 600
@@ -13726,6 +13856,7 @@ function Show-DATStatusToast {
     $scriptContent = $scriptContent.Replace('{{STATUS_TOAST_ACPOWER_BLOCK}}', $statusToastACPowerBlock)
     $scriptContent = $scriptContent.Replace('{{RESTART_DELAY_SECONDS}}', [string]$RestartDelaySeconds)
     $scriptContent = $scriptContent.Replace('{{DISABLE_RESTART}}', $(if ($DisableRestart) { '$true' } else { '$false' }))
+    $scriptContent = $scriptContent.Replace('{{ALARM_MODE}}', $(if ($AlarmMode) { '$true' } else { '$false' }))
 
     # UTF-8 with BOM ensures PS 5.1 reads non-ASCII characters correctly
     [System.IO.File]::WriteAllText($OutputPath, $scriptContent, [System.Text.UTF8Encoding]::new($true))
@@ -15629,6 +15760,7 @@ function Invoke-DATIntunePackageCreation {
         if (-not [string]::IsNullOrEmpty($ReleaseDate)) { $installScriptParams['ReleaseDate'] = $ReleaseDate }
         if ($DisableToast) { $installScriptParams['DisableToast'] = $true }
         if ($DisableRestart) { $installScriptParams['DisableRestart'] = $true }
+        if ($AlarmMode) { $installScriptParams['AlarmMode'] = $true }
         if ($ToastTimeoutAction -ne 'RemindMeLater') { $installScriptParams['ToastTimeoutAction'] = $ToastTimeoutAction }
         if ($MaxDeferrals -gt 0) { $installScriptParams['MaxDeferrals'] = $MaxDeferrals }
         if ($RestartDelaySeconds -ne 600) { $installScriptParams['RestartDelaySeconds'] = $RestartDelaySeconds }
