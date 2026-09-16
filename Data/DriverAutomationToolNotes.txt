@@ -3,6 +3,20 @@ Release Notes
 IMPORTANT
 ** DAT Downloads have been moved to GitHub - https://github.com/maurice-daly/DriverAutomationTool **
 
+Version 10.2.8
+What's New & Fixed
+
+- Panasonic devices — TOUGHBOOK models such as FZ-G2[N/P] (mk3) now build; the slash and brackets in Panasonic variant-series names were read as a path separator and as wildcards, which failed every Panasonic build at the first step. (#956)
+- Scheduled build time limit — the hidden four hour cap is now configurable, the deadline is logged when the build starts, a warning is raised before it is reached, and an interrupted run is detected and reported on the next launch. (#950)
+- Package retention in headless builds — automatic cleanup of superseded packages now runs in scheduled and headless builds; the setting was written to the build configuration and discarded when it was read back, and a skipped retention run now records why. (#947)
+- Teams build reports — the notification lists each model with its driver and BIOS versions as a table, and counts packages that were already current separately from packages that were built.
+- Teams custom header — the optional per-tenant headline is available again in Teams Notifications settings, and now applies to scheduled and headless builds as well. (#955)
+- Latest Drivers diagnostics — components that are applications rather than drivers are no longer counted as failures or as an incomplete package, and Windows long path support is only named as a cause when the evidence points to it. (#949)
+- Incomplete package rebuild — a Latest Drivers package that finished with components missing is re-evaluated on the next run instead of being held for a full update cadence. (#948)
+- HPCMSL updates — an update that completes without moving the version is now reported as such, with the module path and anything the installer reported, instead of being logged as successful. (#953)
+- Lenovo BIOS prompts — devices are no longer prompted to flash a BIOS they already have; the comparison understands Lenovo firmware version formats and falls back to the release date where two versions cannot be compared directly.
+- Package telemetry — the package hash is taken before content distribution begins rather than while it is running, and is skipped entirely when telemetry is switched off. (#951, #952)
+
 Version 10.2.7
 What's New & Fixed
 

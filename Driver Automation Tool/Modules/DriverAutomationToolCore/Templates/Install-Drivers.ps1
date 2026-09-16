@@ -322,7 +322,7 @@ try {
     $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
     # Defined before the toast gate so the deferral-reason logging inside the toast block can
     # record status against the per-model key when a user snoozes the update.
-    $VersionRegPath = 'HKLM:\SOFTWARE\DriverAutomationTool\Drivers\{{OEM}}\{{Model}}'
+    $VersionRegPath = 'HKLM:\SOFTWARE\DriverAutomationTool\Drivers\{{OEM}}\{{ModelKey}}'
 {{TOAST_BLOCK}}
     $WimFile = Join-Path $ScriptDir "DriverPackage.wim"
     $ExtractPath = Join-Path $env:ProgramData "DriverAutomationTool\Extract"

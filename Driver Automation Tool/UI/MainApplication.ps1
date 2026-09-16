@@ -2925,7 +2925,7 @@ function Show-DATBuildSummaryDialog {
     $dlg.Background = [System.Windows.Media.Brushes]::Transparent
     $dlg.WindowStartupLocation = 'CenterOwner'
     $dlg.Owner = $Window
-    $dlg.Width = 440
+    $dlg.Width = 480
     $dlg.SizeToContent = 'Height'
     $dlg.Topmost = $false
     $dlg.ResizeMode = 'NoResize'
@@ -2977,16 +2977,20 @@ function Show-DATBuildSummaryDialog {
         [System.Windows.Media.ColorConverter]::ConvertFromString($theme['StatusSuccess']))
     $errorBrush = [System.Windows.Media.SolidColorBrush]::new(
         [System.Windows.Media.ColorConverter]::ConvertFromString($theme['StatusError']))
+    $warnBrush = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.ColorConverter]::ConvertFromString($theme['StatusWarning']))
 
     $grid = [System.Windows.Controls.Grid]::new()
     $grid.Margin = [System.Windows.Thickness]::new(0, 0, 0, 20)
-    # Columns: Label | Succeeded | Failed
-    $col1 = [System.Windows.Controls.ColumnDefinition]::new(); $col1.Width = [System.Windows.GridLength]::new(1, [System.Windows.GridUnitType]::Star)
+    # Columns: Label | Succeeded | Skipped | Failed
+    $col1 = [System.Windows.Controls.ColumnDefinition]::new(); $col1.Width = [System.Windows.GridLength]::new(1.4, [System.Windows.GridUnitType]::Star)
     $col2 = [System.Windows.Controls.ColumnDefinition]::new(); $col2.Width = [System.Windows.GridLength]::new(1, [System.Windows.GridUnitType]::Star)
     $col3 = [System.Windows.Controls.ColumnDefinition]::new(); $col3.Width = [System.Windows.GridLength]::new(1, [System.Windows.GridUnitType]::Star)
+    $col4 = [System.Windows.Controls.ColumnDefinition]::new(); $col4.Width = [System.Windows.GridLength]::new(1, [System.Windows.GridUnitType]::Star)
     $grid.ColumnDefinitions.Add($col1) | Out-Null
     $grid.ColumnDefinitions.Add($col2) | Out-Null
     $grid.ColumnDefinitions.Add($col3) | Out-Null
+    $grid.ColumnDefinitions.Add($col4) | Out-Null
 
     # Failed counts come from the authoritative BuildFailures list (same source as the
     # "View Failures" button) -- NOT TotalModels-Success, which wrongly counts skipped-current,
@@ -3004,21 +3008,37 @@ function Show-DATBuildSummaryDialog {
         Write-DATLogEntry -Value "[UI] Build summary failure parse error: $($_.Exception.Message)" -Severity 2
     }
 
+    # Skipped counts come from BuildSkippedCurrent -- packages left alone because the deployed
+    # version already matches the catalog. The core module counts a skip as a success, so the skips
+    # are subtracted from the success figures below, giving Succeeded + Skipped + Failed = models in scope.
+    $driverSkipped = 0
+    $biosSkipped = 0
+    try {
+        $bsJson = (Get-ItemProperty -Path $global:RegPath -Name 'BuildSkippedCurrent' -ErrorAction SilentlyContinue).BuildSkippedCurrent
+        if (-not [string]::IsNullOrWhiteSpace($bsJson)) {
+            $bsList = @($bsJson | ConvertFrom-Json)
+            $driverSkipped = @($bsList | Where-Object { $_.PackageType -eq 'Drivers' }).Count
+            $biosSkipped = @($bsList | Where-Object { $_.PackageType -eq 'BIOS' }).Count
+        }
+    } catch {
+        Write-DATLogEntry -Value "[UI] Build summary skip parse error: $($_.Exception.Message)" -Severity 2
+    }
+
     # Build rows based on package type
     $rows = @()
     $showDrivers = $PackageType -in @('Drivers', 'All', 'Drivers Pilot', 'All Pilot')
     $showBios = $PackageType -in @('BIOS', 'All', 'BIOS Pilot', 'All Pilot')
     if ($showDrivers) {
-        $rows += @{ Label = 'Driver Packages'; Success = $DriverSuccess; Failed = $driverFailed }
+        $rows += @{ Label = 'Driver Packages'; Success = [Math]::Max(0, $DriverSuccess - $driverSkipped); Skipped = $driverSkipped; Failed = $driverFailed }
     }
     if ($showBios) {
-        $rows += @{ Label = 'BIOS Packages'; Success = $BiosSuccess; Failed = $biosFailed }
+        $rows += @{ Label = 'BIOS Packages'; Success = [Math]::Max(0, $BiosSuccess - $biosSkipped); Skipped = $biosSkipped; Failed = $biosFailed }
     }
 
     # Header row
     $row0 = [System.Windows.Controls.RowDefinition]::new(); $row0.Height = [System.Windows.GridLength]::new(28)
     $grid.RowDefinitions.Add($row0) | Out-Null
-    foreach ($hdr in @(@{Col=1;Text='Succeeded'},@{Col=2;Text='Failed'})) {
+    foreach ($hdr in @(@{Col=1;Text='Succeeded'},@{Col=2;Text='Skipped'},@{Col=3;Text='Failed'})) {
         $h = [System.Windows.Controls.TextBlock]::new()
         $h.Text = $hdr.Text
         $h.FontSize = 12
@@ -3058,6 +3078,18 @@ function Show-DATBuildSummaryDialog {
         [System.Windows.Controls.Grid]::SetColumn($suc, 1)
         $grid.Children.Add($suc) | Out-Null
 
+        # Skipped count -- already current, so nothing was rebuilt
+        $skip = [System.Windows.Controls.TextBlock]::new()
+        $skip.Text = "$($r.Skipped)"
+        $skip.FontSize = 14
+        $skip.FontWeight = [System.Windows.FontWeights]::Bold
+        $skip.Foreground = if ($r.Skipped -gt 0) { $warnBrush } else { $dimBrush }
+        $skip.HorizontalAlignment = 'Center'
+        $skip.VerticalAlignment = 'Center'
+        [System.Windows.Controls.Grid]::SetRow($skip, $rowIndex)
+        [System.Windows.Controls.Grid]::SetColumn($skip, 2)
+        $grid.Children.Add($skip) | Out-Null
+
         # Failed count
         $fail = [System.Windows.Controls.TextBlock]::new()
         $fail.Text = "$($r.Failed)"
@@ -3067,7 +3099,7 @@ function Show-DATBuildSummaryDialog {
         $fail.HorizontalAlignment = 'Center'
         $fail.VerticalAlignment = 'Center'
         [System.Windows.Controls.Grid]::SetRow($fail, $rowIndex)
-        [System.Windows.Controls.Grid]::SetColumn($fail, 2)
+        [System.Windows.Controls.Grid]::SetColumn($fail, 3)
         $grid.Children.Add($fail) | Out-Null
 
         $rowIndex++
@@ -3085,7 +3117,7 @@ function Show-DATBuildSummaryDialog {
     $sep.Margin = [System.Windows.Thickness]::new(0, 4, 0, 4)
     $sep.VerticalAlignment = 'Top'
     [System.Windows.Controls.Grid]::SetRow($sep, $rowIndex)
-    [System.Windows.Controls.Grid]::SetColumnSpan($sep, 3)
+    [System.Windows.Controls.Grid]::SetColumnSpan($sep, 4)
     $grid.Children.Add($sep) | Out-Null
 
     $totalLbl = [System.Windows.Controls.TextBlock]::new()
@@ -3107,7 +3139,7 @@ function Show-DATBuildSummaryDialog {
     $totalVal.VerticalAlignment = 'Center'
     [System.Windows.Controls.Grid]::SetRow($totalVal, $rowIndex)
     [System.Windows.Controls.Grid]::SetColumn($totalVal, 1)
-    [System.Windows.Controls.Grid]::SetColumnSpan($totalVal, 2)
+    [System.Windows.Controls.Grid]::SetColumnSpan($totalVal, 3)
     $grid.Children.Add($totalVal) | Out-Null
 
     $panel.Children.Add($grid) | Out-Null
@@ -10988,7 +11020,7 @@ $btn_Build.Add_Click({
     $script:BuildPS.Runspace = $script:BuildRunspace
     Add-DATCoreRunspaceBootstrap -PowerShell $script:BuildPS -IntuneAuthContext $intuneAuthContext -ModulePath $resolvedModulePath
     [void]$script:BuildPS.AddScript({
-        param($ScriptDir, $RegPath, $RunningMode, $SelectedModels, $StoragePath, $PackagePath, $DisableToast, $DisableRestart, $SiteServer, $SiteCode, $PackageType, $DPGroups, $DPs, $DistPriority, $EnableBDR, $DebugBuildPath, $CustomBrandingPath, $HPPasswordBinPath, $ToastTimeoutAction, $MaxDeferrals, $BIOSRestartDelayMinutes, $TeamsWebhookUrl, $TeamsNotificationsEnabled, $CustomToastTextsJson, $ConsoleFolderID, $MaintenanceWindowsJson, $AlarmMode, $AlarmSound, $CreateIntuneWinOnly, $GenerateXmlLogicPackage, $ExtractDownloadOnlyContent, $ShowBrandingBannerAllToasts)
+        param($ScriptDir, $RegPath, $RunningMode, $SelectedModels, $StoragePath, $PackagePath, $DisableToast, $DisableRestart, $SiteServer, $SiteCode, $PackageType, $DPGroups, $DPs, $DistPriority, $EnableBDR, $DebugBuildPath, $CustomBrandingPath, $HPPasswordBinPath, $ToastTimeoutAction, $MaxDeferrals, $BIOSRestartDelayMinutes, $TeamsWebhookUrl, $TeamsNotificationsEnabled, $TeamsCustomText, $CustomToastTextsJson, $ConsoleFolderID, $MaintenanceWindowsJson, $AlarmMode, $AlarmSound, $CreateIntuneWinOnly, $GenerateXmlLogicPackage, $ExtractDownloadOnlyContent, $ShowBrandingBannerAllToasts)
         try {
             $procParams = @{
                 ScriptDirectory = $ScriptDir
@@ -11025,6 +11057,7 @@ $btn_Build.Add_Click({
             if ($TeamsNotificationsEnabled -and -not [string]::IsNullOrEmpty($TeamsWebhookUrl)) {
                 $procParams['TeamsNotificationsEnabled'] = $true
                 $procParams['TeamsWebhookUrl'] = $TeamsWebhookUrl
+                if (-not [string]::IsNullOrEmpty($TeamsCustomText)) { $procParams['TeamsCustomText'] = $TeamsCustomText }
             }
             Start-DATModelProcessing @procParams
         } catch [System.Management.Automation.PipelineStoppedException] {
@@ -11092,8 +11125,10 @@ $btn_Build.Add_Click({
     # Teams notification settings
     $teamsEnabled = $chk_TeamsNotifications.IsChecked -eq $true
     $teamsUrl = $txt_TeamsWebhookUrl.Text
+    $teamsCustomText = if ($null -ne $txt_TeamsCustomText) { $txt_TeamsCustomText.Text } else { '' }
     [void]$script:BuildPS.AddArgument($teamsUrl)
     [void]$script:BuildPS.AddArgument($teamsEnabled)
+    [void]$script:BuildPS.AddArgument($teamsCustomText)
 
     # Custom toast text (Intune only) -- pass per-type custom texts as JSON
     $customToastTextsJson = $null
@@ -16290,6 +16325,9 @@ $txt_TeamsWebhookUrl.Add_LostFocus({
     $url = $txt_TeamsWebhookUrl.Text
     Set-DATRegistryValue -Name "TeamsWebhookUrl" -Value $url -Type String
 })
+$txt_TeamsCustomText.Add_LostFocus({
+    Set-DATRegistryValue -Name "TeamsCustomText" -Value $txt_TeamsCustomText.Text -Type String
+})
 $btn_TeamsTest.Add_Click({
     $url = $txt_TeamsWebhookUrl.Text
     if ([string]::IsNullOrWhiteSpace($url)) {
@@ -16301,8 +16339,25 @@ $btn_TeamsTest.Add_Click({
         return
     }
     try {
-        Send-DATTeamsNotification -WebhookUrl $url -TotalModels 1 -SuccessCount 1 -FailedCount 0 `
-            -Platform 'Test' -PackageType 'Test' -Models @([PSCustomObject]@{ OEM = 'Test'; Model = 'Test Notification' })
+        # Sample rows so the test card shows the same three tables a real build posts -- an
+        # operator verifying the webhook sees the layout they will actually receive.
+        $testModels = @(
+            [PSCustomObject]@{ OEM = 'Dell';   Model = 'Latitude 5450' }
+            [PSCustomObject]@{ OEM = 'HP';     Model = 'EliteBook 840 G11' }
+            [PSCustomObject]@{ OEM = 'Lenovo'; Model = 'ThinkPad X1 Carbon Gen 12' }
+        )
+        $testResults = @(
+            [PSCustomObject]@{ OEM = 'Dell';   Model = 'Latitude 5450';             OS = 'Windows 11'; Architecture = 'x64'; DriverVersion = 'A03';    DriverStatus = 'Updated'; BIOSVersion = '1.18.0'; BIOSStatus = 'Updated' }
+            [PSCustomObject]@{ OEM = 'HP';     Model = 'EliteBook 840 G11';         OS = 'Windows 11'; Architecture = 'x64'; DriverVersion = '1.24.5'; DriverStatus = 'Updated'; BIOSVersion = '1.09.02'; BIOSStatus = 'Current' }
+            [PSCustomObject]@{ OEM = 'Lenovo'; Model = 'ThinkPad X1 Carbon Gen 12'; OS = 'Windows 11'; Architecture = 'x64'; DriverVersion = '2025.08'; DriverStatus = 'Current'; BIOSVersion = 'N3XET42W'; BIOSStatus = 'Updated' }
+        )
+        # 4 of the 6 packages created, 2 already current -- exercises both package rows.
+        # The headline comes from the box as it currently reads, not from the saved value, so the
+        # test card previews what is being typed before it is committed on LostFocus.
+        $testCustomText = if ($null -ne $txt_TeamsCustomText) { $txt_TeamsCustomText.Text } else { '' }
+        Send-DATTeamsNotification -WebhookUrl $url -TotalModels 3 -SuccessCount 3 -FailedCount 0 `
+            -PackagesCreated 4 -SkippedCount 2 -CustomText $testCustomText `
+            -Platform 'Test' -PackageType 'Test' -Models $testModels -Results $testResults
         $txt_TeamsTestResult.Text = "Test notification sent successfully."
         $txt_TeamsTestResult.Foreground = [System.Windows.Media.SolidColorBrush]::new(
             [System.Windows.Media.ColorConverter]::ConvertFromString(
@@ -16382,6 +16437,21 @@ $btn_Schedule.Add_Click({
     $existing = Get-ScheduledTask -TaskPath '\Driver Automation Tool\' -TaskName 'Scheduled Package Build' -ErrorAction SilentlyContinue
     if ($existing) {
         $btn_ScheduleRemove.Visibility = 'Visible'
+        # Reflect the limit already on the task so re-saving the schedule cannot silently reset it
+        # to the default. PT0S means the task was registered with no limit at all.
+        try {
+            $existingLimitIso = [string]$existing.Settings.ExecutionTimeLimit
+            $existingLimitHours = if ([string]::IsNullOrWhiteSpace($existingLimitIso) -or $existingLimitIso -eq 'PT0S') {
+                0
+            } else {
+                [int][math]::Round([System.Xml.XmlConvert]::ToTimeSpan($existingLimitIso).TotalHours)
+            }
+            foreach ($item in $cmb_ScheduleMaxRunTime.Items) {
+                if ([int]$item.Tag -eq $existingLimitHours) { $cmb_ScheduleMaxRunTime.SelectedItem = $item; break }
+            }
+        } catch {
+            Write-DATActivityLog "Could not read the scheduled task's run time limit: $($_.Exception.Message)" -Level Warn
+        }
         # Parse existing trigger info
         foreach ($t in $existing.Triggers) {
             if ($t -is [Microsoft.Management.Infrastructure.CimInstance]) {
@@ -16487,6 +16557,7 @@ $btn_ScheduleSave.Add_Click({
     $schedBIOSRestartDelay = if (($txt_BIOSRestartDelay.Text -match '^\d+$')) { [int]$txt_BIOSRestartDelay.Text } else { 10 }
     $schedTeamsEnabled = $chk_TeamsNotifications.IsChecked -eq $true
     $schedTeamsUrl = $txt_TeamsWebhookUrl.Text
+    $schedTeamsCustomText = if ($null -ne $txt_TeamsCustomText) { $txt_TeamsCustomText.Text } else { '' }
     $regConfig = Get-ItemProperty -Path $global:RegPath -ErrorAction SilentlyContinue
     $schedTempPath = if ($regConfig -and -not [string]::IsNullOrEmpty($regConfig.TempStoragePath)) { $regConfig.TempStoragePath } else { '' }
     $schedPkgPath = if ($regConfig -and -not [string]::IsNullOrEmpty($regConfig.PackageStoragePath)) { $regConfig.PackageStoragePath } else { '' }
@@ -16535,7 +16606,8 @@ $btn_ScheduleSave.Add_Click({
             -DisableToast $schedDisableToast -DisableRestart $schedDisableRestart `
             -ToastTimeoutAction $schedTimeoutAction -MaxDeferrals $schedMaxDeferrals `
             -BIOSRestartDelayMinutes $schedBIOSRestartDelay `
-            -TeamsWebhookUrl $schedTeamsUrl -TeamsNotificationsEnabled $schedTeamsEnabled -ConfigMgr $schedCM `
+            -TeamsWebhookUrl $schedTeamsUrl -TeamsNotificationsEnabled $schedTeamsEnabled `
+            -TeamsCustomText $schedTeamsCustomText -ConfigMgr $schedCM `
             -Intune $schedIntune `
             -MaintenanceWindowEnabled $schedMWEnabled -MaintenanceWindowMode $schedMWMode -MaintenanceWindows $schedMWindows `
             -CleanTempOnExit $schedCleanTemp `
@@ -16556,6 +16628,7 @@ $btn_ScheduleSave.Add_Click({
         ScriptDirectory = $global:ScriptDirectory
         Frequency       = if ($frequency -eq 'Once Off') { 'Once' } else { $frequency }
         Time            = $time
+        MaxRunTimeHours = $(if ($null -ne $cmb_ScheduleMaxRunTime.SelectedItem) { [int]$cmb_ScheduleMaxRunTime.SelectedItem.Tag } else { 12 })
     }
     if ($frequency -eq 'Weekly') {
         $regParams['DayOfWeek'] = $cmb_ScheduleDay.SelectedItem.Content
@@ -16573,8 +16646,9 @@ $btn_ScheduleSave.Add_Click({
                    elseif ($frequency -eq 'Monthly') { " on day $($cmb_ScheduleDayOfMonth.SelectedItem) of each month" }
                    else { '' }
         $onceNote = if ($frequency -eq 'Once Off') { "`n`nThis is a one-time build. The scheduled task will automatically remove itself after completion." } else { '' }
+        $limitNote = if ($result.MaxRunTimeHours -le 0) { "`n`nMaximum run time: no limit -- a build that hangs will block later scheduled runs." } else { "`n`nMaximum run time: $($result.MaxRunTimeHours) hours. Task Scheduler stops the build if it runs longer." }
         Show-DATInfoDialog -Title "Schedule Saved" `
-            -Message "Your $($frequency.ToLower()) build has been scheduled$dayInfo at $time.`n`nThe task will run under SYSTEM in the '\Driver Automation Tool\' task folder.$onceNote" `
+            -Message "Your $($frequency.ToLower()) build has been scheduled$dayInfo at $time.`n`nThe task will run under SYSTEM in the '\Driver Automation Tool\' task folder.$limitNote$onceNote" `
             -Type Success
     } catch {
         Show-DATInfoDialog -Title 'Schedule Error' `
@@ -27059,6 +27133,11 @@ try {
             Write-Host "  Teams URL     : " -NoNewline -ForegroundColor DarkGray
             Write-Host "(configured)" -ForegroundColor White
         }
+        if (-not [string]::IsNullOrEmpty($savedConfig.TeamsCustomText)) {
+            $txt_TeamsCustomText.Text = $savedConfig.TeamsCustomText
+            Write-Host "  Teams Header  : " -NoNewline -ForegroundColor DarkGray
+            Write-Host $savedConfig.TeamsCustomText -ForegroundColor White
+        }
 
         # Restore OEM selections
         if (-not [string]::IsNullOrEmpty($savedConfig.SelectedOEMs)) {
@@ -27086,15 +27165,28 @@ try {
                     # PackageManagement/PowerShellGet module resolution.
                     $script:HPCMSLUpdateResultFile = Join-Path ([System.IO.Path]::GetTempPath()) "DATHPCMSLUpdate_$([guid]::NewGuid().ToString('N').Substring(0,8)).json"
                     $currentVer = $hpInstalled.Version.ToString()
+                    # The background installer reports what it OBSERVES afterwards, not the version
+                    # it set out to install. Reporting $gallery.Version as NewVersion claimed an
+                    # upgrade that had not necessarily happened, and the next run found the same
+                    # update waiting (#953).
                     $updateScript = @"
 `$ErrorActionPreference = 'Stop'
 try {
-    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
     Set-PSRepository -Name PSGallery -InstallationPolicy Trusted -ErrorAction SilentlyContinue
     `$gallery = Find-Module -Name HPCMSL -Repository PSGallery -ErrorAction Stop
     if (`$gallery.Version -gt [version]'$currentVer') {
-        Install-Module -Name HPCMSL -Force -AllowClobber -SkipPublisherCheck -Scope AllUsers -ErrorAction Stop
-        @{ Status = 'Updated'; OldVersion = '$currentVer'; NewVersion = `$gallery.Version.ToString() } | ConvertTo-Json | Set-Content -Path '$($script:HPCMSLUpdateResultFile)' -Encoding UTF8
+        `$installWarnings = @()
+        Install-Module -Name HPCMSL -Force -AllowClobber -SkipPublisherCheck -Scope AllUsers -ErrorAction Stop -WarningVariable +installWarnings
+        `$after = Get-Module -ListAvailable -Name HPCMSL -ErrorAction SilentlyContinue | Sort-Object Version -Descending | Select-Object -First 1
+        if (`$after -and `$after.Version -gt [version]'$currentVer') {
+            @{ Status = 'Updated'; OldVersion = '$currentVer'; NewVersion = `$after.Version.ToString(); ModuleBase = "`$(`$after.ModuleBase)" } | ConvertTo-Json | Set-Content -Path '$($script:HPCMSLUpdateResultFile)' -Encoding UTF8
+        } else {
+            `$installedVer = if (`$after) { `$after.Version.ToString() } else { 'not found' }
+            `$moduleBase = if (`$after) { "`$(`$after.ModuleBase)" } else { '' }
+            `$warnText = if (`$installWarnings.Count -gt 0) { (`$installWarnings | ForEach-Object { "`$_" }) -join ' | ' } else { 'Install-Module reported no error or warning.' }
+            @{ Status = 'NoChange'; OldVersion = '$currentVer'; Expected = `$gallery.Version.ToString(); Installed = `$installedVer; ModuleBase = `$moduleBase; Warnings = `$warnText } | ConvertTo-Json | Set-Content -Path '$($script:HPCMSLUpdateResultFile)' -Encoding UTF8
+        }
     } else {
         @{ Status = 'Current'; Version = '$currentVer' } | ConvertTo-Json | Set-Content -Path '$($script:HPCMSLUpdateResultFile)' -Encoding UTF8
     }
@@ -27122,9 +27214,16 @@ try {
                                         'Updated' {
                                             Remove-Module -Name HPCMSL -Force -ErrorAction SilentlyContinue
                                             Import-Module -Name HPCMSL -Force -ErrorAction SilentlyContinue
-                                            Write-DATLogEntry -Value "[HP] HPCMSL upgraded in background: v$($r.OldVersion) -> v$($r.NewVersion)" -Severity 1
+                                            Write-DATLogEntry -Value "[HP] HPCMSL upgraded in background: v$($r.OldVersion) -> v$($r.NewVersion) -- $($r.ModuleBase)" -Severity 1
                                             Write-DATActivityLog "HP CMSL updated to v$($r.NewVersion)" -Level Info
                                             Update-DATHpcmslStatus
+                                        }
+                                        'NoChange' {
+                                            # Install-Module returned without error but the installed
+                                            # version did not move. Say so rather than reporting the
+                                            # version that was merely attempted (#953).
+                                            Write-DATLogEntry -Value "[HP] WARNING: HPCMSL is still v$($r.Installed) after installing v$($r.Expected) -- the background update did not take effect. Loaded from: $($r.ModuleBase). $($r.Warnings)" -Severity 2
+                                            Write-DATActivityLog "HP CMSL update did not take effect -- still v$($r.Installed) (expected v$($r.Expected))" -Level Warn
                                         }
                                         'Current' {
                                             Write-DATLogEntry -Value "[HP] HPCMSL v$($r.Version) is already the latest version" -Severity 1
@@ -27591,7 +27690,7 @@ if (Test-Path $logoPath) {
 
 # Read version from module manifest
 $manifestPath = Join-Path $AppRoot "Modules\DriverAutomationToolCore\DriverAutomationToolCore.psd1"
-$script:versionString = "v10.2.7"
+$script:versionString = "v10.2.8"
 if (Test-Path $manifestPath) {
     $manifestData = Import-PowerShellDataFile $manifestPath
     $ver = [version]$manifestData.ModuleVersion
@@ -29020,15 +29119,18 @@ try { Initialize-DATWhatsNew } catch { Write-DATActivityLog "What's New init fai
 # (the IncrementVersion skill covers it, and Tests\UIApplication.Tests.ps1 asserts it matches the
 # module manifest). The modal is suppressed when it does not match the running build, so a missed
 # changelog update shows nothing rather than the previous release's features.
-$script:WhatsNewReleaseVersion = '10.2.7.0'
+$script:WhatsNewReleaseVersion = '10.2.8.0'
 $script:WhatsNewReleaseItems = @(
-    [pscustomobject]@{ Category = 'Windows 11 26H1';            Text = 'Windows 11 26H1 (build 28000) can now be selected as a target release for driver and BIOS packages, and the Modern Driver/BIOS Management scripts recognise it during deployment. 26H1 ships on new devices only, so it is offered alongside 25H2 rather than replacing it.' }
-    [pscustomobject]@{ Category = 'Faster Model Search';        Text = 'Searching the model grid stays responsive on large catalogues. Typing is debounced and the grid is filtered in place rather than rebuilt on every keystroke, and searches now match literally, so punctuation such as [ or ] no longer breaks the filter.' }
-    [pscustomobject]@{ Category = 'Dell Latest Drivers Version'; Text = 'Dell Latest Drivers (DCU) packages now show their build date as the version in the model list, matching how HP SoftPaq packages are displayed. ConfigMgr driver pack mode continues to show the enterprise catalog version.' }
-    [pscustomobject]@{ Category = 'Incomplete Package Reporting'; Text = 'A Latest Drivers component that downloads but stages no drivers is now reported in View Failures with the reason from the vendor package, instead of being dropped silently. The build warns that the package is incomplete and the next run rebuilds it rather than treating the set as current.' }
-    [pscustomobject]@{ Category = 'ConfigMgr Package Source Path'; Text = 'A local package storage path is now published from the server actually holding the content, using a real file share where one exists, rather than assuming the content sits on the primary site server. Multi-server hierarchies no longer receive a source path pointing at the wrong machine. Common Settings shows the exact UNC path ConfigMgr will be given before a build starts.' }
-    [pscustomobject]@{ Category = 'Vendor Selection Respected';   Text = 'The startup connectivity check no longer probes catalog servers for manufacturers you have switched off in OEM Selections, so disabled vendors stop raising unreachable-URL warnings at launch. Shared services such as GitHub and the DAT API are always checked.' }
-    [pscustomobject]@{ Category = 'Closing Window';               Text = 'The cleanup window shown while the application closes no longer floats above every other application on the desktop. It appears in the taskbar instead, so a long cleanup after a large build no longer blocks unrelated work.' }
+    [pscustomobject]@{ Category = 'Panasonic Devices';            Text = 'Panasonic TOUGHBOOK models now build. Panasonic names its catalog entries after a variant series, such as FZ-G2[N/P] (mk3), and the slash and brackets in those names were being read as a folder separator and as wildcards. That failed every Panasonic build at the first step, before anything was downloaded, and 18 of the 19 models in the catalog carry those characters.' }
+    [pscustomobject]@{ Category = 'Scheduled Build Time Limit';   Text = 'Scheduled builds are no longer capped at a hidden four hours. The limit is configurable, the deadline is written to the log when the build starts, and a warning is raised before it is reached rather than only after the run is killed. A build that was interrupted is detected and reported on the next launch.' }
+    [pscustomobject]@{ Category = 'Retention in Scheduled Builds'; Text = 'Automatic cleanup of superseded packages now runs in scheduled and headless builds. The setting was written into the build configuration and then discarded when it was read back, so retention only ever ran from the interface. A run that skips retention now records that it did, and which setting decided it.' }
+    [pscustomobject]@{ Category = 'Teams Build Reports';          Text = 'The Teams notification lists each model with its driver and BIOS versions as a table, and counts packages that were already current separately from packages that were built. A run where everything was already up to date no longer reads as though every package was rebuilt.' }
+    [pscustomobject]@{ Category = 'Teams Custom Header';          Text = 'The optional custom header text is available again in Teams Notifications settings, shown as a headline at the top of the card so that several tenants posting into one channel can be told apart. It now applies to scheduled and headless builds as well, which it never did before.' }
+    [pscustomobject]@{ Category = 'Latest Drivers Diagnostics';   Text = 'Components in a Dell or Lenovo Latest Drivers package that are applications rather than drivers are no longer counted as failures, and no longer make a package read as incomplete. Genuine failures are reported with the reason given by the vendor package, and Windows long path support is only named as a possible cause when the evidence actually points to it.' }
+    [pscustomobject]@{ Category = 'Incomplete Package Rebuild';   Text = 'A Latest Drivers package that finished with components missing is re-evaluated on the next run instead of being held for a full update cadence, and the reason each model was left incomplete is recorded for that run to report on.' }
+    [pscustomobject]@{ Category = 'HPCMSL Updates';               Text = 'An HPCMSL update now reports what happened rather than what was attempted. Where the install completes but the version does not move, the log says so, names the folder the module is loading from, and includes anything the installer reported, instead of showing the update as successful and finding it again on the next run.' }
+    [pscustomobject]@{ Category = 'Lenovo BIOS Prompts';          Text = 'Lenovo devices are no longer prompted to flash a BIOS they already have. The comparison understands the firmware version formats Lenovo reports, and falls back to the release date where two versions cannot be compared directly.' }
+    [pscustomobject]@{ Category = 'Faster Package Telemetry';     Text = 'The package hash used for telemetry is taken before content distribution begins rather than while it is running, which removes a contention that could make it time out on a site server. It is also skipped entirely when telemetry is switched off, so opting out now avoids the work as well as the upload.' }
 )
 
 function Get-DATWhatsNewModalShownVersion {

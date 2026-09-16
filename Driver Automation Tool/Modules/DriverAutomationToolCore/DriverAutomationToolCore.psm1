@@ -4,7 +4,7 @@
      Organization:  MSEndpointMgr / Patch My PC
      Filename:      DriverAutomationToolCore.psm1
      Purpose:       Core functions for Driver Automation Tool v2.0
-     Version:       10.2.7.0
+     Version:       10.2.8.0
     ===========================================================================
 #>
 
@@ -37,7 +37,7 @@ if ($PSVersionTable.PSVersion.Major -le 5) {
 
 #region Variables
 
-[version]$global:ScriptRelease = "10.2.7.0"
+[version]$global:ScriptRelease = "10.2.8.0"
 $global:ScriptBuildDate = "25-08-2026"
 $global:ReleaseNotesURL = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/DriverAutomationToolNotes.txt"
 $global:DATConfigUrl = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/refs/heads/master/Data/DATAPIConfig.json"
@@ -1145,7 +1145,10 @@ function Invoke-DATContentDownload {
         throw "Download URL must use HTTPS: '$DownloadURL'"
     }
 
-    if (-not (Test-Path -Path $DownloadDestination)) {
+    # -LiteralPath throughout: the destination folder is named after a model, and a model name is
+    # data, not a wildcard. Panasonic publishes names such as "FZ-G2[N/P] (mk3)", and -Path would
+    # read the unbalanced bracket as a character class and fail to resolve (issue #956).
+    if (-not (Test-Path -LiteralPath $DownloadDestination)) {
         New-Item -Path $DownloadDestination -ItemType Directory -Force | Out-Null
     }
 
@@ -1172,8 +1175,8 @@ function Invoke-DATContentDownload {
     }
 
     # Skip if already downloaded: size matches, or size unknown but file exists (trust it)
-    if (Test-Path -Path $DownloadDestination) {
-        $DownloadedFileSize = (Get-Item -Path $DownloadDestination).Length
+    if (Test-Path -LiteralPath $DownloadDestination) {
+        $DownloadedFileSize = (Get-Item -LiteralPath $DownloadDestination).Length
         $sizeMatch = ($DownloadSize -gt 0 -and $DownloadSize -eq $DownloadedFileSize)
         $sizeUnknown = ($DownloadSize -le 0 -and $DownloadedFileSize -gt 0)
         if ($sizeMatch) {
@@ -1199,7 +1202,7 @@ function Invoke-DATContentDownload {
         }
         # Partial / size-mismatch -- remove stale file before retrying
         Write-DATLogEntry -Value "- Removing incomplete/mismatched file before re-download: $DownloadDestination" -Severity 2
-        Remove-Item -Path $DownloadDestination -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $DownloadDestination -Force -ErrorAction SilentlyContinue
     }
 
     if ($DownloadSize -gt 0) {
@@ -1974,11 +1977,17 @@ function Invoke-DATDriverFilePackaging {
         [object[]]$Components = @()
     )
 
+    # Filesystem-safe folder segments -- catalog model names may contain path separators or
+    # PowerShell wildcard brackets (Panasonic "FZ-G2[N/P] (mk3)", issue #956).
+    $OEMPath = ConvertTo-DATSafePathSegment -Segment "$OEM"
+    $ModelPath = ConvertTo-DATSafePathSegment -Segment "$Model"
+    $OSPath = ConvertTo-DATSafePathSegment -Segment "$OS"
+
     # Always use the temp directory for extraction and WIM creation, then copy the
     # final WIM to the package destination.  This keeps the Package path clean and
     # ensures temp files are cleaned up automatically.  Also handles UNC destinations
     # since DISM cannot create WIMs on network shares.
-    $localWorkDir = Join-Path $global:TempDirectory "Build\$OEM\$Model"
+    $localWorkDir = Join-Path $global:TempDirectory "Build\$OEMPath\$ModelPath"
     if (Test-Path $localWorkDir) { Remove-Item $localWorkDir -Recurse -Force -ErrorAction SilentlyContinue }
     New-Item -Path $localWorkDir -ItemType Directory -Force | Out-Null
     Write-DATLogEntry -Value "[$OEM] Using local temp working directory: $localWorkDir" -Severity 1
@@ -2417,7 +2426,7 @@ function Invoke-DATDriverFilePackaging {
         if ($skipConfigMgrWim) {
             # Stage the expanded driver content (no WIM) into the temp Packaged directory.
             # New-DATConfigMgrPkg copies the directory contents into the versioned package source.
-            $destDriverMountFolder = Join-Path -Path $global:TempDirectory -ChildPath "Packaged\$OEM\$Model\$OS"
+            $destDriverMountFolder = Join-Path -Path $global:TempDirectory -ChildPath "Packaged\$OEMPath\$ModelPath\$OSPath"
             if (Test-Path -Path $destDriverMountFolder) {
                 Remove-Item -Path $destDriverMountFolder -Recurse -Force -ErrorAction SilentlyContinue
             }
@@ -2897,7 +2906,7 @@ function Invoke-DATDriverFilePackaging {
             if ($effectiveExitCode -eq 0) {
                 # Stage WIM in the temp directory (not the package destination).
                 # Only the final ConfigMgr/Intune/standalone package should be in the Package Storage Path.
-                $destDriverMountFolder = Join-Path -Path $global:TempDirectory -ChildPath "Packaged\$OEM\$Model\$OS"
+                $destDriverMountFolder = Join-Path -Path $global:TempDirectory -ChildPath "Packaged\$OEMPath\$ModelPath\$OSPath"
                 if (-not (Test-Path -Path $destDriverMountFolder)) {
                     New-Item -Path $destDriverMountFolder -ItemType Directory -Force | Out-Null
                 }
@@ -3640,6 +3649,21 @@ function ConvertTo-DATSafePathSegment {
         package at a non-existent folder and distribution to distribution points fails
         (issue #861). Sanitizing each path segment keeps the stored source path in sync
         with the folder that is created.
+
+        Two further classes of character are handled for issue #956. Panasonic publishes
+        variant-series model names such as "FZ-G2[N/P] (mk3)" and "CF-33[T/U/4/5/6/7] (mk3)":
+
+          * "/" is a path separator, so the raw name silently splits one folder into two
+            nested folders ("FZ-G2[N" containing "P] (mk3)"). It is replaced with "-" so
+            the variant letters survive in a single readable segment.
+          * "[" and "]" are legal on disk but are PowerShell wildcard metacharacters. Any
+            provider cmdlet given such a path as -Path (Test-Path, Get-ChildItem, Copy-Item,
+            Set-Content ...) fails with "Cannot retrieve the dynamic parameters for the
+            cmdlet. The specified wildcard character pattern is not valid", and an unbalanced
+            pattern is exactly what the "/" split produces. They are removed.
+
+        The raw model name is still used for package names and metadata -- only the on-disk
+        segment is normalized.
     #>
     [CmdletBinding()]
     param (
@@ -3648,9 +3672,13 @@ function ConvertTo-DATSafePathSegment {
 
     if ([string]::IsNullOrEmpty($Segment)) { return $Segment }
 
-    # Remove characters that are invalid in Windows file/folder names.
-    $invalidChars = [System.IO.Path]::GetInvalidFileNameChars()
-    $clean = -join ($Segment.ToCharArray() | Where-Object { $invalidChars -notcontains $_ })
+    # Path separators would split one segment into several -- keep them as a visible separator.
+    $clean = $Segment -replace '[\\/]', '-'
+
+    # Remove characters that are invalid in Windows file/folder names, plus the PowerShell
+    # wildcard brackets, which are legal on disk but break every provider path operation.
+    $invalidChars = @([System.IO.Path]::GetInvalidFileNameChars()) + [char]'[' + [char]']'
+    $clean = -join ($clean.ToCharArray() | Where-Object { $invalidChars -notcontains $_ })
 
     # Windows trims trailing dots and spaces from directory names -- mirror that here.
     return $clean.TrimEnd([char]'.', [char]' ')
@@ -4765,6 +4793,8 @@ function Start-DATModelProcessing {
         [string]$HPPasswordBinPath,
         [string]$TeamsWebhookUrl,
         [switch]$TeamsNotificationsEnabled,
+        [AllowEmptyString()]
+        [string]$TeamsCustomText = '',
         [string]$CustomToastTextsJson,
         [string]$MaintenanceWindowsJson,
         [switch]$AlarmMode,
@@ -4889,6 +4919,13 @@ function Start-DATModelProcessing {
     $script:TeamsBuildNotificationSent = $false
     $buildOutcome = 'Aborted'
 
+    # Per-model outcome rows (resolved driver/BIOS versions plus a status per package type) that
+    # back the Teams notification's results table. Each row is built at the end of that model's
+    # iteration from the same counters the failure and skip records use, so the table can never
+    # disagree with the summary counts. Declared outside the try so the finally always has a
+    # list to send, even when the run fails before the loop is reached.
+    $modelResults = [System.Collections.Generic.List[object]]::new()
+
     try {
     # Reset the per-build progress counters in the registry so the completion summary reflects
     # ONLY this build. The per-model writes below are bypassed when a model is skipped (its
@@ -4967,11 +5004,24 @@ function Start-DATModelProcessing {
         $oem = $model.OEM
         $modelName = $model.Model
 
+        # Filesystem-safe copies of the OEM/model names for every folder built below. Catalog
+        # model names are not guaranteed to be valid path segments -- Panasonic publishes
+        # variant series such as "FZ-G2[N/P] (mk3)", where "/" splits the folder in two and the
+        # resulting unbalanced "[" makes every provider path operation fail (issue #956). The
+        # raw names are still used for package names, logging and catalog lookups.
+        $oemPath = ConvertTo-DATSafePathSegment -Segment "$oem"
+        $modelPath = ConvertTo-DATSafePathSegment -Segment "$modelName"
+
         # Per-model failure tracking for the post-build failures report
         $drvSuccessBefore = $driverPackageSuccessCount
         $biosSuccessBefore = $biosPackageSuccessCount
+        $skipCountBefore = $buildSkipped.Count
         $modelFailReason = ''
         $thisBiosNoMatch = $false
+        # Version actually packaged for this model, as resolved by the download module. Reset per
+        # model so a model that never reaches the download path cannot inherit the previous
+        # model's version in the Teams results table.
+        $modelDriverVersion = ''
 
         # Proactively refresh Intune token before each model to prevent expiry during long builds
         if ($RunningMode -eq 'Intune' -and -not [string]::IsNullOrEmpty($script:IntuneAuthToken)) {
@@ -5010,6 +5060,18 @@ function Start-DATModelProcessing {
         Set-DATRegistryValue -Name "DownloadSpeed" -Value "---" -Type String
 
         Write-DATLogEntry -Value "[$currentIndex/$totalModels] Processing $oem $modelName ($os $arch)" -Severity 1
+
+        # Scheduled runs carry a deadline: the headless entry point publishes the task's execution
+        # time limit here so the log warns BEFORE Task Scheduler terminates the process (#950).
+        # Without it the run simply stops mid-line, with no entry explaining why.
+        if ($global:DATRunDeadline -is [datetime]) {
+            $deadlineRemaining = $global:DATRunDeadline - (Get-Date)
+            if ($deadlineRemaining.TotalSeconds -le 0) {
+                Write-DATLogEntry -Value "[$currentIndex/$totalModels] WARNING: past the scheduled task's execution time limit ($($global:DATRunDeadline.ToString('HH:mm:ss'))) -- Task Scheduler will terminate this build without further notice. $($totalModels - $currentIndex + 1) model(s) still to process. Raise 'Maximum run time' on the schedule." -Severity 3
+            } elseif ($null -ne $global:DATRunStarted -and $deadlineRemaining.TotalSeconds -le (($global:DATRunDeadline - $global:DATRunStarted).TotalSeconds * 0.2)) {
+                Write-DATLogEntry -Value "[$currentIndex/$totalModels] WARNING: $([int]$deadlineRemaining.TotalMinutes) minute(s) left of the scheduled task's execution time limit (expires $($global:DATRunDeadline.ToString('HH:mm:ss'))), with $($totalModels - $currentIndex + 1) model(s) still to process." -Severity 2
+            }
+        }
 
         $osParts = $os.Split(" ")
         $windowsBuild = if ($osParts.Count -ge 3) { $osParts[2] } else { $null }
@@ -5132,9 +5194,9 @@ function Start-DATModelProcessing {
                     # Download Only / WIM Package Only -- check if output already exists from today
                     if ($RunningMode -eq 'Download Only') {
                         # Download Only: check if raw download file exists from today
-                        $existingDlDir = Join-Path $StoragePath "$oem\$modelName"
-                        $existingDlFile = if (Test-Path $existingDlDir) {
-                            Get-ChildItem -Path $existingDlDir -File -ErrorAction SilentlyContinue |
+                        $existingDlDir = Join-Path $StoragePath "$oemPath\$modelPath"
+                        $existingDlFile = if (Test-Path -LiteralPath $existingDlDir) {
+                            Get-ChildItem -LiteralPath $existingDlDir -File -ErrorAction SilentlyContinue |
                                 Where-Object { $_.LastWriteTime.Date -eq (Get-Date).Date } | Select-Object -First 1
                         }
                         if ($existingDlFile -and -not $modelForceUpdate) {
@@ -5145,7 +5207,7 @@ function Start-DATModelProcessing {
                         }
                     } else {
                         # WIM Package Only: check if WIM already exists from today (offline always rebuilds)
-                        $existingWimPath = Join-Path $global:TempDirectory "Packaged\$oem\$modelName\$osPkgLabel\DriverPackage.wim"
+                        $existingWimPath = Join-Path $global:TempDirectory "Packaged\$oemPath\$modelPath\$osPkgLabel\DriverPackage.wim"
                         if ((Test-Path $existingWimPath) -and (Get-Item $existingWimPath).LastWriteTime.Date -eq (Get-Date).Date -and -not $modelForceUpdate -and $RunningMode -ne 'Configuration Manager (Offline)') {
                             Write-DATLogEntry -Value "[$currentIndex/$totalModels] SKIPPED download -- driver WIM already created today: $existingWimPath" -Severity 1
                             Set-DATRegistryValue -Name "RunningMessage" -Value "Skipped (exists): $oem $modelName" -Type String
@@ -5157,6 +5219,7 @@ function Start-DATModelProcessing {
 
                 if (-not $skipDriverDownload) {
                 $global:DATSoftPaqBuildSkipped = $false
+                $global:DATSoftPaqSkipReason = ''
 
                 # Build the list of remote package identifiers so the HP SoftPaq short-circuit
                 # can confirm a previously built package still exists before skipping a rebuild.
@@ -5176,7 +5239,7 @@ function Start-DATModelProcessing {
                     -WindowsBuild $windowsBuild `
                     -WindowsVersion $windowsVersion `
                     -Architecture $arch `
-                    -DownloadDestination (Join-Path $StoragePath "$oem\$modelName") `
+                    -DownloadDestination (Join-Path $StoragePath "$oemPath\$modelPath") `
                     -PackageDestination $PackagePath `
                     -RegPath $RegPath `
                     -LogDirectory $global:LogDirectory `
@@ -5191,7 +5254,16 @@ function Start-DATModelProcessing {
                     -ExtractDownloadOnlyContent $ExtractDownloadOnlyContent
 
                 if ($global:DATSoftPaqBuildSkipped) {
-                    Write-DATLogEntry -Value "[$currentIndex/$totalModels] $oem $modelName -- driver package unchanged (SoftPaq list identical); existing package retained" -Severity 1
+                    # Say which gate retained the package. The cadence gate returns before the
+                    # catalog is read, so reporting "list identical" there claimed a comparison
+                    # that never happened -- and sent an operator looking for a change that the
+                    # run had not actually checked for (#948).
+                    $skipMessage = if ($global:DATSoftPaqSkipReason -eq 'Cadence') {
+                        "$oem $modelName -- within the update cadence; existing package retained (driver list not re-checked)"
+                    } else {
+                        "$oem $modelName -- driver package unchanged (driver list identical); existing package retained"
+                    }
+                    Write-DATLogEntry -Value "[$currentIndex/$totalModels] $skipMessage" -Severity 1
                     $script:driverPipelineSuccess = $true
                 }
 
@@ -5199,10 +5271,11 @@ function Start-DATModelProcessing {
                 # all running modes. Prefer the version returned by the download module (e.g. the
                 # resolved Dell driver-pack revision), then the catalog version, then a date stamp.
                 $resolvedPkgVersion = if (-not [string]::IsNullOrEmpty($catalogVersion)) { "$catalogVersion" } elseif (-not [string]::IsNullOrEmpty($catalogDriverVersion)) { "$catalogDriverVersion" } else { Get-Date -Format "ddMMyyyy" }
+                $modelDriverVersion = $resolvedPkgVersion
 
                 # Intune: Create and upload Win32 app after packaging
                 if ($RunningMode -eq 'Intune') {
-                    $wimPath = Join-Path $global:TempDirectory "Packaged\$oem\$modelName\$osPkgLabel\DriverPackage.wim"
+                    $wimPath = Join-Path $global:TempDirectory "Packaged\$oemPath\$modelPath\$osPkgLabel\DriverPackage.wim"
                     if (Test-Path $wimPath) {
                         Write-DATLogEntry -Value "[$currentIndex/$totalModels] Starting Intune pipeline for $oem $modelName" -Severity 1
                         Set-DATRegistryValue -Name "RunningMessage" -Value "Creating Intune package: $oem $modelName..." -Type String
@@ -5340,9 +5413,11 @@ function Start-DATModelProcessing {
 
                         # Telemetry: driver report with .intunewin hash
                         try {
-                            $intuneWinDir = Join-Path $PackagePath "IntuneWin\$oem\$modelName\$osPkgLabel"
+                            $intuneWinDir = Join-Path $PackagePath "IntuneWin\$oemPath\$modelPath\$osPkgLabel"
                             $intuneWinFile = Get-ChildItem -Path $intuneWinDir -Filter '*.intunewin' -ErrorAction SilentlyContinue | Select-Object -First 1
-                            $drvHash = if ($intuneWinFile) { Get-DATPackageHash -FilePath $intuneWinFile.FullName } else { $null }
+                            # Hashing is done solely to populate the report below, so it is skipped
+                            # when telemetry will not be sent (#951).
+                            $drvHash = if ($intuneWinFile -and (Test-DATTelemetryWanted)) { Get-DATPackageHash -FilePath $intuneWinFile.FullName } else { $null }
                             $drvSize = if ($intuneWinFile) { $intuneWinFile.Length } else { 0 }
                             Send-DATDriverReport -Manufacturer $oem -Model $modelName `
                                 -OSVersion $osPkgLabel -OSArchitecture $arch -Platform 'Intune' `
@@ -5359,7 +5434,7 @@ function Start-DATModelProcessing {
 
                 # ConfigMgr: Create driver package on site server after packaging
                 if ($RunningMode -eq 'Configuration Manager') {
-                    $stagedDriverDir = Join-Path $global:TempDirectory "Packaged\$oem\$modelName\$osPkgLabel"
+                    $stagedDriverDir = Join-Path $global:TempDirectory "Packaged\$oemPath\$modelPath\$osPkgLabel"
                     $wimPath = Join-Path $stagedDriverDir "DriverPackage.wim"
                     # When WIM compression is disabled for ConfigMgr the staged content is the
                     # expanded driver folder rather than a single DriverPackage.wim file.
@@ -5376,6 +5451,39 @@ function Start-DATModelProcessing {
                             Write-DATLogEntry -Value "-- Site server: $SiteServer" -Severity 1
                             Write-DATLogEntry -Value "-- Site code: $SiteCode" -Severity 1
                             Set-DATRegistryValue -Name "RunningMessage" -Value "Creating ConfigMgr driver package: $oem $modelName..." -Type String
+
+                            # Hash for telemetry HERE, before the content copy and the distribution
+                            # call. New-DATConfigMgrPkg returns as soon as ConfigMgr accepts the
+                            # distribution job, so Distribution Manager is still reading the package
+                            # source when the hash used to start. On a site server whose content
+                            # share and staging directory share storage the two contend, and a
+                            # multi-GB hash reaches its 300s timeout and is discarded -- worse,
+                            # a timed-out hash is abandoned rather than stopped, so it keeps
+                            # reading while the next model builds (#952). The WIM is idle at this
+                            # point, so the same hash costs the same time without the contention.
+                            # Both the hash and the size exist only to populate the telemetry report,
+                            # so the whole block is skipped when telemetry will not be sent -- which
+                            # also spares the recursive directory walk on expanded content (#951).
+                            $drvHash = $null
+                            $drvSize = 0
+                            if (Test-DATTelemetryWanted) {
+                                try {
+                                    if (Test-Path $driverSource -PathType Leaf) {
+                                        # Compressed WIM -- hash the single file
+                                        Write-DATLogEntry -Value "[$oem] Pre-package: hashing driver WIM for telemetry ($driverSource)" -Severity 1
+                                        $drvHash = Get-DATPackageHash -FilePath $driverSource
+                                        $drvSize = (Get-Item $driverSource).Length
+                                        Write-DATLogEntry -Value "[$oem] Pre-package: driver WIM hashing complete" -Severity 1
+                                    } else {
+                                        # Expanded driver content -- sum the directory size, no single-file hash
+                                        Write-DATLogEntry -Value "[$oem] Pre-package: measuring expanded driver content for telemetry" -Severity 1
+                                        $drvSize = [int64](Get-ChildItem -Path $driverSource -Recurse -File -ErrorAction SilentlyContinue |
+                                            Measure-Object -Property Length -Sum).Sum
+                                    }
+                                } catch {
+                                    Write-DATLogEntry -Value "[Telemetry] Driver package hash/size failed: $($_.Exception.Message)" -Severity 2
+                                }
+                            }
 
                             $version = if (-not [string]::IsNullOrEmpty($catalogVersion)) { "$catalogVersion" } elseif (-not [string]::IsNullOrEmpty($catalogDriverVersion)) { "$catalogDriverVersion" } else { Get-Date -Format "ddMMyyyy" }
                             $cmParams = @{
@@ -5424,24 +5532,10 @@ function Start-DATModelProcessing {
                                     [void](Update-DATLenovoLatestManifestReference -Key $lnvRefKey -Field 'configMgrPackageId' -Value "$cmResult")
                                 }
 
-                                # Telemetry: driver report with WIM hash (before cleanup). The hash
-                                # runs on a timeout-guarded runspace so a stalled file read can never
-                                # hang the build; the surrounding log lines make the previously-silent
-                                # post-creation stretch diagnosable (#853).
+                                # Telemetry: driver report. The hash and size were taken before the
+                                # content copy, so they no longer contend with Distribution Manager
+                                # still reading the package source (#952).
                                 try {
-                                    if (Test-Path $driverSource -PathType Leaf) {
-                                        # Compressed WIM -- hash the single file
-                                        Write-DATLogEntry -Value "[$oem] Post-package: hashing driver WIM for telemetry ($driverSource)" -Severity 1
-                                        $drvHash = Get-DATPackageHash -FilePath $driverSource
-                                        $drvSize = (Get-Item $driverSource).Length
-                                        Write-DATLogEntry -Value "[$oem] Post-package: driver WIM hashing complete" -Severity 1
-                                    } else {
-                                        # Expanded driver content -- sum the directory size, no single-file hash
-                                        Write-DATLogEntry -Value "[$oem] Post-package: measuring expanded driver content for telemetry" -Severity 1
-                                        $drvHash = $null
-                                        $drvSize = [int64](Get-ChildItem -Path $driverSource -Recurse -File -ErrorAction SilentlyContinue |
-                                            Measure-Object -Property Length -Sum).Sum
-                                    }
                                     Send-DATDriverReport -Manufacturer $oem -Model $modelName `
                                         -OSVersion $osPkgLabel -OSArchitecture $arch `
                                         -Platform 'ConfigMgr' -Status 'Success' `
@@ -5482,8 +5576,8 @@ function Start-DATModelProcessing {
                 # Configuration Manager (Offline): export the staged WIM/expanded content to the
                 # offline folder and record a manifest entry for later import (no live site).
                 if ($isOfflineCM) {
-                    $offlineWim = Join-Path $global:TempDirectory "Packaged\$oem\$modelName\$osPkgLabel\DriverPackage.wim"
-                    $offlineDir = Join-Path $global:TempDirectory "Packaged\$oem\$modelName\$osPkgLabel"
+                    $offlineWim = Join-Path $global:TempDirectory "Packaged\$oemPath\$modelPath\$osPkgLabel\DriverPackage.wim"
+                    $offlineDir = Join-Path $global:TempDirectory "Packaged\$oemPath\$modelPath\$osPkgLabel"
                     $offlineDriverSrc = if (Test-Path $offlineWim) {
                         $offlineWim
                     } elseif ((Test-Path $offlineDir) -and @(Get-ChildItem -Path $offlineDir -Force -ErrorAction SilentlyContinue).Count -gt 0) {
@@ -5509,9 +5603,9 @@ function Start-DATModelProcessing {
 
                 # WIM Package Only: copy the final WIM from temp staging to the Package Storage Path
                 if ($RunningMode -eq 'WIM Package Only') {
-                    $wimStagingPath = Join-Path $global:TempDirectory "Packaged\$oem\$modelName\$osPkgLabel\DriverPackage.wim"
+                    $wimStagingPath = Join-Path $global:TempDirectory "Packaged\$oemPath\$modelPath\$osPkgLabel\DriverPackage.wim"
                     if (Test-Path $wimStagingPath) {
-                        $wimFinalDir = Join-Path $PackagePath "$oem\$modelName\$osPkgLabel"
+                        $wimFinalDir = Join-Path $PackagePath "$oemPath\$modelPath\$osPkgLabel"
                         if (-not (Test-Path $wimFinalDir)) { New-Item -Path $wimFinalDir -ItemType Directory -Force | Out-Null }
                         $wimFinalPath = Join-Path $wimFinalDir "DriverPackage.wim"
                         Copy-Item -Path $wimStagingPath -Destination $wimFinalPath -Force
@@ -5531,13 +5625,13 @@ function Start-DATModelProcessing {
                     try {
                         if ($RunningMode -eq 'Download Only') {
                             # Download Only: use the raw downloaded file for telemetry
-                            $dlDestDir = Join-Path $StoragePath "$oem\$modelName"
+                            $dlDestDir = Join-Path $StoragePath "$oemPath\$modelPath"
                             $dlFile = if (Test-Path $dlDestDir) {
                                 Get-ChildItem -Path $dlDestDir -File -ErrorAction SilentlyContinue |
                                     Sort-Object LastWriteTime -Descending | Select-Object -First 1
                             }
                             if ($dlFile) {
-                                $drvHash = Get-DATPackageHash -FilePath $dlFile.FullName
+                                $drvHash = if (Test-DATTelemetryWanted) { Get-DATPackageHash -FilePath $dlFile.FullName } else { $null }
                                 $drvSize = $dlFile.Length
                                 Send-DATDriverReport -Manufacturer $oem -Model $modelName `
                                     -OSVersion $osPkgLabel -OSArchitecture $arch `
@@ -5546,12 +5640,12 @@ function Start-DATModelProcessing {
                             }
                         } else {
                         # WIM Package Only: use the WIM file for telemetry
-                        $dlWimPath = Join-Path $global:TempDirectory "Packaged\$oem\$modelName\$osPkgLabel\DriverPackage.wim"
+                        $dlWimPath = Join-Path $global:TempDirectory "Packaged\$oemPath\$modelPath\$osPkgLabel\DriverPackage.wim"
                         if (-not (Test-Path $dlWimPath)) {
-                            $dlWimPath = Join-Path $PackagePath "$oem\$modelName\$osPkgLabel\DriverPackage.wim"
+                            $dlWimPath = Join-Path $PackagePath "$oemPath\$modelPath\$osPkgLabel\DriverPackage.wim"
                         }
                         if (Test-Path $dlWimPath) {
-                            $drvHash = Get-DATPackageHash -FilePath $dlWimPath
+                            $drvHash = if (Test-DATTelemetryWanted) { Get-DATPackageHash -FilePath $dlWimPath } else { $null }
                             $drvSize = (Get-Item $dlWimPath).Length
                             Send-DATDriverReport -Manufacturer $oem -Model $modelName `
                                 -OSVersion $osPkgLabel -OSArchitecture $arch `
@@ -5567,10 +5661,10 @@ function Start-DATModelProcessing {
                 # Count driver package success -- check if the WIM was produced
                 # or if it was successfully consumed by the Intune/ConfigMgr pipeline
                 # For Download Only, the raw download exists (no WIM) -- check the download folder
-                $drvWimCheck = Join-Path $global:TempDirectory "Packaged\$oem\$modelName\$osPkgLabel\DriverPackage.wim"
+                $drvWimCheck = Join-Path $global:TempDirectory "Packaged\$oemPath\$modelPath\$osPkgLabel\DriverPackage.wim"
                 if ($RunningMode -eq 'Download Only') {
                     # Download Only skips WIM packaging -- success = downloaded file exists in destination
-                    $dlDestDir = Join-Path $StoragePath "$oem\$modelName"
+                    $dlDestDir = Join-Path $StoragePath "$oemPath\$modelPath"
                     $dlFileExists = (Test-Path $dlDestDir) -and @(Get-ChildItem -Path $dlDestDir -File -ErrorAction SilentlyContinue).Count -gt 0
                     if ($dlFileExists) { $driverPackageSuccessCount++; $packagesCreated++ }
                 } elseif ((Test-Path $drvWimCheck) -or $script:driverPipelineSuccess) { $driverPackageSuccessCount++; $packagesCreated++ }
@@ -5693,7 +5787,7 @@ function Start-DATModelProcessing {
                         }
                     } else {
                         # Download Only / WIM Package Only -- check if BIOS package already exists with matching version
-                        $existingBiosDir = Join-Path $PackagePath "$oem\$modelName\BIOS"
+                        $existingBiosDir = Join-Path $PackagePath "$oemPath\$modelPath\BIOS"
                         $existingBiosVersionFile = Join-Path $existingBiosDir ".biosversion"
                         if ((Test-Path $existingBiosDir) -and (Test-Path $existingBiosVersionFile)) {
                             $existingBiosVer = (Get-Content $existingBiosVersionFile -Raw -ErrorAction SilentlyContinue).Trim()
@@ -5726,7 +5820,7 @@ function Start-DATModelProcessing {
                         Set-DATRegistryValue -Name "RunningMode" -Value "BiosNoMatch" -Type String
                     }
                 } else {
-                    $biosDownloadDir = Join-Path $StoragePath "$oem\$modelName\BIOS"
+                    $biosDownloadDir = Join-Path $StoragePath "$oemPath\$modelPath\BIOS"
                     Set-DATRegistryValue -Name "RunningMode" -Value "Download" -Type String
                     $biosFilePath = @(Start-DATBiosDownload -BiosEntry $biosEntry -DownloadDestination $biosDownloadDir -OEM $oem)[-1]
 
@@ -5875,9 +5969,9 @@ function Start-DATModelProcessing {
 
                                 # Telemetry: BIOS report with .intunewin hash
                                 try {
-                                    $biosIntuneWinDir = Join-Path $PackagePath "IntuneWin\$oem\$modelName\BIOS"
+                                    $biosIntuneWinDir = Join-Path $PackagePath "IntuneWin\$oemPath\$modelPath\BIOS"
                                     $biosIntuneWinFile = Get-ChildItem -Path $biosIntuneWinDir -Filter '*.intunewin' -ErrorAction SilentlyContinue | Select-Object -First 1
-                                    $biosHash = if ($biosIntuneWinFile) { Get-DATPackageHash -FilePath $biosIntuneWinFile.FullName } else { $null }
+                                    $biosHash = if ($biosIntuneWinFile -and (Test-DATTelemetryWanted)) { Get-DATPackageHash -FilePath $biosIntuneWinFile.FullName } else { $null }
                                     Send-DATBiosReport -Manufacturer $oem -Model $modelName `
                                         -Platform 'Intune' -Status 'Success' `
                                         -TargetBiosVersion $biosEntry.Version -PackageHash $biosHash
@@ -5920,14 +6014,16 @@ function Start-DATModelProcessing {
                                     if ($modelForceUpdate) { $cmParams['ForceUpdate'] = $true }
                                     if ($EnableBinaryDeltaReplication) { $cmParams['EnableBinaryDeltaReplication'] = $true }
                                     if ($ConsoleFolderID -ge 0) { $cmParams['ConsoleFolderID'] = $ConsoleFolderID }
-                                    $cmResult = New-DATConfigMgrPkg @cmParams
 
-                                    if ($cmResult) {
-                                        Write-DATLogEntry -Value "- $oem $modelName ConfigMgr BIOS package created" -Severity 1
-
-                                        # Telemetry: BIOS report with staged package hash
-                                        # For ConfigMgr BIOS, $biosPackagePath is a directory (no WIM) --
-                                        # hash the first file inside it rather than the directory itself.
+                                    # Hash before the package is created, for the reason the driver path
+                                    # does the same (#952): New-DATConfigMgrPkg returns once ConfigMgr has
+                                    # accepted the distribution job, so hashing afterwards reads the source
+                                    # while Distribution Manager is still copying it. A BIOS payload is small
+                                    # enough that nobody has hit the timeout here, but it is the same shape,
+                                    # and the file is idle at this point.
+                                    # $biosPackagePath is a directory (no WIM) -- hash the first file inside it.
+                                    $biosHash = $null
+                                    if (Test-DATTelemetryWanted) {
                                         try {
                                             $hashTarget = $biosPackagePath
                                             if (Test-Path $biosPackagePath -PathType Container) {
@@ -5935,6 +6031,18 @@ function Start-DATModelProcessing {
                                                 if ($firstFile) { $hashTarget = $firstFile.FullName }
                                             }
                                             $biosHash = Get-DATPackageHash -FilePath $hashTarget
+                                        } catch {
+                                            Write-DATLogEntry -Value "[Telemetry] BIOS package hash failed: $($_.Exception.Message)" -Severity 2
+                                        }
+                                    }
+
+                                    $cmResult = New-DATConfigMgrPkg @cmParams
+
+                                    if ($cmResult) {
+                                        Write-DATLogEntry -Value "- $oem $modelName ConfigMgr BIOS package created" -Severity 1
+
+                                        # Telemetry: BIOS report with the hash taken above, before distribution.
+                                        try {
                                             Send-DATBiosReport -Manufacturer $oem -Model $modelName `
                                                 -Platform 'ConfigMgr' -Status 'Success' `
                                                 -TargetBiosVersion $biosVersion -PackageHash $biosHash
@@ -5977,7 +6085,7 @@ function Start-DATModelProcessing {
                                         $firstFile = Get-ChildItem -Path $biosPackagePath -File -ErrorAction SilentlyContinue | Select-Object -First 1
                                         if ($firstFile) { $hashTarget = $firstFile.FullName }
                                     }
-                                    $biosHash = Get-DATPackageHash -FilePath $hashTarget
+                                    $biosHash = if (Test-DATTelemetryWanted) { Get-DATPackageHash -FilePath $hashTarget } else { $null }
                                     Send-DATBiosReport -Manufacturer $oem -Model $modelName `
                                         -Platform $RunningMode -Status 'Success' `
                                         -TargetBiosVersion $biosEntry.Version -PackageHash $biosHash
@@ -6020,6 +6128,40 @@ function Start-DATModelProcessing {
                 $buildFailures.Add([pscustomobject]@{ OEM = $oem; Model = $modelName; PackageType = 'BIOS'; OS = "$os"; Reason = $biosReason })
             }
         }
+
+        # Record the per-model row for the Teams results table. Derived from the same counters and
+        # skip records the failure block above uses: a package type that was in scope and whose
+        # success counter advanced is 'Updated' unless it was recorded as a skip, in which case it
+        # was already current. Types that were never in scope are left blank rather than reported
+        # as failures.
+        $newSkips = if ($buildSkipped.Count -gt $skipCountBefore) { @($buildSkipped[$skipCountBefore..($buildSkipped.Count - 1)]) } else { @() }
+        $drvWasSkipped  = @($newSkips | Where-Object { $_.PackageType -eq 'Drivers' }).Count -gt 0
+        $biosWasSkipped = @($newSkips | Where-Object { $_.PackageType -eq 'BIOS' }).Count -gt 0
+        $drvStatus = if ($modelPackageType -notin @('Drivers', 'All')) { '' }
+                     elseif ($modelIsBIOSOnly) { 'N/A' }
+                     elseif ($drvWasSkipped) { 'Current' }
+                     elseif ($driverPackageSuccessCount -gt $drvSuccessBefore) { 'Updated' }
+                     else { 'Failed' }
+        # Surface BIOS ships inside the driver package -- reported as not applicable, not failed.
+        $biosStatus = if ($modelPackageType -notin @('BIOS', 'All')) { '' }
+                      elseif ($oem -eq 'Microsoft') { 'N/A' }
+                      elseif ($biosWasSkipped) { 'Current' }
+                      elseif ($thisBiosNoMatch) { 'No update' }
+                      elseif ($biosPackageSuccessCount -gt $biosSuccessBefore) { 'Updated' }
+                      else { 'Failed' }
+        $rowDriverVersion = if (-not [string]::IsNullOrEmpty($modelDriverVersion)) { "$modelDriverVersion" }
+                            elseif (-not [string]::IsNullOrEmpty($catalogDriverVersion)) { "$catalogDriverVersion" }
+                            else { '' }
+        $modelResults.Add([pscustomobject]@{
+            OEM           = $oem
+            Model         = $modelName
+            OS            = "$os"
+            Architecture  = "$arch"
+            DriverVersion = $rowDriverVersion
+            DriverStatus  = $drvStatus
+            BIOSVersion   = if (-not [string]::IsNullOrEmpty($catalogBIOSVersion)) { "$catalogBIOSVersion" } else { '' }
+            BIOSStatus    = $biosStatus
+        })
 
         Set-DATRegistryValue -Name "CompletedJobs" -Value "$completedCount" -Type String
         Set-DATRegistryValue -Name "CompletedDriverPackages" -Value "$driverPackageSuccessCount" -Type String
@@ -6150,10 +6292,18 @@ function Start-DATModelProcessing {
             $attemptedCount    = [Math]::Min($currentIndex, $totalModels)
             $failedCount       = [Math]::Max(0, $attemptedCount - $completedCount)
             $notProcessedCount = [Math]::Max(0, $totalModels - $attemptedCount)
+            # Packages left alone because the deployed version already matched the catalog. Same
+            # list the post-build summary modal reads, so the card and the modal agree. Declared
+            # inside the try, so it is absent when the run failed before the reset block ran.
+            $skippedPkgCount = if ($buildSkipped) { $buildSkipped.Count } else { 0 }
             try {
+                # Empty when the run failed before any model completed -- the card then simply
+                # reports that no models were processed.
                 Send-DATTeamsNotification -WebhookUrl $TeamsWebhookUrl `
                     -TotalModels $totalModels -SuccessCount $completedCount -FailedCount $failedCount `
-                    -NotProcessedCount $notProcessedCount `
+                    -NotProcessedCount $notProcessedCount -Results @($modelResults) `
+                    -PackagesCreated $packagesCreated -SkippedCount $skippedPkgCount `
+                    -CustomText $TeamsCustomText `
                     -Platform $RunningMode -PackageType $PackageType -Models $modelList -Outcome $buildOutcome
                 Write-DATLogEntry -Value "[Teams] Build notification sent successfully" -Severity 1
             } catch {
@@ -6174,8 +6324,29 @@ function Send-DATTeamsNotification {
         [string]$PackageType = 'Drivers',
         [array]$Models = @(),
         [ValidateSet('Auto', 'Completed', 'CompletedWithErrors', 'Aborted', 'Failed')][string]$Outcome = 'Auto',
-        [int]$NotProcessedCount = 0
+        [int]$NotProcessedCount = 0,
+        # Package-level work counts, taken from the same sources the post-build summary modal
+        # reads so the two surfaces cannot disagree. PackagesCreated counts packages genuinely
+        # downloaded and repackaged; SkippedCount counts packages left alone because the deployed
+        # version already matched the catalog. A model can succeed while creating nothing.
+        [int]$PackagesCreated = 0,
+        [int]$SkippedCount = 0,
+        # Per-model rows produced by the build loop: OEM, Model, OS, Architecture, DriverVersion,
+        # DriverStatus, BIOSVersion, BIOSStatus. Optional -- callers that have no per-model detail
+        # (the settings test button, the headless pre-flight failure) simply omit the table.
+        [array]$Results = @(),
+        # Optional headline shown above everything else on the card, so several tenants posting
+        # into one channel can be told apart (#842). Empty = no headline.
+        [AllowEmptyString()]
+        [string]$CustomText = ''
     )
+
+    # Teams rejects webhook payloads over ~28 KB. The per-model table starts at this many rows and
+    # is trimmed further below if the serialized card still exceeds the budget, so a build with
+    # unusually long model names cannot silently produce a card Teams refuses. Updated rows sort
+    # first, so trimming can only ever hide rows that reported no change.
+    $maxResultRows  = 25
+    $payloadBudget  = 24000
 
     # 'Auto' derives the state from FailedCount as before, so existing callers are unaffected.
     $effectiveOutcome = $Outcome
@@ -6184,7 +6355,7 @@ function Send-DATTeamsNotification {
     }
 
     # Amber for a build that finished imperfectly or was cancelled, red only for a hard
-    # failure. The status text names the state -- the counts live in the fact set below.
+    # failure. The status text names the state -- the counts live in the summary table below.
     # "at" keeps the crash and abort timestamps distinct from the Failed count above them.
     switch ($effectiveOutcome) {
         'Completed' {
@@ -6212,30 +6383,172 @@ function Send-DATTeamsNotification {
             $timestampLabel = 'Completed'
         }
     }
+    # A run that skipped every package did no work, so a plain "completed successfully" overstates
+    # it -- 18 packages already at the catalog version are 18 skips, not 18 builds. Still a green
+    # card: nothing went wrong, there was simply nothing to do.
+    if ($effectiveOutcome -eq 'Completed' -and $PackagesCreated -eq 0 -and $SkippedCount -gt 0) {
+        $statusText = 'completed - all packages already current'
+    }
+
     $hostname = $env:COMPUTERNAME
     $timestamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
 
-    # Models a stopped build never reached are not failures -- row omitted when zero.
-    $summaryFacts = @(
-        @{ title = 'Platform';     value = $Platform },
-        @{ title = 'Package Type'; value = $PackageType },
-        @{ title = 'Total Models'; value = "$TotalModels" },
-        @{ title = 'Succeeded';    value = "$SuccessCount" },
-        @{ title = 'Failed';       value = "$FailedCount" }
-    )
-    if ($NotProcessedCount -gt 0) {
-        $summaryFacts += @{ title = 'Not Processed'; value = "$NotProcessedCount" }
+    # Adaptive Cards only gained a native Table element in schema 1.5, which not every Teams
+    # surface renders. A ColumnSet per row is the portable equivalent and is what every client
+    # back to 1.0 draws correctly, so all three tables below are built from these rows.
+    $newTableRow = {
+        param (
+            [string[]]$Cells,
+            [string[]]$Widths,
+            [switch]$IsHeader,
+            [switch]$Separator
+        )
+        $columns = @()
+        for ($i = 0; $i -lt $Cells.Count; $i++) {
+            $columns += @{
+                type  = 'Column'
+                width = $Widths[$i]
+                items = @(
+                    @{
+                        type     = 'TextBlock'
+                        text     = "$($Cells[$i])"
+                        wrap     = $true
+                        size     = 'Small'
+                        spacing  = 'None'
+                        weight   = $(if ($IsHeader) { 'Bolder' } else { 'Default' })
+                        isSubtle = [bool]$IsHeader
+                    }
+                )
+            }
+        }
+        @{
+            type      = 'ColumnSet'
+            columns   = $columns
+            spacing   = 'Small'
+            separator = [bool]$Separator
+        }
     }
-    $summaryFacts += @{ title = 'Host';          value = $hostname }
-    $summaryFacts += @{ title = $timestampLabel; value = $timestamp }
 
-    # Build model list for the card
-    $modelFacts = @()
-    foreach ($m in $Models) {
-        $modelName = if ($m.Model) { $m.Model } else { "$($m.OEM) Unknown" }
-        $modelFacts += @{ title = $m.OEM; value = $modelName }
+    # ── Build summary table (replaces the former FactSet) ──────────────────────
+    # Model rows describe scope, package rows describe work done, and they are labelled apart
+    # because the two do not move together: a run can succeed on every model and still create
+    # nothing when each package is already at the catalog version.
+    $summaryWidths = @('2', '3')
+    $summaryRows = @(
+        (& $newTableRow -Cells @('Platform',         $Platform)       -Widths $summaryWidths),
+        (& $newTableRow -Cells @('Package Type',     $PackageType)    -Widths $summaryWidths),
+        (& $newTableRow -Cells @('Total Models',     "$TotalModels")  -Widths $summaryWidths),
+        (& $newTableRow -Cells @('Models Succeeded', "$SuccessCount") -Widths $summaryWidths),
+        (& $newTableRow -Cells @('Models Failed',    "$FailedCount")  -Widths $summaryWidths)
+    )
+    # Models a stopped build never reached are not failures -- row omitted when zero.
+    if ($NotProcessedCount -gt 0) {
+        $summaryRows += (& $newTableRow -Cells @('Models Not Processed', "$NotProcessedCount") -Widths $summaryWidths)
     }
-    if ($modelFacts.Count -eq 0) { $modelFacts += @{ title = 'Models'; value = 'None specified' } }
+    $summaryRows += (& $newTableRow -Cells @('Packages Created', "$PackagesCreated") -Widths $summaryWidths)
+    $summaryRows += (& $newTableRow -Cells @('Packages Skipped', "$SkippedCount")    -Widths $summaryWidths)
+    $summaryRows += (& $newTableRow -Cells @('Host',             $hostname)          -Widths $summaryWidths)
+    $summaryRows += (& $newTableRow -Cells @($timestampLabel,    $timestamp)         -Widths $summaryWidths)
+
+    # ── Selected models per manufacturer ───────────────────────────────────────
+    # Counts selection entries rather than distinct models: a model selected for two OS versions
+    # is two entries, so the column always reconciles with Total Models above.
+    $oemCounts = [ordered]@{}
+    foreach ($m in $Models) {
+        $oemKey = if ($m.OEM) { "$($m.OEM)" } else { 'Unknown' }
+        if (-not $oemCounts.Contains($oemKey)) { $oemCounts[$oemKey] = 0 }
+        $oemCounts[$oemKey]++
+    }
+    $oemWidths = @('3', '2')
+    $oemRows = @((& $newTableRow -Cells @('Manufacturer', 'Selected') -Widths $oemWidths -IsHeader))
+    if ($oemCounts.Count -eq 0) {
+        $oemRows += (& $newTableRow -Cells @('None specified', '0') -Widths $oemWidths -Separator)
+    } else {
+        foreach ($key in ($oemCounts.Keys | Sort-Object)) {
+            $oemRows += (& $newTableRow -Cells @($key, "$($oemCounts[$key])") -Widths $oemWidths -Separator)
+        }
+        $oemRows += (& $newTableRow -Cells @('Total', "$(($oemCounts.Values | Measure-Object -Sum).Sum)") -Widths $oemWidths -IsHeader -Separator)
+    }
+
+    # ── Per-model driver / BIOS versions ───────────────────────────────────────
+    # Renders the version alongside what happened to it, so "v1.24.0" (packaged this run) is never
+    # confused with the same version already deployed. A package type that was out of scope for
+    # the model shows an em dash rather than an empty cell.
+    $formatCell = {
+        param ([string]$Version, [string]$Status)
+        $ver = if ([string]::IsNullOrWhiteSpace($Version)) { '' } else { "v$Version" }
+        switch ($Status) {
+            'Updated'   { if ($ver) { $ver } else { 'Updated' } }
+            'Current'   { if ($ver) { "$ver (current)" } else { 'Current' } }
+            'Failed'    { 'Failed' }
+            'No update' { 'No update found' }
+            'N/A'       { 'N/A' }
+            default     { [char]0x2014 }
+        }
+    }
+    $resultWidths = @('2', '4', '3', '3')
+    $orderedResults = @()
+    if ($Results -and $Results.Count -gt 0) {
+        # Updated rows first so the row cap can only trim rows that reported no change; build
+        # order is preserved within each group.
+        $realResults = @($Results | Where-Object { $null -ne $_ })
+        $orderedResults = @($realResults | Where-Object { $_.DriverStatus -eq 'Updated' -or $_.BIOSStatus -eq 'Updated' }) +
+                          @($realResults | Where-Object { $_.DriverStatus -ne 'Updated' -and $_.BIOSStatus -ne 'Updated' })
+    }
+    $buildResultRows = {
+        param ([int]$Limit)
+        $rows = @()
+        if ($orderedResults.Count -eq 0) {
+            return @(
+                @{
+                    type     = 'TextBlock'
+                    text     = 'No models were processed.'
+                    wrap     = $true
+                    size     = 'Small'
+                    isSubtle = $true
+                    spacing  = 'Small'
+                }
+            )
+        }
+        $rows += (& $newTableRow -Cells @('Make', 'Model', 'Driver', 'BIOS') -Widths $resultWidths -IsHeader)
+        foreach ($r in ($orderedResults | Select-Object -First $Limit)) {
+            $rows += (& $newTableRow -Widths $resultWidths -Separator -Cells @(
+                "$($r.OEM)",
+                "$($r.Model)",
+                (& $formatCell -Version "$($r.DriverVersion)" -Status "$($r.DriverStatus)"),
+                (& $formatCell -Version "$($r.BIOSVersion)"   -Status "$($r.BIOSStatus)")
+            ))
+        }
+        if ($orderedResults.Count -gt $Limit) {
+            $rows += @{
+                type     = 'TextBlock'
+                text     = "Showing $Limit of $($orderedResults.Count) models -- see the build log for the full list."
+                wrap     = $true
+                size     = 'Small'
+                isSubtle = $true
+                spacing  = 'Small'
+            }
+        }
+        return $rows
+    }
+    $renderedRows = [Math]::Min($maxResultRows, [Math]::Max(1, $orderedResults.Count))
+    $resultRows = @(& $buildResultRows -Limit $renderedRows)
+
+    $sectionHeading = {
+        param ([string]$Text)
+        @{
+            type    = 'TextBlock'
+            text    = $Text
+            weight  = 'Bolder'
+            spacing = 'Medium'
+        }
+    }
+
+    # Held as its own hashtable so the size trim below can re-render its rows in place.
+    $resultsContainer = @{
+        type  = 'Container'
+        items = @(@(& $sectionHeading -Text 'Driver and BIOS Versions') + $resultRows)
+    }
 
     $card = @{
         type = 'message'
@@ -6284,38 +6597,51 @@ function Send-DATTeamsNotification {
                             )
                         },
                         @{
-                            type      = 'Container'
-                            style     = $statusColor
-                            bleed     = $true
-                            items     = @(
-                                @{
-                                    type    = 'FactSet'
-                                    facts   = $summaryFacts
-                                }
-                            )
+                            type  = 'Container'
+                            style = $statusColor
+                            bleed = $true
+                            items = @(@(& $sectionHeading -Text 'Build Summary') + $summaryRows)
                         },
                         @{
-                            type      = 'Container'
-                            items     = @(
-                                @{
-                                    type   = 'TextBlock'
-                                    text   = 'Selected Models'
-                                    weight = 'Bolder'
-                                    spacing = 'Medium'
-                                },
-                                @{
-                                    type  = 'FactSet'
-                                    facts = $modelFacts
-                                }
-                            )
-                        }
+                            type  = 'Container'
+                            items = @(@(& $sectionHeading -Text 'Selected Models by Manufacturer') + $oemRows)
+                        },
+                        $resultsContainer
                     )
                 }
             }
         )
     }
 
-    $jsonPayload = $card | ConvertTo-Json -Depth 20 -Compress
+    # The optional per-tenant headline sits directly under the title row and above Build Summary,
+    # so a channel fed by several tenants can be read at a glance (#842). It is inserted after the
+    # card is built rather than inline, both to keep the body literal above readable and so it is
+    # counted by the payload budget below.
+    if (-not [string]::IsNullOrWhiteSpace($CustomText)) {
+        $cardContent = $card.attachments[0].content
+        $headlineBlock = @{
+            type    = 'TextBlock'
+            text    = $CustomText
+            wrap    = $true
+            weight  = 'Bolder'
+            size    = 'Large'
+            color   = 'Accent'
+            spacing = 'Small'
+        }
+        $cardContent.body = @($cardContent.body[0], $headlineBlock) +
+                            @($cardContent.body[1..($cardContent.body.Count - 1)])
+    }
+
+    # Drop the lowest-priority rows (updated models sort first, so these reported no change) until
+    # the card fits Teams' payload limit. Model names vary enough in length that a fixed row cap
+    # cannot guarantee this on its own.
+    $jsonPayload = $card | ConvertTo-Json -Depth 25 -Compress
+    while ([System.Text.Encoding]::UTF8.GetByteCount($jsonPayload) -gt $payloadBudget -and $renderedRows -gt 1) {
+        $renderedRows--
+        $resultsContainer.items = @(@(& $sectionHeading -Text 'Driver and BIOS Versions') + (& $buildResultRows -Limit $renderedRows))
+        $jsonPayload = $card | ConvertTo-Json -Depth 25 -Compress
+    }
+
     $utf8 = [System.Text.Encoding]::UTF8
     # Runs on the build's critical path -- an unreachable webhook must not stall the run.
     Invoke-RestMethod -Uri $WebhookUrl -Method Post -Body ($utf8.GetBytes($jsonPayload)) `
@@ -6341,6 +6667,8 @@ function Export-DATBuildConfig {
         [int]$BIOSRestartDelayMinutes = 3,
         [string]$TeamsWebhookUrl,
         [bool]$TeamsNotificationsEnabled = $false,
+        [AllowEmptyString()]
+        [string]$TeamsCustomText = '',
         [hashtable]$Intune,
         [hashtable]$ConfigMgr,
         [bool]$MaintenanceWindowEnabled = $false,
@@ -6389,6 +6717,7 @@ function Export-DATBuildConfig {
         DownloadOnlyExtractContent = $DownloadOnlyExtractContent
         TeamsWebhookUrl            = if ($TeamsWebhookUrl) { $TeamsWebhookUrl } else { '' }
         TeamsNotificationsEnabled  = $TeamsNotificationsEnabled
+        TeamsCustomText            = if ($TeamsCustomText) { $TeamsCustomText } else { '' }
         Intune                     = if ($Intune) { $Intune } else { [ordered]@{ TenantEnvironment = 'Commercial'; TenantId = ''; AppId = ''; AppSecret = '' } }
         ConfigMgr                  = if ($ConfigMgr) { $ConfigMgr } else { [ordered]@{ SiteServer = ''; SiteCode = ''; DistributionPointGroups = @(); DistributionPriority = 'Normal' } }
         MaintenanceWindowEnabled   = $MaintenanceWindowEnabled
@@ -6484,6 +6813,11 @@ function Import-DATBuildConfig {
         DownloadOnlyExtractContent = if ($null -ne $config.DownloadOnlyExtractContent) { [bool]$config.DownloadOnlyExtractContent } else { $true }
         TeamsWebhookUrl           = $config.TeamsWebhookUrl
         TeamsNotificationsEnabled = [bool]$config.TeamsNotificationsEnabled
+        # Carried explicitly: this whitelist is what the headless runner sees, so a key missing
+        # here is silently $null no matter what the config file holds. The 10.2.2 release wrote
+        # TeamsCustomText on export and omitted it here, so the headless card never had a
+        # headline -- the same defect that hid package retention (#947).
+        TeamsCustomText           = if ($null -ne $config.TeamsCustomText) { [string]$config.TeamsCustomText } else { '' }
         WimEngine                 = if ($config.WimEngine) { $config.WimEngine } else { $null }
         CompressionLevel          = if ($config.CompressionLevel) { $config.CompressionLevel } else { $null }
         Models                    = @($models)
@@ -6492,6 +6826,18 @@ function Import-DATBuildConfig {
         MaintenanceWindowEnabled  = [bool]$config.MaintenanceWindowEnabled
         MaintenanceWindowMode     = if ($config.MaintenanceWindowMode) { $config.MaintenanceWindowMode } else { 'Daily' }
         MaintenanceWindows        = @($config.MaintenanceWindows)
+        # Export-DATBuildConfig writes a PackageRetention block, but this whitelist never carried
+        # it, so $config.PackageRetention was always $null in the headless runner and retention
+        # silently never ran -- the setting round-tripped on write and was discarded on read
+        # (#947). Normalised here so the caller gets the same shape whether the block is present,
+        # partial or absent.
+        PackageRetention          = if ($null -ne $config.PackageRetention) {
+            [PSCustomObject]@{
+                Enabled                     = [bool]$config.PackageRetention.Enabled
+                RetainCount                 = if ($null -ne $config.PackageRetention.RetainCount) { [int]$config.PackageRetention.RetainCount } else { 0 }
+                DeleteSourceFolderOnRemoval = [bool]$config.PackageRetention.DeleteSourceFolderOnRemoval
+            }
+        } else { $null }
     }
 }
 
@@ -6504,8 +6850,24 @@ function Register-DATScheduledBuild {
         [string]$Time = '02:00',
         [ValidateSet('Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday')]
         [string]$DayOfWeek = 'Monday',
-        [int]$DayOfMonth = 1
+        [int]$DayOfMonth = 1,
+        # Task Scheduler stops the task once this many hours have elapsed and terminates the
+        # process without warning -- no log entry, no telemetry, no notification (#950). The old
+        # hardcoded four hours was reached by any estate whose full build runs longer, so it is
+        # now caller-supplied. 0 registers the task with no limit at all; the caller is warned
+        # because MultipleInstances is IgnoreNew, so a wedged run would block every later run.
+        [ValidateRange(0, 72)][int]$MaxRunTimeHours = 12
     )
+
+    # One source for the limit -- the settings-set path takes a TimeSpan and the monthly XML path
+    # takes an ISO 8601 duration, and the two previously carried separate hardcoded copies.
+    $executionLimit    = if ($MaxRunTimeHours -le 0) { [TimeSpan]::Zero } else { New-TimeSpan -Hours $MaxRunTimeHours }
+    $executionLimitIso = if ($MaxRunTimeHours -le 0) { 'PT0S' } else { "PT${MaxRunTimeHours}H" }
+    if ($MaxRunTimeHours -le 0) {
+        Write-DATLogEntry -Value "[Schedule] Execution time limit: none. A run that hangs will never be stopped and, because the task ignores new instances while one is running, will block every later scheduled build." -Severity 2
+    } else {
+        Write-DATLogEntry -Value "[Schedule] Execution time limit: $MaxRunTimeHours hour(s). Task Scheduler terminates the build if it runs longer." -Severity 1
+    }
 
     $taskFolder = '\Driver Automation Tool'
     $taskName   = 'Scheduled Package Build'
@@ -6524,7 +6886,7 @@ function Register-DATScheduledBuild {
         -WorkingDirectory $ScriptDirectory
 
     $taskSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
-        -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Hours 4) -MultipleInstances IgnoreNew
+        -StartWhenAvailable -ExecutionTimeLimit $executionLimit -MultipleInstances IgnoreNew
     $taskPrincipal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
 
     # Monthly has no New-ScheduledTaskTrigger switch and the MSFT_TaskMonthlyTrigger CIM class
@@ -6565,7 +6927,7 @@ function Register-DATScheduledBuild {
     <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
     <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
     <StartWhenAvailable>true</StartWhenAvailable>
-    <ExecutionTimeLimit>PT4H</ExecutionTimeLimit>
+    <ExecutionTimeLimit>$executionLimitIso</ExecutionTimeLimit>
     <Enabled>true</Enabled>
   </Settings>
   <Actions Context="Author">
@@ -6586,6 +6948,7 @@ function Register-DATScheduledBuild {
             Frequency = $Frequency
             Time      = $Time
             Config    = $ConfigPath
+            MaxRunTimeHours = $MaxRunTimeHours
         }
     }
 
@@ -6606,6 +6969,7 @@ function Register-DATScheduledBuild {
         Frequency = $Frequency
         Time      = $Time
         Config    = $ConfigPath
+        MaxRunTimeHours = $MaxRunTimeHours
     }
 }
 
@@ -6628,6 +6992,186 @@ function Unregister-DATScheduledBuild {
     }
     Write-DATLogEntry -Value "[Schedule] No scheduled build task found to remove" -Severity 2
     return $false
+}
+
+
+function Get-DATRunStateRegPath {
+    <#
+    .SYNOPSIS
+        Registry key holding the state of the most recent headless/scheduled build.
+        Derived from $global:RegPath so tests can redirect it away from HKLM.
+    #>
+    [CmdletBinding()]
+    param ()
+    $root = if ([string]::IsNullOrWhiteSpace($global:RegPath)) { 'HKLM:\SOFTWARE\DriverAutomationTool' } else { $global:RegPath }
+    return (Join-Path $root 'LastRun')
+}
+
+function Set-DATRunState {
+    <#
+    .SYNOPSIS
+        Records where a headless/scheduled build has got to, so the NEXT run can tell whether the
+        previous one ever finished.
+    .DESCRIPTION
+        Marking completion from inside the run is not enough on its own: when Task Scheduler stops
+        a task that has exceeded its execution time limit it terminates the process, so no finally
+        block, telemetry call or notification runs and the log simply stops mid-line (#950). The
+        same is true of a host reboot, an out-of-memory kill or a crash. A marker written at the
+        start and closed on exit turns all of those into something the next run can see and report.
+
+        Never throws -- a marker that cannot be written must not take a build down with it.
+    #>
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory)][ValidateSet('Running', 'Completed', 'Failed')][string]$State,
+        [int]$ModelCount = 0,
+        [AllowEmptyString()][string]$Deadline = '',
+        [AllowEmptyString()][string]$Detail = '',
+        [AllowEmptyString()][string]$LogFile = ''
+    )
+
+    try {
+        $path = Get-DATRunStateRegPath
+        if (-not (Test-Path $path)) { New-Item -Path $path -Force | Out-Null }
+
+        if ($State -eq 'Running') {
+            # A fresh run replaces the previous marker wholesale -- the caller has already read and
+            # reported on it by this point.
+            Set-ItemProperty -Path $path -Name 'State'       -Value 'Running' -Force
+            Set-ItemProperty -Path $path -Name 'StartTime'   -Value (Get-Date).ToString('o') -Force
+            Set-ItemProperty -Path $path -Name 'ProcessId'   -Value $PID -Force
+            Set-ItemProperty -Path $path -Name 'ModelCount'  -Value $ModelCount -Force
+            Set-ItemProperty -Path $path -Name 'Deadline'    -Value $Deadline -Force
+            Set-ItemProperty -Path $path -Name 'LogFile'     -Value $LogFile -Force
+            Remove-ItemProperty -Path $path -Name 'EndTime' -ErrorAction SilentlyContinue
+            Remove-ItemProperty -Path $path -Name 'Detail'  -ErrorAction SilentlyContinue
+        } else {
+            Set-ItemProperty -Path $path -Name 'State'   -Value $State -Force
+            Set-ItemProperty -Path $path -Name 'EndTime' -Value (Get-Date).ToString('o') -Force
+            if (-not [string]::IsNullOrEmpty($Detail)) { Set-ItemProperty -Path $path -Name 'Detail' -Value $Detail -Force }
+        }
+    } catch {
+        try { Write-DATLogEntry -Value "[RunState] Could not record run state '$State': $($_.Exception.Message)" -Severity 2 } catch { }
+    }
+}
+
+function Get-DATRunState {
+    <#
+    .SYNOPSIS
+        Returns the recorded state of the most recent headless/scheduled build, or $null when no
+        run has been recorded (or the marker cannot be read).
+    #>
+    [CmdletBinding()]
+    param ()
+
+    try {
+        $path = Get-DATRunStateRegPath
+        if (-not (Test-Path $path)) { return $null }
+        $props = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $props -or [string]::IsNullOrWhiteSpace([string]$props.State)) { return $null }
+
+        $startTime = $null
+        if (-not [string]::IsNullOrWhiteSpace([string]$props.StartTime)) {
+            try { $startTime = [datetime]::Parse([string]$props.StartTime, [System.Globalization.CultureInfo]::InvariantCulture) } catch { }
+        }
+        $endTime = $null
+        if (-not [string]::IsNullOrWhiteSpace([string]$props.EndTime)) {
+            try { $endTime = [datetime]::Parse([string]$props.EndTime, [System.Globalization.CultureInfo]::InvariantCulture) } catch { }
+        }
+
+        return [PSCustomObject]@{
+            State      = [string]$props.State
+            StartTime  = $startTime
+            EndTime    = $endTime
+            ProcessId  = if ($null -ne $props.ProcessId) { [int]$props.ProcessId } else { 0 }
+            ModelCount = if ($null -ne $props.ModelCount) { [int]$props.ModelCount } else { 0 }
+            Deadline   = [string]$props.Deadline
+            LogFile    = [string]$props.LogFile
+            Detail     = [string]$props.Detail
+        }
+    } catch {
+        return $null
+    }
+}
+
+function Get-DATInterruptedRunReport {
+    <#
+    .SYNOPSIS
+        Returns a report when the PREVIOUS headless/scheduled build never finished, or $null when
+        it completed, when none has run, or when one is genuinely still running.
+    .DESCRIPTION
+        Resolves the cause where Windows recorded one, so the report says what happened rather than
+        just that something did:
+
+        - Task Scheduler writes event 329 to Microsoft-Windows-TaskScheduler/Operational when it
+          terminates a task "due to exceeding the time allocated for execution", and leaves
+          LastTaskResult 0x41306 (267014) on the task. That pair is the execution-time-limit kill
+          behind #950, and it is the only way the run itself can be told about it, since the
+          process is terminated without a chance to log anything.
+        - Anything else that leaves a Running marker behind (host reboot, out-of-memory kill,
+          crash) is reported as an interruption of unknown cause.
+
+        A marker whose process is still alive is NOT an interruption: the recorded PID is checked
+        against the live process AND its start time, because PIDs are reused.
+    #>
+    [CmdletBinding()]
+    param (
+        [string]$TaskPath = '\Driver Automation Tool\',
+        [string]$TaskName = 'Scheduled Package Build'
+    )
+
+    $state = Get-DATRunState
+    if ($null -eq $state -or $state.State -ne 'Running') { return $null }
+
+    # Still running? Match the PID AND its start time -- a recycled PID must not mask a dead run.
+    if ($state.ProcessId -gt 0 -and $null -ne $state.StartTime) {
+        try {
+            $live = Get-Process -Id $state.ProcessId -ErrorAction SilentlyContinue
+            if ($null -ne $live -and [math]::Abs(($live.StartTime - $state.StartTime).TotalMinutes) -lt 5) {
+                return $null
+            }
+        } catch { }
+    }
+
+    $cause  = 'Unknown'
+    $detail = 'The previous build did not record an outcome. The process was ended before it could finish (host restart, crash or an external stop).'
+
+    # Task Scheduler's own record of the kill, which is the only witness when it happens.
+    try {
+        $filter = @{ LogName = 'Microsoft-Windows-TaskScheduler/Operational'; Id = 329 }
+        if ($null -ne $state.StartTime) { $filter['StartTime'] = $state.StartTime }
+        $events = @(Get-WinEvent -FilterHashtable $filter -MaxEvents 25 -ErrorAction Stop |
+            Where-Object { "$($_.Message)" -like "*$TaskName*" })
+        if ($events.Count -gt 0) {
+            $cause  = 'ExecutionTimeLimit'
+            $limitText = if (-not [string]::IsNullOrWhiteSpace($state.Deadline)) { " The task's limit expired at $($state.Deadline)." } else { '' }
+            $detail = "Task Scheduler terminated the build for exceeding the execution time limit set on the scheduled task (event 329).$limitText Raise 'Maximum run time' on the schedule so the full build fits."
+        }
+    } catch {
+        # Log unavailable or unreadable -- fall through to the task's last result.
+    }
+
+    if ($cause -eq 'Unknown') {
+        try {
+            $info = Get-ScheduledTaskInfo -TaskPath $TaskPath -TaskName $TaskName -ErrorAction Stop
+            # 0x41306 -- the task was terminated rather than exiting on its own.
+            if ($null -ne $info -and [int]$info.LastTaskResult -eq 267014) {
+                $cause  = 'Terminated'
+                $detail = "The scheduled task was terminated before the build finished (last task result 0x41306). If the run reached the task's execution time limit, raise 'Maximum run time' on the schedule."
+            }
+        } catch { }
+    }
+
+    $ranFor = if ($null -ne $state.StartTime) { (Get-Date) - $state.StartTime } else { $null }
+    return [PSCustomObject]@{
+        Cause       = $cause
+        Detail      = $detail
+        StartTime   = $state.StartTime
+        Deadline    = $state.Deadline
+        ModelCount  = $state.ModelCount
+        LogFile     = $state.LogFile
+        ElapsedText = if ($null -ne $ranFor) { '{0}h {1}m' -f [int]$ranFor.TotalHours, $ranFor.Minutes } else { 'unknown' }
+    }
 }
 
 function Get-DATAvailableUpdate {
@@ -6831,6 +7375,88 @@ function Update-DATApplication {
     }
 }
 
+function Confirm-DATPowerShellGetReady {
+    <#
+    .SYNOPSIS
+        Prepares the client side of a PSGallery install: TLS 1.2, a trusted PSGallery, and a
+        PowerShellGet new enough to install from it. Returns $true when the preparation held.
+    .DESCRIPTION
+        The first-install path carried this preparation and the update path did not, so a host
+        whose HPCMSL predates DAT only ever went through the unprepared path -- the one case the
+        guard exists for (#953). Shared here so both paths get the same footing.
+
+        Never throws: a preparation step that cannot run is logged and the caller still attempts
+        the install, which is no worse off than before.
+    #>
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param (
+        [string]$LogPrefix = '[HP]'
+    )
+
+    $ready = $true
+
+    # PSGallery speaks TLS 1.2 only. Windows PowerShell 5.1 on an older .NET default negotiates
+    # TLS 1.0 and the call fails with a misleading "unable to connect" -- OR the existing protocol
+    # set is fine, in which case leave it alone rather than narrowing it.
+    try {
+        $tls12 = [Net.SecurityProtocolType]::Tls12
+        if (([Net.ServicePointManager]::SecurityProtocol -band $tls12) -ne $tls12) {
+            [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor $tls12
+            Write-DATLogEntry -Value "$LogPrefix Enabled TLS 1.2 for PSGallery access" -Severity 1
+        }
+    } catch {
+        $ready = $false
+        Write-DATLogEntry -Value "$LogPrefix Could not enable TLS 1.2: $($_.Exception.Message)" -Severity 2
+    }
+
+    # An untrusted PSGallery prompts, and a prompt in a headless run hangs or aborts the install.
+    try {
+        $psGallery = Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue
+        if ($psGallery -and $psGallery.InstallationPolicy -ne 'Trusted') {
+            Set-PSRepository -Name PSGallery -InstallationPolicy Trusted -ErrorAction SilentlyContinue
+        }
+    } catch {
+        Write-DATLogEntry -Value "$LogPrefix Could not set PSGallery to trusted: $($_.Exception.Message)" -Severity 2
+    }
+
+    # PowerShellGet 1.0.0.1 (the inbox version) cannot install from PSGallery reliably.
+    try {
+        $psGetVer = (Get-Module -ListAvailable -Name PowerShellGet -ErrorAction SilentlyContinue |
+            Sort-Object Version -Descending | Select-Object -First 1).Version
+        if ($null -eq $psGetVer -or $psGetVer -lt [version]'2.2.5') {
+            Write-DATLogEntry -Value "$LogPrefix PowerShellGet v$psGetVer is outdated -- upgrading to enable PSGallery installs..." -Severity 2
+            Install-Module -Name PowerShellGet -Force -AllowClobber -Scope (Get-DATModuleInstallScope) -ErrorAction Stop
+            Import-Module -Name PowerShellGet -Force -ErrorAction SilentlyContinue
+            Write-DATLogEntry -Value "$LogPrefix PowerShellGet upgraded successfully" -Severity 1
+        }
+    } catch {
+        $ready = $false
+        Write-DATLogEntry -Value "$LogPrefix PowerShellGet upgrade failed: $($_.Exception.Message) -- the install below may not take effect" -Severity 2
+    }
+
+    return $ready
+}
+
+function Get-DATModuleInstallScope {
+    <#
+    .SYNOPSIS
+        'AllUsers' when the process can write there, otherwise 'CurrentUser'.
+    .DESCRIPTION
+        AllUsers is what makes a module reachable from a scheduled/headless run under SYSTEM. The
+        update path hardcoded it while the install path fell back, so a non-elevated session could
+        fail the update for a reason the log did not give (#953).
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param ()
+    try {
+        $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+        if ($isAdmin) { return 'AllUsers' }
+    } catch { }
+    return 'CurrentUser'
+}
+
 function Test-DATHPCMSLReady {
     <#
     .SYNOPSIS
@@ -6851,25 +7477,22 @@ function Test-DATHPCMSLReady {
             try {
                 Write-DATLogEntry -Value "[HP] HPCMSL not found -- installing from PSGallery..." -Severity 1
 
-                # Ensure PowerShellGet/PackageManagement are recent enough to install from PSGallery
-                $psGetVer = (Get-Module -ListAvailable -Name PowerShellGet -ErrorAction SilentlyContinue | Sort-Object Version -Descending | Select-Object -First 1).Version
-                if ($null -eq $psGetVer -or $psGetVer -lt [version]'2.2.5') {
-                    Write-DATLogEntry -Value "[HP] PowerShellGet v$psGetVer is outdated -- upgrading to enable PSGallery installs..." -Severity 2
-                    Install-Module -Name PowerShellGet -Force -AllowClobber -Scope AllUsers -ErrorAction Stop
-                    # Reload the updated module into the current session
-                    Import-Module -Name PowerShellGet -Force -ErrorAction SilentlyContinue
-                    Write-DATLogEntry -Value "[HP] PowerShellGet upgraded successfully" -Severity 1
-                }
+                # TLS, a trusted PSGallery and a current PowerShellGet. Shared with the update
+                # path below, which previously did none of it (#953).
+                [void](Confirm-DATPowerShellGetReady)
 
-                # Install to AllUsers so the module is available for scheduled/headless runs (e.g. SYSTEM context)
-                $installScope = 'AllUsers'
-                $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-                if (-not $isAdmin) {
-                    $installScope = 'CurrentUser'
+                # AllUsers keeps the module reachable from scheduled/headless runs (SYSTEM context).
+                $installScope = Get-DATModuleInstallScope
+                if ($installScope -ne 'AllUsers') {
                     Write-DATLogEntry -Value "[HP] Running without admin rights -- falling back to Scope CurrentUser" -Severity 2
                 }
                 Install-Module -Name HPCMSL -Force -Scope $installScope -ErrorAction Stop
                 $hpModule = Get-Module -ListAvailable -Name HPCMSL -ErrorAction SilentlyContinue | Sort-Object Version -Descending | Select-Object -First 1
+                if (-not $hpModule) {
+                    $result.Error = "Install-Module reported success but HPCMSL is still not discoverable. Check that the install scope ($installScope) is on this process's PSModulePath."
+                    return $result
+                }
+                Write-DATLogEntry -Value "[HP] HPCMSL v$($hpModule.Version) installed -- $($hpModule.ModuleBase)" -Severity 1
             } catch {
                 $result.Error = "Failed to install HPCMSL: $($_.Exception.Message)"
                 return $result
@@ -6886,18 +7509,31 @@ function Test-DATHPCMSLReady {
     # Check for newer version on PSGallery and auto-update if available (once per session)
     if ($AutoInstall -and -not $script:HPCMSLUpdateChecked) {
         try {
-            # Ensure PSGallery is trusted so Update-Module/Install-Module won't prompt
-            $psGallery = Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue
-            if ($psGallery -and $psGallery.InstallationPolicy -ne 'Trusted') {
-                Set-PSRepository -Name PSGallery -InstallationPolicy Trusted -ErrorAction SilentlyContinue
-            }
+            [void](Confirm-DATPowerShellGetReady)
             $galleryModule = Find-Module -Name HPCMSL -Repository PSGallery -ErrorAction Stop
             if ($galleryModule.Version -gt $hpModule.Version) {
-                Write-DATLogEntry -Value "[HP] HPCMSL update available: v$($hpModule.Version) -> v$($galleryModule.Version) -- updating..." -Severity 1
-                Install-Module -Name HPCMSL -Force -AllowClobber -SkipPublisherCheck -Scope AllUsers -ErrorAction Stop
+                $preUpdateVersion = $hpModule.Version
+                Write-DATLogEntry -Value "[HP] HPCMSL update available: v$preUpdateVersion -> v$($galleryModule.Version) -- updating..." -Severity 1
+
+                # Capture what Install-Module says without throwing. PowerShellGet reports some
+                # failures -- a module file held open by another process is the common one, and DAT
+                # itself imports HPCMSL here and in a background job -- as warnings rather than
+                # terminating errors, so -ErrorAction Stop never sees them (#953).
+                $installWarnings = @()
+                Install-Module -Name HPCMSL -Force -AllowClobber -SkipPublisherCheck -Scope (Get-DATModuleInstallScope) -ErrorAction Stop -WarningVariable +installWarnings
+
                 $hpModule = Get-Module -ListAvailable -Name HPCMSL -ErrorAction SilentlyContinue | Sort-Object Version -Descending | Select-Object -First 1
                 $result.Version = $hpModule.Version
-                Write-DATLogEntry -Value "[HP] HPCMSL updated to v$($hpModule.Version)" -Severity 1
+
+                # Report what happened, not what was attempted. The old message printed the
+                # re-queried version under the word "updated", so an install that changed nothing
+                # read as a success and the same update was found again on every run (#953).
+                if ($hpModule.Version -gt $preUpdateVersion) {
+                    Write-DATLogEntry -Value "[HP] HPCMSL updated to v$($hpModule.Version) (from v$preUpdateVersion) -- $($hpModule.ModuleBase)" -Severity 1
+                } else {
+                    $warnText = if ($installWarnings.Count -gt 0) { " Install-Module reported: $((($installWarnings | ForEach-Object { "$_" }) -join ' | '))" } else { ' Install-Module reported no error or warning.' }
+                    Write-DATLogEntry -Value "[HP] WARNING: HPCMSL is still v$($hpModule.Version) after installing v$($galleryModule.Version) -- the update did not take effect and will be retried next run. Loaded from: $($hpModule.ModuleBase).$warnText" -Severity 2
+                }
             }
         } catch {
             Write-DATLogEntry -Value "[HP] HPCMSL update check failed: $($_.Exception.Message) -- continuing with v$($hpModule.Version)" -Severity 2
@@ -7254,8 +7890,19 @@ function Invoke-DATLatestDriverExtract {
         privileges to run a bundled 7-Zip and pre-checks that the de-escalated context can write
         to the target (#936).
 
-        Returns InfCount / FileCount / ExitCode / UsedFallback / Reason. Reason is populated only
-        when nothing extracted, and is safe to surface in the post-build failure report.
+        Returns InfCount / FileCount / ExitCode / UsedFallback / Classification / Reason. Reason is
+        populated only when nothing extracted, and is safe to surface in the post-build failure
+        report.
+
+        Classification separates the two ways a package can stage no INF:
+          Extracted        -- INF files landed; a normal driver.
+          NonDriverPayload -- the package ran cleanly and unpacked files, but there is no INF, CAT
+                              or SYS anywhere in it. That is an application shipped under a driver
+                              component type (Dell types NVIDIA Control Panel, Waves MaxxAudio and
+                              the Intel power-management package as DRVR), not a build failure.
+          Failed           -- everything else: a non-zero exit, an extractor that would not start,
+                              a payload that could not be moved, or driver artefacts present with
+                              no INF, which means the unpack was truncated (#936).
 
     .PARAMETER ArgumentTemplate
         Command line for the package, with {TARGET} standing in for the extraction folder and an
@@ -7272,11 +7919,12 @@ function Invoke-DATLatestDriverExtract {
     )
 
     $result = [PSCustomObject]@{
-        InfCount     = 0
-        FileCount    = 0
-        ExitCode     = $null
-        UsedFallback = $false
-        Reason       = ''
+        InfCount       = 0
+        FileCount      = 0
+        ExitCode       = $null
+        UsedFallback   = $false
+        Classification = 'Failed'
+        Reason         = ''
     }
 
     if (-not (Test-Path -LiteralPath $Destination)) {
@@ -7285,6 +7933,10 @@ function Invoke-DATLatestDriverExtract {
 
     $startError = ''
     $moveError  = ''
+    # Set once the short-path retry below has actually run. That retry is an empirical test of the
+    # MAX_PATH hypothesis, so knowing whether it happened is what lets the failure reason say
+    # anything honest about path length (#949).
+    $shortPathTested = $false
 
     # -- Pass 1: extract straight into the staging folder --
     $argLine = $ArgumentTemplate.Replace('{TARGET}', $Destination).Replace('{LOG}', $LogPath)
@@ -7312,6 +7964,7 @@ function Invoke-DATLatestDriverExtract {
             try {
                 $retryProc = Start-Process -FilePath $PackagePath -ArgumentList $retryLine -Wait -PassThru -WindowStyle Hidden
                 $result.ExitCode = $retryProc.ExitCode
+                $shortPathTested = $true
             } catch {
                 $startError = $_.Exception.Message
             }
@@ -7334,9 +7987,29 @@ function Invoke-DATLatestDriverExtract {
         $result.InfCount = @(Get-ChildItem -LiteralPath $Destination -Recurse -Filter *.inf -ErrorAction SilentlyContinue).Count
     }
 
-    $result.FileCount = @(Get-ChildItem -LiteralPath $Destination -Recurse -File -ErrorAction SilentlyContinue).Count
+    $stagedFiles = @(Get-ChildItem -LiteralPath $Destination -Recurse -File -ErrorAction SilentlyContinue)
+    $result.FileCount = $stagedFiles.Count
 
-    if ($result.InfCount -gt 0) { return $result }
+    if ($result.InfCount -gt 0) {
+        $result.Classification = 'Extracted'
+        return $result
+    }
+
+    # No INF. Decide whether the package simply has no drivers in it, or whether the unpack broke.
+    # A driver payload always carries CAT/SYS alongside its INF, so files unpacked cleanly with no
+    # driver artefact at all is an application component, not a truncated extraction (#936).
+    # Filter the enumeration rather than using -Include: on Windows PowerShell 5.1, -Include with
+    # -LiteralPath and -Recurse is ignored and every file comes back, which classified every
+    # application payload as a failure.
+    if ($result.ExitCode -eq 0 -and $result.FileCount -gt 0 -and
+        [string]::IsNullOrEmpty($startError) -and [string]::IsNullOrEmpty($moveError)) {
+        $driverArtefacts = @($stagedFiles | Where-Object { $_.Extension -in @('.sys', '.cat') }).Count
+        if ($driverArtefacts -eq 0) {
+            $result.Classification = 'NonDriverPayload'
+            $result.Reason = "the package unpacked $($result.FileCount) file(s) but contains no INF, CAT or SYS -- it is an application payload, not a driver"
+            return $result
+        }
+    }
 
     # Nothing staged -- assemble the most useful reason available for the failure report.
     $parts = New-Object System.Collections.Generic.List[string]
@@ -7349,8 +8022,26 @@ function Invoke-DATLatestDriverExtract {
     if ($parts.Count -eq 0) {
         $parts.Add('the package reported no error but staged no INF files')
     }
-    if (-not (Test-DATLongPathsEnabled)) {
-        $parts.Add('Windows long path support (LongPathsEnabled) is disabled, which blocks deeply nested payloads')
+
+    # Blame path length only where the evidence supports it (#949). The short-path retry above is
+    # an empirical test of exactly this hypothesis: when it ran and still produced no INF, a
+    # 260-character limit is not what stopped this package, whatever the host setting says.
+    # Appending the clause on the host setting alone sent an operator off enabling LongPathsEnabled
+    # and rebooting a site server, for components that turned out not to be drivers at all.
+    #
+    # The clause survives in the two cases the retry leaves open: it never ran (the extractor would
+    # not start, or the short working folder could not be created), or the payload did extract to a
+    # short path and then failed to move into the longer staging folder -- which is the one shape
+    # of this failure where the staging path length is the prime suspect.
+    $capturedText = @($startError, $moveError, $logTail) -join ' '
+    $pathLengthNamed = $capturedText -match '(?i)too long|MAX_PATH|PathTooLong|0x800700CE'
+    $shortPathRuledOut = $shortPathTested -and [string]::IsNullOrEmpty($moveError)
+
+    if ($pathLengthNamed) {
+        # Worth saying even where long paths are enabled -- something still hit the limit.
+        $parts.Add('the payload reported a path-length error, so it exceeds the 260-character limit somewhere')
+    } elseif (-not $shortPathRuledOut -and -not (Test-DATLongPathsEnabled)) {
+        $parts.Add('Windows long path support (LongPathsEnabled) is disabled, which can block deeply nested payloads -- untested here, because the short-path retry did not run')
     }
 
     $result.Reason = ($parts -join '; ')
@@ -7392,6 +8083,9 @@ function Invoke-DATDellLatestDriverPackage {
     )
 
     $OEM = 'Dell'
+    # Filesystem-safe folder segments (issue #956) -- see ConvertTo-DATSafePathSegment.
+    $OEMPath = ConvertTo-DATSafePathSegment -Segment "$OEM"
+    $ModelPath = ConvertTo-DATSafePathSegment -Segment "$Model"
     Set-DATRegistryValue -Name "RunningMessage" -Value "Resolving latest Dell drivers for $Model..." -Type String
     Write-DATLogEntry -Value "[Dell] Latest Drivers mode (DCU catalog) for $Model (SKU: $SystemSKU, $WindowsVersion $WindowsBuild $Architecture)" -Severity 1
 
@@ -7439,7 +8133,7 @@ function Invoke-DATDellLatestDriverPackage {
 
     # Dell Latest temp dirs: Temp\DellLatest\Model\OS\Build\{Catalog,DUPs,Staging}
     $osTag = ($WindowsVersion -replace '\s', '')
-    $dellRoot   = Join-Path $TempDirectory "DellLatest\$Model\$osTag\$WindowsBuild"
+    $dellRoot   = Join-Path $TempDirectory "DellLatest\$ModelPath\$osTag\$WindowsBuild"
     $catalogDir = Join-Path $dellRoot 'Catalog'
     $dupDir     = Join-Path $dellRoot 'DUPs'
     $stagingDir = Join-Path $dellRoot 'Staging'
@@ -7465,6 +8159,7 @@ function Invoke-DATDellLatestDriverPackage {
             $nextDue = switch ($cadence) { 'Daily' { $nextDue.AddDays(1) } 'Weekly' { $nextDue.AddDays(7) } 'Monthly' { $nextDue.AddMonths(1) } default { $nextDue } }
             Write-DATLogEntry -Value "[Dell] Within $cadence update cadence for $Model -- retaining existing package (next eligible $($nextDue.ToString('yyyy-MM-dd')))" -Severity 1 -UpdateUI
             $global:DATSoftPaqBuildSkipped = $true
+            $global:DATSoftPaqSkipReason = 'Cadence'
             Set-DATRegistryValue -Name "RunningMode" -Value "Download Completed" -Type String
             return "$($entryEarly.version)"
         }
@@ -7663,7 +8358,7 @@ function Invoke-DATDellLatestDriverPackage {
                 }
             }
             'WIM Package Only' {
-                $wimFinalPath = Join-Path $PackageDestination "$OEM\$Model\$WindowsVersion $WindowsBuild\DriverPackage.wim"
+                $wimFinalPath = Join-Path $PackageDestination "$OEMPath\$ModelPath\$WindowsVersion $WindowsBuild\DriverPackage.wim"
                 if (-not (Test-Path -LiteralPath $wimFinalPath)) { $packageStillExists = $false; $missingReason = 'the WIM package is missing' }
             }
             'Download Only' {
@@ -7690,6 +8385,7 @@ function Invoke-DATDellLatestDriverPackage {
                 Write-DATLogEntry -Value "[Dell] Failed to update Latest Drivers manifest verification time: $($_.Exception.Message)" -Severity 2
             }
             $global:DATSoftPaqBuildSkipped = $true
+            $global:DATSoftPaqSkipReason = 'Unchanged'
             Set-DATRegistryValue -Name "RunningMode" -Value "Download Completed" -Type String
             return $stableVersion
         }
@@ -7710,6 +8406,11 @@ function Invoke-DATDellLatestDriverPackage {
     # Identifiers of the DUPs that actually staged drivers -- the manifest is fingerprinted from
     # these, so a partial build is retried next run instead of being treated as up to date (#936).
     $extractedIdentifiers = New-Object System.Collections.Generic.List[string]
+    # DUPs Dell types as DRVR that hold no driver at all (control-panel apps, audio suites, power
+    # management packages). They stage nothing, but they are a settled outcome rather than a
+    # failure, so they count towards the fingerprint -- otherwise the built set could never match
+    # the selected set and every run rebuilt the model from scratch (#936).
+    $nonDriverIdentifiers = New-Object System.Collections.Generic.List[string]
     Set-DATRegistryValue -Name "DownloadBytes" -Value "$total" -Type String
     Set-DATRegistryValue -Name "BytesTransferred" -Value "0" -Type String
     Set-DATRegistryValue -Name "RunningMode" -Value "Download" -Type String
@@ -7754,6 +8455,16 @@ function Invoke-DATDellLatestDriverPackage {
         $extract = Invoke-DATLatestDriverExtract -OEM 'Dell' -PackagePath $dupFile -Destination $outDir `
             -ArgumentTemplate '/s /e="{TARGET}" /l="{LOG}"' -LogPath $dupLog
 
+        if ($extract.Classification -eq 'NonDriverPayload') {
+            # An application published under a driver component type. There is nothing to stage and
+            # nothing went wrong, so this is a note rather than a build failure -- and the DUP is
+            # recorded so the fingerprint still reconciles with the selected set (#936).
+            Write-DATLogEntry -Value "[Dell] $($dup.Name) contains no drivers -- $($extract.Reason). Excluded from the driver package." -Severity 2
+            $nonDriverIdentifiers.Add($(if ($dup.Identifier) { "$($dup.Identifier)" } else { "$($dup.FileName)" }))
+            Remove-Item -LiteralPath $outDir -Recurse -Force -ErrorAction SilentlyContinue
+            continue
+        }
+
         if ($extract.InfCount -eq 0) {
             # A DUP that stages no driver is a build failure, not a note: dropping it silently
             # shipped packages missing network and graphics drivers with a success result (#936).
@@ -7785,8 +8496,14 @@ function Invoke-DATDellLatestDriverPackage {
     if ($stagedFiles -eq 0) {
         throw "No Dell driver files were extracted from the DCU catalog for $Model"
     }
-    if ($dellComponents.Count -lt $total) {
-        Write-DATLogEntry -Value "[Dell] [Warning] - $($total - $dellComponents.Count) of $total component(s) staged no drivers for $Model -- the package is incomplete. See View Failures for the affected drivers; the next run will rebuild rather than treat this set as current." -Severity 2 -UpdateUI
+    if ($nonDriverIdentifiers.Count -gt 0) {
+        Write-DATLogEntry -Value "[Dell] $($nonDriverIdentifiers.Count) of $total component(s) for $Model are applications rather than drivers and were excluded -- this is expected and does not make the package incomplete." -Severity 1
+    }
+    # Only genuine extraction failures leave the package incomplete; excluded application payloads
+    # are a settled outcome and must not force a rebuild every run (#936).
+    $failedComponents = $total - $dellComponents.Count - $nonDriverIdentifiers.Count
+    if ($failedComponents -gt 0) {
+        Write-DATLogEntry -Value "[Dell] [Warning] - $failedComponents of $total component(s) staged no drivers for $Model -- the package is incomplete. See View Failures for the affected drivers; the next run will rebuild rather than treat this set as current." -Severity 2 -UpdateUI
     }
 
     # -- 6. Package via the common WIM pipeline (embeds DATDriverManifest.json) --
@@ -7808,27 +8525,43 @@ function Invoke-DATDellLatestDriverPackage {
     Set-DATRegistryValue -Name "RunningMode" -Value "Download Completed" -Type String
     Write-DATLogEntry -Value "[Dell] Latest Drivers package process completed successfully" -Severity 1 -UpdateUI
 
-    # Persist the manifest so an unchanged DUP set skips rebuild next time. Record only the DUPs
-    # that actually staged drivers: a partial build then fingerprints differently from the selected
-    # set, so the next run rebuilds and retries the components that failed to extract (#936).
+    # Persist the manifest so an unchanged DUP set skips rebuild next time. Record the DUPs that
+    # staged drivers plus those settled as application-only: a partial build then fingerprints
+    # differently from the selected set, so the next run rebuilds and retries the components that
+    # failed to extract, while a model containing an application component still reconciles and is
+    # left alone (#936).
+    #
+    # That retry can only happen if the run gets as far as computing a fingerprint. The cadence
+    # gate above returns before the catalog is even downloaded, keyed on lastChecked alone -- so
+    # stamping lastChecked after an incomplete build parked the model for the whole cadence period
+    # and the promised rebuild never came (#948). An incomplete build has not been checked to a
+    # conclusion, so it does not get the stamp: Test-DATLatestCadenceElapsed treats a missing
+    # timestamp as due, which puts the model back through the gate on the next run.
     try {
-        $builtIdentifiers = @($extractedIdentifiers)
+        $builtIdentifiers = @($extractedIdentifiers) + @($nonDriverIdentifiers)
         $builtFingerprint = Get-DATDellDUPFingerprint -Identifiers $builtIdentifiers
         $manifestSave = Get-DATDellLatestManifest
         $existingRef = $manifestSave[$manifestKey]
+        $nowIso = (Get-Date -Format 'o')
         $manifestSave[$manifestKey] = [PSCustomObject]@{
             systemSku          = "$SystemSKU"
             componentIds       = @($builtIdentifiers | Sort-Object)
             fingerprint        = $builtFingerprint
             version            = $buildVersion
-            lastBuilt          = (Get-Date -Format 'o')
-            lastChecked        = (Get-Date -Format 'o')
-            lastVerified       = (Get-Date -Format 'o')
+            lastBuilt          = $nowIso
+            lastChecked        = if ($failedComponents -gt 0) { '' } else { $nowIso }
+            lastVerified       = $nowIso
+            lastIncomplete     = if ($failedComponents -gt 0) { $nowIso } else { '' }
+            incompleteCount    = [int]$failedComponents
             intuneAppId        = if ($existingRef) { "$($existingRef.intuneAppId)" } else { '' }
             configMgrPackageId = if ($existingRef) { "$($existingRef.configMgrPackageId)" } else { '' }
         }
         [void](Save-DATDellLatestManifest -Manifest $manifestSave)
-        Write-DATLogEntry -Value "[Dell] Latest Drivers manifest updated for $Model (v$buildVersion, $($dellComponents.Count) components)" -Severity 1
+        if ($failedComponents -gt 0) {
+            Write-DATLogEntry -Value "[Dell] Latest Drivers manifest updated for $Model (v$buildVersion, $($dellComponents.Count) components) -- recorded as incomplete ($failedComponents component(s) staged no drivers), so the update cadence is not started and the next run re-evaluates this model" -Severity 2
+        } else {
+            Write-DATLogEntry -Value "[Dell] Latest Drivers manifest updated for $Model (v$buildVersion, $($dellComponents.Count) components)" -Severity 1
+        }
     } catch {
         Write-DATLogEntry -Value "[Dell] Failed to update Latest Drivers manifest: $($_.Exception.Message)" -Severity 2
     }
@@ -7870,6 +8603,8 @@ function Invoke-DATLenovoLatestDriverPackage {
     )
 
     $OEM = 'Lenovo'
+    # Filesystem-safe folder segments (issue #956) -- see ConvertTo-DATSafePathSegment.
+    $ModelPath = ConvertTo-DATSafePathSegment -Segment "$Model"
     $LenovoBase = 'https://download.lenovo.com'
     Set-DATRegistryValue -Name "RunningMessage" -Value "Resolving latest Lenovo drivers for $Model..." -Type String
     Write-DATLogEntry -Value "[Lenovo] Latest Drivers mode (Model-XML catalog) for $Model (MT: $SystemSKU, $WindowsVersion $WindowsBuild $Architecture)" -Severity 1
@@ -7936,6 +8671,7 @@ function Invoke-DATLenovoLatestDriverPackage {
             $nextDue = switch ($cadence) { 'Daily' { $nextDue.AddDays(1) } 'Weekly' { $nextDue.AddDays(7) } 'Monthly' { $nextDue.AddMonths(1) } default { $nextDue } }
             Write-DATLogEntry -Value "[Lenovo] Within $cadence update cadence for $Model -- retaining existing package (next eligible $($nextDue.ToString('yyyy-MM-dd'))) " -Severity 1 -UpdateUI
             $global:DATSoftPaqBuildSkipped = $true
+            $global:DATSoftPaqSkipReason = 'Cadence'
             Set-DATRegistryValue -Name "RunningMode" -Value "Download Completed" -Type String
             return "$($entry.version)"
         }
@@ -7943,7 +8679,7 @@ function Invoke-DATLenovoLatestDriverPackage {
 
     # -- Lenovo Latest temp dirs --
     $osTag = ($WindowsVersion -replace '\s', '')
-    $lnvRoot    = Join-Path $TempDirectory "LenovoLatest\$Model\$osTag\$WindowsBuild"
+    $lnvRoot    = Join-Path $TempDirectory "LenovoLatest\$ModelPath\$osTag\$WindowsBuild"
     $catalogDir = Join-Path $lnvRoot 'Catalog'
     $pkgDlDir   = Join-Path $lnvRoot 'Packages'
     $stagingDir = Join-Path $lnvRoot 'Staging'
@@ -8066,6 +8802,7 @@ function Invoke-DATLenovoLatestDriverPackage {
                 [void](Save-DATLenovoLatestManifest -Manifest $manifest)
             } catch { }
             $global:DATSoftPaqBuildSkipped = $true
+            $global:DATSoftPaqSkipReason = 'Unchanged'
             Set-DATRegistryValue -Name "RunningMode" -Value "Download Completed" -Type String
             return "$($entry.version)"
         }
@@ -8083,6 +8820,8 @@ function Invoke-DATLenovoLatestDriverPackage {
     $lnvComponents = New-Object System.Collections.Generic.List[object]
     # Identifiers of the packages that actually staged drivers -- see the Dell path (#936).
     $extractedIdentifiers = New-Object System.Collections.Generic.List[string]
+    # Packages that hold an application rather than a driver -- see the Dell path (#936).
+    $nonDriverIdentifiers = New-Object System.Collections.Generic.List[string]
     Set-DATRegistryValue -Name "DownloadBytes" -Value "$total" -Type String
     Set-DATRegistryValue -Name "BytesTransferred" -Value "0" -Type String
     Set-DATRegistryValue -Name "RunningMode" -Value "Download" -Type String
@@ -8125,6 +8864,15 @@ function Invoke-DATLenovoLatestDriverPackage {
         $extract = Invoke-DATLatestDriverExtract -OEM 'Lenovo' -PackagePath $pkgFile -Destination $outDir `
             -ArgumentTemplate $extractArgs
 
+        if ($extract.Classification -eq 'NonDriverPayload') {
+            # An application rather than a driver -- a note, not a failure, and still counted
+            # towards the fingerprint so the model is not rebuilt every run (#936).
+            Write-DATLogEntry -Value "[Lenovo] $($pkg.Title) contains no drivers -- $($extract.Reason). Excluded from the driver package." -Severity 2
+            $nonDriverIdentifiers.Add("$($pkg.Id)|$($pkg.Version)")
+            Remove-Item -LiteralPath $outDir -Recurse -Force -ErrorAction SilentlyContinue
+            continue
+        }
+
         if ($extract.InfCount -eq 0) {
             Write-DATLogEntry -Value "[Lenovo] $($pkg.FileName) staged no driver files (exit $($extract.ExitCode)) -- $($extract.Reason)" -Severity 3
             Add-DATDriverDownloadFailure -OEM 'Lenovo' -Model $Model -Driver "$($pkg.Title)" `
@@ -8152,8 +8900,12 @@ function Invoke-DATLenovoLatestDriverPackage {
     $stagedFiles = @(Get-ChildItem -Path $stagingDir -Recurse -File -ErrorAction SilentlyContinue).Count
     Write-DATLogEntry -Value "[Lenovo] Extraction complete: $stagedFiles driver files staged from $($lnvComponents.Count) of $total package(s)" -Severity 1
     if ($stagedFiles -eq 0) { throw "No Lenovo driver files were extracted from the Model-XML catalog for $Model" }
-    if ($lnvComponents.Count -lt $total) {
-        Write-DATLogEntry -Value "[Lenovo] [Warning] - $($total - $lnvComponents.Count) of $total package(s) staged no drivers for $Model -- the package is incomplete. See View Failures for the affected drivers; the next run will rebuild rather than treat this set as current." -Severity 2 -UpdateUI
+    if ($nonDriverIdentifiers.Count -gt 0) {
+        Write-DATLogEntry -Value "[Lenovo] $($nonDriverIdentifiers.Count) of $total package(s) for $Model are applications rather than drivers and were excluded -- this is expected and does not make the package incomplete." -Severity 1
+    }
+    $failedPackages = $total - $lnvComponents.Count - $nonDriverIdentifiers.Count
+    if ($failedPackages -gt 0) {
+        Write-DATLogEntry -Value "[Lenovo] [Warning] - $failedPackages of $total package(s) staged no drivers for $Model -- the package is incomplete. See View Failures for the affected drivers; the next run will rebuild rather than treat this set as current." -Severity 2 -UpdateUI
     }
 
     # -- 5. Package via the common WIM pipeline (embeds DATDriverManifest.json) --
@@ -8175,10 +8927,16 @@ function Invoke-DATLenovoLatestDriverPackage {
     Set-DATRegistryValue -Name "RunningMode" -Value "Download Completed" -Type String
     Write-DATLogEntry -Value "[Lenovo] Latest Drivers package process completed successfully" -Severity 1 -UpdateUI
 
-    # Persist the tracking manifest (fingerprint + cadence timestamps). Only the packages that
-    # staged drivers are recorded, so a partial build is retried next run (#936).
+    # Persist the tracking manifest (fingerprint + cadence timestamps). Packages that staged drivers
+    # plus those settled as application-only are recorded, so a partial build is retried next run
+    # while an application component still reconciles against the selected set (#936).
+    #
+    # The retry depends on the run reaching the fingerprint comparison, and the cadence gate above
+    # returns before the catalog is read, keyed on lastChecked alone. An incomplete build therefore
+    # does not start the cadence -- it has not been checked to a conclusion, and
+    # Test-DATLatestCadenceElapsed treats a missing timestamp as due (#948).
     try {
-        $builtIdentifiers = @($extractedIdentifiers)
+        $builtIdentifiers = @($extractedIdentifiers) + @($nonDriverIdentifiers)
         $builtFingerprint = Get-DATLenovoPackageFingerprint -Identifiers $builtIdentifiers
         $manifestSave = Get-DATLenovoLatestManifest
         $existingRef = $manifestSave[$manifestKey]
@@ -8189,13 +8947,19 @@ function Invoke-DATLenovoLatestDriverPackage {
             fingerprint        = $builtFingerprint
             version            = $buildVersion
             lastBuilt          = $nowIso
-            lastChecked        = $nowIso
+            lastChecked        = if ($failedPackages -gt 0) { '' } else { $nowIso }
             lastVerified       = $nowIso
+            lastIncomplete     = if ($failedPackages -gt 0) { $nowIso } else { '' }
+            incompleteCount    = [int]$failedPackages
             intuneAppId        = if ($existingRef) { "$($existingRef.intuneAppId)" } else { '' }
             configMgrPackageId = if ($existingRef) { "$($existingRef.configMgrPackageId)" } else { '' }
         }
         [void](Save-DATLenovoLatestManifest -Manifest $manifestSave)
-        Write-DATLogEntry -Value "[Lenovo] Latest Drivers manifest updated for $Model (v$buildVersion, $($lnvComponents.Count) packages)" -Severity 1
+        if ($failedPackages -gt 0) {
+            Write-DATLogEntry -Value "[Lenovo] Latest Drivers manifest updated for $Model (v$buildVersion, $($lnvComponents.Count) packages) -- recorded as incomplete ($failedPackages package(s) staged no drivers), so the update cadence is not started and the next run re-evaluates this model" -Severity 2
+        } else {
+            Write-DATLogEntry -Value "[Lenovo] Latest Drivers manifest updated for $Model (v$buildVersion, $($lnvComponents.Count) packages)" -Severity 1
+        }
     } catch {
         Write-DATLogEntry -Value "[Lenovo] Failed to update Latest Drivers manifest: $($_.Exception.Message)" -Severity 2
     }
@@ -8319,8 +9083,14 @@ function Invoke-DATOEMDownloadModule {
         }
     } catch { }
 
-    if (-not (Test-Path $TempDirectory)) { New-Item -Path $TempDirectory -ItemType Directory -Force | Out-Null }
-    if (-not (Test-Path $DownloadDestination)) { New-Item -Path $DownloadDestination -ItemType Directory -Force | Out-Null }
+    # Filesystem-safe folder segments (issue #956) -- see ConvertTo-DATSafePathSegment. The caller
+    # builds $DownloadDestination from the same helper, so the folders agree.
+    $OEMPath = ConvertTo-DATSafePathSegment -Segment "$OEM"
+    $ModelPath = ConvertTo-DATSafePathSegment -Segment "$Model"
+
+    # -LiteralPath: the destination folder name is a model name, and a model name is not a wildcard.
+    if (-not (Test-Path -LiteralPath $TempDirectory)) { New-Item -Path $TempDirectory -ItemType Directory -Force | Out-Null }
+    if (-not (Test-Path -LiteralPath $DownloadDestination)) { New-Item -Path $DownloadDestination -ItemType Directory -Force | Out-Null }
 
     $OEMLinksURL = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/OEMLinks.xml"
 
@@ -8596,7 +9366,7 @@ function Invoke-DATOEMDownloadModule {
             }
 
             # Build HP-specific temp path: Temp\HP\Model\OS\OSVer
-            $HPTempDirectory = Join-Path $TempDirectory "HP\$Model\$HPOS\$WindowsBuild"
+            $HPTempDirectory = Join-Path $TempDirectory "HP\$ModelPath\$HPOS\$WindowsBuild"
             if (-not (Test-Path $HPTempDirectory)) { New-Item -Path $HPTempDirectory -ItemType Directory -Force | Out-Null }
             $HPExtractDir = Join-Path $HPTempDirectory "Extracted"
             $HPStagingDir = Join-Path $HPTempDirectory "Staging"
@@ -8639,6 +9409,7 @@ function Invoke-DATOEMDownloadModule {
                     $nextDue = switch ($hpCadence) { 'Daily' { $nextDue.AddDays(1) } 'Weekly' { $nextDue.AddDays(7) } 'Monthly' { $nextDue.AddMonths(1) } default { $nextDue } }
                     Write-DATLogEntry -Value "[HP] Within $hpCadence update cadence for $Model -- retaining existing package (next eligible $($nextDue.ToString('yyyy-MM-dd')))" -Severity 1 -UpdateUI
                     $global:DATSoftPaqBuildSkipped = $true
+                    $global:DATSoftPaqSkipReason = 'Cadence'
                     Set-DATRegistryValue -Name "RunningMode" -Value "Download Completed" -Type String
                     return "$($spCadenceEntry.version)"
                 }
@@ -8791,7 +9562,7 @@ New-HPDriverPack -Platform "$PlatformID" -Os "$HPOS" -OSVer "$WindowsBuild" -For
                         }
                     }
                     'WIM Package Only' {
-                        $wimFinalPath = Join-Path $PackageDestination "$OEM\$Model\$WindowsVersion $WindowsBuild\DriverPackage.wim"
+                        $wimFinalPath = Join-Path $PackageDestination "$OEMPath\$ModelPath\$WindowsVersion $WindowsBuild\DriverPackage.wim"
                         if (-not (Test-Path -LiteralPath $wimFinalPath)) {
                             $packageStillExists = $false; $missingReason = 'the WIM package is missing'
                         }
@@ -8839,6 +9610,7 @@ New-HPDriverPack -Platform "$PlatformID" -Os "$HPOS" -OSVer "$WindowsBuild" -For
                         Write-DATLogEntry -Value "[HP] Failed to update SoftPaq manifest verification time: $($_.Exception.Message)" -Severity 2
                     }
                     $global:DATSoftPaqBuildSkipped = $true
+                    $global:DATSoftPaqSkipReason = 'Unchanged'
                     Set-DATRegistryValue -Name "RunningMode" -Value "Download Completed" -Type String
                     return $spStableVersion
                 }
@@ -9418,10 +10190,13 @@ New-HPDriverPack -Platform "$PlatformID" -Os "$HPOS" -OSVer "$WindowsBuild" -For
             } | Select-Object -First 1
 
             if ($null -eq $matchingModel) {
-                # Fuzzy fallback -- partial name match
+                # Fuzzy fallback -- partial name match. Panasonic names carry wildcard brackets
+                # ("FZ-G2[N/P] (mk3)"), so the model has to be escaped before it is used as a
+                # -like pattern or the brackets match as a character class (issue #956).
                 Write-DATLogEntry -Value "[$OEM] Exact match not found, attempting partial name match for '$Model'" -Severity 2
+                $ModelPattern = [System.Management.Automation.WildcardPattern]::Escape("$Model")
                 $matchingModel = $PanasonicDrivers | Where-Object {
-                    $_.Name -like "*$Model*" -and $_.SCCM.Version -eq $WindowsBuild -and $_.SCCM.OS -eq $WinVer
+                    $_.Name -like "*$ModelPattern*" -and $_.SCCM.Version -eq $WindowsBuild -and $_.SCCM.OS -eq $WinVer
                 } | Select-Object -First 1
             }
 
@@ -9754,6 +10529,11 @@ $script:IntuneAuthToken = $null
 $script:IntuneTokenExpiry = [datetime]::MinValue
 $script:IntuneTenantId = $null
 $script:IntuneRefreshToken = $null
+# Last failed silent (non-interactive) token acquisition. Throttles retries so a UI timer cannot
+# hammer the token endpoint or flood the log when an app registration is misconfigured.
+$script:IntuneSilentAuthLastFailure = $null
+# Set by Disconnect-DATIntuneGraph so an explicit sign-out is not undone by silent re-acquisition.
+$script:IntuneAuthDisconnected = $false
 $script:IntuneAuthClientId = $null  # Tracks which client ID was used during auth (for refresh)
 # Authority tenant segment used at sign-in ('organizations', 'common', or a specific tenant GUID).
 # Custom single-tenant app registrations require their tenant ID here; the built-in multi-tenant
@@ -10022,6 +10802,9 @@ function Complete-DATDeviceCodeAuth {
         # Success - store token
         $script:IntuneAuthToken = $tokenResponse.access_token
         $script:IntuneTokenExpiry = (Get-Date).AddSeconds([int]$tokenResponse.expires_in - 60)
+        # Holding a token supersedes an earlier explicit sign-out.
+        $script:IntuneAuthDisconnected = $false
+        $script:IntuneSilentAuthLastFailure = $null
         $script:IntuneAuthClientId = $script:DeviceCodeContext.ClientId
         $script:IntuneAuthTenantEndpoint = $tenantEndpoint
         if ($script:DeviceCodeContext.Environment) {
@@ -10114,6 +10897,9 @@ function Connect-DATIntuneGraphClientCredential {
 
         $script:IntuneAuthToken = $tokenResponse.access_token
         $script:IntuneTokenExpiry = (Get-Date).AddSeconds([int]$tokenResponse.expires_in - 60)
+        # Holding a token supersedes an earlier explicit sign-out.
+        $script:IntuneAuthDisconnected = $false
+        $script:IntuneSilentAuthLastFailure = $null
         $script:IntuneTenantId = $TenantId
 
         Write-DATLogEntry -Value "[Intune Auth] Client credential authentication successful - tenant: $TenantId" -Severity 1
@@ -10312,6 +11098,9 @@ function Complete-DATBrowserAuth {
         # Store tokens in module scope
         $script:IntuneAuthToken   = $tokenResponse.access_token
         $script:IntuneTokenExpiry = (Get-Date).AddSeconds([int]$tokenResponse.expires_in - 60)
+        # Holding a token supersedes an earlier explicit sign-out.
+        $script:IntuneAuthDisconnected = $false
+        $script:IntuneSilentAuthLastFailure = $null
         $script:IntuneRefreshToken = $tokenResponse.refresh_token
         $script:IntuneAuthClientId = $ctx.ClientId
         $script:IntuneAuthTenantEndpoint = $tokenTenantEndpoint
@@ -10389,6 +11178,9 @@ function Invoke-DATTokenRefresh {
 
         $script:IntuneAuthToken = $tokenResponse.access_token
         $script:IntuneTokenExpiry = (Get-Date).AddSeconds([int]$tokenResponse.expires_in - 60)
+        # Holding a token supersedes an earlier explicit sign-out.
+        $script:IntuneAuthDisconnected = $false
+        $script:IntuneSilentAuthLastFailure = $null
         # Refresh tokens may rotate -- always store the latest
         if ($tokenResponse.refresh_token) {
             $script:IntuneRefreshToken = $tokenResponse.refresh_token
@@ -10506,17 +11298,65 @@ function Test-DATIntuneAuth {
     [OutputType([bool])]
     param ()
 
-    if ([string]::IsNullOrEmpty($script:IntuneAuthToken)) { return $false }
-    if ((Get-Date) -ge $script:IntuneTokenExpiry) {
-        Write-DATLogEntry -Value "[Intune Auth] Token expired - attempting automatic refresh" -Severity 2
+    # Missing and expired are handled the same way: hand off to the refresh strategies. App-only
+    # (client credentials) auth can acquire a token silently at any point, so a missing token is
+    # only fatal once those strategies have actually been tried and failed. Use
+    # Test-DATIntuneAuthTokenValid for a pure check that never acquires instead.
+    $tokenMissing = [string]::IsNullOrEmpty($script:IntuneAuthToken)
+    if ($tokenMissing -or (Get-Date) -ge $script:IntuneTokenExpiry) {
+        if (-not (Test-DATIntuneSilentAuthAvailable)) {
+            # Interactive sign-in is the only route -- say so without a network call or a log entry,
+            # because the UI calls this on a timer while the user is signed out.
+            return $false
+        }
+        # Throttle repeated silent acquisitions so a misconfigured app registration cannot fill the
+        # log from that same UI timer.
+        if ($script:IntuneSilentAuthLastFailure -and
+            ((Get-Date) - $script:IntuneSilentAuthLastFailure).TotalSeconds -lt 60) {
+            return $false
+        }
+        if (-not $tokenMissing) {
+            Write-DATLogEntry -Value "[Intune Auth] Token expired - attempting automatic refresh" -Severity 2
+        }
         if (Update-DATIntuneTokenIfNeeded -Force) {
+            $script:IntuneSilentAuthLastFailure = $null
             return $true
         }
-        $script:IntuneAuthToken = $null
-        Write-DATLogEntry -Value "[Intune Auth] Token expired and refresh failed - reauthentication required" -Severity 3
+        # The token is left in place: an unusable one costs nothing, whereas clearing it removed
+        # the only state a later recovery attempt could build on.
+        $script:IntuneSilentAuthLastFailure = Get-Date
+        Write-DATLogEntry -Value "[Intune Auth] No usable token and all refresh attempts failed - reauthentication required" -Severity 3
         return $false
     }
     return $true
+}
+
+function Test-DATIntuneSilentAuthAvailable {
+    <#
+    .SYNOPSIS
+        Reports whether a token can be obtained without user interaction -- an interactive refresh
+        token, or a stored app registration (client credentials).
+    .DESCRIPTION
+        Registry-only and silent: no network call and no log output, so callers on a UI timer can
+        use it to decide whether attempting a silent acquisition is worthwhile at all.
+    #>
+    [OutputType([bool])]
+    param ()
+
+    # An explicit Disconnect must stick until the user signs in again.
+    if ($script:IntuneAuthDisconnected) { return $false }
+
+    if (-not [string]::IsNullOrEmpty($script:IntuneRefreshToken)) { return $true }
+
+    try {
+        $regValues = Get-ItemProperty -Path $global:RegPath -ErrorAction SilentlyContinue
+        return ($regValues.IntuneAuthMode -eq 2 -and
+                -not [string]::IsNullOrEmpty($regValues.IntuneAppId) -and
+                -not [string]::IsNullOrEmpty($regValues.IntuneClientSecret) -and
+                -not [string]::IsNullOrEmpty($regValues.IntuneTenantId))
+    } catch {
+        return $false
+    }
 }
 
 function Test-DATIntuneAuthTokenValid {
@@ -10543,10 +11383,16 @@ function Update-DATIntuneTokenIfNeeded {
         [switch]$Force
     )
 
-    # No token at all -- nothing to refresh
-    if ([string]::IsNullOrEmpty($script:IntuneAuthToken)) { return $false }
+    # An absent token is not automatically fatal. App-only (client credentials) auth can acquire a
+    # fresh one at any time without user interaction, and the interactive flow may still hold a
+    # refresh token, so fall through to the strategies below rather than giving up here -- a single
+    # cleared token used to disable Intune for the remainder of the run. If neither strategy
+    # has anything to work with, they fail and this still returns $false.
+    $tokenMissing = [string]::IsNullOrEmpty($script:IntuneAuthToken)
 
-    if (-not $Force) {
+    if ($tokenMissing) {
+        Write-DATLogEntry -Value "[Intune Auth] No cached access token -- attempting to acquire one" -Severity 2
+    } elseif (-not $Force) {
         $minutesRemaining = ($script:IntuneTokenExpiry - (Get-Date)).TotalMinutes
         if ($minutesRemaining -gt 15) {
             # Token still has plenty of life -- no action needed
@@ -10598,7 +11444,7 @@ function Update-DATIntuneTokenIfNeeded {
     }
 
     # If we get here and we weren't forced (proactive check), the token might still be usable
-    if (-not $Force -and (Get-Date) -lt $script:IntuneTokenExpiry) {
+    if (-not $tokenMissing -and -not $Force -and (Get-Date) -lt $script:IntuneTokenExpiry) {
         Write-DATLogEntry -Value "[Intune Auth] Refresh failed but token still valid for $([math]::Round(($script:IntuneTokenExpiry - (Get-Date)).TotalMinutes, 1)) minutes" -Severity 2
         return $true
     }
@@ -10735,6 +11581,9 @@ function Set-DATIntuneAuthContext {
             $script:IntuneTokenExpiry = [datetime]::MinValue
         } else {
             $script:IntuneAuthToken = $token
+            # Receiving a token supersedes an earlier explicit sign-out.
+            $script:IntuneAuthDisconnected = $false
+            $script:IntuneSilentAuthLastFailure = $null
 
             $expiresOn = if ($context.ContainsKey('ExpiresOn')) { $context['ExpiresOn'] } else { $null }
             $expiresInSec = if ($context.ContainsKey('ExpiresInSec')) { $context['ExpiresInSec'] } else { $null }
@@ -10777,6 +11626,11 @@ function Disconnect-DATIntuneGraph {
     $script:IntuneRefreshToken = $null
     $script:IntuneAuthClientId = $null
     $script:IntuneAuthTenantEndpoint = 'organizations'
+    # Signing out is deliberate, so it must survive the silent re-acquisition that now recovers a
+    # token lost to a transient 401 -- without this, stored client credentials would immediately
+    # sign the user back in.
+    $script:IntuneAuthDisconnected = $true
+    $script:IntuneSilentAuthLastFailure = $null
     Write-DATLogEntry -Value "[Intune Auth] Disconnected - token discarded" -Severity 1
 }
 
@@ -10915,34 +11769,74 @@ function Invoke-DATGraphRequest {
             $responseBody = $_.ErrorDetails.Message
         }
         if ($statusCode -eq 401) {
-            # Attempt automatic token refresh before giving up
-            Write-DATLogEntry -Value "[Graph API] 401 Unauthorized - attempting automatic token refresh..." -Severity 2
-            if (Update-DATIntuneTokenIfNeeded -Force) {
-                Write-DATLogEntry -Value "[Graph API] Token refreshed after 401 - retrying request ($Method $Uri)" -Severity 1
-                # Update headers with new token and retry once
-                $headers["Authorization"] = "Bearer $($script:IntuneAuthToken)"
-                try {
-                    $retrySplat = @{
-                        Method      = $Method
-                        Uri         = if ($Uri -match '^https://') { $Uri } else { "$($script:GraphBaseUrl)/$($Uri.TrimStart('/'))" }
-                        Headers     = $headers
-                        TimeoutSec  = 100
-                        ErrorAction = 'Stop'
+            # Graph returns 401 for two unrelated situations and they need different handling:
+            #   * the access token really is bad or expired -- refresh, then retry
+            #   * the token is fine but the addressed resource has not replicated yet. Graph
+            #     reports that as a 401 on a just-created app, e.g. POSTing contentVersions
+            #     seconds after mobileApps returned the id. No refresh can fix it, and an
+            #     immediate retry simply hits the same unreplicated resource again.
+            # The response body separates them: a token problem names InvalidAuthenticationToken
+            # or an expiry. Everything else is treated as transient and retried with a backoff.
+            if ($responseBody) {
+                Write-DATLogEntry -Value "[Graph API] 401 response body: $responseBody" -Severity 2
+            }
+            $tokenRejected = (-not $responseBody) -or
+                             ($responseBody -match '(?i)InvalidAuthenticationToken|CompactToken|Lifetime validation failed|token is expired|Access token has expired')
+
+            $tokenUsable = $true
+            if ($tokenRejected) {
+                Write-DATLogEntry -Value "[Graph API] 401 Unauthorized - attempting automatic token refresh..." -Severity 2
+                $tokenUsable = [bool](Update-DATIntuneTokenIfNeeded -Force)
+                if ($tokenUsable) {
+                    Write-DATLogEntry -Value "[Graph API] Token refreshed after 401 - retrying request ($Method $Uri)" -Severity 1
+                }
+            } else {
+                Write-DATLogEntry -Value "[Graph API] 401 Unauthorized does not name a token failure -- treating as a transient resource 401 and retrying without re-authenticating ($Method $Uri)" -Severity 2
+            }
+
+            if ($tokenUsable) {
+                # A freshly issued token needs a moment to become valid at the resource, and an
+                # unreplicated resource needs the same grace, so every retry waits first.
+                $retrySplat = @{
+                    Method      = $Method
+                    Uri         = if ($Uri -match '^https://') { $Uri } else { "$($script:GraphBaseUrl)/$($Uri.TrimStart('/'))" }
+                    Headers     = $headers
+                    TimeoutSec  = 100
+                    ErrorAction = 'Stop'
+                }
+                if ($Body -and $Method -in @('POST', 'PATCH')) {
+                    $retrySplat['Body'] = if ($Body -is [string]) { $Body } else { $Body | ConvertTo-Json -Depth 20 -Compress }
+                }
+                $retryProxy = Get-DATWebRequestProxy
+                foreach ($key in $retryProxy.Keys) { $retrySplat[$key] = $retryProxy[$key] }
+
+                foreach ($retryDelay in @(3, 8, 20)) {
+                    Start-Sleep -Seconds $retryDelay
+                    # Re-read the token each pass: a parallel refresh may have replaced it.
+                    $retrySplat['Headers']["Authorization"] = "Bearer $($script:IntuneAuthToken)"
+                    try {
+                        $retryResponse = Invoke-RestMethod @retrySplat
+                        if ($retryResponse.value) { return @($retryResponse.value) } else { return $retryResponse }
+                    } catch {
+                        $retryStatus = if ($_.Exception.Response) { [int]$_.Exception.Response.StatusCode } else { $null }
+                        Write-DATLogEntry -Value "[Graph API] Retry after ${retryDelay}s still failed ($retryStatus): $($_.Exception.Message)" -Severity 2
+                        # Anything other than a further 401 is a real error for the caller to see.
+                        if ($retryStatus -ne 401) { throw }
                     }
-                    if ($Body -and $Method -in @('POST', 'PATCH')) {
-                        $retrySplat['Body'] = if ($Body -is [string]) { $Body } else { $Body | ConvertTo-Json -Depth 20 -Compress }
-                    }
-                    $retryProxy = Get-DATWebRequestProxy
-                    foreach ($key in $retryProxy.Keys) { $retrySplat[$key] = $retryProxy[$key] }
-                    $retryResponse = Invoke-RestMethod @retrySplat
-                    if ($retryResponse.value) { return @($retryResponse.value) } else { return $retryResponse }
-                } catch {
-                    Write-DATLogEntry -Value "[Graph API] Retry after token refresh also failed: $($_.Exception.Message)" -Severity 3
                 }
             }
-            $script:IntuneAuthToken = $null
-            Write-DATLogEntry -Value "[Graph API] 401 Unauthorized - token invalidated after failed refresh" -Severity 3
-            throw "Authentication expired. Please re-authenticate."
+
+            # Deliberately NOT clearing $script:IntuneAuthToken. Nulling it made every later Graph
+            # call in the run fail with "Intune authentication required" -- including for app-only
+            # (client credentials) auth, which can silently re-acquire at any time -- so one
+            # transient 401 wrote off the rest of the build queue.
+            Write-DATLogEntry -Value "[Graph API] 401 Unauthorized - request abandoned after retries ($Method $Uri); the cached token is retained for subsequent requests" -Severity 3
+            if ($tokenRejected) {
+                throw "Authentication expired. Please re-authenticate."
+            }
+            # The token was never the problem, so do not tell the user to sign in again. Both
+            # messages keep the words the UI matches on to show its Intune status.
+            throw "Microsoft Graph returned 401 Unauthorized for $Method $Uri after 3 retries, with a valid access token. The target resource is most likely still replicating -- this model can be retried."
         }
         Write-DATLogEntry -Value "[Graph API] Request failed ($Method $Uri): $($_.Exception.Message)" -Severity 3
         if ($responseBody) {
@@ -11059,8 +11953,13 @@ function Get-DATIntuneKnownModels {
             $statusCode = [int]$_.Exception.Response.StatusCode
         }
         if ($statusCode -eq 401) {
-            $script:IntuneAuthToken = $null
+            # Give the refresh strategies a chance, and leave the cached token alone either way:
+            # clearing it here disabled Intune for the rest of the session over a single failed
+            # device query.
             Write-DATLogEntry -Value "[Graph API] 401 Unauthorized during known model lookup" -Severity 3
+            if (Update-DATIntuneTokenIfNeeded -Force) {
+                throw "Microsoft Graph returned 401 Unauthorized during the known model lookup. The token has been renewed -- retry the lookup."
+            }
             throw "Authentication expired. Please re-authenticate."
         }
         Write-DATLogEntry -Value "[Graph API] Known model lookup failed: $($_.Exception.Message)" -Severity 3
@@ -12699,12 +13598,23 @@ function New-DATIntuneToastScript {
 `$greetingPrefix    = '$($greetingPrefix -replace "'","''")'
 
 # --- Toast Debug Logging ---
+# The toast runs unattended in the user's session, so this log is usually the only
+# record of what happened. It is rolled at 1 MB (one generation kept) so a long-lived
+# device cannot accumulate an unbounded file under ProgramData.
 `$toastLogPath = Join-Path `$env:ProgramData 'DriverAutomationTool\DAT_Toast.log'
+`$toastLogMaxBytes = 1MB
 function Write-ToastLog {
     param([string]`$Message, [string]`$Severity = 'INFO')
     try {
         `$logDir = Split-Path `$toastLogPath -Parent
         if (-not (Test-Path `$logDir)) { New-Item -Path `$logDir -ItemType Directory -Force | Out-Null }
+        # Roll before appending so the current run always starts with headroom
+        try {
+            `$existing = Get-Item -Path `$toastLogPath -ErrorAction SilentlyContinue
+            if (`$existing -and `$existing.Length -gt `$toastLogMaxBytes) {
+                Move-Item -Path `$toastLogPath -Destination "`$toastLogPath.bak" -Force -ErrorAction SilentlyContinue
+            }
+        } catch { }
         `$timestamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss.fff'
         "`$timestamp [`$Severity] [PID:`$PID] `$Message" | Out-File -FilePath `$toastLogPath -Encoding UTF8 -Append
     } catch { }
@@ -13267,27 +14177,49 @@ try {
     # Write result on window Closing -- fires regardless of how the window is closed
     # (user click, DispatcherTimer auto-close, or external process termination).
     # This ensures the Install script always sees a result file.
+    #
+    # A tag of 'Pending' here means the window was closed WITHOUT the user answering and
+    # without the auto-close timer running -- i.e. something terminated us. Log that loudly:
+    # the install script treats it as a non-response, never as consent.
     $window.Add_Closing({
-        $timer.Stop()
+        try { $timer.Stop() } catch { }
         try {
             $resultDir = Split-Path $resultPath -Parent
             if (-not (Test-Path $resultDir)) { New-Item -Path $resultDir -ItemType Directory -Force | Out-Null }
+            if ($window.Tag -eq 'Pending') {
+                Write-ToastLog "Window closed while still 'Pending' -- no button pressed and the auto-close timer never fired (process likely terminated externally)" 'WARN'
+            }
             $window.Tag | Out-File -FilePath $resultPath -Encoding UTF8 -Force
-            Write-ToastLog "Result written on window close -- value: $($window.Tag)"
+            # Verify the write landed -- a result the install script cannot read is the same
+            # as no result at all, and we would rather see that stated in the log.
+            if (Test-Path $resultPath) {
+                Write-ToastLog "Result written on window close -- value: $($window.Tag) -> $resultPath"
+            } else {
+                Write-ToastLog "Result file missing immediately after write: $resultPath" 'ERROR'
+            }
         } catch {
             Write-ToastLog "Failed to write result on close: $($_.Exception.Message)" 'ERROR'
         }
     })
 
-    # Auto-close timer -- closes the window after 300 seconds if the user doesn't respond
-    $autoCloseSeconds = 300
+    # Auto-close timer -- closes the window if the user doesn't respond.
+    #
+    # This MUST expire before the scheduled task's ExecutionTimeLimit (6 min) and before the
+    # install script's wait budget (330s), otherwise the process is killed mid-prompt and the
+    # window closes still tagged 'Pending' -- losing the user's non-response. Order:
+    #   auto-close 240s  <  install wait 330s  <  task ExecutionTimeLimit 360s
+    $autoCloseSeconds = 240
     $timer = New-Object System.Windows.Threading.DispatcherTimer
     $timer.Interval = [TimeSpan]::FromSeconds($autoCloseSeconds)
     $timer.Add_Tick({
         Write-ToastLog "Auto-close timer expired ($autoCloseSeconds seconds) -- closing window"
-        $timer.Stop()
+        try { $timer.Stop() } catch { }
         $window.Tag = 'Timeout'
-        $window.Close()
+        try {
+            $window.Close()
+        } catch {
+            Write-ToastLog "Failed to close window on auto-close: $($_.Exception.Message)" 'ERROR'
+        }
     })
     $timer.Start()
     Write-ToastLog "Auto-close timer started ($autoCloseSeconds seconds)"
@@ -13402,8 +14334,23 @@ function New-DATIntuneInstallScript {
     $snoozeRegPath = 'HKLM:\SOFTWARE\DriverAutomationTool\Toast\{{UPDATE_TYPE}}'
     $maxDeferrals  = {{MAX_DEFERRALS}}
     $forceInstall  = $false
+
+    # State up front: every later decision in this gate is a function of these values, so
+    # having them in the log turns "why did it install?" into a one-line answer.
+    Write-CMTraceLog "[ToastGate] ============ Toast notification gate ============"
+    Write-CMTraceLog "[ToastGate] Update type    : {{UPDATE_TYPE}}"
+    Write-CMTraceLog "[ToastGate] Timeout action : {{TOAST_TIMEOUT_ACTION}}"
+    Write-CMTraceLog "[ToastGate] Max deferrals  : $maxDeferrals$(if ($maxDeferrals -le 0) { ' (deferral tracking disabled)' })"
+    Write-CMTraceLog "[ToastGate] State key      : $snoozeRegPath"
+
     if (-not (Test-Path $snoozeRegPath)) {
-        New-Item -Path $snoozeRegPath -Force | Out-Null
+        try {
+            New-Item -Path $snoozeRegPath -Force -ErrorAction Stop | Out-Null
+        } catch {
+            # Without this key deferrals cannot be recorded. Say so plainly rather than
+            # silently losing every subsequent snooze.
+            Write-CMTraceLog "[ToastGate] Failed to create state key '$snoozeRegPath': $($_.Exception.Message) -- deferrals cannot be persisted this run" -Severity 3
+        }
     }
 
     # Check whether the maximum deferral limit has been reached (when tracking is enabled)
@@ -13420,20 +14367,22 @@ function New-DATIntuneInstallScript {
     }
 
     if ($forceInstall) {
-        Write-CMTraceLog "Proceeding with forced BIOS installation (maximum deferrals reached)"
+        Write-CMTraceLog "[ToastGate] Proceeding with forced {{UPDATE_TYPE}} installation (maximum deferrals reached)"
         # Blended final notice: inform the interactive user -- bypassing Focus Assist / DND --
-        # that the BIOS update is now being pre-staged because the deferral limit was reached.
+        # that the update is now being applied because the deferral limit was reached.
         # This is informational only; the installation proceeds regardless of the response.
+        # The final-notice toast is only staged for BIOS packages (see New-DATIntuneToastScript
+        # callers), so its absence is expected for Drivers and is not an error.
         try {
             $finalNoticeScript = Join-Path $ScriptDir "Show-StatusToast-BIOSFinalNotice.ps1"
             if (Test-Path $finalNoticeScript) {
-                Write-CMTraceLog "Displaying final deferral notice (Focus Assist bypass) before pre-staging BIOS update"
+                Write-CMTraceLog "[ToastGate] Displaying final deferral notice (Focus Assist bypass) before applying the update"
                 Show-DATStatusToast -ToastScript $finalNoticeScript
             } else {
-                Write-CMTraceLog "Final notice toast script not found at $finalNoticeScript -- proceeding without final notice" -Severity 2
+                Write-CMTraceLog "[ToastGate] No final-notice toast staged for this package type -- proceeding without a final notice"
             }
         } catch {
-            Write-CMTraceLog "Failed to display final deferral notice: $($_.Exception.Message) -- proceeding" -Severity 2
+            Write-CMTraceLog "[ToastGate] Failed to display final deferral notice: $($_.Exception.Message) -- proceeding" -Severity 2
         }
     } else {
         $snoozeUntil = (Get-ItemProperty -Path $snoozeRegPath -Name 'SnoozeUntil' -ErrorAction SilentlyContinue).SnoozeUntil
@@ -13499,82 +14448,110 @@ function New-DATIntuneInstallScript {
                 } else {
                     Write-CMTraceLog "Running toast notification as $loggedOnUser"
 
-                    # Create a scheduled task to run the toast UI in the user's interactive session
+                    # Create a scheduled task to run the toast UI in the user's interactive session.
+                    #
+                    # TIMER BUDGET -- these three values must stay strictly ordered:
+                    #
+                    #   toast auto-close (240s)  <  install-side wait (330s)  <  task limit (360s)
+                    #
+                    # ExecutionTimeLimit is Task Scheduler's LAST-RESORT stop. If it fires first it
+                    # terminates the toast process before the toast's own auto-close timer can record
+                    # a genuine 'Timeout' answer -- the window is force-closed while still carrying its
+                    # initial 'Pending' tag, and the user's (non-)response is lost. Keep the internal
+                    # timer comfortably ahead so the toast always reports its own outcome.
                     $taskName = 'User Toast Notification'
                     $taskFolder = '\Driver Automation Tool'
                     $taskAction = New-ScheduledTaskAction -Execute $ps64 `
                         -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -STA -File `"$toastScriptPath`""
                     $taskPrincipal = New-ScheduledTaskPrincipal -UserId $loggedOnUser -LogonType Interactive -RunLevel Limited
                     $taskSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
-                        -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Minutes 5)
+                        -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Minutes 6)
 
-                    Write-CMTraceLog "Registering scheduled task '$taskFolder\$taskName' -- Execute: $ps64"
+                    Write-CMTraceLog "[ToastGate] Registering scheduled task '$taskFolder\$taskName' -- Execute: $ps64"
+                    Write-CMTraceLog "[ToastGate] Toast script: $toastScriptPath"
                     Unregister-ScheduledTask -TaskPath $taskFolder -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
+                    $toastLaunched = $false
+                    $launchFailure  = $null
                     try {
                         Register-ScheduledTask -TaskPath $taskFolder -TaskName $taskName -Action $taskAction -Principal $taskPrincipal `
-                            -Settings $taskSettings -Force | Out-Null
-                        Start-ScheduledTask -TaskPath $taskFolder -TaskName $taskName
-                        Write-CMTraceLog "Scheduled task '$taskFolder\$taskName' started successfully"
+                            -Settings $taskSettings -Force -ErrorAction Stop | Out-Null
+                        Start-ScheduledTask -TaskPath $taskFolder -TaskName $taskName -ErrorAction Stop
+                        $toastLaunched = $true
+                        $taskState = (Get-ScheduledTask -TaskPath "$taskFolder\" -TaskName $taskName -ErrorAction SilentlyContinue).State
+                        Write-CMTraceLog "[ToastGate] Scheduled task started successfully -- state: $taskState"
                     } catch {
-                        Write-CMTraceLog "Failed to register/start toast task: $($_.Exception.Message)" -Severity 3
+                        $launchFailure = $_.Exception.Message
+                        Write-CMTraceLog "[ToastGate] Failed to register/start toast task: $launchFailure" -Severity 3
                     }
 
-                    # Wait for the user to respond (up to 5 minutes)
+                    # Wait for the user to respond.
                     # NOTE: The scheduled task fires powershell.exe and then the task
                     # itself transitions to Ready/completes almost immediately.  We must
                     # track the actual toast PowerShell *process* (by PID) rather than
                     # the task state -- otherwise the wait loop exits after the first
                     # 10-second check and treats a still-visible toast as a timeout.
-                    $waitTimeout = 300
+                    $waitTimeout = 330
                     $waited = 0
                     $taskExitedEarly = $false
+                    $toastPid = $null
+                    $noResponseReason = $null
 
-                    # Discover the toast process PID spawned by the scheduled task.
-                    # The task launches powershell.exe with the toast script path -- look
-                    # for processes whose command line contains the persistent script path.
-                    Start-Sleep -Seconds 3
-                    $waited += 3
-                    $toastProc = $null
-                    try {
-                        $toastProc = Get-CimInstance Win32_Process -Filter "Name = 'powershell.exe'" -ErrorAction SilentlyContinue |
-                            Where-Object { $_.CommandLine -and $_.CommandLine -match 'Show-ToastNotification' } |
-                            Select-Object -First 1
-                        if ($toastProc) {
-                            Write-CMTraceLog "Toast process found: PID $($toastProc.ProcessId)"
-                        } else {
-                            Write-CMTraceLog "Toast process not found via WMI -- will track result file only" -Severity 2
+                    if (-not $toastLaunched) {
+                        # Nothing is going to write a result file -- don't burn 330s waiting for one.
+                        $noResponseReason = "the toast task could not be started ($launchFailure)"
+                        Write-CMTraceLog "[ToastGate] Skipping response wait -- $noResponseReason" -Severity 2
+                    } else {
+                        # Discover the toast process PID spawned by the scheduled task.
+                        # The task launches powershell.exe with the toast script path -- look
+                        # for processes whose command line contains the persistent script path.
+                        Start-Sleep -Seconds 3
+                        $waited += 3
+                        $toastProc = $null
+                        try {
+                            $toastProc = Get-CimInstance Win32_Process -Filter "Name = 'powershell.exe'" -ErrorAction SilentlyContinue |
+                                Where-Object { $_.CommandLine -and $_.CommandLine -match 'Show-ToastNotification' } |
+                                Select-Object -First 1
+                            if ($toastProc) {
+                                Write-CMTraceLog "[ToastGate] Toast process found: PID $($toastProc.ProcessId)"
+                            } else {
+                                Write-CMTraceLog "[ToastGate] Toast process not found via WMI -- will track result file only" -Severity 2
+                            }
+                        } catch {
+                            Write-CMTraceLog "[ToastGate] WMI process query failed: $($_.Exception.Message) -- will track result file only" -Severity 2
                         }
-                    } catch {
-                        Write-CMTraceLog "WMI process query failed: $($_.Exception.Message) -- will track result file only" -Severity 2
-                    }
-                    $toastPid = if ($toastProc) { $toastProc.ProcessId } else { $null }
+                        $toastPid = if ($toastProc) { $toastProc.ProcessId } else { $null }
 
-                    while ($waited -lt $waitTimeout) {
-                        Start-Sleep -Seconds 2
-                        $waited += 2
-                        if (Test-Path $toastResultFile) { break }
+                        while ($waited -lt $waitTimeout) {
+                            Start-Sleep -Seconds 2
+                            $waited += 2
+                            if (Test-Path $toastResultFile) { break }
 
-                        # Check if the toast process is still running
-                        $processAlive = $false
-                        if ($null -ne $toastPid) {
-                            $processAlive = [bool](Get-Process -Id $toastPid -ErrorAction SilentlyContinue)
-                        } else {
-                            # No PID captured -- fall back to checking for any toast process
-                            $processAlive = [bool](Get-Process -Name 'powershell' -ErrorAction SilentlyContinue |
-                                Where-Object { try { (Get-CimInstance Win32_Process -Filter "ProcessId = $($_.Id)" -ErrorAction SilentlyContinue).CommandLine -match 'Show-ToastNotification' } catch { $false } } |
-                                Select-Object -First 1)
+                            # Check if the toast process is still running
+                            $processAlive = $false
+                            if ($null -ne $toastPid) {
+                                $processAlive = [bool](Get-Process -Id $toastPid -ErrorAction SilentlyContinue)
+                            } else {
+                                # No PID captured -- fall back to checking for any toast process
+                                $processAlive = [bool](Get-Process -Name 'powershell' -ErrorAction SilentlyContinue |
+                                    Where-Object { try { (Get-CimInstance Win32_Process -Filter "ProcessId = $($_.Id)" -ErrorAction SilentlyContinue).CommandLine -match 'Show-ToastNotification' } catch { $false } } |
+                                    Select-Object -First 1)
+                            }
+
+                            # Log state periodically for diagnostics
+                            if ($waited % 30 -eq 0) {
+                                Write-CMTraceLog "[ToastGate] Toast wait ${waited}s of ${waitTimeout}s -- process alive: $processAlive"
+                            }
+
+                            # Only break if the toast process has exited AND no result file appeared
+                            if (-not $processAlive -and -not (Test-Path $toastResultFile)) {
+                                Write-CMTraceLog "[ToastGate] Toast process (PID: $toastPid) exited without writing a result at ${waited}s" -Severity 2
+                                $taskExitedEarly = $true
+                                break
+                            }
                         }
 
-                        # Log state periodically for diagnostics
-                        if ($waited % 30 -eq 0) {
-                            Write-CMTraceLog "Toast wait ${waited}s -- process alive: $processAlive"
-                        }
-
-                        # Only break if the toast process has exited AND no result file appeared
-                        if (-not $processAlive -and -not (Test-Path $toastResultFile)) {
-                            Write-CMTraceLog "Toast process (PID: $toastPid) exited without result file at ${waited}s" -Severity 2
-                            $taskExitedEarly = $true
-                            break
+                        if ($waited -ge $waitTimeout -and -not (Test-Path $toastResultFile)) {
+                            Write-CMTraceLog "[ToastGate] Wait budget of ${waitTimeout}s exhausted with no result file" -Severity 2
                         }
                     }
 
@@ -13590,72 +14567,112 @@ function New-DATIntuneInstallScript {
                         }
                     }
 
-                    # Clean up
+                    # Clean up -- capture the task's own outcome first, it explains kills/failures
+                    $taskInfo = Get-ScheduledTaskInfo -TaskPath "$taskFolder\" -TaskName $taskName -ErrorAction SilentlyContinue
+                    if ($taskInfo) {
+                        Write-CMTraceLog ("[ToastGate] Task last result: 0x{0:X} (last run: {1})" -f $taskInfo.LastTaskResult, $taskInfo.LastRunTime)
+                    }
                     Unregister-ScheduledTask -TaskPath $taskFolder -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
 
+                    # ---- Interpret the response ---------------------------------------------
+                    # DEFAULT DENY. Installing drivers or flashing a BIOS is disruptive, so ONLY
+                    # an explicit 'Update' click counts as consent. Every other outcome -- an
+                    # explicit deferral, the auto-close timer, a toast killed before it could
+                    # answer ('Pending'), an unreadable or empty file, or no file at all -- means
+                    # "the user did not agree" and is routed through the configured timeout action.
+                    # Never add a branch here that proceeds on an unrecognised value.
+                    $toastResult = ''
                     if (Test-Path $toastResultFile) {
-                        $toastResult = (Get-Content $toastResultFile -Raw).Trim()
+                        try {
+                            $rawResult = Get-Content $toastResultFile -Raw -ErrorAction Stop
+                            if ($null -ne $rawResult) { $toastResult = $rawResult.Trim() }
+                        } catch {
+                            Write-CMTraceLog "[ToastGate] Failed to read result file '$toastResultFile': $($_.Exception.Message)" -Severity 3
+                        }
                         Remove-Item -Path $toastResultFile -Force -ErrorAction SilentlyContinue
-                        Write-CMTraceLog "Toast result: $toastResult"
+                    }
 
-                        if ($toastResult -in @('Snooze','Timeout')) {
-                            # Snooze = user clicked Remind Me Later
-                            # Timeout = auto-close timer expired (300s) or toast process exited early
-                            $isAutoTimeout = ($toastResult -eq 'Timeout')
-
-                            # Check configured timeout action for auto-timeouts
-                            if ($isAutoTimeout -and '{{TOAST_TIMEOUT_ACTION}}' -ne 'RemindMeLater') {
-                                Write-CMTraceLog "Toast auto-closed after ${waited}s -- proceeding with installation (Auto Install on timeout)" -Severity 2
+                    # Classify the outcome. $userDeferred marks a deliberate "Remind Me Later"
+                    # (always honoured, whatever the timeout action) as distinct from a silent
+                    # non-response (honoured only when the timeout action is RemindMeLater).
+                    $userConsented = $false
+                    $userDeferred  = $false
+                    switch ($toastResult) {
+                        'Update' {
+                            $userConsented = $true
+                            Write-CMTraceLog "[ToastGate] Toast result: Update -- user chose Update Now"
+                        }
+                        'Snooze' {
+                            $userDeferred = $true
+                            Write-CMTraceLog "[ToastGate] Toast result: Snooze -- user chose Remind Me Later"
+                        }
+                        'Timeout' {
+                            $noResponseReason = "the toast auto-closed after its timer expired"
+                            Write-CMTraceLog "[ToastGate] Toast result: Timeout -- $noResponseReason"
+                        }
+                        'Pending' {
+                            # 'Pending' is the toast window's INITIAL tag. Seeing it means the window
+                            # closed before either button was pressed and before the auto-close timer
+                            # ran -- almost always because the process was terminated (the scheduled
+                            # task hit its ExecutionTimeLimit, or the user signed out). It is NOT
+                            # consent. If this appears routinely, check the timer budget above.
+                            $noResponseReason = "the toast closed without recording an answer (terminated before its auto-close timer -- check the ExecutionTimeLimit vs auto-close budget)"
+                            Write-CMTraceLog "[ToastGate] Toast result: Pending -- $noResponseReason" -Severity 2
+                        }
+                        default {
+                            if ([string]::IsNullOrWhiteSpace($toastResult)) {
+                                if ([string]::IsNullOrWhiteSpace($noResponseReason)) {
+                                    $noResponseReason = if ($taskExitedEarly) {
+                                        "the toast process exited without writing a result"
+                                    } else {
+                                        "no result was written within ${waitTimeout}s"
+                                    }
+                                }
+                                Write-CMTraceLog "[ToastGate] No toast result recorded after ${waited}s -- $noResponseReason (see DAT_Toast.log for Focus Assist state)" -Severity 2
                             } else {
-                                # Increment deferral counter if tracking is active
-                                if ($maxDeferrals -gt 0) {
-                                    $rawCount  = (Get-ItemProperty -Path $snoozeRegPath -Name 'DeferralCount' -ErrorAction SilentlyContinue).DeferralCount
-                                    [int]$prev = if ($null -ne $rawCount) { $rawCount } else { 0 }
-                                    Set-ItemProperty -Path $snoozeRegPath -Name 'DeferralCount' -Value ($prev + 1) -Type DWord -Force
-                                    Write-CMTraceLog "Deferral count incremented to $($prev + 1) / $maxDeferrals"
-                                }
-                                $snoozeExpiry = (Get-Date).AddHours(4).ToString('o')
-                                Set-ItemProperty -Path $snoozeRegPath -Name 'SnoozeUntil' -Value $snoozeExpiry -Force
-                                if ($isAutoTimeout) {
-                                    Write-CMTraceLog "Toast auto-closed after ${waited}s -- snoozed until $snoozeExpiry (Remind Me Later on timeout)"
-                                } else {
-                                    Write-CMTraceLog "User chose Remind Me Later -- rescheduled until $snoozeExpiry"
-                                }
-                                # Record the deferral reason so custom reporting can see WHY the
-                                # device is still pending. Cleared on the next successful run.
-                                $deferReason = if ($isAutoTimeout) { "Toast auto-closed (Remind Me Later) -- snoozed until $snoozeExpiry" } else { "User chose Remind Me Later -- snoozed until $snoozeExpiry" }
-                                Set-DATInstallStatus -RegPath $VersionRegPath -Result 'RetryScheduled' -Phase 'UserDeferral' -ScriptExitCode 1618 -ErrorMessage $deferReason
-                                # 1618 = ERROR_INSTALL_ALREADY_RUNNING -- signals Intune to retry
-                                # the deferred install later rather than record it as completed.
-                                exit 1618
+                                $noResponseReason = "the toast returned an unrecognised result '$toastResult'"
+                                Write-CMTraceLog "[ToastGate] $noResponseReason -- treating as no response" -Severity 2
                             }
-                        } elseif ($toastResult -eq 'Update') {
-                            Write-CMTraceLog "User chose Update Now -- proceeding with installation"
-                        } else {
-                            Write-CMTraceLog "Unexpected toast result: $toastResult -- proceeding" -Severity 2
                         }
+                    }
+
+                    if ($userConsented) {
+                        Write-CMTraceLog "[ToastGate] Consent given -- proceeding with installation"
+                    } elseif (-not $userDeferred -and '{{TOAST_TIMEOUT_ACTION}}' -ne 'RemindMeLater') {
+                        # Admin configured InstallNow for unanswered prompts. An explicit
+                        # Remind Me Later is still honoured -- it never reaches this branch.
+                        Write-CMTraceLog "[ToastGate] No response after ${waited}s ($noResponseReason) -- proceeding with installation (timeout action: InstallNow)" -Severity 2
                     } else {
-                        Write-CMTraceLog "Toast process exited without result file (waited ${waited}s of ${waitTimeout}s) -- check DAT_Toast.log for Focus Assist state" -Severity 2
-                        if ('{{TOAST_TIMEOUT_ACTION}}' -eq 'RemindMeLater') {
-                            # Treat timeout as Remind Me Later -- increment deferral counter if tracking is active
-                            if ($maxDeferrals -gt 0) {
-                                $rawCount  = (Get-ItemProperty -Path $snoozeRegPath -Name 'DeferralCount' -ErrorAction SilentlyContinue).DeferralCount
-                                [int]$prev = if ($null -ne $rawCount) { $rawCount } else { 0 }
-                                Set-ItemProperty -Path $snoozeRegPath -Name 'DeferralCount' -Value ($prev + 1) -Type DWord -Force
-                            Write-CMTraceLog "Toast process exited without result (deferral) -- count incremented to $($prev + 1) / $maxDeferrals"
+                        # Deferral: count it, snooze for 4 hours, and tell Intune to retry later.
+                        if ($maxDeferrals -gt 0) {
+                            $rawCount  = (Get-ItemProperty -Path $snoozeRegPath -Name 'DeferralCount' -ErrorAction SilentlyContinue).DeferralCount
+                            [int]$prev = if ($null -ne $rawCount) { $rawCount } else { 0 }
+                            try {
+                                Set-ItemProperty -Path $snoozeRegPath -Name 'DeferralCount' -Value ($prev + 1) -Type DWord -Force -ErrorAction Stop
+                                Write-CMTraceLog "[ToastGate] Deferral count incremented to $($prev + 1) / $maxDeferrals"
+                            } catch {
+                                Write-CMTraceLog "[ToastGate] Failed to record deferral count under '$snoozeRegPath': $($_.Exception.Message)" -Severity 3
                             }
-                            $snoozeExpiry = (Get-Date).AddHours(4).ToString('o')
-                            Set-ItemProperty -Path $snoozeRegPath -Name 'SnoozeUntil' -Value $snoozeExpiry -Force
-                            Write-CMTraceLog "Toast process exited without result -- snoozed until $snoozeExpiry (Remind Me Later on no result)"
-                            # Record the deferral reason so custom reporting can see WHY the device
-                            # is still pending. Cleared automatically on the next successful run.
-                            Set-DATInstallStatus -RegPath $VersionRegPath -Result 'RetryScheduled' -Phase 'UserDeferral' -ScriptExitCode 1618 -ErrorMessage "Toast dismissed without response -- snoozed until $snoozeExpiry"
-                            # 1618 = ERROR_INSTALL_ALREADY_RUNNING -- signals Intune to retry
-                            # the deferred install later rather than record it as completed.
-                            exit 1618
-                        } else {
-                            Write-CMTraceLog "Toast process exited without result -- proceeding with installation (Auto Install on no result)" -Severity 2
                         }
+                        $snoozeExpiry = (Get-Date).AddHours(4).ToString('o')
+                        try {
+                            Set-ItemProperty -Path $snoozeRegPath -Name 'SnoozeUntil' -Value $snoozeExpiry -Force -ErrorAction Stop
+                        } catch {
+                            Write-CMTraceLog "[ToastGate] Failed to record snooze expiry under '$snoozeRegPath': $($_.Exception.Message)" -Severity 3
+                        }
+                        $deferReason = if ($userDeferred) {
+                            "User chose Remind Me Later -- snoozed until $snoozeExpiry"
+                        } else {
+                            "No response ($noResponseReason) -- snoozed until $snoozeExpiry"
+                        }
+                        Write-CMTraceLog "[ToastGate] $deferReason"
+                        # Record the deferral reason so custom reporting can see WHY the device is
+                        # still pending. Cleared automatically on the next successful/current run.
+                        Set-DATInstallStatus -RegPath $VersionRegPath -Result 'RetryScheduled' -Phase 'UserDeferral' -ScriptExitCode 1618 -ErrorMessage $deferReason
+                        # 1618 = ERROR_INSTALL_ALREADY_RUNNING -- a built-in Intune Win32 return
+                        # code mapped to 'retry', so the deferred install is re-attempted later
+                        # instead of being recorded as a successful (completed) install.
+                        exit 1618
                     }
                 }
             }
@@ -13819,7 +14836,10 @@ function Show-DATStatusToast {
     # OEM/model/version/OS names but can break string literals or comments in the output
     # script (e.g. a catalog-supplied value of  Dell"; exit 1; "  would be injected verbatim).
     # An allow-list applied once here covers every template context uniformly.
-    $allowPattern = '^[\w\s\.\-\/\(\)]+$'   # letters, digits, _, space, . - / ( )
+    # Square brackets are included for Panasonic variant-series model names such as
+    # "FZ-G2[N/P] (mk3)" (issue #956). Every template context is a comment or a quoted
+    # string, where a bracket is inert -- it cannot terminate a literal or start a command.
+    $allowPattern = '^[\w\s\.\-\/\(\)\[\]]+$'   # letters, digits, _, space, . - / ( ) [ ]
     $tokensToValidate = [ordered]@{
         OEM     = $OEM
         Model   = $Model
@@ -13836,6 +14856,11 @@ function Show-DATStatusToast {
 
     # Replace template tokens (use literal .Replace() -- NOT -replace -- because the
     # toast blocks contain $_ which .NET regex interprets as "entire input string")
+    # Registry marker key segment, replaced before {{Model}} so the longer token wins. A key name
+    # is addressed through the registry provider, so it must not contain a path separator or a
+    # PowerShell wildcard bracket -- see ConvertTo-DATSafePathSegment (issue #956). The detection
+    # and requirement scripts derive the same value, so all three agree on the marker key.
+    $scriptContent = $scriptContent.Replace('{{ModelKey}}', (ConvertTo-DATSafePathSegment -Segment "$Model"))
     $scriptContent = $scriptContent.Replace('{{OEM}}', $OEM)
     $scriptContent = $scriptContent.Replace('{{Model}}', $Model)
     $scriptContent = $scriptContent.Replace('{{OS}}', $OS)
@@ -13872,7 +14897,8 @@ function Get-DATBiosCompareBlock {
         truth: the Install-BIOS.ps1 template) plus a no-op Write-CMTraceLog shim, ready to embed
         in the Intune requirement and detection rule scripts. This lets applicability and detection
         use the SAME comparison the installer uses -- Dell/HP/Surface/Acer by version, Lenovo by
-        release date -- so all three stages agree.
+        firmware version (UEFI BIOS / System Firmware) with a release-date fallback -- so all three
+        stages agree.
     #>
     [CmdletBinding()]
     param()
@@ -13946,6 +14972,10 @@ function New-DATIntuneRequirementScript {
 
     # Determine registry sub-key and whether to include OS check
     $regSubKey = if ($UpdateType -eq 'BIOS') { 'BIOS' } else { 'Drivers' }
+    # Per-model marker key segment -- must match the install and detection scripts. A raw catalog
+    # name can carry a path separator or a PowerShell wildcard bracket (Panasonic
+    # "FZ-G2[N/P] (mk3)", issue #956), either of which breaks Test-Path on the registry provider.
+    $modelKey = ConvertTo-DATSafePathSegment -Segment "$Model"
     $osCheckBlock = if ($UpdateType -eq 'BIOS') {
         @'
     # BIOS packages are OS-agnostic -- OS check skipped
@@ -14069,9 +15099,9 @@ function New-DATIntuneRequirementScript {
 
     # BIOS applicability gate (Check 4, BIOS only). Reuse the installer's manufacturer-aware
     # Compare-BIOSVersion so applicability exactly matches what the installer would do:
-    # Dell/HP/Surface/Acer compare by version, Lenovo by release date. The package is applicable
-    # only when an update is actually needed; an up-to-date device reports "Not applicable".
-    # Drivers are unaffected.
+    # Dell/HP/Surface/Acer compare by version, Lenovo by firmware version with a release-date
+    # fallback. The package is applicable only when an update is actually needed; an up-to-date
+    # device reports "Not applicable". Drivers are unaffected.
     $biosCompareFuncs = ''
     $biosRecencyBlock = ''
     if ($UpdateType -eq 'BIOS') {
@@ -14082,7 +15112,7 @@ function New-DATIntuneRequirementScript {
         $biosCompareFuncs = Get-DATBiosCompareBlock
         $biosRecencyBlock = @"
     # Check 4: BIOS recency -- applicable only when the installer's own comparison says an update
-    # is needed (Dell/HP/Surface/Acer by version, Lenovo by release date). Independent of the
+    # is needed (Dell/HP/Surface/Acer by version, Lenovo by firmware version). Independent of the
     # registry marker, so an already-current device correctly reports "Not applicable".
     try {
         `$biosUpdateNeeded = Compare-BIOSVersion -AvailableBIOSVersion "$Version" -Manufacturer "$OEM" -AvailableReleaseDate "$releaseDate8"
@@ -14102,7 +15132,7 @@ function New-DATIntuneRequirementScript {
     # without parsing IME logs. Every write is stdout-silent, so it never interferes with the
     # "Requirement met" string the rule compares against. Runs as SYSTEM (HKLM writable).
     $applicabilityFunc = @"
-`$datReqRegPath = 'HKLM:\SOFTWARE\DriverAutomationTool\$regSubKey\$OEM\$Model'
+`$datReqRegPath = 'HKLM:\SOFTWARE\DriverAutomationTool\$regSubKey\$OEM\$modelKey'
 function Set-DATApplicability {
     param([Parameter(Mandatory)][string]`$Result, [string]`$Reason = '')
     try {
@@ -14244,6 +15274,8 @@ function New-DATIntuneDetectionScript {
 
     # Determine registry sub-key and whether to include OS check
     $regSubKey = if ($UpdateType -eq 'BIOS') { 'BIOS' } else { 'Drivers' }
+    # Per-model marker key segment -- must match the install and requirement scripts (issue #956).
+    $modelKey = ConvertTo-DATSafePathSegment -Segment "$Model"
     $detectionLabel = if ($UpdateType -eq 'BIOS') { 'BIOS' } else { 'drivers' }
     $osCheckBlock = if ($UpdateType -eq 'BIOS') {
         @'
@@ -14315,8 +15347,8 @@ function New-DATIntuneDetectionScript {
     $detectionCheckBlock = if ($UpdateType -eq 'BIOS') {
         @"
     # Check 4: BIOS detection. Detected when the installer's own manufacturer-aware comparison
-    # reports the BIOS is already current (Dell/HP/Surface/Acer by version, Lenovo by release
-    # date). The registry version marker is only a FALLBACK for when the live BIOS version cannot
+    # reports the BIOS is already current (Dell/HP/Surface/Acer by version, Lenovo by firmware
+    # version). The registry version marker is only a FALLBACK for when the live BIOS version cannot
     # be read: a flash that was staged but silently failed (or was rolled back) leaves the marker
     # tattooed AHEAD of the real firmware, so trusting it would wrongly report the update as
     # installed and permanently block any re-run of the upgrade. We therefore only trust the marker
@@ -14339,7 +15371,7 @@ function New-DATIntuneDetectionScript {
             if (`$liveBios -and -not [string]::IsNullOrWhiteSpace([string]`$liveBios.SMBIOSBIOSVersion)) { `$liveBiosReadable = `$true }
         } catch { `$liveBiosReadable = `$false }
 
-        `$regPath = "HKLM:\SOFTWARE\DriverAutomationTool\$regSubKey\$OEM\$Model"
+        `$regPath = "HKLM:\SOFTWARE\DriverAutomationTool\$regSubKey\$OEM\$modelKey"
         if (Test-Path `$regPath) {
             `$installedVer = (Get-ItemProperty -Path `$regPath -Name 'Version' -ErrorAction SilentlyContinue).Version
             if (`$installedVer -eq "$Version") {
@@ -14362,7 +15394,7 @@ $pendingRebootGuard
     } else {
         @"
     # Check 4: Version marker in registry (only trusted once any pending reboot has occurred)
-    `$regPath = "HKLM:\SOFTWARE\DriverAutomationTool\$regSubKey\$OEM\$Model"
+    `$regPath = "HKLM:\SOFTWARE\DriverAutomationTool\$regSubKey\$OEM\$modelKey"
     if (Test-Path `$regPath) {
         `$installedVersion = (Get-ItemProperty -Path `$regPath -Name 'Version' -ErrorAction SilentlyContinue).Version
         if (`$installedVersion -eq "$Version") {
@@ -14740,6 +15772,81 @@ function ConvertFrom-DATAzCopyProgressLine {
     return [int][math]::Round($pct)
 }
 
+function Get-DATAzCopyFailureDetail {
+    <#
+    .SYNOPSIS
+        Builds a useful failure reason from AzCopy's JSON output stream.
+
+    .DESCRIPTION
+        With --output-type=json AzCopy emits one JSON object per line and reports why a job failed
+        in its LAST messages (MessageType Error / EndOfJob), after a preamble of Init and Info
+        lines. Joining the stream and keeping the FIRST n characters therefore captured only
+        "Scanning..." and threw away the reason, leaving every AzCopy failure unexplained in the
+        log.
+
+        This selects the error-bearing messages, falls back to the tail of the stream when none is
+        classified, and appends the AzCopy log file path so the full detail stays retrievable.
+
+    .OUTPUTS
+        String. Empty when there is nothing useful to report.
+    #>
+    [OutputType([string])]
+    [CmdletBinding()]
+    param (
+        [AllowEmptyString()][AllowNull()][string]$StdErr = '',
+        [AllowNull()][string[]]$OutputLines = @(),
+        [int]$MaxLength = 900
+    )
+
+    $lines = @($OutputLines | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    $errorParts = New-Object System.Collections.Generic.List[string]
+    $logPath = ''
+
+    foreach ($line in $lines) {
+        $msg = $null
+        try { $msg = $line | ConvertFrom-Json -ErrorAction Stop } catch { $msg = $null }
+
+        if ($null -eq $msg) {
+            # Not JSON (text output mode, or a partial line) -- keep it only if it reads like a fault.
+            if ($line -match '(?i)\b(error|failed|denied|forbidden)\b') { $errorParts.Add($line.Trim()) }
+            continue
+        }
+
+        $type    = "$($msg.MessageType)"
+        $content = "$($msg.MessageContent)".Trim()
+
+        if ($type -eq 'Init') {
+            if ($content -match '"LogFileLocation"\s*:\s*"([^"]+)"') {
+                $logPath = $Matches[1] -replace '\\\\', '\'
+            }
+        } elseif ($type -in @('Error', 'EndOfJob', 'JobResponse')) {
+            if ($content) { $errorParts.Add($content) }
+        } elseif ($content -match '(?i)\b(error|failed|denied|forbidden)\b') {
+            $errorParts.Add($content)
+        }
+    }
+
+    $detail = ''
+    if (-not [string]::IsNullOrWhiteSpace($StdErr)) { $detail = $StdErr.Trim() }
+
+    if ($errorParts.Count -gt 0) {
+        $joined = (($errorParts | Select-Object -Last 5) -join ' | ')
+        $detail = if ($detail) { "$detail | $joined" } else { $joined }
+    } elseif ([string]::IsNullOrWhiteSpace($detail) -and $lines.Count -gt 0) {
+        # Nothing classified as an error, but the tail of the stream is still far more informative
+        # than its preamble.
+        $detail = (($lines | Select-Object -Last 5) -join ' ')
+    }
+
+    if ($detail.Length -gt $MaxLength) {
+        # Keep the END of the text: that is where AzCopy puts the reason.
+        $detail = '...' + $detail.Substring($detail.Length - $MaxLength)
+    }
+
+    if ($logPath) { $detail = "$detail -- AzCopy log: $logPath" }
+    return $detail.Trim()
+}
+
 function Invoke-DATAzCopyBlobUpload {
     <#
     .SYNOPSIS
@@ -14827,9 +15934,12 @@ function Invoke-DATAzCopyBlobUpload {
             $lastPct = -1
             $recent = New-Object System.Collections.Generic.Queue[string]
             while ($null -ne ($line = $proc.StandardOutput.ReadLine())) {
-                if (-not [string]::IsNullOrWhiteSpace($line)) {
+                # Buffer the stream for diagnostics, minus the periodic Progress messages -- on a
+                # long transfer those would otherwise evict the Init header and the closing
+                # Error/EndOfJob messages, which are the two parts worth keeping.
+                if (-not [string]::IsNullOrWhiteSpace($line) -and $line -notmatch '"MessageType"\s*:\s*"Progress"') {
                     $recent.Enqueue($line)
-                    while ($recent.Count -gt 12) { [void]$recent.Dequeue() }
+                    while ($recent.Count -gt 40) { [void]$recent.Dequeue() }
                 }
                 $prog = ConvertFrom-DATAzCopyProgressLine -Line $line
                 if ($null -ne $prog -and $prog -ge 0 -and $prog -ne $lastPct) {
@@ -14850,13 +15960,8 @@ function Invoke-DATAzCopyBlobUpload {
         $sw.Stop()
 
         if ($exit -ne 0) {
-            $detail = ''
-            if (-not [string]::IsNullOrWhiteSpace($stdErr)) {
-                $detail = $stdErr.Trim()
-            } elseif ($null -ne $recent -and $recent.Count -gt 0) {
-                $detail = ($recent.ToArray() -join ' ')
-            }
-            if ($detail.Length -gt 600) { $detail = $detail.Substring(0, 600) }
+            $outputLines = if ($null -ne $recent) { $recent.ToArray() } else { @() }
+            $detail = Get-DATAzCopyFailureDetail -StdErr $stdErr -OutputLines $outputLines
             return @{ Success = $false; Error = ("AzCopy exited with code $exit. $detail").Trim(); ThroughputMBps = 0 }
         }
 
@@ -15717,8 +16822,12 @@ function Invoke-DATIntunePackageCreation {
     }
     }
 
-    # Create staging directory for the package
-    $pkgSubDir = if ($UpdateType -eq 'BIOS') { "$OEM\$Model\BIOS" } else { "$OEM\$Model\$OS" }
+    # Create staging directory for the package. Filesystem-safe folder segments (issue #956) --
+    # see ConvertTo-DATSafePathSegment. The display name above keeps the raw model name.
+    $OEMPath = ConvertTo-DATSafePathSegment -Segment "$OEM"
+    $ModelPath = ConvertTo-DATSafePathSegment -Segment "$Model"
+    $OSPath = ConvertTo-DATSafePathSegment -Segment "$OS"
+    $pkgSubDir = if ($UpdateType -eq 'BIOS') { "$OEMPath\$ModelPath\BIOS" } else { "$OEMPath\$ModelPath\$OSPath" }
     $stagingDir = Join-Path $PackageDestination "IntuneStaging\$pkgSubDir"
     if (Test-Path $stagingDir) { Remove-Item $stagingDir -Recurse -Force }
     New-Item -Path $stagingDir -ItemType Directory -Force | Out-Null
@@ -15864,7 +16973,7 @@ function Invoke-DATIntunePackageCreation {
 
         # Step 3: Generate requirement script (stored separately, not in the .intunewin)
         Set-DATRegistryValue -Name "RunningMessage" -Value "Generating requirement script for $OEM $Model..." -Type String
-        $requirementScriptPath = Join-Path $scriptsDir "Require-$OEM-$($Model -replace '\s+','-').ps1"
+        $requirementScriptPath = Join-Path $scriptsDir "Require-$OEMPath-$($ModelPath -replace '\s+','-').ps1"
         New-DATIntuneRequirementScript -OutputPath $requirementScriptPath -OEM $OEM -Model $Model `
             -Baseboards $Baseboards -OS $OS -Version $version -UpdateType $UpdateType `
             -ReleaseDate $ReleaseDate -MaintenanceWindowsJson $MaintenanceWindowsJson
@@ -15872,7 +16981,7 @@ function Invoke-DATIntunePackageCreation {
 
         # Step 4: Generate detection script (stored separately, not in the .intunewin)
         Set-DATRegistryValue -Name "RunningMessage" -Value "Generating detection script for $OEM $Model..." -Type String
-        $detectionScriptPath = Join-Path $scriptsDir "Detect-$OEM-$($Model -replace '\s+','-').ps1"
+        $detectionScriptPath = Join-Path $scriptsDir "Detect-$OEMPath-$($ModelPath -replace '\s+','-').ps1"
         New-DATIntuneDetectionScript -OutputPath $detectionScriptPath -OEM $OEM -Model $Model `
             -Baseboards $Baseboards -OS $OS -Version $version -UpdateType $UpdateType `
             -ReleaseDate $ReleaseDate
@@ -15880,7 +16989,7 @@ function Invoke-DATIntunePackageCreation {
 
         # Debug output: copy staging and script content to debug folder for validation
         if (-not [string]::IsNullOrEmpty($DebugBuildPath)) {
-            $debugOutputDir = Join-Path $DebugBuildPath "$OEM\$Model"
+            $debugOutputDir = Join-Path $DebugBuildPath "$OEMPath\$ModelPath"
             Write-DATLogEntry -Value "[Intune Pipeline] Debug build enabled -- copying staging files to: $debugOutputDir" -Severity 1 -UpdateUI
             Set-DATRegistryValue -Name "RunningMessage" -Value "Copying debug output for $OEM $Model..." -Type String
 
@@ -16227,7 +17336,8 @@ function Get-DATBiosCatalog {
                 if (Resolve-DATApiUpgradeRequired -ErrorRecord $_ -Source '[BIOS]') {
                     throw "DATUpgradeRequired: a newer Driver Automation Tool version is required to download the BIOS catalog."
                 }
-                Write-DATLogEntry -Value "[Warning] - BIOS catalog download attempt $i/3 failed: $($_.Exception.Message)" -Severity 2
+                $authDetail = Resolve-DATApiAuthFailure -ErrorRecord $_
+                Write-DATLogEntry -Value "[Warning] - BIOS catalog download attempt $i/3 failed: $($_.Exception.Message)$authDetail" -Severity 2
                 if ($i -lt 3) { Start-Sleep -Seconds 5 } else {
                     # If download fails but we have a cached copy, use it
                     if (Test-Path $cachePath) {
@@ -16436,7 +17546,8 @@ function Get-DATDriverCatalog {
                 if (Resolve-DATApiUpgradeRequired -ErrorRecord $_ -Source '[DRIVERS]') {
                     throw "DATUpgradeRequired: a newer Driver Automation Tool version is required to download the driver catalog."
                 }
-                Write-DATLogEntry -Value "[Warning] - Driver catalog download attempt $i/3 failed: $($_.Exception.Message)" -Severity 2
+                $authDetail = Resolve-DATApiAuthFailure -ErrorRecord $_
+                Write-DATLogEntry -Value "[Warning] - Driver catalog download attempt $i/3 failed: $($_.Exception.Message)$authDetail" -Severity 2
                 if ($i -lt 3) { Start-Sleep -Seconds 5 } else {
                     # If download fails but we have a cached copy, use it
                     if (Test-Path $cachePath) {
@@ -17062,11 +18173,14 @@ function Invoke-DATBiosPackaging {
     # Build the WIM in the Temporary Storage Path, then copy to the Package Store --
     # same pattern as Invoke-DATDriverFilePackaging (avoids writing temp data into the
     # package store and handles UNC destinations where DISM cannot create WIMs directly).
-    $localWorkDir = Join-Path $global:TempDirectory "BIOSBuild\$OEM\$Model"
-    $biosStaging = Join-Path $localWorkDir "Packaged\$OEM\$Model\BIOS"
-    $extractDir = Join-Path $global:TempDirectory "BIOSExtract\$OEM\$Model"
+    # Filesystem-safe folder segments (issue #956) -- see ConvertTo-DATSafePathSegment.
+    $OEMPath = ConvertTo-DATSafePathSegment -Segment "$OEM"
+    $ModelPath = ConvertTo-DATSafePathSegment -Segment "$Model"
+    $localWorkDir = Join-Path $global:TempDirectory "BIOSBuild\$OEMPath\$ModelPath"
+    $biosStaging = Join-Path $localWorkDir "Packaged\$OEMPath\$ModelPath\BIOS"
+    $extractDir = Join-Path $global:TempDirectory "BIOSExtract\$OEMPath\$ModelPath"
     $wimFile = Join-Path $biosStaging "DriverPackage.wim"
-    $destBiosFolder = Join-Path $PackageDestination "$OEM\$Model\BIOS"
+    $destBiosFolder = Join-Path $PackageDestination "$OEMPath\$ModelPath\BIOS"
 
     # Clean previous
     foreach ($dir in @($localWorkDir, $biosStaging, $extractDir)) {
@@ -17549,6 +18663,100 @@ function Resolve-DATApiUpgradeRequired {
     return $true
 }
 
+function Resolve-DATApiAuthFailure {
+    <#
+    .SYNOPSIS
+        Turns an HTTP 401 from the DAT API into a human-readable explanation.
+    .DESCRIPTION
+        The API names the cause of a rejected signature in the 401 body (reason: clock_skew /
+        missing_headers / signature_mismatch / invalid_timestamp). None of that reaches the log on
+        its own, because Invoke-WebRequest only ever surfaces the fixed string "The remote server
+        returned an error: (401) Unauthorized." -- so a signing problem looks identical to an outage.
+
+        Returns a suffix to append to an existing failure message, or an empty string when the error
+        is not a 401 or carries no reason. Engine-safe across Windows PowerShell 5.1
+        (HttpWebResponse) and PowerShell 7 (HttpResponseMessage).
+    .EXAMPLE
+        $authDetail = Resolve-DATApiAuthFailure -ErrorRecord $_
+        Write-DATLogEntry -Value "Download failed: $($_.Exception.Message)$authDetail" -Severity 2
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param (
+        [Parameter(Mandatory)]$ErrorRecord
+    )
+
+    # Status code: [int] of the StatusCode enum works on both HttpWebResponse (5.1) and
+    # HttpResponseMessage (7); .value__ is 5.1-only and must not be used.
+    $status = 0
+    try {
+        $resp = $ErrorRecord.Exception.Response
+        if ($null -ne $resp) { $status = [int]$resp.StatusCode }
+    } catch { $status = 0 }
+    if ($status -ne 401) { return '' }
+
+    # Body: PowerShell 7 exposes it via ErrorDetails.Message; fall back to the response stream for
+    # Windows PowerShell 5.1 where ErrorDetails may be empty.
+    $raw = $null
+    if ($ErrorRecord.ErrorDetails -and -not [string]::IsNullOrWhiteSpace($ErrorRecord.ErrorDetails.Message)) {
+        $raw = $ErrorRecord.ErrorDetails.Message
+    } else {
+        try {
+            $stream = $ErrorRecord.Exception.Response.GetResponseStream()
+            if ($stream) {
+                $reader = New-Object System.IO.StreamReader($stream)
+                $raw = $reader.ReadToEnd()
+                $reader.Dispose()
+            }
+        } catch { }
+    }
+
+    $info = $null
+    if (-not [string]::IsNullOrWhiteSpace($raw)) { try { $info = $raw | ConvertFrom-Json } catch { } }
+    if ($null -eq $info -or -not $info.PSObject.Properties['reason']) {
+        return ' -- the API rejected the request signature (no reason returned)'
+    }
+
+    switch ([string]$info.reason) {
+        'clock_skew' {
+            $drift = 0
+            if ($info.PSObject.Properties['driftSeconds']) { $drift = [int]$info.driftSeconds }
+            $window = ''
+            if ($info.PSObject.Properties['maxDriftMinutes']) {
+                $window = " (the API allows +/-$([int]$info.maxDriftMinutes) minutes)"
+            }
+            # The API reports absolute drift, so derive the direction from its own clock -- that is
+            # the difference between "our clock is fast" and "our clock is slow" when fixing it.
+            $direction = 'out of sync with'
+            if ($info.PSObject.Properties['serverTime']) {
+                try {
+                    $apiUtc = [datetime]::Parse(
+                        [string]$info.serverTime,
+                        [System.Globalization.CultureInfo]::InvariantCulture,
+                        [System.Globalization.DateTimeStyles]::AdjustToUniversal -bor [System.Globalization.DateTimeStyles]::AssumeUniversal)
+                    if ((Get-Date).ToUniversalTime() -gt $apiUtc) { $direction = 'ahead of' } else { $direction = 'behind' }
+                } catch { }
+            }
+            $minutes = [math]::Round($drift / 60, 1)
+            return " -- this machine's clock is $drift seconds ($minutes min) $direction the API$window; correct the system time (w32tm /resync). Requests cannot be signed until it is fixed, so retrying will not help"
+        }
+        'missing_headers' {
+            return ' -- the request was sent unsigned. The API config supplied no hmacSecret: restart the DAT session to refresh it, or upgrade to a build that signs API requests'
+        }
+        'signature_mismatch' {
+            return ' -- the signature was rejected. The cached API config may hold a rotated hmacSecret: restart the DAT session to refresh it'
+        }
+        'invalid_timestamp' {
+            return ' -- the signature timestamp was malformed'
+        }
+        default {
+            $detail = ''
+            if ($info.PSObject.Properties['message']) { $detail = ": $([string]$info.message)" }
+            return " -- the API rejected the request (reason: $([string]$info.reason)$detail)"
+        }
+    }
+}
+
 function Get-DATHttpThrottleInfo {
     <#
     .SYNOPSIS
@@ -17591,6 +18799,32 @@ function Get-DATHttpThrottleInfo {
 
     $isThrottle = ($status -eq 429 -or $status -eq 503 -or $code -in @('ServerBusy', 'TooManyRequests', 'OperationTimedOut'))
     return @{ Status = $status; Code = $code; RetryAfter = $retryAfter; IsThrottle = [bool]$isThrottle }
+}
+
+function Test-DATTelemetryWanted {
+    <#
+    .SYNOPSIS
+        Cached answer to "will telemetry be sent at all", for gating work done only to feed it.
+
+    .DESCRIPTION
+        Test-DATTelemetryEnabled is the authority and belongs on the send path. It is the wrong
+        thing to call before a package hash: it re-reads the registry, can fetch the remote kill
+        switch, and logs a warning every time it finds telemetry off -- so guarding seven hash
+        sites with it would put seven warnings per package into the log of exactly the operator
+        who opted out (#951).
+
+        The answer cannot change mid-build, so it is resolved once per process and reused. A
+        caller that must not be wrong -- Send-DATTelemetry itself -- calls Test-DATTelemetryEnabled
+        directly.
+    #>
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param ()
+
+    if ($null -eq $script:DATTelemetryWanted) {
+        $script:DATTelemetryWanted = [bool](Test-DATTelemetryEnabled)
+    }
+    return $script:DATTelemetryWanted
 }
 
 function Test-DATTelemetryEnabled {
@@ -17744,9 +18978,10 @@ function Send-DATTelemetry {
         # HTTP 426 -- client version below the API minimum. Record the upgrade prompt (telemetry is
         # fire-and-forget, so a failure must never surface as an error), then stop.
         if (Resolve-DATApiUpgradeRequired -ErrorRecord $_ -Source '[Telemetry]') { return }
-        Write-DATLogEntry -Value "[Telemetry] POST $Endpoint -- failed: $($_.Exception.Message)" -Severity 2
+        $authDetail = Resolve-DATApiAuthFailure -ErrorRecord $_
+        Write-DATLogEntry -Value "[Telemetry] POST $Endpoint -- failed: $($_.Exception.Message)$authDetail" -Severity 2
         if ($global:ExecutionMode -eq 'Scheduled Task') {
-            Write-Host "[Telemetry] POST $Endpoint -- failed: $($_.Exception.Message)"
+            Write-Host "[Telemetry] POST $Endpoint -- failed: $($_.Exception.Message)$authDetail"
         }
     }
 }
@@ -17835,7 +19070,8 @@ function Send-DATFeedback {
         Write-DATLogEntry -Value "[Feedback] Submitted $Rating feedback successfully" -Severity 1
     } catch {
         [void](Resolve-DATApiUpgradeRequired -ErrorRecord $_ -Source '[Feedback]')
-        Write-DATLogEntry -Value "[Feedback] Submit failed: $($_.Exception.Message)" -Severity 2
+        $authDetail = Resolve-DATApiAuthFailure -ErrorRecord $_
+        Write-DATLogEntry -Value "[Feedback] Submit failed: $($_.Exception.Message)$authDetail" -Severity 2
         throw
     }
 }
@@ -18064,7 +19300,10 @@ function Test-DATLatestPackagePresent {
             return ((-not [string]::IsNullOrEmpty($ref)) -and ($ExistingPackageIds -contains $ref))
         }
         'WIM Package Only' {
-            $wim = Join-Path $PackageDestination "$OEM\$Model\$WindowsVersion $WindowsBuild\DriverPackage.wim"
+            # Filesystem-safe folder segments (issue #956) -- see ConvertTo-DATSafePathSegment.
+            $safeOEM = ConvertTo-DATSafePathSegment -Segment "$OEM"
+            $safeModel = ConvertTo-DATSafePathSegment -Segment "$Model"
+            $wim = Join-Path $PackageDestination "$safeOEM\$safeModel\$WindowsVersion $WindowsBuild\DriverPackage.wim"
             return (Test-Path -LiteralPath $wim)
         }
         'Download Only' {

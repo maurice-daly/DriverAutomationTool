@@ -54,6 +54,7 @@ function Send-DATHeadlessPreflightFailure {
         Send-DATTeamsNotification -WebhookUrl $config.TeamsWebhookUrl `
             -TotalModels $preflightModels.Count -SuccessCount 0 -FailedCount 0 `
             -NotProcessedCount $preflightModels.Count `
+            -CustomText ([string]$config.TeamsCustomText) `
             -Platform $config.Platform -PackageType $config.PackageType -Models $preflightModels -Outcome 'Failed'
         Write-DATLogEntry -Value "[Teams] Pre-flight failure notification sent -- $Reason" -Severity 1
     } catch {
@@ -90,12 +91,6 @@ Write-Host "[Headless] CleanTempOnExit    : $($config.CleanTempOnExit)"
 Write-DATLogEntry -Value "[Headless] Temp/storage path: $storagePath" -Severity 1
 Write-DATLogEntry -Value "[Headless] Package path: $packagePath" -Severity 1
 Write-DATLogEntry -Value "[Headless] CleanTempOnExit: $($config.CleanTempOnExit)" -Severity 1
-
-# Create a headless registry path for state tracking
-$headlessRegPath = 'HKCU:\SOFTWARE\DriverAutomationTool\Headless'
-if (-not (Test-Path $headlessRegPath)) {
-    New-Item -Path $headlessRegPath -Force | Out-Null
-}
 
 # Write WIM engine and compression settings to $global:RegPath so the core module picks them up.
 # The UI saves these under HKLM:\SOFTWARE\DriverAutomationTool; headless must do the same
@@ -231,6 +226,7 @@ if ($config.MaintenanceWindowEnabled -and $config.MaintenanceWindows -and @($con
 if ($config.TeamsNotificationsEnabled -and -not [string]::IsNullOrEmpty($config.TeamsWebhookUrl)) {
     $processingParams['TeamsNotificationsEnabled'] = $true
     $processingParams['TeamsWebhookUrl'] = $config.TeamsWebhookUrl
+    if (-not [string]::IsNullOrEmpty($config.TeamsCustomText)) { $processingParams['TeamsCustomText'] = $config.TeamsCustomText }
 }
 
 # Normalise platform name -- BuildConfig accepts 'ConfigMgr' or 'Configuration Manager'
@@ -247,10 +243,13 @@ switch ($config.Platform) {
             $appId    = $config.Intune.AppId
             $appSecret = $config.Intune.AppSecret
 
-            # If no credentials in config, try reading from registry (UI-saved DPAPI-encrypted secret)
+            # If no credentials in config, try reading from registry (UI-saved DPAPI-encrypted
+            # secret). The UI persists these through Set-DATRegistryValue, which targets
+            # $global:RegPath (HKLM) -- this read was pointed at HKCU, a key DAT never writes for
+            # any user, so the fallback could never succeed (#947, same defect as the retention
+            # block below).
             if ([string]::IsNullOrEmpty($tenantId) -or [string]::IsNullOrEmpty($appId) -or [string]::IsNullOrEmpty($appSecret)) {
-                $uiRegPath = 'HKCU:\SOFTWARE\DriverAutomationTool'
-                $uiReg = Get-ItemProperty -Path $uiRegPath -ErrorAction SilentlyContinue
+                $uiReg = Get-ItemProperty -Path $global:RegPath -ErrorAction SilentlyContinue
                 if ($uiReg) {
                     if ([string]::IsNullOrEmpty($tenantEnvironment) -and $uiReg.IntuneTenantEnvironment) { $tenantEnvironment = $uiReg.IntuneTenantEnvironment }
                     if ([string]::IsNullOrEmpty($tenantId) -and $uiReg.IntuneTenantId) { $tenantId = $uiReg.IntuneTenantId }
@@ -262,7 +261,11 @@ switch ($config.Platform) {
                                 [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($secString))
                             Write-Host "[Headless] Intune credentials loaded from registry (DPAPI)"
                         } catch {
+                            # DPAPI ties the stored secret to the account that encrypted it, so a
+                            # secret saved by the operator cannot be read back by a task running as
+                            # SYSTEM. Name that here rather than leaving a bare decryption error.
                             Write-Host "[Headless] Warning: Could not decrypt saved client secret: $($_.Exception.Message)"
+                            Write-DATLogEntry -Value "[Headless] Could not decrypt the saved Intune client secret. DPAPI binds it to the account that saved it, so a secret saved in the UI cannot be read by the scheduled task's account -- put AppSecret in the build config instead. Error: $($_.Exception.Message)" -Severity 2
                         }
                     }
                 }
@@ -334,6 +337,45 @@ switch ($config.Platform) {
 Write-Host "[Headless] Starting build at $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
 Write-Host "[Headless] Processing $($config.Models.Count) model(s)..."
 
+# -- Scheduled-run deadline and interrupted-run reporting (#950) --------------------------------
+# When a task exceeds its execution time limit, Task Scheduler terminates the process: no finally
+# block runs, so the build cannot log, notify or submit telemetry on the way out and the log just
+# stops mid-line. Two things make that visible -- publish the deadline so the run warns before it
+# is killed, and leave a marker the NEXT run reads to report that this one never finished.
+$datRunDeadline = $null
+try {
+    $schedTask = Get-ScheduledTask -TaskPath '\Driver Automation Tool\' -TaskName 'Scheduled Package Build' -ErrorAction SilentlyContinue
+    if ($schedTask -and $schedTask.Settings) {
+        $limitIso = [string]$schedTask.Settings.ExecutionTimeLimit
+        if (-not [string]::IsNullOrWhiteSpace($limitIso) -and $limitIso -ne 'PT0S') {
+            $limitSpan = [System.Xml.XmlConvert]::ToTimeSpan($limitIso)
+            $datRunDeadline = (Get-Date).Add($limitSpan)
+            Write-DATLogEntry -Value "[Headless] Scheduled task execution time limit: $([int]$limitSpan.TotalHours)h $($limitSpan.Minutes)m -- this build must finish by $($datRunDeadline.ToString('yyyy-MM-dd HH:mm:ss')) or Task Scheduler terminates it" -Severity 1
+            Write-Host "[Headless] Task execution time limit: $([int]$limitSpan.TotalHours)h $($limitSpan.Minutes)m (deadline $($datRunDeadline.ToString('HH:mm:ss')))"
+        } else {
+            Write-DATLogEntry -Value "[Headless] Scheduled task has no execution time limit -- this build will not be stopped by the scheduler" -Severity 1
+        }
+    }
+} catch {
+    Write-DATLogEntry -Value "[Headless] Could not read the scheduled task's execution time limit: $($_.Exception.Message)" -Severity 2
+}
+$global:DATRunStarted  = Get-Date
+$global:DATRunDeadline = $datRunDeadline
+
+# A 'Running' marker left behind means the previous build never reached its exit path.
+try {
+    $interruptedRun = Get-DATInterruptedRunReport
+    if ($null -ne $interruptedRun) {
+        Write-DATLogEntry -Value "[Headless] PREVIOUS RUN DID NOT COMPLETE -- started $($interruptedRun.StartTime), ran for $($interruptedRun.ElapsedText), $($interruptedRun.ModelCount) model(s) configured. $($interruptedRun.Detail)" -Severity 3
+        Write-Host "[Headless] WARNING: the previous build did not complete ($($interruptedRun.Cause)). $($interruptedRun.Detail)"
+    }
+} catch {
+    Write-DATLogEntry -Value "[Headless] Interrupted-run check failed: $($_.Exception.Message)" -Severity 2
+}
+
+$datDeadlineText = if ($null -ne $datRunDeadline) { $datRunDeadline.ToString('yyyy-MM-dd HH:mm:ss') } else { '' }
+Set-DATRunState -State 'Running' -ModelCount @($config.Models).Count -Deadline $datDeadlineText -LogFile (Join-Path $global:LogDirectory "$global:ProductName.log")
+
 $buildExitCode = 0
 
 try {
@@ -349,15 +391,20 @@ try {
             $retEnabled      = $false
             $retCount        = 0
             $retDeleteSource = $false
+            $retSource       = ''
             if ($config.PackageRetention) {
                 $retEnabled = [bool]$config.PackageRetention.Enabled
                 if ($null -ne $config.PackageRetention.RetainCount) {
                     [int]::TryParse([string]$config.PackageRetention.RetainCount, [ref]$retCount) | Out-Null
                 }
                 $retDeleteSource = [bool]$config.PackageRetention.DeleteSourceFolderOnRemoval
+                $retSource = "build config '$ConfigPath'"
             } else {
-                # Fallback: honour the values the UI persists to the current user's registry.
-                $uiReg = Get-ItemProperty -Path 'HKCU:\SOFTWARE\DriverAutomationTool' -ErrorAction SilentlyContinue
+                # Fallback: honour the values the UI persists. The UI writes every setting through
+                # Set-DATRegistryValue, which targets $global:RegPath (HKLM) -- this previously read
+                # HKCU, a key DAT never writes for any user, so the fallback could not succeed even
+                # when run interactively, let alone under a task running as SYSTEM (#947).
+                $uiReg = Get-ItemProperty -Path $global:RegPath -ErrorAction SilentlyContinue
                 if ($uiReg) {
                     if ($null -ne $uiReg.PackageRetentionEnabled -and $uiReg.PackageRetentionEnabled -eq 1) { $retEnabled = $true }
                     if ($null -ne $uiReg.PackageRetentionCount) {
@@ -365,10 +412,19 @@ try {
                     }
                     if ($null -ne $uiReg.DeleteSourceFolderOnRemoval -and $uiReg.DeleteSourceFolderOnRemoval -eq 1) { $retDeleteSource = $true }
                 }
+                $retSource = "registry $($global:RegPath) (build config carried no PackageRetention block)"
+            }
+
+            if (-not $retEnabled) {
+                # Say so. Retention failing silently is what let superseded packages accumulate
+                # unnoticed for weeks -- a disabled feature must still account for itself (#947).
+                Write-Host "[Headless] Package retention disabled -- superseded packages will be left in place (source: $retSource)"
+                Write-DATLogEntry -Value "[Headless] Package retention disabled -- no superseded packages will be removed. Source: $retSource" -Severity 1
             }
 
             if ($retEnabled) {
                 Write-Host "[Headless] Package retention enabled -- cleaning superseded packages (keep $retCount previous, delete source folder: $retDeleteSource)"
+                Write-DATLogEntry -Value "[Headless] Package retention enabled (RetainCount=$retCount, DeleteSourceFolder=$retDeleteSource, source: $retSource)" -Severity 1
                 Write-DATLogEntry -Value "[Headless] Package retention enabled (RetainCount=$retCount, DeleteSourceFolder=$retDeleteSource)" -Severity 1
 
                 $isIntunePlatform = $config.Platform -eq 'Intune'
@@ -505,6 +561,13 @@ try {
         try { Write-DATLogEntry -Value "[Headless] Build failed: $($_.Exception.Message)" -Severity 3 } catch { }
     }
 } finally {
+    # Close the run marker first so it reflects the build itself, not the cleanup that follows.
+    # On a hard terminate -- execution time limit, host restart, crash -- this never runs, and the
+    # marker left at 'Running' is exactly what the next run reports on (#950).
+    try {
+        Set-DATRunState -State $(if ($buildExitCode -eq 0) { 'Completed' } else { 'Failed' }) -Detail "Exit code $buildExitCode"
+    } catch { }
+
     # Clean temporary storage in a finally block so it ALWAYS runs -- on success AND when the
     # build throws part-way through (#816). Previously this lived on the success path inside the
     # try, so any terminating error (made more likely by $ErrorActionPreference = 'Stop') jumped
