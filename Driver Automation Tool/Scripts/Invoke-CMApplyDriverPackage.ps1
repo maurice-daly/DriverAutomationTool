@@ -1218,7 +1218,15 @@ Process {
 			"*Fujitsu*" {
 				$ComputerDetails.Manufacturer = "Fujitsu"
 				$ComputerDetails.Model = (Get-WmiObject -Class "Win32_ComputerSystem" | Select-Object -ExpandProperty Model).Trim()
-				$ComputerDetails.SystemSKU = (Get-WmiObject -Class "Win32_BaseBoard" | Select-Object -ExpandProperty SKU).Trim()
+				# Win32_BaseBoard.SKU is empty on several Fujitsu models (ESPRIMO D757 for one), so Trim() threw.
+				# Fujitsu devices are identified by BaseBoardProduct, the value that ends up in the package description.
+				$FujitsuSystemSKU = (Get-CIMInstance -ClassName "MS_SystemInformation" -NameSpace "root\WMI" -ErrorAction SilentlyContinue).BaseBoardProduct
+				if ([string]::IsNullOrWhiteSpace($FujitsuSystemSKU)) {
+					$FujitsuSystemSKU = Get-WmiObject -Class "Win32_BaseBoard" | Select-Object -ExpandProperty Product
+				}
+				if (-not [string]::IsNullOrWhiteSpace($FujitsuSystemSKU)) {
+					$ComputerDetails.SystemSKU = $FujitsuSystemSKU.Trim()
+				}
 			}
 			"*Getac*" {
 				$ComputerDetails.Manufacturer = "Getac"
