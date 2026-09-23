@@ -1006,7 +1006,7 @@
                                    Foreground="{DynamicResource AccentColor}" VerticalAlignment="Center" Margin="0,0,8,0"/>
                         <TextBlock Text="Driver Automation Tool" FontSize="13" FontWeight="SemiBold"
                                    Foreground="{DynamicResource WindowForeground}" VerticalAlignment="Center"/>
-                        <TextBlock x:Name="txt_Version" Text=" Version 10.2.7" FontSize="11"
+                        <TextBlock x:Name="txt_Version" Text=" Version 10.2.9" FontSize="11"
                                    Foreground="{DynamicResource InputPlaceholder}" VerticalAlignment="Center" Margin="4,0"/>
                     </StackPanel>
 
@@ -6250,6 +6250,7 @@
                                                                Text="&#xE946;"/>
                                                     <TextBlock x:Name="txt_HpcmslStatus" Grid.Column="1"
                                                                FontSize="12" VerticalAlignment="Center"
+                                                               TextWrapping="Wrap"
                                                                Foreground="{DynamicResource InputPlaceholder}"
                                                                Text="Checking HPCMSL status..."/>
                                                     <Button x:Name="btn_InstallHpcmsl" Grid.Column="2"
@@ -6640,6 +6641,16 @@
                                                        FontSize="11" Margin="0,4,0,0"
                                                        Foreground="{DynamicResource InputPlaceholder}"
                                                        Visibility="Collapsed"/>
+
+                                            <TextBlock Text="Custom Header Text (optional)" FontSize="12" FontWeight="SemiBold"
+                                                       Foreground="{DynamicResource WindowForeground}" Margin="0,12,0,6"/>
+                                            <TextBlock Text="Shown as a headline at the top of the Teams card -- useful for labelling which customer/tenant a build belongs to when several post to one channel."
+                                                       Foreground="{DynamicResource InputPlaceholder}" FontSize="12"
+                                                       TextWrapping="Wrap" Margin="0,0,0,6" LineHeight="18"/>
+                                            <TextBox x:Name="txt_TeamsCustomText"
+                                                     Style="{StaticResource RoundedTextBox}"
+                                                     Height="36"
+                                                     MaxLength="200"/>
                                         </StackPanel>
                                     </Border>
 
@@ -7354,7 +7365,7 @@
                                     <StackPanel>
                                         <TextBlock Text="Driver Automation Tool" FontSize="22" FontWeight="Bold"
                                                    Foreground="{DynamicResource AccentColor}" Margin="0,0,0,4"/>
-                                        <TextBlock x:Name="txt_AboutVersion" Text="Version 10.2.7" FontSize="14"
+                                        <TextBlock x:Name="txt_AboutVersion" Text="Version 10.2.9" FontSize="14"
                                                    Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,16"/>
 
                                         <TextBlock TextWrapping="Wrap" FontSize="13"
@@ -7746,6 +7757,23 @@ BY USING THIS TOOL, YOU ACKNOWLEDGE AND AGREE THAT:
                             </ComboBox>
                         </Grid>
 
+
+                        <!-- Maximum run time -->
+                        <TextBlock Text="Maximum Run Time" FontSize="12" FontWeight="SemiBold"
+                                   Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,6"/>
+                        <ComboBox x:Name="cmb_ScheduleMaxRunTime" Height="36" Margin="0,0,0,4">
+                            <ComboBoxItem Content="4 hours" Tag="4"/>
+                            <ComboBoxItem Content="8 hours" Tag="8"/>
+                            <ComboBoxItem Content="12 hours" Tag="12" IsSelected="True"/>
+                            <ComboBoxItem Content="24 hours" Tag="24"/>
+                            <ComboBoxItem Content="48 hours" Tag="48"/>
+                            <ComboBoxItem Content="72 hours" Tag="72"/>
+                            <ComboBoxItem Content="No limit" Tag="0"/>
+                        </ComboBox>
+                        <TextBlock Text="Task Scheduler stops the build once this time is reached. Allow enough for a full rebuild of every model."
+                                   TextWrapping="Wrap"
+                                   Foreground="{DynamicResource InputPlaceholder}"
+                                   FontSize="11" Margin="0,0,0,16"/>
                         <!-- Config Path -->
                         <TextBlock Text="Build Config" FontSize="12" FontWeight="SemiBold"
                                    Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,6"/>

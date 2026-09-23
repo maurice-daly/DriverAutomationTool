@@ -1,6 +1,6 @@
 @{
     RootModule        = 'DriverAutomationToolCore.psm1'
-    ModuleVersion     = '10.2.7.0'
+    ModuleVersion     = '10.2.9.0'
     GUID              = 'a3e0e746-8e3a-4c5b-b8d0-3b2e4f6a9c1d'
     Author            = 'Maurice Daly'
     CompanyName       = 'MSEndpointMgr'
@@ -82,6 +82,7 @@
         'Get-DATCurlProxyArgs',
         'Test-DATProxyConnection',
         'Test-DATHPCMSLReady',
+        'Get-DATHPCMSLModule',
         'Search-DATEntraGroups',
         'Set-DATIntuneAppAssignment',
         'Set-DATIntuneAppScopeTags',
@@ -127,14 +128,27 @@
         'Invoke-DATBiosPackaging',
         'Start-DATBiosDownload',
         'Test-DATFileSignature',
+        'Test-DATSafeContentRoot',
+        'Remove-DATContentItem',
+        'Expand-DATArchiveSafely',
+        'Get-DATNonAdminWriteAccess',
+        'New-DATProtectedDirectory',
+        'Assert-DATTemplateSourceTrusted',
         'Invoke-DATPackageRetention',
         'Send-DATReportIssue',
         'ConvertTo-DATIntuneMinimumOS',
         'Send-DATTeamsNotification',
+        'ConvertTo-DATBuildStatusLabel',
+        'Format-DATBuildResultTable',
+        'Save-DATBuildResultData',
+        'Get-DATLastBuildResultData',
         'Import-DATBuildConfig',
         'Export-DATBuildConfig',
         'Register-DATScheduledBuild',
         'Unregister-DATScheduledBuild',
+        'Set-DATRunState',
+        'Get-DATRunState',
+        'Get-DATInterruptedRunReport',
         'Get-DATAvailableUpdate',
         'Update-DATApplication',
         'Repair-DATBiosPackageNames',

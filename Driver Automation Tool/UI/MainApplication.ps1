@@ -2925,7 +2925,9 @@ function Show-DATBuildSummaryDialog {
     $dlg.Background = [System.Windows.Media.Brushes]::Transparent
     $dlg.WindowStartupLocation = 'CenterOwner'
     $dlg.Owner = $Window
-    $dlg.Width = 440
+    # The counts-only dialog stays as it was; the table needs room for its columns without
+    # wrapping model names onto three lines.
+    $dlg.Width = if ($summaryRows.Count -gt 0) { 900 } else { 480 }
     $dlg.SizeToContent = 'Height'
     $dlg.Topmost = $false
     $dlg.ResizeMode = 'NoResize'
@@ -2977,16 +2979,20 @@ function Show-DATBuildSummaryDialog {
         [System.Windows.Media.ColorConverter]::ConvertFromString($theme['StatusSuccess']))
     $errorBrush = [System.Windows.Media.SolidColorBrush]::new(
         [System.Windows.Media.ColorConverter]::ConvertFromString($theme['StatusError']))
+    $warnBrush = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.ColorConverter]::ConvertFromString($theme['StatusWarning']))
 
     $grid = [System.Windows.Controls.Grid]::new()
     $grid.Margin = [System.Windows.Thickness]::new(0, 0, 0, 20)
-    # Columns: Label | Succeeded | Failed
-    $col1 = [System.Windows.Controls.ColumnDefinition]::new(); $col1.Width = [System.Windows.GridLength]::new(1, [System.Windows.GridUnitType]::Star)
+    # Columns: Label | Succeeded | Skipped | Failed
+    $col1 = [System.Windows.Controls.ColumnDefinition]::new(); $col1.Width = [System.Windows.GridLength]::new(1.4, [System.Windows.GridUnitType]::Star)
     $col2 = [System.Windows.Controls.ColumnDefinition]::new(); $col2.Width = [System.Windows.GridLength]::new(1, [System.Windows.GridUnitType]::Star)
     $col3 = [System.Windows.Controls.ColumnDefinition]::new(); $col3.Width = [System.Windows.GridLength]::new(1, [System.Windows.GridUnitType]::Star)
+    $col4 = [System.Windows.Controls.ColumnDefinition]::new(); $col4.Width = [System.Windows.GridLength]::new(1, [System.Windows.GridUnitType]::Star)
     $grid.ColumnDefinitions.Add($col1) | Out-Null
     $grid.ColumnDefinitions.Add($col2) | Out-Null
     $grid.ColumnDefinitions.Add($col3) | Out-Null
+    $grid.ColumnDefinitions.Add($col4) | Out-Null
 
     # Failed counts come from the authoritative BuildFailures list (same source as the
     # "View Failures" button) -- NOT TotalModels-Success, which wrongly counts skipped-current,
@@ -3004,21 +3010,37 @@ function Show-DATBuildSummaryDialog {
         Write-DATLogEntry -Value "[UI] Build summary failure parse error: $($_.Exception.Message)" -Severity 2
     }
 
+    # Skipped counts come from BuildSkippedCurrent -- packages left alone because the deployed
+    # version already matches the catalog. The core module counts a skip as a success, so the skips
+    # are subtracted from the success figures below, giving Succeeded + Skipped + Failed = models in scope.
+    $driverSkipped = 0
+    $biosSkipped = 0
+    try {
+        $bsJson = (Get-ItemProperty -Path $global:RegPath -Name 'BuildSkippedCurrent' -ErrorAction SilentlyContinue).BuildSkippedCurrent
+        if (-not [string]::IsNullOrWhiteSpace($bsJson)) {
+            $bsList = @($bsJson | ConvertFrom-Json)
+            $driverSkipped = @($bsList | Where-Object { $_.PackageType -eq 'Drivers' }).Count
+            $biosSkipped = @($bsList | Where-Object { $_.PackageType -eq 'BIOS' }).Count
+        }
+    } catch {
+        Write-DATLogEntry -Value "[UI] Build summary skip parse error: $($_.Exception.Message)" -Severity 2
+    }
+
     # Build rows based on package type
     $rows = @()
     $showDrivers = $PackageType -in @('Drivers', 'All', 'Drivers Pilot', 'All Pilot')
     $showBios = $PackageType -in @('BIOS', 'All', 'BIOS Pilot', 'All Pilot')
     if ($showDrivers) {
-        $rows += @{ Label = 'Driver Packages'; Success = $DriverSuccess; Failed = $driverFailed }
+        $rows += @{ Label = 'Driver Packages'; Success = [Math]::Max(0, $DriverSuccess - $driverSkipped); Skipped = $driverSkipped; Failed = $driverFailed }
     }
     if ($showBios) {
-        $rows += @{ Label = 'BIOS Packages'; Success = $BiosSuccess; Failed = $biosFailed }
+        $rows += @{ Label = 'BIOS Packages'; Success = [Math]::Max(0, $BiosSuccess - $biosSkipped); Skipped = $biosSkipped; Failed = $biosFailed }
     }
 
     # Header row
     $row0 = [System.Windows.Controls.RowDefinition]::new(); $row0.Height = [System.Windows.GridLength]::new(28)
     $grid.RowDefinitions.Add($row0) | Out-Null
-    foreach ($hdr in @(@{Col=1;Text='Succeeded'},@{Col=2;Text='Failed'})) {
+    foreach ($hdr in @(@{Col=1;Text='Succeeded'},@{Col=2;Text='Skipped'},@{Col=3;Text='Failed'})) {
         $h = [System.Windows.Controls.TextBlock]::new()
         $h.Text = $hdr.Text
         $h.FontSize = 12
@@ -3058,6 +3080,18 @@ function Show-DATBuildSummaryDialog {
         [System.Windows.Controls.Grid]::SetColumn($suc, 1)
         $grid.Children.Add($suc) | Out-Null
 
+        # Skipped count -- already current, so nothing was rebuilt
+        $skip = [System.Windows.Controls.TextBlock]::new()
+        $skip.Text = "$($r.Skipped)"
+        $skip.FontSize = 14
+        $skip.FontWeight = [System.Windows.FontWeights]::Bold
+        $skip.Foreground = if ($r.Skipped -gt 0) { $warnBrush } else { $dimBrush }
+        $skip.HorizontalAlignment = 'Center'
+        $skip.VerticalAlignment = 'Center'
+        [System.Windows.Controls.Grid]::SetRow($skip, $rowIndex)
+        [System.Windows.Controls.Grid]::SetColumn($skip, 2)
+        $grid.Children.Add($skip) | Out-Null
+
         # Failed count
         $fail = [System.Windows.Controls.TextBlock]::new()
         $fail.Text = "$($r.Failed)"
@@ -3067,7 +3101,7 @@ function Show-DATBuildSummaryDialog {
         $fail.HorizontalAlignment = 'Center'
         $fail.VerticalAlignment = 'Center'
         [System.Windows.Controls.Grid]::SetRow($fail, $rowIndex)
-        [System.Windows.Controls.Grid]::SetColumn($fail, 2)
+        [System.Windows.Controls.Grid]::SetColumn($fail, 3)
         $grid.Children.Add($fail) | Out-Null
 
         $rowIndex++
@@ -3085,7 +3119,7 @@ function Show-DATBuildSummaryDialog {
     $sep.Margin = [System.Windows.Thickness]::new(0, 4, 0, 4)
     $sep.VerticalAlignment = 'Top'
     [System.Windows.Controls.Grid]::SetRow($sep, $rowIndex)
-    [System.Windows.Controls.Grid]::SetColumnSpan($sep, 3)
+    [System.Windows.Controls.Grid]::SetColumnSpan($sep, 4)
     $grid.Children.Add($sep) | Out-Null
 
     $totalLbl = [System.Windows.Controls.TextBlock]::new()
@@ -3107,10 +3141,134 @@ function Show-DATBuildSummaryDialog {
     $totalVal.VerticalAlignment = 'Center'
     [System.Windows.Controls.Grid]::SetRow($totalVal, $rowIndex)
     [System.Windows.Controls.Grid]::SetColumn($totalVal, 1)
-    [System.Windows.Controls.Grid]::SetColumnSpan($totalVal, 2)
+    [System.Windows.Controls.Grid]::SetColumnSpan($totalVal, 3)
     $grid.Children.Add($totalVal) | Out-Null
 
     $panel.Children.Add($grid) | Out-Null
+
+    # Per-model table (#957). The counts above say how much was done; this says what was done to
+    # each model, which is the question an operator actually has after a 40-model run.
+    if ($summaryRows.Count -gt 0) {
+        # Updated rows first, matching the Teams card, so the row cap below can only ever hide rows
+        # that reported no change. Build order is preserved within each group.
+        $orderedRows = @($summaryRows | Where-Object { $_.DriverStatus -eq 'Updated' -or $_.BIOSStatus -eq 'Updated' }) +
+                       @($summaryRows | Where-Object { $_.DriverStatus -ne 'Updated' -and $_.BIOSStatus -ne 'Updated' })
+        $maxTableRows = 50
+        $shownRows = @($orderedRows | Select-Object -First $maxTableRows)
+        $hiddenCount = $orderedRows.Count - $shownRows.Count
+
+        # Version and status share a cell: two columns per package type would push the dialog wider
+        # than most laptops, and the status is only ever read next to its version anyway.
+        $cellText = {
+            param ($Version, $Status)
+            $label = switch ("$Status") {
+                'Updated'   { 'Updated' }
+                'Current'   { 'Current' }
+                'Failed'    { 'Failed' }
+                'No update' { 'No update' }
+                'N/A'       { 'N/A' }
+                default     { '' }
+            }
+            $ver = if ([string]::IsNullOrWhiteSpace("$Version")) { '' } else { "$Version" }
+            if ($ver -and $label) { "$ver  --  $label" }
+            elseif ($ver) { $ver }
+            elseif ($label) { $label }
+            else { [string][char]0x2014 }
+        }
+        $statusBrush = {
+            param ($Status)
+            switch ("$Status") {
+                'Updated' { $successBrush }
+                'Failed'  { $errorBrush }
+                'Current' { $dimBrush }
+                default   { $dimBrush }
+            }
+        }
+
+        $tableGrid = [System.Windows.Controls.Grid]::new()
+        foreach ($w in @(1.1, 2.4, 1.3, 0.6, 1.9, 1.9)) {
+            $c = [System.Windows.Controls.ColumnDefinition]::new()
+            $c.Width = [System.Windows.GridLength]::new($w, [System.Windows.GridUnitType]::Star)
+            $tableGrid.ColumnDefinitions.Add($c) | Out-Null
+        }
+
+        $headerRow = [System.Windows.Controls.RowDefinition]::new()
+        $headerRow.Height = [System.Windows.GridLength]::new(26)
+        $tableGrid.RowDefinitions.Add($headerRow) | Out-Null
+        $colIndex = 0
+        foreach ($hdrText in @('Manufacturer', 'Model', 'OS', 'Arch', 'Driver Pack', 'BIOS')) {
+            $h = [System.Windows.Controls.TextBlock]::new()
+            $h.Text = $hdrText
+            $h.FontSize = 11
+            $h.FontWeight = [System.Windows.FontWeights]::SemiBold
+            $h.Foreground = $dimBrush
+            $h.VerticalAlignment = 'Center'
+            $h.Margin = [System.Windows.Thickness]::new(0, 0, 10, 0)
+            [System.Windows.Controls.Grid]::SetRow($h, 0)
+            [System.Windows.Controls.Grid]::SetColumn($h, $colIndex)
+            $tableGrid.Children.Add($h) | Out-Null
+            $colIndex++
+        }
+
+        $rowIndex = 1
+        foreach ($r in $shownRows) {
+            $rd = [System.Windows.Controls.RowDefinition]::new()
+            $rd.Height = [System.Windows.GridLength]::Auto
+            $tableGrid.RowDefinitions.Add($rd) | Out-Null
+
+            $driverCell = & $cellText $r.DriverVersion $r.DriverStatus
+            $biosCell   = & $cellText $r.BIOSVersion $r.BIOSStatus
+            $cells = @(
+                @{ Text = "$($r.OEM)";          Brush = $fgBrush }
+                @{ Text = "$($r.Model)";        Brush = $fgBrush }
+                @{ Text = "$($r.OS)";           Brush = $dimBrush }
+                @{ Text = "$($r.Architecture)"; Brush = $dimBrush }
+                @{ Text = $driverCell;          Brush = (& $statusBrush $r.DriverStatus) }
+                @{ Text = $biosCell;            Brush = (& $statusBrush $r.BIOSStatus) }
+            )
+            for ($c = 0; $c -lt $cells.Count; $c++) {
+                $t = [System.Windows.Controls.TextBlock]::new()
+                $t.Text = $cells[$c].Text
+                $t.FontSize = 11
+                $t.Foreground = $cells[$c].Brush
+                $t.TextWrapping = 'Wrap'
+                $t.VerticalAlignment = 'Center'
+                $t.Margin = [System.Windows.Thickness]::new(0, 3, 10, 3)
+                [System.Windows.Controls.Grid]::SetRow($t, $rowIndex)
+                [System.Windows.Controls.Grid]::SetColumn($t, $c)
+                $tableGrid.Children.Add($t) | Out-Null
+            }
+            $rowIndex++
+        }
+
+        # Scrolls rather than growing past the screen on a large run; SizeToContent handles the
+        # short ones, so a three-model build shows three rows and no scrollbar.
+        $scroll = [System.Windows.Controls.ScrollViewer]::new()
+        $scroll.VerticalScrollBarVisibility = 'Auto'
+        $scroll.HorizontalScrollBarVisibility = 'Disabled'
+        $scroll.MaxHeight = 320
+        $scroll.Content = $tableGrid
+
+        $tableBorder = [System.Windows.Controls.Border]::new()
+        $tableBorder.BorderBrush = [System.Windows.Media.SolidColorBrush]::new(
+            [System.Windows.Media.ColorConverter]::ConvertFromString($theme['CardBorder']))
+        $tableBorder.BorderThickness = [System.Windows.Thickness]::new(1)
+        $tableBorder.CornerRadius = [System.Windows.CornerRadius]::new(8)
+        $tableBorder.Padding = [System.Windows.Thickness]::new(14, 10, 14, 10)
+        $tableBorder.Margin = [System.Windows.Thickness]::new(0, 0, 0, 16)
+        $tableBorder.Child = $scroll
+        $panel.Children.Add($tableBorder) | Out-Null
+
+        if ($hiddenCount -gt 0) {
+            $moreText = [System.Windows.Controls.TextBlock]::new()
+            $moreText.Text = "$hiddenCount more model$(if ($hiddenCount -ne 1) { 's' }) not shown -- the full table is in the log."
+            $moreText.FontSize = 11
+            $moreText.Foreground = $dimBrush
+            $moreText.HorizontalAlignment = 'Center'
+            $moreText.Margin = [System.Windows.Thickness]::new(0, -8, 0, 16)
+            $panel.Children.Add($moreText) | Out-Null
+        }
+    }
 
     # Elapsed time
     if (-not [string]::IsNullOrEmpty($Elapsed)) {
@@ -3695,6 +3853,304 @@ function Show-DATBugNoticeModal {
     $border.Child = $panel
     $dlg.Content = $border
     $dlg.ShowDialog() | Out-Null
+}
+
+function Get-DATTelemetryInviteState {
+    <#
+    .SYNOPSIS
+        Decides whether the twice-yearly telemetry invitation is due, and why not when it is not.
+    .DESCRIPTION
+        Telemetry is opt-in and off by default, so the people who would most help the project are
+        the ones who never see the setting. Asking twice a year is a reasonable reminder; asking
+        more often, or asking someone who has said no, is nagging. The rules, in order:
+
+          - Already opted in           -> nothing to ask.
+          - Said "don't ask again"     -> never ask again, permanently.
+          - Seen for the first time    -> record the date and say nothing. A prompt on first launch
+                                          asks for a favour before the tool has done anything.
+          - Less than 7 days known     -> still settling in.
+          - Asked within 183 days      -> not due yet.
+
+        Returns a hashtable with Due and Reason. Reason is logged rather than shown, so the
+        behaviour can be explained from a support log without guessing.
+    #>
+    [CmdletBinding()]
+    [OutputType([hashtable])]
+    param (
+        [int]$IntervalDays = 183,
+        [int]$GraceDays = 7,
+        [datetime]$Now = (Get-Date)
+    )
+
+    $result = @{ Due = $false; Reason = '' }
+    $reg = Get-ItemProperty -Path $global:RegPath -ErrorAction SilentlyContinue
+
+    # The local opt-in only. Test-DATTelemetryEnabled also consults the remote kill switch and the
+    # minimum-version gate, and neither is the user's decision to make -- nor worth a network call
+    # to decide whether to show a prompt.
+    if ($reg.TelemetryOptOut -eq 1) { $result.Reason = 'already opted in'; return $result }
+    if ($reg.TelemetryPromptSuppressed -eq 1) { $result.Reason = 'user asked not to be prompted again'; return $result }
+
+    $parseDate = {
+        param ($Value)
+        if ([string]::IsNullOrWhiteSpace("$Value")) { return $null }
+        try { return [datetime]::Parse("$Value", [System.Globalization.CultureInfo]::InvariantCulture) } catch { return $null }
+    }
+
+    $firstSeen = & $parseDate $reg.TelemetryPromptFirstSeen
+    if ($null -eq $firstSeen) {
+        # First run, or an unparsable value written by hand -- start the clock, say nothing.
+        try { Set-DATRegistryValue -Name 'TelemetryPromptFirstSeen' -Value ($Now.ToString('s', [System.Globalization.CultureInfo]::InvariantCulture)) -Type String } catch { }
+        $result.Reason = 'first seen now -- grace period started'
+        return $result
+    }
+    if (($Now - $firstSeen).TotalDays -lt $GraceDays) {
+        $result.Reason = "within the $GraceDays day grace period"
+        return $result
+    }
+
+    $lastShown = & $parseDate $reg.TelemetryPromptLastShown
+    if ($null -ne $lastShown -and ($Now - $lastShown).TotalDays -lt $IntervalDays) {
+        $result.Reason = "last asked $([int]($Now - $lastShown).TotalDays) days ago, interval is $IntervalDays"
+        return $result
+    }
+
+    $result.Due = $true
+    $result.Reason = if ($null -eq $lastShown) { 'never asked' } else { "last asked $([int]($Now - $lastShown).TotalDays) days ago" }
+    return $result
+}
+
+function Show-DATTelemetryInviteModal {
+    <#
+    .SYNOPSIS
+        Invites a user who has not opted in to consider enabling telemetry (at most twice a year).
+    .DESCRIPTION
+        Deliberately even-handed: the dialog names exactly what is sent and what is not, offers
+        "Not now" and "Don't ask again" alongside enabling, and closes to "Not now" if it is
+        dismissed with the window chrome. Nothing is enabled by simply seeing it.
+
+        The shown date is recorded before the dialog opens, so a crash or a forced close cannot
+        produce a prompt on every launch.
+    #>
+    [CmdletBinding()]
+    param ()
+
+    try {
+        Set-DATRegistryValue -Name 'TelemetryPromptLastShown' -Value ((Get-Date).ToString('s', [System.Globalization.CultureInfo]::InvariantCulture)) -Type String
+    } catch { }
+
+    $theme = Get-DATTheme -ThemeName $script:CurrentTheme
+    $bgColor  = [System.Windows.Media.ColorConverter]::ConvertFromString($theme['CardBackground'])
+    $fgColor  = [System.Windows.Media.ColorConverter]::ConvertFromString($theme['WindowForeground'])
+    $dimColor = [System.Windows.Media.ColorConverter]::ConvertFromString($theme['InputPlaceholder'])
+    $accent   = [System.Windows.Media.ColorConverter]::ConvertFromString($theme['AccentColor'])
+
+    $dlg = [System.Windows.Window]::new()
+    $dlg.WindowStyle = 'None'
+    $dlg.AllowsTransparency = $true
+    $dlg.Background = [System.Windows.Media.Brushes]::Transparent
+    $dlg.Width = 560
+    $dlg.SizeToContent = 'Height'
+    $dlg.Topmost = $false
+    $dlg.ResizeMode = 'NoResize'
+    $dlg.ShowInTaskbar = $false
+    try {
+        $dlg.Owner = $Window
+        $dlg.WindowStartupLocation = 'CenterOwner'
+    } catch {
+        $dlg.WindowStartupLocation = 'CenterScreen'
+    }
+
+    $border = [System.Windows.Controls.Border]::new()
+    $border.Background = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.Color]::FromArgb(245, $bgColor.R, $bgColor.G, $bgColor.B))
+    $border.CornerRadius = [System.Windows.CornerRadius]::new(16)
+    $border.Padding = [System.Windows.Thickness]::new(28, 24, 28, 24)
+    $border.BorderBrush = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.ColorConverter]::ConvertFromString($theme['CardBorder']))
+    $border.BorderThickness = [System.Windows.Thickness]::new(1)
+    $shadow = [System.Windows.Media.Effects.DropShadowEffect]::new()
+    $shadow.BlurRadius = 30; $shadow.ShadowDepth = 0; $shadow.Opacity = 0.5
+    $shadow.Color = [System.Windows.Media.Colors]::Black
+    $border.Effect = $shadow
+
+    $panel = [System.Windows.Controls.StackPanel]::new()
+
+    $iconText = [System.Windows.Controls.TextBlock]::new()
+    $iconText.Text = [string][char]0xE9D9   # Insights
+    $iconText.FontFamily = [System.Windows.Media.FontFamily]::new('Segoe MDL2 Assets')
+    $iconText.FontSize = 30
+    $iconText.Foreground = [System.Windows.Media.SolidColorBrush]::new($accent)
+    $iconText.HorizontalAlignment = 'Center'
+    $iconText.Margin = [System.Windows.Thickness]::new(0, 0, 0, 12)
+    $panel.Children.Add($iconText) | Out-Null
+
+    $titleText = [System.Windows.Controls.TextBlock]::new()
+    $titleText.Text = 'Help shape the Driver Automation Tool'
+    $titleText.FontSize = 16
+    $titleText.FontWeight = [System.Windows.FontWeights]::Bold
+    $titleText.Foreground = [System.Windows.Media.SolidColorBrush]::new($fgColor)
+    $titleText.HorizontalAlignment = 'Center'
+    $titleText.Margin = [System.Windows.Thickness]::new(0, 0, 0, 14)
+    $panel.Children.Add($titleText) | Out-Null
+
+    $bodyText = [System.Windows.Controls.TextBlock]::new()
+    $bodyText.Text = 'Telemetry is off. Turning it on shows which manufacturers, models and Windows versions are actually in use, which is what decides where effort goes next -- and which OEM problems are widespread rather than one-off.'
+    $bodyText.FontSize = 12.5
+    $bodyText.TextWrapping = 'Wrap'
+    $bodyText.Foreground = [System.Windows.Media.SolidColorBrush]::new($fgColor)
+    $bodyText.Margin = [System.Windows.Thickness]::new(0, 0, 0, 14)
+    $panel.Children.Add($bodyText) | Out-Null
+
+    # Naming the fields is the point. "Anonymous telemetry" on its own asks for trust the reader
+    # has no way to check.
+    $sentHeader = [System.Windows.Controls.TextBlock]::new()
+    $sentHeader.Text = 'What is sent'
+    $sentHeader.FontSize = 12
+    $sentHeader.FontWeight = [System.Windows.FontWeights]::SemiBold
+    $sentHeader.Foreground = [System.Windows.Media.SolidColorBrush]::new($fgColor)
+    $sentHeader.Margin = [System.Windows.Thickness]::new(0, 0, 0, 4)
+    $panel.Children.Add($sentHeader) | Out-Null
+
+    $sentText = [System.Windows.Controls.TextBlock]::new()
+    $sentText.Text = 'A random ID generated for this installation, the manufacturer, model, Windows version and architecture of the packages built, the tool version, and whether the run was interactive or scheduled.'
+    $sentText.FontSize = 12
+    $sentText.TextWrapping = 'Wrap'
+    $sentText.Foreground = [System.Windows.Media.SolidColorBrush]::new($dimColor)
+    $sentText.Margin = [System.Windows.Thickness]::new(0, 0, 0, 10)
+    $panel.Children.Add($sentText) | Out-Null
+
+    $notHeader = [System.Windows.Controls.TextBlock]::new()
+    $notHeader.Text = 'What is not'
+    $notHeader.FontSize = 12
+    $notHeader.FontWeight = [System.Windows.FontWeights]::SemiBold
+    $notHeader.Foreground = [System.Windows.Media.SolidColorBrush]::new($fgColor)
+    $notHeader.Margin = [System.Windows.Thickness]::new(0, 0, 0, 4)
+    $panel.Children.Add($notHeader) | Out-Null
+
+    $notText = [System.Windows.Controls.TextBlock]::new()
+    $notText.Text = 'No device names, user names, serial numbers, IP addresses, site or tenant identifiers, and no device counts. Nothing that identifies your organisation or anyone in it.'
+    $notText.FontSize = 12
+    $notText.TextWrapping = 'Wrap'
+    $notText.Foreground = [System.Windows.Media.SolidColorBrush]::new($dimColor)
+    $notText.Margin = [System.Windows.Thickness]::new(0, 0, 0, 14)
+    $panel.Children.Add($notText) | Out-Null
+
+    $footNote = [System.Windows.Controls.TextBlock]::new()
+    $footNote.Text = 'You can change this at any time in Settings > Notifications & Telemetry. If you would rather not be asked, say so below and this will not appear again.'
+    $footNote.FontSize = 11
+    $footNote.TextWrapping = 'Wrap'
+    $footNote.Foreground = [System.Windows.Media.SolidColorBrush]::new($dimColor)
+    $footNote.Margin = [System.Windows.Thickness]::new(0, 0, 0, 20)
+    $panel.Children.Add($footNote) | Out-Null
+
+    $buttonRow = [System.Windows.Controls.StackPanel]::new()
+    $buttonRow.Orientation = 'Horizontal'
+    $buttonRow.HorizontalAlignment = 'Center'
+
+    $primaryTemplate = [System.Windows.Markup.XamlReader]::Parse(@"
+<ControlTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" TargetType="Button">
+    <Border x:Name="bd" Background="$($theme['ButtonPrimary'])" CornerRadius="8" Padding="20,8">
+        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+    </Border>
+    <ControlTemplate.Triggers>
+        <Trigger Property="IsMouseOver" Value="True">
+            <Setter TargetName="bd" Property="Background" Value="$($theme['ButtonPrimaryHover'])"/>
+        </Trigger>
+    </ControlTemplate.Triggers>
+</ControlTemplate>
+"@)
+
+    $btnEnable = [System.Windows.Controls.Button]::new()
+    $btnEnable.Template = $primaryTemplate
+    $btnEnable.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.ColorConverter]::ConvertFromString($theme['ButtonPrimaryForeground']))
+    $btnEnable.FontSize = 13
+    $btnEnable.FontWeight = [System.Windows.FontWeights]::SemiBold
+    $btnEnable.Margin = [System.Windows.Thickness]::new(0, 0, 10, 0)
+    $enableContent = [System.Windows.Controls.TextBlock]::new()
+    $enableIconRun = [System.Windows.Documents.Run]::new([string][char]0xE73E)
+    $enableIconRun.FontFamily = [System.Windows.Media.FontFamily]::new('Segoe MDL2 Assets')
+    $enableContent.Inlines.Add($enableIconRun) | Out-Null
+    $enableContent.Inlines.Add([System.Windows.Documents.Run]::new('  Enable telemetry')) | Out-Null
+    $btnEnable.Content = $enableContent
+    $btnEnable.Add_Click({
+        # Drive the settings checkbox rather than writing the registry here: its Checked handler
+        # also mints the telemetry ID, reveals it in Settings and enables the Report Issue buttons.
+        # Two places setting TelemetryOptOut would eventually disagree.
+        try {
+            if ($null -ne $chk_TelemetryOptOut) {
+                $chk_TelemetryOptOut.IsChecked = $true
+            } else {
+                Set-DATRegistryValue -Name 'TelemetryOptOut' -Value 1 -Type DWord
+            }
+            Write-DATActivityLog 'Telemetry enabled from the periodic invitation -- thank you' -Level Success
+        } catch {
+            Write-DATActivityLog "Could not enable telemetry: $($_.Exception.Message)" -Level Warn
+        }
+        $dlg.Close()
+    })
+    $buttonRow.Children.Add($btnEnable) | Out-Null
+
+    $secondaryTemplate = [System.Windows.Markup.XamlReader]::Parse(@"
+<ControlTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" TargetType="Button">
+    <Border x:Name="bd" Background="Transparent" BorderBrush="$($theme['CardBorder'])" BorderThickness="1" CornerRadius="8" Padding="20,8">
+        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+    </Border>
+    <ControlTemplate.Triggers>
+        <Trigger Property="IsMouseOver" Value="True">
+            <Setter TargetName="bd" Property="Background" Value="$($theme['InputBackground'])"/>
+        </Trigger>
+    </ControlTemplate.Triggers>
+</ControlTemplate>
+"@)
+
+    $btnLater = [System.Windows.Controls.Button]::new()
+    $btnLater.Template = $secondaryTemplate
+    $btnLater.Foreground = [System.Windows.Media.SolidColorBrush]::new($fgColor)
+    $btnLater.FontSize = 13
+    $btnLater.Content = 'Not now'
+    $btnLater.Margin = [System.Windows.Thickness]::new(0, 0, 10, 0)
+    $btnLater.Add_Click({ $dlg.Close() })
+    $buttonRow.Children.Add($btnLater) | Out-Null
+
+    $btnNever = [System.Windows.Controls.Button]::new()
+    $btnNever.Template = $secondaryTemplate
+    $btnNever.Foreground = [System.Windows.Media.SolidColorBrush]::new($dimColor)
+    $btnNever.FontSize = 13
+    $btnNever.Content = "Don't ask again"
+    $btnNever.Add_Click({
+        try {
+            Set-DATRegistryValue -Name 'TelemetryPromptSuppressed' -Value 1 -Type DWord
+            Write-DATActivityLog 'Telemetry invitation suppressed -- it will not be shown again' -Level Info
+        } catch { }
+        $dlg.Close()
+    })
+    $buttonRow.Children.Add($btnNever) | Out-Null
+
+    $panel.Children.Add($buttonRow) | Out-Null
+
+    $border.Child = $panel
+    $dlg.Content = $border
+    $dlg.ShowDialog() | Out-Null
+}
+
+function Show-DATTelemetryInviteIfDue {
+    <#
+    .SYNOPSIS
+        Shows the telemetry invitation when it is due. UI only -- scheduled and headless builds
+        never reach this file, so an unattended run can never be blocked by it.
+    #>
+    [CmdletBinding()]
+    param ()
+
+    $state = Get-DATTelemetryInviteState
+    if (-not $state.Due) {
+        Write-DATLogEntry -Value "[Telemetry] Invitation not shown -- $($state.Reason)" -Severity 1
+        return
+    }
+    Write-DATLogEntry -Value "[Telemetry] Showing the periodic invitation -- $($state.Reason)" -Severity 1
+    Show-DATTelemetryInviteModal
 }
 
 function Show-DATBiosNameRepairModal {
@@ -10988,7 +11444,7 @@ $btn_Build.Add_Click({
     $script:BuildPS.Runspace = $script:BuildRunspace
     Add-DATCoreRunspaceBootstrap -PowerShell $script:BuildPS -IntuneAuthContext $intuneAuthContext -ModulePath $resolvedModulePath
     [void]$script:BuildPS.AddScript({
-        param($ScriptDir, $RegPath, $RunningMode, $SelectedModels, $StoragePath, $PackagePath, $DisableToast, $DisableRestart, $SiteServer, $SiteCode, $PackageType, $DPGroups, $DPs, $DistPriority, $EnableBDR, $DebugBuildPath, $CustomBrandingPath, $HPPasswordBinPath, $ToastTimeoutAction, $MaxDeferrals, $BIOSRestartDelayMinutes, $TeamsWebhookUrl, $TeamsNotificationsEnabled, $CustomToastTextsJson, $ConsoleFolderID, $MaintenanceWindowsJson, $AlarmMode, $AlarmSound, $CreateIntuneWinOnly, $GenerateXmlLogicPackage, $ExtractDownloadOnlyContent, $ShowBrandingBannerAllToasts)
+        param($ScriptDir, $RegPath, $RunningMode, $SelectedModels, $StoragePath, $PackagePath, $DisableToast, $DisableRestart, $SiteServer, $SiteCode, $PackageType, $DPGroups, $DPs, $DistPriority, $EnableBDR, $DebugBuildPath, $CustomBrandingPath, $HPPasswordBinPath, $ToastTimeoutAction, $MaxDeferrals, $BIOSRestartDelayMinutes, $TeamsWebhookUrl, $TeamsNotificationsEnabled, $TeamsCustomText, $CustomToastTextsJson, $ConsoleFolderID, $MaintenanceWindowsJson, $AlarmMode, $AlarmSound, $CreateIntuneWinOnly, $GenerateXmlLogicPackage, $ExtractDownloadOnlyContent, $ShowBrandingBannerAllToasts)
         try {
             $procParams = @{
                 ScriptDirectory = $ScriptDir
@@ -11025,6 +11481,7 @@ $btn_Build.Add_Click({
             if ($TeamsNotificationsEnabled -and -not [string]::IsNullOrEmpty($TeamsWebhookUrl)) {
                 $procParams['TeamsNotificationsEnabled'] = $true
                 $procParams['TeamsWebhookUrl'] = $TeamsWebhookUrl
+                if (-not [string]::IsNullOrEmpty($TeamsCustomText)) { $procParams['TeamsCustomText'] = $TeamsCustomText }
             }
             Start-DATModelProcessing @procParams
         } catch [System.Management.Automation.PipelineStoppedException] {
@@ -11092,8 +11549,10 @@ $btn_Build.Add_Click({
     # Teams notification settings
     $teamsEnabled = $chk_TeamsNotifications.IsChecked -eq $true
     $teamsUrl = $txt_TeamsWebhookUrl.Text
+    $teamsCustomText = if ($null -ne $txt_TeamsCustomText) { $txt_TeamsCustomText.Text } else { '' }
     [void]$script:BuildPS.AddArgument($teamsUrl)
     [void]$script:BuildPS.AddArgument($teamsEnabled)
+    [void]$script:BuildPS.AddArgument($teamsCustomText)
 
     # Custom toast text (Intune only) -- pass per-type custom texts as JSON
     $customToastTextsJson = $null
@@ -11447,9 +11906,16 @@ $btn_Build.Add_Click({
                 if ($sumReg.CompletedDriverPackages) { [int]::TryParse($sumReg.CompletedDriverPackages, [ref]$sumDriverPkgs) | Out-Null }
                 if ($sumReg.CompletedBiosPackages) { [int]::TryParse($sumReg.CompletedBiosPackages, [ref]$sumBiosPkgs) | Out-Null }
                 $sumPkgType = if ($sumReg.PackageType) { [string]$sumReg.PackageType } else { 'Drivers' }
+                # Per-model rows the build saved beside the log (#957). Absent on a run that ended
+                # before any model completed, in which case the dialog shows the counts alone.
+                $sumResults = @()
+                try { $sumResults = @(Get-DATLastBuildResultData) } catch {
+                    Write-DATLogEntry -Value "[UI] Build summary table unavailable: $($_.Exception.Message)" -Severity 2
+                }
                 Show-DATBuildSummaryDialog -TotalModels $fTotalJobs `
                     -DriverSuccess $sumDriverPkgs -BiosSuccess $sumBiosPkgs `
                     -PackageType $sumPkgType -Elapsed $totalElapsed -HadErrors $hadErrors `
+                    -Results $sumResults `
                     -UploadSkipped ($createWinOnlyActive -and -not $hadErrors -and -not $isNoMatch)
             } catch {
                 Write-DATLogEntry -Value "[UI] Build summary dialog error: $($_.Exception.Message)" -Severity 2
@@ -16290,6 +16756,9 @@ $txt_TeamsWebhookUrl.Add_LostFocus({
     $url = $txt_TeamsWebhookUrl.Text
     Set-DATRegistryValue -Name "TeamsWebhookUrl" -Value $url -Type String
 })
+$txt_TeamsCustomText.Add_LostFocus({
+    Set-DATRegistryValue -Name "TeamsCustomText" -Value $txt_TeamsCustomText.Text -Type String
+})
 $btn_TeamsTest.Add_Click({
     $url = $txt_TeamsWebhookUrl.Text
     if ([string]::IsNullOrWhiteSpace($url)) {
@@ -16301,8 +16770,25 @@ $btn_TeamsTest.Add_Click({
         return
     }
     try {
-        Send-DATTeamsNotification -WebhookUrl $url -TotalModels 1 -SuccessCount 1 -FailedCount 0 `
-            -Platform 'Test' -PackageType 'Test' -Models @([PSCustomObject]@{ OEM = 'Test'; Model = 'Test Notification' })
+        # Sample rows so the test card shows the same three tables a real build posts -- an
+        # operator verifying the webhook sees the layout they will actually receive.
+        $testModels = @(
+            [PSCustomObject]@{ OEM = 'Dell';   Model = 'Latitude 5450' }
+            [PSCustomObject]@{ OEM = 'HP';     Model = 'EliteBook 840 G11' }
+            [PSCustomObject]@{ OEM = 'Lenovo'; Model = 'ThinkPad X1 Carbon Gen 12' }
+        )
+        $testResults = @(
+            [PSCustomObject]@{ OEM = 'Dell';   Model = 'Latitude 5450';             OS = 'Windows 11'; Architecture = 'x64'; DriverVersion = 'A03';    DriverStatus = 'Updated'; BIOSVersion = '1.18.0'; BIOSStatus = 'Updated' }
+            [PSCustomObject]@{ OEM = 'HP';     Model = 'EliteBook 840 G11';         OS = 'Windows 11'; Architecture = 'x64'; DriverVersion = '1.24.5'; DriverStatus = 'Updated'; BIOSVersion = '1.09.02'; BIOSStatus = 'Current' }
+            [PSCustomObject]@{ OEM = 'Lenovo'; Model = 'ThinkPad X1 Carbon Gen 12'; OS = 'Windows 11'; Architecture = 'x64'; DriverVersion = '2025.08'; DriverStatus = 'Current'; BIOSVersion = 'N3XET42W'; BIOSStatus = 'Updated' }
+        )
+        # 4 of the 6 packages created, 2 already current -- exercises both package rows.
+        # The headline comes from the box as it currently reads, not from the saved value, so the
+        # test card previews what is being typed before it is committed on LostFocus.
+        $testCustomText = if ($null -ne $txt_TeamsCustomText) { $txt_TeamsCustomText.Text } else { '' }
+        Send-DATTeamsNotification -WebhookUrl $url -TotalModels 3 -SuccessCount 3 -FailedCount 0 `
+            -PackagesCreated 4 -SkippedCount 2 -CustomText $testCustomText `
+            -Platform 'Test' -PackageType 'Test' -Models $testModels -Results $testResults
         $txt_TeamsTestResult.Text = "Test notification sent successfully."
         $txt_TeamsTestResult.Foreground = [System.Windows.Media.SolidColorBrush]::new(
             [System.Windows.Media.ColorConverter]::ConvertFromString(
@@ -16382,6 +16868,21 @@ $btn_Schedule.Add_Click({
     $existing = Get-ScheduledTask -TaskPath '\Driver Automation Tool\' -TaskName 'Scheduled Package Build' -ErrorAction SilentlyContinue
     if ($existing) {
         $btn_ScheduleRemove.Visibility = 'Visible'
+        # Reflect the limit already on the task so re-saving the schedule cannot silently reset it
+        # to the default. PT0S means the task was registered with no limit at all.
+        try {
+            $existingLimitIso = [string]$existing.Settings.ExecutionTimeLimit
+            $existingLimitHours = if ([string]::IsNullOrWhiteSpace($existingLimitIso) -or $existingLimitIso -eq 'PT0S') {
+                0
+            } else {
+                [int][math]::Round([System.Xml.XmlConvert]::ToTimeSpan($existingLimitIso).TotalHours)
+            }
+            foreach ($item in $cmb_ScheduleMaxRunTime.Items) {
+                if ([int]$item.Tag -eq $existingLimitHours) { $cmb_ScheduleMaxRunTime.SelectedItem = $item; break }
+            }
+        } catch {
+            Write-DATActivityLog "Could not read the scheduled task's run time limit: $($_.Exception.Message)" -Level Warn
+        }
         # Parse existing trigger info
         foreach ($t in $existing.Triggers) {
             if ($t -is [Microsoft.Management.Infrastructure.CimInstance]) {
@@ -16487,6 +16988,7 @@ $btn_ScheduleSave.Add_Click({
     $schedBIOSRestartDelay = if (($txt_BIOSRestartDelay.Text -match '^\d+$')) { [int]$txt_BIOSRestartDelay.Text } else { 10 }
     $schedTeamsEnabled = $chk_TeamsNotifications.IsChecked -eq $true
     $schedTeamsUrl = $txt_TeamsWebhookUrl.Text
+    $schedTeamsCustomText = if ($null -ne $txt_TeamsCustomText) { $txt_TeamsCustomText.Text } else { '' }
     $regConfig = Get-ItemProperty -Path $global:RegPath -ErrorAction SilentlyContinue
     $schedTempPath = if ($regConfig -and -not [string]::IsNullOrEmpty($regConfig.TempStoragePath)) { $regConfig.TempStoragePath } else { '' }
     $schedPkgPath = if ($regConfig -and -not [string]::IsNullOrEmpty($regConfig.PackageStoragePath)) { $regConfig.PackageStoragePath } else { '' }
@@ -16535,7 +17037,8 @@ $btn_ScheduleSave.Add_Click({
             -DisableToast $schedDisableToast -DisableRestart $schedDisableRestart `
             -ToastTimeoutAction $schedTimeoutAction -MaxDeferrals $schedMaxDeferrals `
             -BIOSRestartDelayMinutes $schedBIOSRestartDelay `
-            -TeamsWebhookUrl $schedTeamsUrl -TeamsNotificationsEnabled $schedTeamsEnabled -ConfigMgr $schedCM `
+            -TeamsWebhookUrl $schedTeamsUrl -TeamsNotificationsEnabled $schedTeamsEnabled `
+            -TeamsCustomText $schedTeamsCustomText -ConfigMgr $schedCM `
             -Intune $schedIntune `
             -MaintenanceWindowEnabled $schedMWEnabled -MaintenanceWindowMode $schedMWMode -MaintenanceWindows $schedMWindows `
             -CleanTempOnExit $schedCleanTemp `
@@ -16556,6 +17059,7 @@ $btn_ScheduleSave.Add_Click({
         ScriptDirectory = $global:ScriptDirectory
         Frequency       = if ($frequency -eq 'Once Off') { 'Once' } else { $frequency }
         Time            = $time
+        MaxRunTimeHours = $(if ($null -ne $cmb_ScheduleMaxRunTime.SelectedItem) { [int]$cmb_ScheduleMaxRunTime.SelectedItem.Tag } else { 12 })
     }
     if ($frequency -eq 'Weekly') {
         $regParams['DayOfWeek'] = $cmb_ScheduleDay.SelectedItem.Content
@@ -16573,8 +17077,9 @@ $btn_ScheduleSave.Add_Click({
                    elseif ($frequency -eq 'Monthly') { " on day $($cmb_ScheduleDayOfMonth.SelectedItem) of each month" }
                    else { '' }
         $onceNote = if ($frequency -eq 'Once Off') { "`n`nThis is a one-time build. The scheduled task will automatically remove itself after completion." } else { '' }
+        $limitNote = if ($result.MaxRunTimeHours -le 0) { "`n`nMaximum run time: no limit -- a build that hangs will block later scheduled runs." } else { "`n`nMaximum run time: $($result.MaxRunTimeHours) hours. Task Scheduler stops the build if it runs longer." }
         Show-DATInfoDialog -Title "Schedule Saved" `
-            -Message "Your $($frequency.ToLower()) build has been scheduled$dayInfo at $time.`n`nThe task will run under SYSTEM in the '\Driver Automation Tool\' task folder.$onceNote" `
+            -Message "Your $($frequency.ToLower()) build has been scheduled$dayInfo at $time.`n`nThe task will run under SYSTEM in the '\Driver Automation Tool\' task folder.$limitNote$onceNote" `
             -Type Success
     } catch {
         Show-DATInfoDialog -Title 'Schedule Error' `
@@ -16960,12 +17465,25 @@ function Update-DATBuildTypeWarning {
 
 # HP CMSL status check
 function Update-DATHpcmslStatus {
-    $hpcmslModule = Get-Module -ListAvailable -Name HPCMSL -ErrorAction SilentlyContinue | Select-Object -First 1
+    # Root order, not version order -- this is the copy Import-Module binds to, and so the version
+    # builds actually run against. Where a second copy sits in a later PSModulePath root it never
+    # loads, and reporting it as "installed" sent people chasing a version they were not using (#958).
+    $hpcmsl = Get-DATHPCMSLModule
+    $hpcmslModule = $hpcmsl.Module
     if ($null -ne $hpcmslModule) {
-        $txt_HpcmslStatusIcon.Text = [string][char]0xE930
-        $txt_HpcmslStatusIcon.Foreground = $Window.FindResource('StatusSuccess')
-        $txt_HpcmslStatus.Text = "Installed -- Version $($hpcmslModule.Version)"
-        $txt_HpcmslStatus.Foreground = $Window.FindResource('StatusSuccess')
+        if ($hpcmsl.Shadowed) {
+            $txt_HpcmslStatusIcon.Text = [string][char]0xE7BA
+            $txt_HpcmslStatusIcon.Foreground = $Window.FindResource('StatusWarning')
+            $txt_HpcmslStatus.Text = "Installed -- Version $($hpcmslModule.Version) (v$($hpcmsl.ShadowedVersion) is also installed but does not load)"
+            $txt_HpcmslStatus.Foreground = $Window.FindResource('StatusWarning')
+            $txt_HpcmslStatus.ToolTip = "In use:    $($hpcmslModule.ModuleBase)`nShadowed:  $($hpcmsl.ShadowedModuleBase)`n`nPowerShell loads the first match on PSModulePath, so v$($hpcmslModule.Version) is the version builds use. Remove the older copy to pick up v$($hpcmsl.ShadowedVersion)."
+        } else {
+            $txt_HpcmslStatusIcon.Text = [string][char]0xE930
+            $txt_HpcmslStatusIcon.Foreground = $Window.FindResource('StatusSuccess')
+            $txt_HpcmslStatus.Text = "Installed -- Version $($hpcmslModule.Version)"
+            $txt_HpcmslStatus.Foreground = $Window.FindResource('StatusSuccess')
+            $txt_HpcmslStatus.ToolTip = $hpcmslModule.ModuleBase
+        }
         $btn_InstallHpcmsl.Visibility = 'Collapsed'
 
         # Re-enable HP in OEM selection
@@ -25602,7 +26120,7 @@ $script:btn_ApplyUpdate.Add_Click({
             # Extract ZIP
             Write-UpdateLog "Extracting update package..."
             $extractPath = Join-Path $tempDir "Extracted"
-            Expand-Archive -Path $zipPath -DestinationPath $extractPath -Force
+            Expand-DATArchiveSafely -Path $zipPath -DestinationPath $extractPath
 
             $extractedRoot = Get-ChildItem -Path $extractPath -Directory | Select-Object -First 1
             if (-not $extractedRoot) {
@@ -25719,7 +26237,7 @@ $script:btn_ApplyUpdate.Add_Click({
             if ($backupZip -and (Test-Path $backupZip)) {
                 Write-UpdateLog "Restoring Modules and UI from backup ZIP..." -Level Warn
                 try {
-                    Expand-Archive -Path $backupZip -DestinationPath $InstallDir -Force
+                    Expand-DATArchiveSafely -Path $backupZip -DestinationPath $InstallDir
                     Write-UpdateLog "Backup restored successfully"
                 } catch {
                     Write-UpdateLog "Backup restore failed: $($_.Exception.Message)" -Level Error
@@ -27059,6 +27577,11 @@ try {
             Write-Host "  Teams URL     : " -NoNewline -ForegroundColor DarkGray
             Write-Host "(configured)" -ForegroundColor White
         }
+        if (-not [string]::IsNullOrEmpty($savedConfig.TeamsCustomText)) {
+            $txt_TeamsCustomText.Text = $savedConfig.TeamsCustomText
+            Write-Host "  Teams Header  : " -NoNewline -ForegroundColor DarkGray
+            Write-Host $savedConfig.TeamsCustomText -ForegroundColor White
+        }
 
         # Restore OEM selections
         if (-not [string]::IsNullOrEmpty($savedConfig.SelectedOEMs)) {
@@ -27076,25 +27599,52 @@ try {
 
             # Auto-upgrade HPCMSL if HP is selected and module is already installed
             if ($savedOEMs -contains 'HP') {
-                $hpInstalled = Get-Module -ListAvailable -Name HPCMSL -ErrorAction SilentlyContinue | Sort-Object Version -Descending | Select-Object -First 1
+                # Banner must name the version that loads, not the highest one installed. Sorting by
+                # version announced a build the tool would never import, and it disagreed with the
+                # settings panel that reported the real one (#958).
+                $hpcmsl = Get-DATHPCMSLModule
+                $hpInstalled = $hpcmsl.Module
                 if ($hpInstalled) {
                     Write-Host "  HPCMSL        : " -NoNewline -ForegroundColor DarkGray
                     Write-Host "v$($hpInstalled.Version) installed -- update check running in background" -ForegroundColor White
                     Write-DATLogEntry -Value "[HP] HPCMSL v$($hpInstalled.Version) detected at startup -- background update check started" -Severity 1
+                    if ($hpcmsl.Shadowed) {
+                        Write-Host "                  " -NoNewline
+                        Write-Host "v$($hpcmsl.ShadowedVersion) is also installed but v$($hpInstalled.Version) comes first on PSModulePath and is what loads" -ForegroundColor Yellow
+                        Write-DATLogEntry -Value "[HP] WARNING: HPCMSL v$($hpcmsl.ShadowedVersion) at $($hpcmsl.ShadowedModuleBase) is shadowed by v$($hpInstalled.Version) at $($hpInstalled.ModuleBase) -- builds use v$($hpInstalled.Version)." -Severity 2
+                    }
 
                     # Use a child process for the update check -- bare runspaces break
                     # PackageManagement/PowerShellGet module resolution.
                     $script:HPCMSLUpdateResultFile = Join-Path ([System.IO.Path]::GetTempPath()) "DATHPCMSLUpdate_$([guid]::NewGuid().ToString('N').Substring(0,8)).json"
                     $currentVer = $hpInstalled.Version.ToString()
+                    # The background installer reports what it OBSERVES afterwards, not the version
+                    # it set out to install. Reporting $gallery.Version as NewVersion claimed an
+                    # upgrade that had not necessarily happened, and the next run found the same
+                    # update waiting (#953).
                     $updateScript = @"
 `$ErrorActionPreference = 'Stop'
 try {
-    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
     Set-PSRepository -Name PSGallery -InstallationPolicy Trusted -ErrorAction SilentlyContinue
     `$gallery = Find-Module -Name HPCMSL -Repository PSGallery -ErrorAction Stop
     if (`$gallery.Version -gt [version]'$currentVer') {
-        Install-Module -Name HPCMSL -Force -AllowClobber -SkipPublisherCheck -Scope AllUsers -ErrorAction Stop
-        @{ Status = 'Updated'; OldVersion = '$currentVer'; NewVersion = `$gallery.Version.ToString() } | ConvertTo-Json | Set-Content -Path '$($script:HPCMSLUpdateResultFile)' -Encoding UTF8
+        `$installWarnings = @()
+        Install-Module -Name HPCMSL -Force -AllowClobber -SkipPublisherCheck -Scope AllUsers -ErrorAction Stop -WarningVariable +installWarnings
+        # Root order, not version order: Import-Module binds to the first PSModulePath match, so a
+        # copy in an earlier root masks the one just installed (#958).
+        `$avail = @(Get-Module -ListAvailable -Name HPCMSL -ErrorAction SilentlyContinue)
+        `$after = `$avail | Select-Object -First 1
+        `$highest = `$avail | Sort-Object Version -Descending | Select-Object -First 1
+        if (`$after -and `$after.Version -gt [version]'$currentVer') {
+            @{ Status = 'Updated'; OldVersion = '$currentVer'; NewVersion = `$after.Version.ToString(); ModuleBase = "`$(`$after.ModuleBase)" } | ConvertTo-Json | Set-Content -Path '$($script:HPCMSLUpdateResultFile)' -Encoding UTF8
+        } else {
+            `$installedVer = if (`$after) { `$after.Version.ToString() } else { 'not found' }
+            `$moduleBase = if (`$after) { "`$(`$after.ModuleBase)" } else { '' }
+            `$warnText = if (`$installWarnings.Count -gt 0) { (`$installWarnings | ForEach-Object { "`$_" }) -join ' | ' } else { 'Install-Module reported no error or warning.' }
+            `$shadowText = if (`$highest -and `$after -and `$highest.Version -gt `$after.Version) { "v`$(`$highest.Version) is installed at `$(`$highest.ModuleBase) but v`$(`$after.Version) at `$(`$after.ModuleBase) comes first on PSModulePath and is what loads -- remove the older copy so the update takes effect." } else { '' }
+            @{ Status = 'NoChange'; OldVersion = '$currentVer'; Expected = `$gallery.Version.ToString(); Installed = `$installedVer; ModuleBase = `$moduleBase; Warnings = `$warnText; Shadow = `$shadowText } | ConvertTo-Json | Set-Content -Path '$($script:HPCMSLUpdateResultFile)' -Encoding UTF8
+        }
     } else {
         @{ Status = 'Current'; Version = '$currentVer' } | ConvertTo-Json | Set-Content -Path '$($script:HPCMSLUpdateResultFile)' -Encoding UTF8
     }
@@ -27122,9 +27672,23 @@ try {
                                         'Updated' {
                                             Remove-Module -Name HPCMSL -Force -ErrorAction SilentlyContinue
                                             Import-Module -Name HPCMSL -Force -ErrorAction SilentlyContinue
-                                            Write-DATLogEntry -Value "[HP] HPCMSL upgraded in background: v$($r.OldVersion) -> v$($r.NewVersion)" -Severity 1
+                                            Write-DATLogEntry -Value "[HP] HPCMSL upgraded in background: v$($r.OldVersion) -> v$($r.NewVersion) -- $($r.ModuleBase)" -Severity 1
                                             Write-DATActivityLog "HP CMSL updated to v$($r.NewVersion)" -Level Info
                                             Update-DATHpcmslStatus
+                                        }
+                                        'NoChange' {
+                                            # Install-Module returned without error but the installed
+                                            # version did not move. Say so rather than reporting the
+                                            # version that was merely attempted (#953).
+                                            if ($r.Shadow) {
+                                                # Not a failed install -- the files landed, an older
+                                                # copy in an earlier root just wins the import (#958).
+                                                Write-DATLogEntry -Value "[HP] WARNING: HPCMSL update did not take effect -- $($r.Shadow)" -Severity 2
+                                                Write-DATActivityLog "HP CMSL v$($r.Expected) installed but v$($r.Installed) still loads -- remove the older copy" -Level Warn
+                                            } else {
+                                                Write-DATLogEntry -Value "[HP] WARNING: HPCMSL is still v$($r.Installed) after installing v$($r.Expected) -- the background update did not take effect. Loaded from: $($r.ModuleBase). $($r.Warnings)" -Severity 2
+                                                Write-DATActivityLog "HP CMSL update did not take effect -- still v$($r.Installed) (expected v$($r.Expected))" -Level Warn
+                                            }
                                         }
                                         'Current' {
                                             Write-DATLogEntry -Value "[HP] HPCMSL v$($r.Version) is already the latest version" -Severity 1
@@ -27591,7 +28155,7 @@ if (Test-Path $logoPath) {
 
 # Read version from module manifest
 $manifestPath = Join-Path $AppRoot "Modules\DriverAutomationToolCore\DriverAutomationToolCore.psd1"
-$script:versionString = "v10.2.7"
+$script:versionString = "v10.2.9"
 if (Test-Path $manifestPath) {
     $manifestData = Import-PowerShellDataFile $manifestPath
     $ver = [version]$manifestData.ModuleVersion
@@ -29020,15 +29584,14 @@ try { Initialize-DATWhatsNew } catch { Write-DATActivityLog "What's New init fai
 # (the IncrementVersion skill covers it, and Tests\UIApplication.Tests.ps1 asserts it matches the
 # module manifest). The modal is suppressed when it does not match the running build, so a missed
 # changelog update shows nothing rather than the previous release's features.
-$script:WhatsNewReleaseVersion = '10.2.7.0'
+$script:WhatsNewReleaseVersion = '10.2.9.0'
 $script:WhatsNewReleaseItems = @(
-    [pscustomobject]@{ Category = 'Windows 11 26H1';            Text = 'Windows 11 26H1 (build 28000) can now be selected as a target release for driver and BIOS packages, and the Modern Driver/BIOS Management scripts recognise it during deployment. 26H1 ships on new devices only, so it is offered alongside 25H2 rather than replacing it.' }
-    [pscustomobject]@{ Category = 'Faster Model Search';        Text = 'Searching the model grid stays responsive on large catalogues. Typing is debounced and the grid is filtered in place rather than rebuilt on every keystroke, and searches now match literally, so punctuation such as [ or ] no longer breaks the filter.' }
-    [pscustomobject]@{ Category = 'Dell Latest Drivers Version'; Text = 'Dell Latest Drivers (DCU) packages now show their build date as the version in the model list, matching how HP SoftPaq packages are displayed. ConfigMgr driver pack mode continues to show the enterprise catalog version.' }
-    [pscustomobject]@{ Category = 'Incomplete Package Reporting'; Text = 'A Latest Drivers component that downloads but stages no drivers is now reported in View Failures with the reason from the vendor package, instead of being dropped silently. The build warns that the package is incomplete and the next run rebuilds it rather than treating the set as current.' }
-    [pscustomobject]@{ Category = 'ConfigMgr Package Source Path'; Text = 'A local package storage path is now published from the server actually holding the content, using a real file share where one exists, rather than assuming the content sits on the primary site server. Multi-server hierarchies no longer receive a source path pointing at the wrong machine. Common Settings shows the exact UNC path ConfigMgr will be given before a build starts.' }
-    [pscustomobject]@{ Category = 'Vendor Selection Respected';   Text = 'The startup connectivity check no longer probes catalog servers for manufacturers you have switched off in OEM Selections, so disabled vendors stop raising unreachable-URL warnings at launch. Shared services such as GitHub and the DAT API are always checked.' }
-    [pscustomobject]@{ Category = 'Closing Window';               Text = 'The cleanup window shown while the application closes no longer floats above every other application on the desktop. It appears in the taskbar instead, so a long cleanup after a large build no longer blocks unrelated work.' }
+    [pscustomobject]@{ Category = 'Package Integrity';            Text = 'The Intune packaging chain now verifies what it ships. The staging folders are created so that only SYSTEM and administrators can write to them, which closes the window in which a generated install script could be replaced before it was packaged. The Microsoft content prep tool is checked for a valid Microsoft signature before it is run, on a copy kept from an earlier run as well as a fresh download. A package build stops if the install templates sit in a folder an ordinary user could write to, because that script runs as SYSTEM on every device it reaches.' }
+    [pscustomobject]@{ Category = 'Scheduled Build Protection';   Text = 'The check that refuses to register a scheduled build from a folder ordinary users can write to did not work on Windows PowerShell 5.1, which is the version the scheduled task itself runs under. Where exactly one account had write access -- the most common case by far -- the check passed silently. It now reports correctly on both PowerShell versions.' }
+    [pscustomobject]@{ Category = 'Secure Downloads';             Text = 'The deployment scripts no longer switch off certificate validation before calling the AdminService, so a device on the network can no longer impersonate the site server and collect the service account. Driver packs whose hash does not match the vendor catalog are now rejected rather than downloaded again and used, and archives are checked for entries that would write outside the folder being extracted to.' }
+    [pscustomobject]@{ Category = 'BIOS Password Handling';       Text = 'The BIOS flash command is masked before it reaches the log, so the password is no longer written in full to the Intune Management Extension log folder, which is readable by any user on the device and is collected by "collect diagnostics".' }
+    [pscustomobject]@{ Category = 'Safer Cleanup';                Text = 'Cleanup in scheduled builds no longer follows junctions or accepts a drive root as a content path, so a standard user can no longer arrange for the build to delete somewhere it was never pointed at.' }
+    [pscustomobject]@{ Category = 'HPCMSL Version Reporting';     Text = 'Common Settings and the startup window now report the same HPCMSL version, and it is the version that will actually be used. Where the module is installed for both the current user and all users, Windows loads whichever comes first on the module path, which is not always the newest -- so the tool could report 1.9.0 while every HP build ran on 1.8.6. Where a newer copy is present but masked, both the settings page and the log now say so and name the folder to remove.' }
 )
 
 function Get-DATWhatsNewModalShownVersion {
@@ -29074,6 +29637,8 @@ function Show-DATWhatsNewModal {
     # Persist as shown immediately so it never reappears for this version, even if the window is
     # closed without pressing "Got it".
     try { Set-DATRegistryValue -Name 'WhatsNewModalShownVersion' -Value ([string]$global:ScriptRelease) -Type String } catch {}
+    # Lets the telemetry invitation stand aside rather than stacking a second modal on an upgrade.
+    $script:WhatsNewModalShownThisSession = $true
 }
 
 function Show-DATWhatsNewModalIfUpgraded {
@@ -29097,6 +29662,17 @@ if ($null -ne $btn_WhatsNewClose) {
 }
 
 try { Show-DATWhatsNewModalIfUpgraded } catch { Write-DATActivityLog "What's New modal failed: $($_.Exception.Message)" -Level Warn }
+
+# Twice-yearly invitation to enable telemetry, for installs that have not opted in. Deliberately
+# after the What's New modal and skipped in the same session as an upgrade: two modals stacked on
+# one launch is how a reasonable prompt starts feeling like nagging.
+try {
+    if ($script:WhatsNewModalShownThisSession) {
+        Write-DATLogEntry -Value "[Telemetry] Invitation deferred -- the release notes modal was shown this session" -Severity 1
+    } else {
+        Show-DATTelemetryInviteIfDue
+    }
+} catch { Write-DATActivityLog "Telemetry invitation failed: $($_.Exception.Message)" -Level Warn }
 #endregion
 
 

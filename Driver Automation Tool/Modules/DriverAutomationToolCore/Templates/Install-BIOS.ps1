@@ -346,6 +346,46 @@ function Compare-BIOSVersion {
         }
         '*Lenovo*' {
             try {
+                # Lenovo ships BIOS updates as two different package types, and the catalog stores
+                # whichever version string the package declared:
+                #   BIOS_* packages -- the version IS the UEFI BIOS version the device reports in
+                #                      SMBIOSBIOSVersion, e.g. "N4BET77W (1.47 )" -> 1.47.
+                #   FWU_*  packages -- the version is the System Firmware (UEFI capsule) version,
+                #                      which runs on a completely separate counter. n4buj30w, for
+                #                      example, is System Firmware 1.29 and contains UEFI BIOS 1.47.
+                # The two scales are not interchangeable, so read both versions off the device and
+                # only decide when they agree. Release dates cannot settle this on their own:
+                # Win32_BIOS.ReleaseDate is the firmware BUILD date while the catalog carries the
+                # PUBLICATION date, so a device running exactly the BIOS inside the package still
+                # looks weeks out of date -- which is what prompted users to flash a BIOS they
+                # already had, every single Intune cycle.
+                $currentUefiVersion     = ConvertTo-BIOSVersionObject -Value (Get-LenovoUefiBiosVersion -BIOS $currentBIOS)
+                $currentFirmwareVersion = ConvertTo-BIOSVersionObject -Value (Get-LenovoSystemFirmwareVersion)
+                $availableVersion       = ConvertTo-BIOSVersionObject -Value $AvailableBIOSVersion
+                $deviceVersions         = @(@($currentUefiVersion, $currentFirmwareVersion) | Where-Object { $null -ne $_ })
+
+                if ($null -ne $availableVersion -and $deviceVersions.Count -gt 0) {
+                    $versionDetail = @()
+                    if ($null -ne $currentUefiVersion)     { $versionDetail += "UEFI BIOS $currentUefiVersion" }
+                    if ($null -ne $currentFirmwareVersion) { $versionDetail += "System Firmware $currentFirmwareVersion" }
+                    $versionSummary = $versionDetail -join ' / '
+                    Write-CMTraceLog "Lenovo: Device reports $versionSummary | package version $AvailableBIOSVersion"
+
+                    if ($deviceVersions -contains $availableVersion) {
+                        Write-CMTraceLog "Lenovo: Package version $AvailableBIOSVersion is already installed ($versionSummary) -- no update required"
+                        return $false
+                    }
+                    if (-not ($deviceVersions | Where-Object { $_ -ge $availableVersion })) {
+                        Write-CMTraceLog "Lenovo: Newer BIOS available (package $AvailableBIOSVersion is ahead of $versionSummary)"
+                        return $true
+                    }
+                    if (-not ($deviceVersions | Where-Object { $_ -le $availableVersion })) {
+                        Write-CMTraceLog "Lenovo: Device firmware ($versionSummary) is ahead of package $AvailableBIOSVersion -- no update required"
+                        return $false
+                    }
+                    Write-CMTraceLog "Lenovo: Package version $AvailableBIOSVersion falls between the device's own versions ($versionSummary) -- cannot tell which scale it is on, falling back to release date" -Severity 2
+                }
+
                 # Guard a null/absent BIOS release date, and require a strict 8-digit yyyyMMdd on
                 # BOTH sides before comparing. The compare is ordinal (culture-independent).
                 $currentReleaseDate = if ($null -ne $currentBIOS.ReleaseDate) {
@@ -355,7 +395,9 @@ function Compare-BIOSVersion {
                 Write-CMTraceLog "Lenovo: Available BIOS version: $AvailableBIOSVersion"
 
                 # Use release date comparison only when both dates are valid 8-digit stamps
-                # (version strings like M43KT32A are not reliably sortable).
+                # (version strings like M43KT32A are not reliably sortable). This is a last
+                # resort: the catalog date is a publication date and the device date is a build
+                # date, so it is biased towards reporting an update.
                 $datesComparable = ($AvailableReleaseDate -match '^\d{8}$') -and ($currentReleaseDate -match '^\d{8}$')
                 if ($datesComparable) {
                     Write-CMTraceLog "Lenovo: Available BIOS release date: $AvailableReleaseDate"
@@ -463,6 +505,91 @@ function Compare-BIOSVersion {
     Write-CMTraceLog "BIOS is already up to date -- no update required"
     return $false
 }
+
+function ConvertTo-BIOSVersionObject {
+    <#
+    .SYNOPSIS
+        Parses a plain dotted numeric version ("1.29", "1.47", "1.24.0") into [System.Version].
+    .DESCRIPTION
+        Returns $null for anything that is not a plain dotted number -- Lenovo dual-BIOS catalog
+        entries ("1.68_1.57"), BIOS ID strings and DAT date stamps included -- so callers treat an
+        unparseable value as "no usable version" rather than guessing at one.
+    #>
+    param ([string]$Value)
+
+    if ([string]::IsNullOrWhiteSpace($Value)) { return $null }
+    $trimmed = $Value.Trim()
+    if ($trimmed -notmatch '^\d+(\.\d+){1,3}$') { return $null }
+    $parsed = $null
+    if ([System.Version]::TryParse($trimmed, [ref]$parsed)) { return $parsed }
+    return $null
+}
+
+function Get-LenovoUefiBiosVersion {
+    <#
+    .SYNOPSIS
+        Returns the UEFI BIOS version a Lenovo device reports, as a dotted string ("1.47").
+    .DESCRIPTION
+        Lenovo formats SMBIOSBIOSVersion as "<BIOS ID> (<version> )" -- e.g. "N4BET77W (1.47 )" --
+        and it is the bracketed value that Lenovo publishes as "UEFI BIOS" in its package readmes.
+        When the string is not in that form, fall back to the SMBIOS major/minor pair, which
+        carries the same number (1 and 47 for the example above).
+    #>
+    param ($BIOS)
+
+    if ($null -eq $BIOS) { return '' }
+    $raw = [string]$BIOS.SMBIOSBIOSVersion
+    if ($raw -match '\(\s*(\d+(?:\.\d+){1,3})\s*\)') { return $Matches[1] }
+    if ($null -ne $BIOS.SystemBiosMajorVersion -and $null -ne $BIOS.SystemBiosMinorVersion) {
+        return "$($BIOS.SystemBiosMajorVersion).$($BIOS.SystemBiosMinorVersion)"
+    }
+    return ''
+}
+
+function Get-LenovoSystemFirmwareVersion {
+    <#
+    .SYNOPSIS
+        Returns the Lenovo System Firmware (UEFI capsule) version from the device's ESRT, as "1.29".
+    .DESCRIPTION
+        Lenovo's FWU_* packages gate themselves on the EFI System Resource Table rather than on the
+        BIOS string: n4buj30w (ThinkPad X1 Carbon Gen 13) declares
+        <Version hex2dec="True">1001D^</Version> for its UEFI\RES_{...} resource, and 0x1001D
+        decodes as major 1 / minor 0x1D -- "System Firmware 1.29", exactly the version its readme
+        lists and the version the DAT catalog stores for that package. Windows exposes the same
+        DWORD under HKLM:\SYSTEM\CurrentControlSet\Control\FirmwareResources\{GUID}\Version.
+
+        The high-word/low-word split is Lenovo's convention (other OEMs pack the same DWORD
+        differently), so this is only ever called from the Lenovo comparison. Returns an empty
+        string when the system firmware resource cannot be identified -- a device with no ESRT, or
+        several firmware resources with nothing to distinguish them -- leaving the caller to fall
+        back rather than compare against another component's firmware.
+    #>
+
+    try {
+        $resourceRoot = 'HKLM:\SYSTEM\CurrentControlSet\Control\FirmwareResources'
+        if (-not (Test-Path $resourceRoot)) { return '' }
+        $resources = @(Get-ChildItem -Path $resourceRoot -ErrorAction Stop)
+        if ($resources.Count -eq 0) { return '' }
+
+        if ($resources.Count -gt 1) {
+            # Device firmware, retimers and NVMe firmware all appear alongside the system
+            # firmware, so identify the right GUID from its PnP entity before reading a version.
+            $systemFirmwareGuids = @(Get-CimInstance -ClassName Win32_PnPEntity -Filter "PNPClass='Firmware'" -ErrorAction Stop |
+                Where-Object { $_.Name -like 'System Firmware*' } |
+                ForEach-Object { if ($_.DeviceID -match '(\{[0-9A-Fa-f\-]{36}\})') { $Matches[1] } })
+            if ($systemFirmwareGuids.Count -eq 0) { return '' }
+            $resources = @($resources | Where-Object { $systemFirmwareGuids -contains $_.PSChildName })
+            if ($resources.Count -ne 1) { return '' }
+        }
+
+        $raw = (Get-ItemProperty -Path $resources[0].PSPath -Name 'Version' -ErrorAction SilentlyContinue).Version
+        if ($null -eq $raw) { return '' }
+        $value = [uint32]$raw
+        return "$([int]($value -shr 16)).$([int]($value -band 0xFFFF))"
+    } catch {
+        return ''
+    }
+}
 {{TOAST_FUNCTIONS}}
 try {
     Write-CMTraceLog "=========================================="
@@ -493,7 +620,7 @@ try {
     $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
     $WimFile = Join-Path $ScriptDir "DriverPackage.wim"
     $ExtractPath = Join-Path $env:ProgramData "DriverAutomationTool\Extract"
-    $VersionRegPath = 'HKLM:\SOFTWARE\DriverAutomationTool\BIOS\{{OEM}}\{{Model}}'
+    $VersionRegPath = 'HKLM:\SOFTWARE\DriverAutomationTool\BIOS\{{OEM}}\{{ModelKey}}'
     $Manufacturer = '{{OEM}}'
     $installPhase = 'Init'
     $flashExitCode = $null

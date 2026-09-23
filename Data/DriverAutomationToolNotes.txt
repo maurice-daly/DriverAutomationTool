@@ -3,6 +3,36 @@ Release Notes
 IMPORTANT
 ** DAT Downloads have been moved to GitHub - https://github.com/maurice-daly/DriverAutomationTool **
 
+Version 10.2.9
+What's New & Fixed
+
+- Security — removed the TLS certificate-validation bypass from the OSD deployment scripts; connecting to a self-signed AdminService now requires a pinned certificate thumbprint instead of trusting any certificate on the network. This is a breaking change for anyone relying on the old bypass — see docs/AdminServiceAuthRewrite.md.
+- Security — the OSD scripts no longer depend on the retired PSIntuneAuth/AzureAD module chain to authenticate to the AdminService (AzureAD stopped working in October 2025); they request the token directly, and a failed sign-in now names the actual reason (bad credentials, MFA required, Conditional Access) instead of a bare "Unauthorized".
+- Security — catalog-supplied baseboard/SKU values written into the generated Intune detection and requirement scripts are now validated against an allow-list before being emitted, closing a code-injection risk from a compromised or malformed catalog entry.
+- Security — the BIOS install log no longer records the plaintext flash password, its length or its first and last characters.
+- Security — SYSTEM cleanup during headless and scheduled builds now refuses to delete outside an approved content root and will not follow a reparse point planted in the temp folder.
+- Security — driver and BIOS downloads that fail their catalog hash check after every retry are no longer packaged; archive extraction (driver/BIOS payloads and the tool's own updater) now validates every entry path before writing, closing a directory-traversal risk.
+- Security — the scheduled build task now refuses to register if the install folder is writable by anyone other than the account running the build, SYSTEM, Administrators or TrustedInstaller, and Intune packaging locks down its staging folders and verifies IntuneWinAppUtil.exe's signature before running it.
+- Security — Settings/BuildConfig.json (which can hold the Teams webhook and Intune app secret) is no longer copied into standalone release packages, and packaging now fails outright if a credential is detected in the staged files.
+- OEM Support — Panasonic TOUGHBOOK models with a variant-series name such as "FZ-G2[N/P] (mk3)" can be packaged again; the model name previously produced an invalid folder path and blocked Intune script generation for effectively the whole catalog. (#956)
+- OEM Support — Fujitsu builds no longer crash on a blank SystemSKU on some models (e.g. ESPRIMO D757), and the value read now actually matches the driver package's own detection rule. (#945)
+- Latest Drivers reliability — an incomplete Dell/Lenovo Latest Drivers build (a component that staged no files) no longer parks the model for a full cadence period; the next run retries it automatically. (#948)
+- Latest Drivers diagnostics — a "Windows long path support is disabled" failure reason is now shown only when there is real evidence of a path-length failure, not just because the host setting happens to be off. (#949)
+- Lenovo BIOS — devices already on the catalog's BIOS version are no longer repeatedly prompted to reflash; version comparison now reads the correct field for both BIOS and System Firmware package types.
+- Build summary — the completion dialog and Teams notification no longer count packages skipped as already-current toward "Succeeded"; a separate Skipped figure is shown for each. (#19)
+- Build summary — a per-model table (manufacturer, model, OS, driver/BIOS status) is now written to the log on every run and shown in the completion dialog.
+- Teams notification — build cards now include per-model driver and BIOS version tables alongside the existing counts, and the optional custom header text dropped since 10.2.3 is restored. (#955)
+- Telemetry — the package hash computed only for the optional telemetry report is now skipped entirely when telemetry is off, saving 15-25 minutes on large builds; the ConfigMgr driver and BIOS package hash no longer runs while ConfigMgr is still distributing the content, which could previously time out and fail the package. (#951, #952)
+- Telemetry — users who have never opted in are now invited to enable it from the interface, at most twice a year, with a clear list of what is and is not sent.
+- HPCMSL — the tool now reports the HPCMSL version actually loaded rather than the highest version installed anywhere, and warns when a newer install is being shadowed by an older one; update checks correctly report when an update did not apply instead of claiming success. (#953, #958)
+- Scheduled builds — the fixed 4-hour run limit is now configurable (0-72 hours) and no longer silently kills a long-running build partway through, skipping cleanup, telemetry and the Teams notification. (#950)
+- Scheduled builds — package retention (removing superseded ConfigMgr packages) now actually runs under the headless/SYSTEM task; it previously always read as disabled. (#947)
+- Intune uploads — a transient Graph 401 immediately after creating an app no longer disables Intune authentication for the rest of the run; affected models now retry with a backoff instead of failing outright.
+- Catalog downloads — a 401 from the Driver Automation Tool API now explains the reason (clock skew, invalid timestamp, etc.) instead of a bare "Unauthorized".
+- Update prompts — an update or BIOS-flash toast that times out unanswered is now correctly treated as declined rather than as consent to install.
+
+Version 10.2.8 - Internal testing build
+
 Version 10.2.7
 What's New & Fixed
 
