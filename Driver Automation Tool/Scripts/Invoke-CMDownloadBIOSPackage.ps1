@@ -14,6 +14,12 @@
 .PARAMETER BIOSUpdate
 	Set the script to operate in 'BIOSUpdate' (full OS) deployment type mode.
 
+.PARAMETER XMLPackage
+	Set the script to operate in 'XMLPackage' deployment type mode, where BIOS package details are read from a pre-downloaded DriverPackages.xml logic file instead of the AdminService.
+
+.PARAMETER XMLDeploymentType
+	Specify the deployment type mode for XML based BIOS package deployments, e.g. 'BareMetal' or 'BIOSUpdate'.
+
 .PARAMETER DebugMode
 	Set the script to operate in 'DebugMode' deployment type mode.
 
@@ -41,6 +47,9 @@
 .PARAMETER SystemSKU
 	Override the automatically detected SystemSKU when running in debug mode.
 
+.PARAMETER ForceDownload
+	Force the matching BIOS package to be downloaded (and flagged for flashing) even when the installed BIOS version already matches the package version. This is an opt-in switch used for intentional re-application scenarios -- for example recreating Dell BIOS recovery images on newer Pro/Precision platforms after OS deployment, SSD replacement or disk wipes. The equivalent task sequence variable is SMSTSForceBIOSDownload=True. Default behaviour (skip when already up to date) is unchanged.
+
 .PARAMETER OSVersionFallback
 	Use this switch to check for drivers packages that matches earlier versions of Windows than what's specified as input for TargetOSVersion.
 
@@ -50,6 +59,12 @@
 
 	# Detect and download latest available BIOS package with ConfigMgr through the admin service in a full OS deployment:
 	.\Invoke-CMDownloadBIOSPackage.ps1 -BIOSUpdate -Endpoint "CM01.domain.com"
+
+	# Detect and download latest available BIOS package using a pre-downloaded XML package logic file in a baremetal deployment:
+	.\Invoke-CMDownloadBIOSPackage.ps1 -XMLPackage -XMLDeploymentType "BareMetal"
+
+	# Detect and download latest available BIOS package using a pre-downloaded XML package logic file in a full OS deployment:
+	.\Invoke-CMDownloadBIOSPackage.ps1 -XMLPackage -XMLDeploymentType "BIOSUpdate"
 
 	# Detect, and report on the matched BIOS release without downloading / in full OS
 	.\Invoke-CMDownloadBIOSPackage.ps1 -Endpoint "CM01.domain.com" -UserName "Username" -Password "Password" -DebugMode
@@ -62,8 +77,8 @@
 	Author:      Nickolaj Andersen / Maurice Daly
     Contact:     @NickolajA / @MoDaly_IT
     Created:     2020-10-30
-    Updated:     2026-08-05
-    
+    Updated:     2026-09-03
+
     Version history:
     3.0.0 - (2020-10-30) - Script created
 	3.0.1 - (2020-12-04) - Fixes to parameter sets, matching logic and removal of no longer code
@@ -79,6 +94,22 @@
 						 - Corrected $null comparisons to place $null on the left-hand side.
 						 - Added a documented placeholder (default) branch in Get-ComputerData describing how to add support for custom/unlisted manufacturers.
 						 - Logging improvements for troubleshooting: Invoke-Executable launch failures are now written to the log file (Severity 3) instead of only Write-Warning, and return -1 rather than silently continuing; Get-ComputerData wraps manufacturer detection in try/catch that logs the manufacturer context on failure and degrades gracefully; and a script version + key parameter banner is written at startup.
+	3.0.5 - (2026-08-21) - Fixed BIOS package detection failing in a live task sequence while succeeding in DebugMode (#902):
+					 - Get-BIOSUpdate matched packages against the script-level $ComputerModel parameter, which is only populated in DebugMode. In a real (BareMetal/BIOSUpdate) run it was empty, so the ComputerModel detection method and the SystemSKU-to-model fallback compared against a blank string and never matched -- most visible on Lenovo, where the SystemSKU is only the 4-char machine type and the model-name fallback is often required. Now uses $ComputerSystemType (the detected/overridden $InputObject.Model) so matching behaves identically in both modes.
+	3.0.6 - (2026-08-31) - Added optional force-download support for intentional BIOS re-application (MSEndpointMgr/ModernBIOSManagement#31):
+					 - New -ForceDownload switch (and SMSTSForceBIOSDownload=True task sequence variable) downloads the matching BIOS package and flags it for flashing (NewBIOSAvailable=true) even when the installed version already matches the package version. Enables recreating Dell BIOS recovery images (stored on internal NVMe) after OSD, SSD replacement or disk wipes. Opt-in only; default behaviour (skip when already up to date) is unchanged. Note: forcing the flash of the same version on Dell also requires the companion Dell BIOS update step to pass Dell's /f switch.
+	3.0.7 - (2026-09-03) - Added the missing XMLPackage parameter set (MSEndpointMgr/ModernBIOSManagement#32):
+					 - The script body already implemented XML (non-AdminService) package logic -- Get-DeploymentType, Get-BIOSPackages and the AdminService phase all branch on the 'XMLPackage' parameter set name -- but the parameter set itself was never declared in the param block. Running the script with -XMLPackage therefore failed at parameter binding ("A parameter cannot be found that matches parameter name 'XMLPackage'"), making XML/standalone (webservice-less) BIOS deployments impossible. Added the -XMLPackage switch and -XMLDeploymentType parameter (BareMetal/BIOSUpdate), and extended -Filter, -OperationalMode and -ForceDownload to the XMLPackage parameter set.
+					 - Fixed the "latest package by creation date" selection sorting SourceDate as text rather than as a date. Packages read from the XML logic file always carry SourceDate as a string, so Sort-Object compared text and, with a culture formatted stamp ('03/09/2026 12:00:00'), an older BIOS package could be selected whenever multiple packages matched a device. New ConvertTo-PackageSourceDate helper normalises ISO 8601, WMI DMTF, culture formatted and DateTime values to a sortable [datetime] (unparsable values sort last), and all five Dell/Lenovo/HP/Microsoft selection sorts now use it.
+	3.0.8 - (2026-09-03) - Added AdminService authentication resiliency for the ConfigMgr 2603 security changes:
+					 - ConfigMgr 2603 rejects AdminService authentication that uses a bare service account user name (e.g. 'svc-osd'), a configuration that worked on earlier builds, so existing task sequences began failing with 401 Unauthorized. Get-AuthCredential now warns when the configured user name is not in UPN format and recommends updating it, naming the alternative formats that will be attempted.
+					 - Get-AuthDomainName resolves the Active Directory DNS domain from, in order: the OSDDOMAINNAME / OSDJoinDomainName task sequence variables, the domain membership of the running device (full OS only), and the DNS suffix of the AdminService endpoint or management point host name (the only sources available in WinPE).
+					 - Get-AdminServiceItem now retries the request with the UPN form (user@domain.com) and then the down-level form (DOMAIN\user) when, and only when, the AdminService responds with 401 Unauthorized. The configured value is always attempted first so a working environment is unchanged, the working credential is reused for the remainder of the run, and a run where every format is rejected logs explicit guidance to move the account to UPN format.
+					 - The self-signed certificate callback was moved into Set-CertificateValidationCallback and is now only registered once per run. Previously Add-Type ran on every certificate failure, so a second AdminService call hitting the same condition failed with a duplicate type error.
+	3.0.9 - (2026-09-21) - Security: removed the blanket TLS certificate validation bypass from the AdminService connection path:
+					 - Set-CertificateValidationCallback installed a callback that returned true for every certificate presented by any host, for the remainder of the process, and the service account credential was then sent over that connection. Any machine able to answer for the endpoint address (DNS, DHCP or ARP spoofing on the deployment network) could therefore collect the AdminService service account password. That callback and its base64 encoded type definition have been removed.
+					 - Set-PinnedCertificateValidationCallback replaces it. A certificate that does not chain to a trusted root is now accepted only when its SHA1 thumbprint matches the value supplied through the 'MDMCertificateThumbprint' task sequence variable or the new CertificateThumbprint parameter. Every other validation failure remains a failure, and a certificate that already validates normally is unaffected.
+					 - When no thumbprint is configured the request is not retried and the credential is not sent. The log names both remedies: trust the issuing CA on the machine (import the root certificate into the boot image for WinPE), or configure the expected thumbprint. BREAKING: an environment that relied on the old bypass to reach a self-signed AdminService binding must do one of those two before this version will connect.
 
 #>
 [CmdletBinding(SupportsShouldProcess = $true, DefaultParameterSetName = "BareMetal")]
@@ -88,13 +119,21 @@ param (
 	
 	[parameter(Mandatory = $true, ParameterSetName = "BIOSUpdate", HelpMessage = "Set the script to operate in 'BIOSUpdate' deployment type mode.")]
 	[switch]$BIOSUpdate,
-	
+
+	[parameter(Mandatory = $true, ParameterSetName = "XMLPackage", HelpMessage = "Set the script to operate in 'XMLPackage' deployment type mode.")]
+	[switch]$XMLPackage,
+
 	[parameter(Mandatory = $true, ParameterSetName = "BIOSUpdate", HelpMessage = "Specify the internal fully qualified domain name of the server hosting the AdminService, e.g. CM01.domain.local.")]
 	[parameter(Mandatory = $true, ParameterSetName = "BareMetal")]
 	[parameter(Mandatory = $true, ParameterSetName = "Debug")]
 	[ValidateNotNullOrEmpty()]
 	[string]$Endpoint,
-	
+
+	[parameter(Mandatory = $false, ParameterSetName = "XMLPackage", HelpMessage = "Specify the deployment type mode for XML based BIOS package deployments, e.g. 'BareMetal' or 'BIOSUpdate'.")]
+	[ValidateNotNullOrEmpty()]
+	[ValidateSet("BareMetal", "BIOSUpdate")]
+	[string]$XMLDeploymentType = "BareMetal",
+
 	[parameter(Mandatory = $false, ParameterSetName = "Debug", HelpMessage = "Set the script to operate in 'DebugMode' deployment type mode.")]
 	[switch]$DebugMode,
 	
@@ -106,14 +145,20 @@ param (
 	[ValidateNotNullOrEmpty()]
 	[string]$Password = "",
 	
+	[parameter(Mandatory = $false, HelpMessage = "Specify the expected SHA1 thumbprint of the AdminService certificate. Only required when that certificate does not chain to a root this machine trusts, such as a ConfigMgr self-signed binding.")]
+	[AllowEmptyString()]
+	[string]$CertificateThumbprint = "",
+	
 	[parameter(Mandatory = $false, ParameterSetName = "BIOSUpdate", HelpMessage = "Define a filter used when calling the AdminService to only return objects matching the filter.")]
 	[parameter(Mandatory = $false, ParameterSetName = "BareMetal")]
+	[parameter(Mandatory = $false, ParameterSetName = "XMLPackage")]
 	[ValidateNotNullOrEmpty()]
 	[string]$Filter = "BIOS",
 	
 	[parameter(Mandatory = $false, ParameterSetName = "BIOSUpdate", HelpMessage = "Define the operational mode, either Production or Pilot, for when calling ConfigMgr WebService to only return objects matching the selected operational mode.")]
 	[parameter(Mandatory = $false, ParameterSetName = "BareMetal")]
 	[parameter(Mandatory = $true, ParameterSetName = "Debug")]
+	[parameter(Mandatory = $false, ParameterSetName = "XMLPackage")]
 	[ValidateNotNullOrEmpty()]
 	[ValidateSet("Production", "Pilot")]
 	[string]$OperationalMode = "Production",
@@ -129,7 +174,13 @@ param (
 	
 	[parameter(Mandatory = $false, ParameterSetName = "Debug", HelpMessage = "Override the automatically detected SystemSKU when running in debug mode.")]
 	[ValidateNotNullOrEmpty()]
-	[string]$SystemSKU
+	[string]$SystemSKU,
+
+	[parameter(Mandatory = $false, ParameterSetName = "BareMetal", HelpMessage = "Force the BIOS package to download and flag for flashing even when the installed version already matches (opt-in; for intentional re-application such as Dell recovery image recreation).")]
+	[parameter(Mandatory = $false, ParameterSetName = "BIOSUpdate")]
+	[parameter(Mandatory = $false, ParameterSetName = "Debug")]
+	[parameter(Mandatory = $false, ParameterSetName = "XMLPackage")]
+	[switch]$ForceDownload
 )
 Begin {
 	
@@ -365,7 +416,48 @@ Process {
 		# Handle return value
 		return $ErrorRecord
 	}
-	
+
+	function ConvertTo-PackageSourceDate {
+		<#
+		.SYNOPSIS
+			Normalise a package SourceDate value into a sortable [datetime].
+
+		.DESCRIPTION
+			BIOS package selection sorts on SourceDate to pick the most recently created package.
+			From the AdminService the value arrives as an ISO 8601 string or a DateTime, but from the
+			XML package logic file it is always a string -- so an unconverted Sort-Object compares text
+			rather than time. With a culture formatted stamp such as '03/09/2026 12:00:00' that ordering
+			is simply wrong ('12/01/2026' sorts above '03/09/2026'), and an older BIOS package can win
+			the selection. Handles ISO 8601, WMI DMTF datetime, culture formatted strings and DateTime
+			input, and returns [datetime]::MinValue for missing or unparsable values so those packages
+			sort last (oldest) instead of winning by accident.
+		#>
+		param (
+			[parameter(Mandatory = $false, HelpMessage = "The SourceDate value to normalise.")]
+			$Value
+		)
+		if ($null -eq $Value) { return [datetime]::MinValue }
+		if ($Value -is [datetime]) { return $Value }
+
+		$DateString = ([string]$Value).Trim()
+		if ([string]::IsNullOrEmpty($DateString)) { return [datetime]::MinValue }
+
+		# WMI DMTF datetime, e.g. 20260801120000.000000+000
+		if ($DateString -match '^\d{14}\.') {
+			try { return [System.Management.ManagementDateTimeConverter]::ToDateTime($DateString) } catch { }
+		}
+
+		# Current culture first: logic files written by earlier versions of the Driver Automation Tool
+		# carry a culture formatted stamp, and only the local culture reads day/month order correctly.
+		# ISO 8601 (written by current versions) parses identically under either culture, so the
+		# invariant fallback only ever catches formats the local culture cannot read.
+		$ParsedDate = [datetime]::MinValue
+		if ([datetime]::TryParse($DateString, [System.Globalization.CultureInfo]::CurrentCulture, [System.Globalization.DateTimeStyles]::None, [ref]$ParsedDate)) { return $ParsedDate }
+		if ([datetime]::TryParse($DateString, [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::None, [ref]$ParsedDate)) { return $ParsedDate }
+
+		return [datetime]::MinValue
+	}
+
 	function Get-DeploymentType {
 		switch ($PSCmdlet.ParameterSetName) {
 			"XMLPackage" {
@@ -469,6 +561,19 @@ Process {
 			}
 		} else {
 			Write-CMLogEntry -Value " - Successfully read service account password from parameter input: ********" -Severity 1
+		}
+		
+		# Resolve the optional AdminService certificate thumbprint. It is only needed when the
+		# AdminService certificate does not chain to a root this machine trusts, and it is what lets
+		# a self-signed binding be accepted without also trusting every other certificate presented.
+		if ((-not ([string]::IsNullOrWhiteSpace($CertificateThumbprint))) -or ($Script:PSCmdLet.ParameterSetName -like "Debug")) {
+			$Script:CertificateThumbprint = $CertificateThumbprint
+		}
+		else {
+			$Script:CertificateThumbprint = $TSEnvironment.Value("MDMCertificateThumbprint")
+		}
+		if (-not ([string]::IsNullOrWhiteSpace($Script:CertificateThumbprint))) {
+			Write-CMLogEntry -Value " - An AdminService certificate thumbprint is configured and will be used if the endpoint certificate does not validate normally" -Severity 1
 		}
 		
 		# Validate that if determined AdminService endpoint type is external, that additional required TS environment variables are available
@@ -595,64 +700,368 @@ Process {
 		Write-CMLogEntry -Value " - Setting 'AdminServiceURL' variable to: $($Script:AdminServiceURL)" -Severity 1
 	}
 	
-	function Install-AuthModule {
-		# Determine if the PSIntuneAuth module needs to be installed
+	function Read-AuthErrorDetail {
+		<#
+		.SYNOPSIS
+			Return the reason Microsoft Entra ID rejected a token request.
+
+		.DESCRIPTION
+			Entra returns the reason as JSON in the response body, while the exception message alone
+			is only the HTTP status, e.g. "The remote server returned an error: (400) Bad Request".
+			The body carries an AADSTS code that names the actual cause, which is the difference
+			between a diagnosable task sequence failure and a dead end:
+
+			  AADSTS50126    the user name or password is wrong
+			  AADSTS50076    the account requires multi-factor authentication
+			  AADSTS50079    the account must enrol for multi-factor authentication
+			  AADSTS53003    access blocked by a Conditional Access policy
+			  AADSTS65001    the client app has no consent for the requested resource
+			  AADSTS7000218  the client app is not enabled for public client flows
+
+			Falls back to the exception message when the body cannot be read.
+		#>
+		param (
+			[parameter(Mandatory = $true, HelpMessage = "Specify the error record captured from the token request.")]
+			[ValidateNotNullOrEmpty()]
+			$ErrorRecord
+		)
 		try {
-			Write-CMLogEntry -Value " - Attempting to locate PSIntuneAuth module" -Severity 1
-			$PSIntuneAuthModule = Get-InstalledModule -Name "PSIntuneAuth" -ErrorAction Stop -Verbose:$false
-			if ($null -ne $PSIntuneAuthModule) {
-				Write-CMLogEntry -Value " - Authentication module detected, checking for latest version" -Severity 1
-				$LatestModuleVersion = (Find-Module -Name "PSIntuneAuth" -ErrorAction SilentlyContinue -Verbose:$false).Version
-				if ($LatestModuleVersion -gt $PSIntuneAuthModule.Version) {
-					Write-CMLogEntry -Value " - Latest version of PSIntuneAuth module is not installed, attempting to install: $($LatestModuleVersion.ToString())" -Severity 1
-					$null = Update-Module -Name "PSIntuneAuth" -Scope CurrentUser -Force -ErrorAction Stop -Confirm:$false -Verbose:$false
-				}
-			}
+			$ResponseStream = $ErrorRecord.Exception.Response.GetResponseStream()
+			$ResponseStream.Position = 0
+			$StreamReader = New-Object -TypeName System.IO.StreamReader -ArgumentList $ResponseStream
+			$ErrorDetail = $StreamReader.ReadToEnd() | ConvertFrom-Json
+
+			# error_description is multi-line; the first line carries the AADSTS code and the reason
+			$Description = ($ErrorDetail.error_description -split "`r?`n")[0]
+
+			# Handle return value
+			return "$($ErrorDetail.error): $($Description)"
 		} catch [System.Exception] {
-			Write-CMLogEntry -Value " - Unable to detect PSIntuneAuth module, attempting to install from PSGallery" -Severity 2
-			try {
-				# Install NuGet package provider
-				$null = Install-PackageProvider -Name "NuGet" -Force -Verbose:$false
-				
-				# Install PSIntuneAuth module
-				Install-Module -Name "PSIntuneAuth" -Scope AllUsers -Force -ErrorAction Stop -Confirm:$false -Verbose:$false
-				Write-CMLogEntry -Value " - Successfully installed PSIntuneAuth module" -Severity 1
-			} catch [System.Exception] {
-				Write-CMLogEntry -Value " - An error occurred while attempting to install PSIntuneAuth module. Error message: $($_.Exception.Message)" -Severity 3
-				
-				# Throw terminating error
-				$ErrorRecord = New-TerminatingErrorRecord -Message ([string]::Empty)
-				$PSCmdlet.ThrowTerminatingError($ErrorRecord)
-			}
+			# Handle return value
+			return $ErrorRecord.Exception.Message
 		}
 	}
-	
+
 	function Get-AuthToken {
+		<#
+		.SYNOPSIS
+			Retrieve an access token for the AdminService from Microsoft Entra ID.
+
+		.DESCRIPTION
+			Requests the token directly from the Entra ID token endpoint. This previously ran through
+			the PSIntuneAuth module, which loads ADAL out of the AzureAD module and installs both from
+			the PSGallery on demand. The AzureAD module was retired in October 2025, so that path no
+			longer works at all -- and installing modules inside WinPE required the NuGet provider, a
+			reachable PSGallery and a writable module path, three failure modes in the most fragile
+			part of a deployment, to obtain what is a single HTTPS POST.
+
+			The grant is unchanged: a delegated (user) token requested by the CMG native client app,
+			for the CMG server app as the audience, using the v1.0 endpoint and a 'resource' value.
+			That is precisely what the module was doing underneath, so no app registration or task
+			sequence variable has to change.
+		#>
+		# Reuse a cached token while more than five minutes of its lifetime remain. A BIOS package
+		# phase on a slow link can outlive a token, and nothing here refreshed one previously.
+		if (($null -ne $Script:AuthTokenExpiry) -and ((Get-Date) -lt $Script:AuthTokenExpiry.AddMinutes(-5))) {
+			Write-CMLogEntry -Value " - Reusing cached authentication token, valid until $($Script:AuthTokenExpiry.ToString("u"))" -Severity 1
+			return
+		}
+
+		$TokenEndpointUri = "https://login.microsoftonline.com/$($TenantName)/oauth2/token"
+		$TokenRequestBody = @{
+			grant_type = "password"
+			client_id  = $ClientID
+			resource   = $ApplicationIDURI
+			username   = $Credential.UserName
+			password   = $Credential.GetNetworkCredential().Password
+		}
+
 		try {
-			# Attempt to install PSIntuneAuth module, if already installed ensure the latest version is being used
-			Install-AuthModule
-			
-			# Import MS Intune Auth Token
-			Write-CMLogEntry -Value " - Importing PSIntuneAuth PS module" -Severity 1
-			Import-Module -Name PSIntuneAuth
-			
 			# Retrieve authentication token
 			Write-CMLogEntry -Value " - Attempting to retrieve authentication token using native client with ID: $($ClientID)" -Severity 1
-			$Script:AuthToken = Get-MSIntuneAuthToken -TenantName $TenantName -ClientID $ClientID -Credential $Credential -Resource $ApplicationIDURI -RedirectUri "https://login.microsoftonline.com/common/oauth2/nativeclient" -ErrorAction Stop
-			Write-CMLogEntry -Value " - Successfully retrieved authentication token" -Severity 1
+			Write-CMLogEntry -Value " - Requesting token for resource: $($ApplicationIDURI)" -Severity 1
+			$TokenResponse = Invoke-RestMethod -Method Post -Uri $TokenEndpointUri -Body $TokenRequestBody -ContentType "application/x-www-form-urlencoded" -UseBasicParsing -ErrorAction Stop
+
+			# Headers only -- every value in this table is sent as an HTTP header on each AdminService
+			# call, so the token expiry is held separately rather than added here
+			$Script:AuthToken = @{
+				"Content-Type"  = "application/json"
+				"Authorization" = "Bearer $($TokenResponse.access_token)"
+			}
+			$Script:AuthTokenExpiry = (Get-Date).AddSeconds([int]$TokenResponse.expires_in)
+			Write-CMLogEntry -Value " - Successfully retrieved authentication token, valid until $($Script:AuthTokenExpiry.ToString("u"))" -Severity 1
 		} catch [System.Exception] {
-			Write-CMLogEntry -Value " - Failed to retrieve authentication token. Error message: $($PSItem.Exception.Message)" -Severity 3
-			
+			Write-CMLogEntry -Value " - Failed to retrieve authentication token. Error message: $(Read-AuthErrorDetail -ErrorRecord $PSItem)" -Severity 3
+
 			# Throw terminating error
 			$ErrorRecord = New-TerminatingErrorRecord -Message ([string]::Empty)
 			$PSCmdlet.ThrowTerminatingError($ErrorRecord)
 		}
 	}
 	
+	function Get-AuthDomainName {
+		<#
+		.SYNOPSIS
+			Determine the Active Directory DNS domain name used to qualify a non-UPN service account.
+
+		.DESCRIPTION
+			Returns an empty string when no domain name can be determined, in which case the configured
+			user name is used exactly as supplied. Sources are attempted in order of how explicitly they
+			state the AD DNS domain, so a value the operator has configured always wins over one that is
+			inferred from a host name.
+		#>
+		# 1. Task sequence domain join variables -- these are the AD DNS domain by definition
+		if ($null -ne $Script:TSEnvironment) {
+			foreach ($VariableName in @("OSDDOMAINNAME", "OSDJoinDomainName")) {
+				try {
+					$VariableValue = $Script:TSEnvironment.Value($VariableName)
+				}
+				catch [System.Exception] {
+					$VariableValue = [string]::Empty
+				}
+				if ((-not [string]::IsNullOrWhiteSpace($VariableValue)) -and ($VariableValue -match "\.")) {
+					return $VariableValue.Trim()
+				}
+			}
+		}
+
+		# 2. Domain membership of the running device -- available in full OS deployment types, but not
+		#    in WinPE where the computer is always reported as a workgroup member
+		try {
+			$ComputerSystem = Get-WmiObject -Class Win32_ComputerSystem -ErrorAction Stop
+			if (($ComputerSystem.PartOfDomain -eq $true) -and ($ComputerSystem.Domain -match "\.")) {
+				return $ComputerSystem.Domain
+			}
+		}
+		catch [System.Exception] {
+			# Fall through to the host name based sources below
+		}
+
+		# 3. DNS suffix of the site server hosting the AdminService and of the management point, e.g.
+		#    'CM01.corp.contoso.com' yields 'corp.contoso.com'. Available in WinPE, where neither of
+		#    the sources above is, and correct wherever the site server shares the account's domain.
+		$HostNameSources = New-Object -TypeName System.Collections.ArrayList
+		foreach ($EndpointValue in @($Script:Endpoint, $Script:ExternalEndpoint)) {
+			if (-not [string]::IsNullOrWhiteSpace($EndpointValue)) {
+				$null = $HostNameSources.Add($EndpointValue)
+			}
+		}
+		if ($null -ne $Script:TSEnvironment) {
+			try {
+				$ManagementPoint = $Script:TSEnvironment.Value("_SMSTSMP")
+			}
+			catch [System.Exception] {
+				$ManagementPoint = [string]::Empty
+			}
+			if (-not [string]::IsNullOrWhiteSpace($ManagementPoint)) {
+				$null = $HostNameSources.Add($ManagementPoint)
+			}
+		}
+		foreach ($HostNameSource in $HostNameSources) {
+			$HostName = ((($HostNameSource -replace "^https?://", "") -split "/")[0] -split ":")[0]
+			if ($HostName -match "^[^\.]+\.(?<Suffix>.+)$") {
+				return $Matches.Suffix
+			}
+		}
+
+		return [string]::Empty
+	}
+
+	function Get-AuthUserNameCandidate {
+		<#
+		.SYNOPSIS
+			Build the ordered list of user name formats to attempt against the AdminService.
+
+		.DESCRIPTION
+			The configured value is always first, so an environment that authenticates today is never
+			altered. It is followed by the UPN form (user@domain.com) and then the down-level logon
+			form (DOMAIN\user), both built from the detected AD DNS domain. Duplicates are removed, so
+			a value already in UPN form simply yields fewer candidates.
+		#>
+		param (
+			[parameter(Mandatory = $true, HelpMessage = "Specify the configured service account user name.")]
+			[ValidateNotNullOrEmpty()]
+			[string]$UserName
+		)
+		$Candidates = New-Object -TypeName System.Collections.ArrayList
+		$null = $Candidates.Add($UserName)
+
+		# Split the configured value into its account name and whatever domain qualifier it carries
+		$DomainName = Get-AuthDomainName
+		if ($UserName -match "^(?<Domain>[^\\]+)\\(?<Account>.+)$") {
+			$AccountName = $Matches.Account
+			$NetBIOSName = $Matches.Domain
+		}
+		elseif ($UserName -match "^(?<Account>[^@]+)@(?<Suffix>.+)$") {
+			$AccountName = $Matches.Account
+			$NetBIOSName = ($Matches.Suffix -split "\.")[0]
+			if ([string]::IsNullOrWhiteSpace($DomainName)) {
+				$DomainName = $Matches.Suffix
+			}
+		}
+		else {
+			$AccountName = $UserName
+			$NetBIOSName = [string]::Empty
+		}
+
+		# UPN form -- the format required from ConfigMgr 2603 onwards
+		if (-not [string]::IsNullOrWhiteSpace($DomainName)) {
+			$UserPrincipalName = "$($AccountName)@$($DomainName)"
+			if ($Candidates -notcontains $UserPrincipalName) {
+				$null = $Candidates.Add($UserPrincipalName)
+			}
+			if ([string]::IsNullOrWhiteSpace($NetBIOSName)) {
+				$NetBIOSName = ($DomainName -split "\.")[0]
+			}
+		}
+
+		# Down-level logon form, for sites that still accept it
+		if (-not [string]::IsNullOrWhiteSpace($NetBIOSName)) {
+			$DownLevelName = "$($NetBIOSName)\$($AccountName)"
+			if ($Candidates -notcontains $DownLevelName) {
+				$null = $Candidates.Add($DownLevelName)
+			}
+		}
+
+		# Handle return value
+		return $Candidates
+	}
+
+	function New-AuthCredential {
+		param (
+			[parameter(Mandatory = $true, HelpMessage = "Specify the user name to construct a credential object for.")]
+			[ValidateNotNullOrEmpty()]
+			[string]$UserName
+		)
+		$EncryptedPassword = ConvertTo-SecureString -String $Script:Password -AsPlainText -Force
+
+		# Handle return value
+		return (New-Object -TypeName System.Management.Automation.PSCredential -ArgumentList @($UserName, $EncryptedPassword))
+	}
+
+	function Set-PinnedCertificateValidationCallback {
+		<#
+		.SYNOPSIS
+			Pin AdminService TLS validation to one expected certificate thumbprint.
+
+		.DESCRIPTION
+			This replaces the previous behaviour, which installed a callback that returned true for
+			every certificate presented by any host for the remainder of the process. Any machine that
+			could answer for the endpoint address was therefore trusted, and the service account
+			credential was sent to it, so that behaviour has been removed.
+
+			Pinning is the only supported way to keep using a certificate that does not chain to a
+			trusted root. The expected thumbprint comes from the MDMCertificateThumbprint task
+			sequence variable or the CertificateThumbprint parameter. When neither supplies one this
+			function changes nothing and returns false, so the caller fails with guidance instead of
+			authenticating to an endpoint whose identity it could not verify.
+
+			A certificate that already validates normally is unaffected -- the callback only rescues
+			the one pinned certificate, and every other validation failure stays a failure.
+		#>
+		if ([string]::IsNullOrWhiteSpace($Script:CertificateThumbprint)) {
+			return $false
+		}
+		if ($Script:CertificateValidationCallbackEnabled -eq $true) {
+			return $true
+		}
+
+		# Thumbprints are routinely copied out of the certificate UI carrying spaces and a leading
+		# invisible mark, so reduce the value to hex characters before checking its length
+		$ExpectedThumbprint = ($Script:CertificateThumbprint -replace '[^0-9A-Fa-f]', '').ToUpper()
+		if ($ExpectedThumbprint -notmatch '^[0-9A-F]{40}$') {
+			Write-CMLogEntry -Value " - The configured AdminService certificate thumbprint is not a 40 character SHA1 thumbprint and will be ignored" -Severity 3
+			return $false
+		}
+
+		$PinnedValidationType = @'
+using System;
+using System.Net;
+using System.Net.Security;
+using System.Security.Cryptography.X509Certificates;
+public class DATPinnedCertificateValidation
+{
+    public static string ExpectedThumbprint = String.Empty;
+    public static void Enable(string thumbprint)
+    {
+        ExpectedThumbprint = thumbprint;
+        ServicePointManager.ServerCertificateValidationCallback =
+            delegate(Object sender, X509Certificate certificate, X509Chain chain, SslPolicyErrors errors)
+            {
+                if (errors == SslPolicyErrors.None) { return true; }
+                if (certificate == null) { return false; }
+                if (String.IsNullOrEmpty(ExpectedThumbprint)) { return false; }
+                return String.Equals(certificate.GetCertHashString(), ExpectedThumbprint, StringComparison.OrdinalIgnoreCase);
+            };
+    }
+}
+'@
+
+		if (-not ("DATPinnedCertificateValidation" -as [type])) {
+			Add-Type -TypeDefinition $PinnedValidationType
+		}
+		[DATPinnedCertificateValidation]::Enable($ExpectedThumbprint)
+		$Script:CertificateValidationCallbackEnabled = $true
+		Write-CMLogEntry -Value " - AdminService certificate validation is pinned to thumbprint: $($ExpectedThumbprint)" -Severity 1
+
+		# Handle return value
+		return $true
+	}
+
+	function Test-AuthenticationFailure {
+		<#
+		.SYNOPSIS
+			Determine whether an AdminService request failed because the credentials were rejected.
+
+		.DESCRIPTION
+			Only a rejected authentication justifies retrying with a different user name format. The
+			HTTP status code is used where the exception carries a response; the message is only
+			inspected as a fallback, since its wording is localised.
+		#>
+		param (
+			[parameter(Mandatory = $false, HelpMessage = "Specify the error record from the failed AdminService request.")]
+			$ErrorRecord
+		)
+		if ($null -eq $ErrorRecord) {
+			return $false
+		}
+		try {
+			$Response = $ErrorRecord.Exception.Response
+			if (($null -ne $Response) -and ($null -ne $Response.StatusCode)) {
+				if ([int]$Response.StatusCode -eq 401) {
+					return $true
+				}
+
+				# A response carrying any other status code is a definitive non-authentication failure
+				return $false
+			}
+		}
+		catch [System.Exception] {
+			# Fall through to the message based check below
+		}
+
+		# Handle return value
+		return ($ErrorRecord.Exception.Message -match "\(401\)|Unauthorized")
+	}
 	function Get-AuthCredential {
 		# Construct PSCredential object for authentication
-		$EncryptedPassword = ConvertTo-SecureString -String $Script:Password -AsPlainText -Force
-		$Script:Credential = New-Object -TypeName System.Management.Automation.PSCredential -ArgumentList @($Script:UserName, $EncryptedPassword)
+		$Script:Credential = New-AuthCredential -UserName $Script:UserName
+
+		# Build the ordered list of user name formats to attempt against the AdminService. ConfigMgr
+		# 2603 introduced security changes that reject a service account supplied as a bare user name,
+		# a configuration that worked on earlier builds, so warn when the configured value is not a UPN
+		# and prepare the domain qualified alternatives for Get-AdminServiceItem to fall back on.
+		$Script:CredentialCandidates = Get-AuthUserNameCandidate -UserName $Script:UserName
+		if ($Script:UserName -notmatch "@") {
+			Write-CMLogEntry -Value " - WARNING: The service account user name is not in UPN format. ConfigMgr 2603 and later reject AdminService authentication that uses a bare user name, it is recommended that the service account is specified in the UPN format (user@domain.com)" -Severity 2
+			if (($Script:CredentialCandidates | Measure-Object).Count -gt 1) {
+				$AlternativeNames = ($Script:CredentialCandidates | Select-Object -Skip 1 | ForEach-Object { ConvertTo-ObfuscatedUserName -InputObject $PSItem }) -join ", "
+				Write-CMLogEntry -Value " - Alternative user name formats will be attempted automatically if the configured value is rejected: $($AlternativeNames)" -Severity 2
+			}
+			else {
+				Write-CMLogEntry -Value " - Unable to determine the Active Directory DNS domain name, no alternative user name formats can be attempted if the configured value is rejected" -Severity 2
+			}
+		}
 	}
 	
 	function Get-AdminServiceItem {
@@ -681,43 +1090,85 @@ Process {
 			"Internal" {
 				$AdminServiceUri = $AdminServiceURL + $Resource
 				Write-CMLogEntry -Value " - Calling AdminService endpoint with URI: $($AdminServiceUri)" -Severity 1
-				
-				try {
-					# Call AdminService endpoint to retrieve package data
-					$AdminServiceResponse = Invoke-RestMethod -Method Get -Uri $AdminServiceUri -Credential $Credential -ErrorAction Stop
-				} catch [System.Security.Authentication.AuthenticationException] {
-					Write-CMLogEntry -Value " - The remote AdminService endpoint certificate is invalid according to the validation procedure. Error message: $($PSItem.Exception.Message)" -Severity 2
-					Write-CMLogEntry -Value " - Will attempt to set the current session to ignore self-signed certificates and retry AdminService endpoint connection" -Severity 2
-					
-					# Attempt to ignore self-signed certificate binding for AdminService
-					# Convert encoded base64 string for ignore self-signed certificate validation functionality
-					$CertificationValidationCallbackEncoded = "DQAKACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAdQBzAGkAbgBnACAAUwB5AHMAdABlAG0AOwANAAoAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAB1AHMAaQBuAGcAIABTAHkAcwB0AGUAbQAuAE4AZQB0ADsADQAKACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAdQBzAGkAbgBnACAAUwB5AHMAdABlAG0ALgBOAGUAdAAuAFMAZQBjAHUAcgBpAHQAeQA7AA0ACgAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgAHUAcwBpAG4AZwAgAFMAeQBzAHQAZQBtAC4AUwBlAGMAdQByAGkAdAB5AC4AQwByAHkAcAB0AG8AZwByAGEAcABoAHkALgBYADUAMAA5AEMAZQByAHQAaQBmAGkAYwBhAHQAZQBzADsADQAKACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAcAB1AGIAbABpAGMAIABjAGwAYQBzAHMAIABTAGUAcgB2AGUAcgBDAGUAcgB0AGkAZgBpAGMAYQB0AGUAVgBhAGwAaQBkAGEAdABpAG8AbgBDAGEAbABsAGIAYQBjAGsADQAKACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAewANAAoAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgAHAAdQBiAGwAaQBjACAAcwB0AGEAdABpAGMAIAB2AG8AaQBkACAASQBnAG4AbwByAGUAKAApAA0ACgAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAewANAAoAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAaQBmACgAUwBlAHIAdgBpAGMAZQBQAG8AaQBuAHQATQBhAG4AYQBnAGUAcgAuAFMAZQByAHYAZQByAEMAZQByAHQAaQBmAGkAYwBhAHQAZQBWAGEAbABpAGQAYQB0AGkAbwBuAEMAYQBsAGwAYgBhAGMAawAgAD0APQBuAHUAbABsACkADQAKACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgAHsADQAKACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAUwBlAHIAdgBpAGMAZQBQAG8AaQBuAHQATQBhAG4AYQBnAGUAcgAuAFMAZQByAHYAZQByAEMAZQByAHQAaQBmAGkAYwBhAHQAZQBWAGEAbABpAGQAYQB0AGkAbwBuAEMAYQBsAGwAYgBhAGMAawAgACsAPQAgAA0ACgAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAZABlAGwAZQBnAGEAdABlAA0ACgAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAKAANAAoAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAATwBiAGoAZQBjAHQAIABvAGIAagAsACAADQAKACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgAFgANQAwADkAQwBlAHIAdABpAGYAaQBjAGEAdABlACAAYwBlAHIAdABpAGYAaQBjAGEAdABlACwAIAANAAoAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAWAA1ADAAOQBDAGgAYQBpAG4AIABjAGgAYQBpAG4ALAAgAA0ACgAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIABTAHMAbABQAG8AbABpAGMAeQBFAHIAcgBvAHIAcwAgAGUAcgByAG8AcgBzAA0ACgAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAKQANAAoAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgAHsADQAKACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgAHIAZQB0AHUAcgBuACAAdAByAHUAZQA7AA0ACgAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAfQA7AA0ACgAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAB9AA0ACgAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAfQANAAoAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAB9AA0ACgAgACAAIAAgACAAIAAgACAA"
-					$CertificationValidationCallback = [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($CertificationValidationCallbackEncoded))
-					
-					# Load required type definition to be able to ignore self-signed certificate to circumvent issues with AdminService running with ConfigMgr self-signed certificate binding
-					Add-Type -TypeDefinition $CertificationValidationCallback
-					[ServerCertificateValidationCallback]::Ignore()
-					
+
+				# Attempt each user name format in turn. The configured value is always first, so a
+				# working environment is unaffected; the domain qualified alternatives are only used
+				# after the AdminService rejects the credentials with 401 Unauthorized, which is what
+				# ConfigMgr 2603 and later return for a service account supplied as a bare user name.
+				$CandidateList = @($Script:CredentialCandidates)
+				if ($CandidateList.Count -eq 0) {
+					$CandidateList = @($Script:UserName)
+				}
+				$RequestSucceeded = $false
+				$LastErrorRecord = $null
+
+				for ($CandidateIndex = 0; $CandidateIndex -lt $CandidateList.Count; $CandidateIndex++) {
+					$CandidateUserName = $CandidateList[$CandidateIndex]
+					$CandidateCredential = New-AuthCredential -UserName $CandidateUserName
+					$LastErrorRecord = $null
+					if ($CandidateIndex -gt 0) {
+						Write-CMLogEntry -Value " - Retrying AdminService endpoint connection using alternative user name format: $(ConvertTo-ObfuscatedUserName -InputObject $CandidateUserName)" -Severity 2
+					}
+
 					try {
 						# Call AdminService endpoint to retrieve package data
-						$AdminServiceResponse = Invoke-RestMethod -Method Get -Uri $AdminServiceUri -Credential $Credential -ErrorAction Stop
-					} catch [System.Exception] {
-						Write-CMLogEntry -Value " - Failed to retrieve available package items from AdminService endpoint. Error message: $($PSItem.Exception.Message)" -Severity 3
-						
-						# Throw terminating error
-						$ErrorRecord = New-TerminatingErrorRecord -Message ([string]::Empty)
-						$PSCmdlet.ThrowTerminatingError($ErrorRecord)
+						$AdminServiceResponse = Invoke-RestMethod -Method Get -Uri $AdminServiceUri -Credential $CandidateCredential -ErrorAction Stop
+						$RequestSucceeded = $true
 					}
-				} catch {
-					Write-CMLogEntry -Value " - Failed to retrieve available package items from AdminService endpoint. Error message: $($PSItem.Exception.Message)" -Severity 3
-					
+					catch [System.Security.Authentication.AuthenticationException] {
+						Write-CMLogEntry -Value " - The remote AdminService endpoint certificate is invalid according to the validation procedure. Error message: $($PSItem.Exception.Message)" -Severity 2
+						if (Set-PinnedCertificateValidationCallback) {
+							Write-CMLogEntry -Value " - Retrying the AdminService endpoint connection against the pinned certificate thumbprint" -Severity 2
+
+							try {
+								# Call AdminService endpoint to retrieve package data
+								$AdminServiceResponse = Invoke-RestMethod -Method Get -Uri $AdminServiceUri -Credential $CandidateCredential -ErrorAction Stop
+								$RequestSucceeded = $true
+							}
+							catch [System.Exception] {
+								$LastErrorRecord = $PSItem
+							}
+						}
+						else {
+							Write-CMLogEntry -Value " - The AdminService endpoint identity could not be verified, so the service account credential was not sent. Trust the issuing CA on this machine (import the root certificate into the boot image for WinPE), or set the 'MDMCertificateThumbprint' task sequence variable to the expected AdminService certificate thumbprint" -Severity 3
+							$LastErrorRecord = $PSItem
+						}
+					}
+					catch {
+						$LastErrorRecord = $PSItem
+					}
+
+					if ($RequestSucceeded -eq $true) {
+						# Persist the working credential so any further calls in this run authenticate directly
+						$Script:Credential = $CandidateCredential
+						if ($CandidateIndex -gt 0) {
+							Write-CMLogEntry -Value " - Successfully authenticated against the AdminService using user name format: $(ConvertTo-ObfuscatedUserName -InputObject $CandidateUserName)" -Severity 2
+							Write-CMLogEntry -Value " - WARNING: Update the service account user name to the UPN format (user@domain.com) to avoid these additional authentication attempts" -Severity 2
+						}
+						break
+					}
+
+					# Only a rejected authentication justifies attempting another user name format
+					if (-not (Test-AuthenticationFailure -ErrorRecord $LastErrorRecord)) {
+						break
+					}
+					Write-CMLogEntry -Value " - AdminService endpoint rejected the credentials for user name: $(ConvertTo-ObfuscatedUserName -InputObject $CandidateUserName)" -Severity 2
+				}
+
+				if ($RequestSucceeded -eq $false) {
+					$FailureMessage = if ($null -ne $LastErrorRecord) { $LastErrorRecord.Exception.Message } else { "No response was returned from the AdminService endpoint" }
+					Write-CMLogEntry -Value " - Failed to retrieve available package items from AdminService endpoint. Error message: $($FailureMessage)" -Severity 3
+					if (Test-AuthenticationFailure -ErrorRecord $LastErrorRecord) {
+						Write-CMLogEntry -Value " - All attempted user name formats were rejected by the AdminService. ConfigMgr 2603 introduced security changes that require the service account to be specified in UPN format (user@domain.com), update the MDMUserName task sequence variable or the UserName parameter accordingly" -Severity 3
+					}
+
 					# Throw terminating error
 					$ErrorRecord = New-TerminatingErrorRecord -Message ([string]::Empty)
 					$PSCmdlet.ThrowTerminatingError($ErrorRecord)
 				}
 			}
 		}
-		
+
 		# Add returned driver package objects to array list
 		if ($null -ne $AdminServiceResponse.value) {
 			foreach ($Package in $AdminServiceResponse.value) {
@@ -1123,7 +1574,7 @@ Process {
 		if ($ComputerSystemType -notin @("Virtual Machine", "VMware Virtual Platform", "VirtualBox", "HVM domU", "KVM")) {
 			# Process packages returned from web service
 			if ($null -ne $BIOSPackages) {
-				if (($null -ne $ComputerModel) -and (-not ([System.String]::IsNullOrEmpty($ComputerModel))) -or (($null -ne $SystemSKU) -and (-not ([System.String]::IsNullOrEmpty($SystemSKU))))) {
+				if (($null -ne $ComputerSystemType) -and (-not ([System.String]::IsNullOrEmpty($ComputerSystemType))) -or (($null -ne $SystemSKU) -and (-not ([System.String]::IsNullOrEmpty($SystemSKU))))) {
 					# Determine computer model detection
 					if ([System.String]::IsNullOrEmpty($SystemSKU)) {
 						Write-CMLogEntry -Value "Attempting to find a match for BIOS package: $($Package.PackageName) ($($Package.PackageID))" -Severity 1
@@ -1152,8 +1603,8 @@ Process {
 						
 						switch ($ComputerDetectionMethod) {
 							"ComputerModel" {
-								if ($PackageNameComputerModel -like $ComputerModel) {
-									Write-CMLogEntry -Value "Match found for computer model using detection method: $($ComputerDetectionMethod) ($($ComputerModel))" -Severity 1
+								if ($PackageNameComputerModel -like $ComputerSystemType) {
+									Write-CMLogEntry -Value "Match found for computer model using detection method: $($ComputerDetectionMethod) ($($ComputerSystemType))" -Severity 1
 									$ComputerDetectionResult = $true
 								}
 							}
@@ -1174,8 +1625,8 @@ Process {
 									$ComputerDetectionResult = $true
 								} else {
 									Write-CMLogEntry -Value "Unable to match computer model using detection method: $($ComputerDetectionMethod) ($($SystemSKU))" -Severity 2
-									if ($PackageNameComputerModel -like $ComputerModel) {
-										Write-CMLogEntry -Value "Fallback from SystemSKU match found for computer model instead using detection method: $($ComputerDetectionMethod) ($($ComputerModel))" -Severity 1
+									if ($PackageNameComputerModel -like $ComputerSystemType) {
+										Write-CMLogEntry -Value "Fallback from SystemSKU match found for computer model instead using detection method: $($ComputerDetectionMethod) ($($ComputerSystemType))" -Severity 1
 										$ComputerDetectionResult = $true
 									}
 								}
@@ -1215,6 +1666,11 @@ Process {
 							}
 							
 							if ($Script:PSCmdlet.ParameterSetName -notlike "Debug") {
+								# Force download re-applies the matching package even when the version already matches
+								if (($TSEnvironment.Value("NewBIOSAvailable") -ne $true) -and ($Script:ForceBIOSDownload -eq $true)) {
+									Write-CMLogEntry -Value "Force BIOS download enabled -- installed version already matches $($PackageList[0].Version); downloading and flagging the package for re-application (e.g. Dell recovery image recreation)" -Severity 2
+									$TSEnvironment.Value("NewBIOSAvailable") = $true
+								}
 								if ($TSEnvironment.Value("NewBIOSAvailable") -eq $true) {
 									# Attempt to download BIOS package content
 									$DownloadInvocation = Invoke-CMDownloadContent -PackageID $($PackageList[0].PackageID) -DestinationLocationType Custom -DestinationVariableName "OSDBIOSPackage" -CustomLocationPath "%_SMSTSMDataPath%\BIOSPackage"
@@ -1233,15 +1689,19 @@ Process {
 									Write-CMLogEntry -Value "BIOS is already up to date with the latest $($PackageList[0].PackageVersion) version" -Severity 1
 								}
 							} else {
-								Write-CMLogEntry -Value "Task sequence engine would have been instructed to download package ID $($PackageList[0].PackageID) to %_SMSTSMDataPath%\BIOSPackage" -Severity 1
+								if ($Script:ForceBIOSDownload -eq $true) {
+									Write-CMLogEntry -Value "Task sequence engine would have been instructed to download package ID $($PackageList[0].PackageID) to %_SMSTSMDataPath%\BIOSPackage (Force BIOS download enabled)" -Severity 1
+								} else {
+									Write-CMLogEntry -Value "Task sequence engine would have been instructed to download package ID $($PackageList[0].PackageID) to %_SMSTSMDataPath%\BIOSPackage" -Severity 1
+								}
 							}
-							
+
 						} elseif ($PackageList.Count -ge 2) {
 							Write-CMLogEntry -Value "BIOS package list contains multiple matches, attempting to set task sequence variable" -Severity 1
 							
 							# Determine the latest BIOS package by creation date
 							if ($ComputerManufacturer -match "Dell") {
-								$PackageList = $PackageList | Sort-Object -Property SourceDate -Descending | Select-Object -First 1
+								$PackageList = $PackageList | Sort-Object -Property @{ Expression = { ConvertTo-PackageSourceDate -Value $_.SourceDate } } -Descending | Select-Object -First 1
 							} elseif ($ComputerManufacturer -eq "Lenovo") {
 								$ComputerDescription = Get-WmiObject -Class Win32_ComputerSystemProduct | Select-Object -ExpandProperty Version
 								# Preserve the full match list so the fallback can use it if the model-name filter
@@ -1251,21 +1711,21 @@ Process {
 								# Attempt to find exact model match for Lenovo models which overlap model types
 								$PackageList = $LenovoModelMatches | Where-object {
 									($_.Name -like "*$ComputerDescription") -and ($_.Manufacturer -match $ComputerManufacturer)
-								} | Sort-object -Property SourceDate -Descending | Select-Object -First 1
+								} | Sort-Object -Property @{ Expression = { ConvertTo-PackageSourceDate -Value $_.SourceDate } } -Descending | Select-Object -First 1
 								
 								If ($null -eq $PackageList) {
 									# Fall back to select the latest model type match if no model name match is found
-									$PackageList = $LenovoModelMatches | Sort-object -Property SourceDate -Descending | Select-Object -First 1
+									$PackageList = $LenovoModelMatches | Sort-Object -Property @{ Expression = { ConvertTo-PackageSourceDate -Value $_.SourceDate } } -Descending | Select-Object -First 1
 								}
 							} elseif ($ComputerManufacturer -match "Hewlett-Packard|HP") {
 								# Determine the latest BIOS package by creation date. Use SourceDate (a real
 								# SMS_Package property) -- PackageCreated does not exist on the AdminService object,
 								# so Sort-Object silently left the list unsorted and the "latest" selection could
 								# return an older package.
-								$PackageList = $PackageList | Sort-Object -Property SourceDate -Descending | Select-Object -First 1
+								$PackageList = $PackageList | Sort-Object -Property @{ Expression = { ConvertTo-PackageSourceDate -Value $_.SourceDate } } -Descending | Select-Object -First 1
 
 							} elseif ($ComputerManufacturer -match "Microsoft") {
-								$PackageList = $PackageList | Sort-Object -Property SourceDate -Descending | Select-Object -First 1
+								$PackageList = $PackageList | Sort-Object -Property @{ Expression = { ConvertTo-PackageSourceDate -Value $_.SourceDate } } -Descending | Select-Object -First 1
 							}
 							# Normalise to an array so .Count and [0] indexing behave predictably after the
 							# Select-Object -First 1 reductions above collapse $PackageList to a scalar.
@@ -1283,9 +1743,14 @@ Process {
 								}
 								
 								if ($Script:PSCmdlet.ParameterSetName -notlike "Debug") {
+									# Force download re-applies the matching package even when the version already matches
+									if (($TSEnvironment.Value("NewBIOSAvailable") -ne $true) -and ($Script:ForceBIOSDownload -eq $true)) {
+										Write-CMLogEntry -Value "Force BIOS download enabled -- installed version already matches $($PackageList[0].Version); downloading and flagging the package for re-application (e.g. Dell recovery image recreation)" -Severity 2
+										$TSEnvironment.Value("NewBIOSAvailable") = $true
+									}
 									if ($TSEnvironment.Value("NewBIOSAvailable") -eq $true) {
 										$DownloadInvocation = Invoke-CMDownloadContent -PackageID $($PackageList[0].PackageID) -DestinationLocationType Custom -DestinationVariableName "OSDBIOSPackage" -CustomLocationPath "%_SMSTSMDataPath%\BIOSPackage"
-										
+
 										try {
 											# Check for successful package download
 											if ($DownloadInvocation -eq 0) {
@@ -1300,7 +1765,11 @@ Process {
 										Write-CMLogEntry -Value "BIOS is already up to date with the latest $($PackageList[0].Version) version" -Severity 1
 									}
 								} else {
-									Write-CMLogEntry -Value "Task sequence engine would have been instructed to download package ID $($PackageList[0].PackageID) to %_SMSTSMDataPath%\BIOSPackage" -Severity 1
+									if ($Script:ForceBIOSDownload -eq $true) {
+										Write-CMLogEntry -Value "Task sequence engine would have been instructed to download package ID $($PackageList[0].PackageID) to %_SMSTSMDataPath%\BIOSPackage (Force BIOS download enabled)" -Severity 1
+									} else {
+										Write-CMLogEntry -Value "Task sequence engine would have been instructed to download package ID $($PackageList[0].PackageID) to %_SMSTSMDataPath%\BIOSPackage" -Severity 1
+									}
 								}
 							} else {
 								Write-CMLogEntry -Value "Unable to determine a matching BIOS package from list since an unsupported count was returned from package list, bailing out" -Severity 2; exit 1
@@ -1319,13 +1788,32 @@ Process {
 	}
 	
 	Write-CMLogEntry -Value "[ApplyBIOSPackage]: Apply BIOS Package process initiated" -Severity 1
-	Write-CMLogEntry -Value " - Script version: 3.0.4" -Severity 1
+	Write-CMLogEntry -Value " - Script version: 3.0.9" -Severity 1
 	if ($PSCmdLet.ParameterSetName -like "Debug") {
 		Write-CMLogEntry -Value " - Apply BIOS package process initiated in debug mode" -Severity 1
 	}
 	Write-CMLogEntry -Value " - Apply BIOS package deployment type: $($PSCmdLet.ParameterSetName)" -Severity 1
 	Write-CMLogEntry -Value " - Apply BIOS package operational mode: $($OperationalMode)" -Severity 1
 	Write-CMLogEntry -Value " - Endpoint: '$($Endpoint)' | Filter: '$($Filter)'" -Severity 1
+
+	# Determine effective BIOS force-download mode. When enabled, the matching BIOS package is
+	# downloaded and flagged for flashing (NewBIOSAvailable=true) even if the installed version
+	# already matches -- used to recreate Dell BIOS recovery images after OSD/SSD replacement
+	# (MSEndpointMgr/ModernBIOSManagement#31). Opt-in only: the -ForceDownload switch, or the
+	# SMSTSForceBIOSDownload task sequence variable ('True'/'1'/'Yes').
+	$Script:ForceBIOSDownload = $false
+	if ($ForceDownload.IsPresent) { $Script:ForceBIOSDownload = $true }
+	if ($PSCmdLet.ParameterSetName -notlike "Debug") {
+		$ForceTSValue = $TSEnvironment.Value("SMSTSForceBIOSDownload")
+		if (-not [string]::IsNullOrEmpty($ForceTSValue) -and $ForceTSValue -match '^(?i:true|1|yes)$') {
+			$Script:ForceBIOSDownload = $true
+		}
+	}
+	if ($Script:ForceBIOSDownload -eq $true) {
+		Write-CMLogEntry -Value " - Force BIOS download: ENABLED -- BIOS package will be downloaded even if the installed version matches" -Severity 2
+	} else {
+		Write-CMLogEntry -Value " - Force BIOS download: disabled (default)" -Severity 1
+	}
 	
 	# Set script error preference variable
 	$ErrorActionPreference = "Stop"

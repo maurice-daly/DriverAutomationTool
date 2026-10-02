@@ -110,7 +110,7 @@
 	Author:      Nickolaj Andersen / Maurice Daly
     Contact:     @NickolajA / @MoDaly_IT
     Created:     2017-03-27
-    Updated:     2026-08-05
+    Updated:     2026-09-03
 	
 	Contributors: @CodyMathis123, @JamesMcwatty @EdenNelson
     
@@ -220,6 +220,33 @@
 						 - Switched exact comparisons (OS name, architecture, OS version, computer model) from -like to -eq to avoid wildcard misinterpretation of values containing bracket characters
     4.2.8 - (2026-08-05) - Documented the Get-ComputerData default branch with a placeholder/template describing how to add support for custom/unlisted manufacturers (WMI/CIM property sources, the Manufacturer-match requirement in Confirm-DriverPackage, and the -Manufacturer debug ValidateSet).
 						 - Logging improvements for troubleshooting: Invoke-Executable launch failures are now written to the log file (Severity 3) instead of only Write-Warning, and return -1 rather than silently continuing; Get-ComputerData wraps manufacturer detection in try/catch that logs the manufacturer context on failure and degrades gracefully; the unlisted-manufacturer default branch now logs a warning; and a script version + key parameter banner is written at startup.
+	4.2.9 - (2026-09-03) - Fixed "most recently created package" selection sorting SourceDate as text rather than as a date:
+						 - DateCreated was populated with the raw SourceDate value, which is always a string when read from the XML package logic file. Sort-Object therefore compared text, so with a culture formatted stamp ('03/09/2026 12:00:00') an older driver package could be selected whenever multiple packages matched a device. New ConvertTo-PackageSourceDate helper normalises ISO 8601, WMI DMTF, culture formatted and DateTime values to a sortable [datetime] (unparsable values sort last), and DateCreated is now populated through it -- fixing every Confirm-DriverPackageList / fallback sort that consumes it.
+	4.3.0 - (2026-09-03) - Added support for Windows 11 26H1 (Arm64 devices):
+						 - TargetOSVersion now accepts '26H1', so BareMetal/OSUpgrade/PreCache/XMLPackage runs can target driver packages built for the release.
+						 - Get-OSBuild translates OS build 28000 to '26H1' (per the Microsoft Windows 11 release information page; 26H1 reached general availability on 2026-02-10 and ships on new devices only -- it is not offered as an in-place update from 24H2 or 25H2).
+						 - Get-OSBuild also no longer fails outright on a Windows 11 build number it has no entry for. It now falls back to the DisplayVersion value under HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion, which is the authoritative feature update token on every build from 20H2 onwards, so DriverUpdate mode keeps resolving future releases without waiting for a script update per build number. An unreadable or non-conforming DisplayVersion still raises the original unsupported-OS terminating error.
+						 - No change was needed for package matching: the OSVersion parser already recognises the NNHN token, the Arm64 architecture token was added in 4.2.7, and the OSVersionFallback comparison already orders 26H1 (2605) above 25H2 (2510).
+	4.3.1 - (2026-09-03) - Added AdminService authentication resiliency for the ConfigMgr 2603 security changes:
+						 - ConfigMgr 2603 rejects AdminService authentication that uses a bare service account user name (e.g. 'svc-osd'), a configuration that worked on earlier builds, so existing task sequences began failing with 401 Unauthorized. Get-AuthCredential now warns when the configured user name is not in UPN format and recommends updating it, naming the alternative formats that will be attempted.
+						 - Get-AuthDomainName resolves the Active Directory DNS domain from, in order: the OSDDOMAINNAME / OSDJoinDomainName task sequence variables, the domain membership of the running device (full OS only), and the DNS suffix of the AdminService endpoint or management point host name (the only sources available in WinPE).
+						 - Get-AdminServiceItem now retries the request with the UPN form (user@domain.com) and then the down-level form (DOMAIN\user) when, and only when, the AdminService responds with 401 Unauthorized. The configured value is always attempted first so a working environment is unchanged, the working credential is reused for the remainder of the run, and a run where every format is rejected logs explicit guidance to move the account to UPN format.
+						 - The self-signed certificate callback was moved into Set-CertificateValidationCallback and is now only registered once per run. Previously Add-Type ran on every certificate failure, so a second AdminService call hitting the same condition failed with a duplicate type error.
+	4.3.2 - (2026-09-21) - Security: removed the blanket TLS certificate validation bypass from the AdminService connection path:
+						 - Set-CertificateValidationCallback installed a callback that returned true for every certificate presented by any host, for the remainder of the process, and the service account credential was then sent over that connection. Any machine able to answer for the endpoint address (DNS, DHCP or ARP spoofing on the deployment network) could therefore collect the AdminService service account password. That callback and its base64 encoded type definition have been removed.
+						 - Set-PinnedCertificateValidationCallback replaces it. A certificate that does not chain to a trusted root is now accepted only when its SHA1 thumbprint matches the value supplied through the 'MDMCertificateThumbprint' task sequence variable or the new CertificateThumbprint parameter. Every other validation failure remains a failure, and a certificate that already validates normally is unaffected.
+						 - When no thumbprint is configured the request is not retried and the credential is not sent. The log names both remedies: trust the issuing CA on the machine (import the root certificate into the boot image for WinPE), or configure the expected thumbprint. BREAKING: an environment that relied on the old bypass to reach a self-signed AdminService binding must do one of those two before this version will connect.
+						 - Driver package archives are now expanded through Expand-ArchiveSafely, which rejects any entry whose path resolves outside the destination directory (Zip Slip). Windows PowerShell 5.1 Expand-Archive accepts a traversing entry, and this script expands vendor-supplied content while running as SYSTEM in WinPE and the full OS.
+	4.3.3 - (2026-09-22) - Fixed Fujitsu SystemSKU detection, contributed by 7heMas7er (issue #945, PR #946):
+						 - The Fujitsu branch of Get-ComputerData read Win32_BaseBoard.SKU and called Trim() on it without a guard. That property is empty on several models, the ESPRIMO D757 among them, so the run stopped in the prerequisite phase with "You cannot call a method on a null-valued expression".
+						 - It now reads MS_SystemInformation.BaseBoardProduct, falling back to Win32_BaseBoard.Product. That is also the value matching requires: the build writes the Fujitsu catalog's SupportedDevices -- mainboard IDs such as D3531-A1 -- into the package description and the Intune detection rule, so a SystemSKU taken from SKU would never have matched the package the tool itself created, crash or no crash. Confirmed on an ESPRIMO D757 by the contributor.
+						 - The Viglen branch had the same unguarded Trim() and is now guarded too. Its property source is left as SKU, because which value Viglen reports has not been verified on hardware and changing it blind would risk trading a crash for a silent no-match.
+						 - Where neither property returns a value, SystemSKU is left unset and matching falls back to computer model, as before.
+	4.3.4 - (2026-09-30) - Added support for Windows 11 26H2:
+						 - TargetOSVersion now accepts '26H2', so BareMetal/OSUpgrade/PreCache/XMLPackage runs can target driver packages built for the release.
+						 - Get-OSBuild translates OS build 26300 to '26H2' (per the Microsoft Windows 11 release information page; 26H2 reached general availability on 2026-09-29 and is serviced alongside 25H2).
+						 - No change was needed for package matching: the OSVersionFallback comparison already orders 26H2 (2610) above 26H1 (2605) and 25H2 (2510).
+						 - The startup banner now reports the current script version (it still said 4.3.2).
 #>
 [CmdletBinding(SupportsShouldProcess = $true, DefaultParameterSetName = "BareMetal")]
 param(
@@ -262,6 +289,10 @@ param(
 	[ValidateNotNullOrEmpty()]
 	[string]$Password = "",
 	
+	[parameter(Mandatory = $false, HelpMessage = "Specify the expected SHA1 thumbprint of the AdminService certificate. Only required when that certificate does not chain to a root this machine trusts, such as a ConfigMgr self-signed binding.")]
+	[AllowEmptyString()]
+	[string]$CertificateThumbprint = "",
+	
 	[parameter(Mandatory = $false, ParameterSetName = "BareMetal", HelpMessage = "Define a filter used when calling the AdminService to only return objects matching the filter.")]
 	[parameter(Mandatory = $false, ParameterSetName = "DriverUpdate")]
 	[parameter(Mandatory = $false, ParameterSetName = "OSUpgrade")]
@@ -287,7 +318,7 @@ param(
 	[parameter(Mandatory = $true, ParameterSetName = "Debug")]
 	[parameter(Mandatory = $false, ParameterSetName = "XMLPackage")]
 	[ValidateNotNullOrEmpty()]
-	[ValidateSet("25H2","24H2","23H2","22H2", "21H2", "21H1", "20H2", "2004", "1909", "1903", "1809", "1803", "1709", "1703", "1607")]
+	[ValidateSet("26H2", "26H1", "25H2", "24H2", "23H2", "22H2", "21H2", "21H1", "20H2", "2004", "1909", "1903", "1809", "1803", "1709", "1703", "1607")]
 	[string]$TargetOSVersion,
 	
 	[parameter(Mandatory = $false, ParameterSetName = "BareMetal", HelpMessage = "Define the value that will be used as the target operating system architecture e.g. 'x64', 'x86' or 'Arm64'.")]
@@ -331,7 +362,7 @@ param(
 	
 	[parameter(Mandatory = $false, ParameterSetName = "Debug", HelpMessage = "Override the automatically detected computer manufacturer when running in debug mode.")]
 	[ValidateNotNullOrEmpty()]
-	[ValidateSet("HP", "Hewlett-Packard", "Dell", "Lenovo", "Microsoft", "Fujitsu", "Panasonic", "Viglen", "AZW", "Getac", "Intel", "ByteSpeed")]
+	[ValidateSet("HP", "Hewlett-Packard", "Dell", "Lenovo", "Microsoft", "Fujitsu", "Panasonic", "Viglen", "AZW", "Getac", "Intel", "ByteSpeed", "ASUS")]
 	[string]$Manufacturer,
 	
 	[parameter(Mandatory = $false, ParameterSetName = "Debug", HelpMessage = "Override the automatically detected computer model when running in debug mode.")]
@@ -586,7 +617,49 @@ Process {
 		# Handle return value
 		return $ErrorRecord
 	}
-	
+
+	function ConvertTo-PackageSourceDate {
+		<#
+		.SYNOPSIS
+			Normalise a package SourceDate value into a sortable [datetime].
+
+		.DESCRIPTION
+			Driver package selection sorts on the DateCreated property (populated from SourceDate) to
+			pick the most recently created package. From the AdminService the value arrives as an ISO
+			8601 string or a DateTime, but from the XML package logic file it is always a string -- so
+			an unconverted Sort-Object compares text rather than time. With a culture formatted stamp
+			such as '03/09/2026 12:00:00' that ordering is simply wrong ('12/01/2026' sorts above
+			'03/09/2026'), and an older driver package can win the selection. Handles ISO 8601, WMI
+			DMTF datetime, culture formatted strings and DateTime input, and returns
+			[datetime]::MinValue for missing or unparsable values so those packages sort last (oldest)
+			instead of winning by accident.
+		#>
+		param (
+			[parameter(Mandatory = $false, HelpMessage = "The SourceDate value to normalise.")]
+			$Value
+		)
+		if ($null -eq $Value) { return [datetime]::MinValue }
+		if ($Value -is [datetime]) { return $Value }
+
+		$DateString = ([string]$Value).Trim()
+		if ([string]::IsNullOrEmpty($DateString)) { return [datetime]::MinValue }
+
+		# WMI DMTF datetime, e.g. 20260801120000.000000+000
+		if ($DateString -match '^\d{14}\.') {
+			try { return [System.Management.ManagementDateTimeConverter]::ToDateTime($DateString) } catch { }
+		}
+
+		# Current culture first: logic files written by earlier versions of the Driver Automation Tool
+		# carry a culture formatted stamp, and only the local culture reads day/month order correctly.
+		# ISO 8601 (written by current versions) parses identically under either culture, so the
+		# invariant fallback only ever catches formats the local culture cannot read.
+		$ParsedDate = [datetime]::MinValue
+		if ([datetime]::TryParse($DateString, [System.Globalization.CultureInfo]::CurrentCulture, [System.Globalization.DateTimeStyles]::None, [ref]$ParsedDate)) { return $ParsedDate }
+		if ([datetime]::TryParse($DateString, [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::None, [ref]$ParsedDate)) { return $ParsedDate }
+
+		return [datetime]::MinValue
+	}
+
 	function Get-DeploymentType {
 		switch ($PSCmdlet.ParameterSetName) {
 			"XMLPackage" {
@@ -689,6 +762,19 @@ Process {
 		}
 		else {
 			Write-CMLogEntry -Value " - Successfully read service account password from parameter input: ********" -Severity 1
+		}
+		
+		# Resolve the optional AdminService certificate thumbprint. It is only needed when the
+		# AdminService certificate does not chain to a root this machine trusts, and it is what lets
+		# a self-signed binding be accepted without also trusting every other certificate presented.
+		if ((-not ([string]::IsNullOrWhiteSpace($CertificateThumbprint))) -or ($Script:PSCmdLet.ParameterSetName -like "Debug")) {
+			$Script:CertificateThumbprint = $CertificateThumbprint
+		}
+		else {
+			$Script:CertificateThumbprint = $TSEnvironment.Value("MDMCertificateThumbprint")
+		}
+		if (-not ([string]::IsNullOrWhiteSpace($Script:CertificateThumbprint))) {
+			Write-CMLogEntry -Value " - An AdminService certificate thumbprint is configured and will be used if the endpoint certificate does not validate normally" -Severity 1
 		}
 		
 		# Validate that if determined AdminService endpoint type is external, that additional required TS environment variables are available
@@ -816,61 +902,433 @@ Process {
 		Write-CMLogEntry -Value " - Setting 'AdminServiceURL' variable to: $($Script:AdminServiceURL)" -Severity 1
 	}
 	
-	function Install-AuthModule {
-		# Determine if the PSIntuneAuth module needs to be installed
+	function Read-AuthErrorDetail {
+		<#
+		.SYNOPSIS
+			Return the reason Microsoft Entra ID rejected a token request.
+
+		.DESCRIPTION
+			Entra returns the reason as JSON in the response body, while the exception message alone
+			is only the HTTP status, e.g. "The remote server returned an error: (400) Bad Request".
+			The body carries an AADSTS code that names the actual cause, which is the difference
+			between a diagnosable task sequence failure and a dead end:
+
+			  AADSTS50126    the user name or password is wrong
+			  AADSTS50076    the account requires multi-factor authentication
+			  AADSTS50079    the account must enrol for multi-factor authentication
+			  AADSTS53003    access blocked by a Conditional Access policy
+			  AADSTS65001    the client app has no consent for the requested resource
+			  AADSTS7000218  the client app is not enabled for public client flows
+
+			Falls back to the exception message when the body cannot be read.
+		#>
+		param (
+			[parameter(Mandatory = $true, HelpMessage = "Specify the error record captured from the token request.")]
+			[ValidateNotNullOrEmpty()]
+			$ErrorRecord
+		)
 		try {
-			Write-CMLogEntry -Value " - Attempting to locate PSIntuneAuth module" -Severity 1
-			$PSIntuneAuthModule = Get-InstalledModule -Name "PSIntuneAuth" -ErrorAction Stop -Verbose:$false
-			if ($PSIntuneAuthModule -ne $null) {
-				Write-CMLogEntry -Value " - Authentication module detected, checking for latest version" -Severity 1
-				$LatestModuleVersion = (Find-Module -Name "PSIntuneAuth" -ErrorAction SilentlyContinue -Verbose:$false).Version
-				if ($LatestModuleVersion -gt $PSIntuneAuthModule.Version) {
-					Write-CMLogEntry -Value " - Latest version of PSIntuneAuth module is not installed, attempting to install: $($LatestModuleVersion.ToString())" -Severity 1
-					$UpdateModuleInvocation = Update-Module -Name "PSIntuneAuth" -Scope CurrentUser -Force -ErrorAction Stop -Confirm:$false -Verbose:$false
-				}
-			}
+			$ResponseStream = $ErrorRecord.Exception.Response.GetResponseStream()
+			$ResponseStream.Position = 0
+			$StreamReader = New-Object -TypeName System.IO.StreamReader -ArgumentList $ResponseStream
+			$ErrorDetail = $StreamReader.ReadToEnd() | ConvertFrom-Json
+
+			# error_description is multi-line; the first line carries the AADSTS code and the reason
+			$Description = ($ErrorDetail.error_description -split "`r?`n")[0]
+
+			# Handle return value
+			return "$($ErrorDetail.error): $($Description)"
 		}
 		catch [System.Exception] {
-			Write-CMLogEntry -Value " - Unable to detect PSIntuneAuth module, attempting to install from PSGallery" -Severity 2
-			try {
-				# Install NuGet package provider
-				$PackageProvider = Install-PackageProvider -Name "NuGet" -Force -Verbose:$false
-				
-				# Install PSIntuneAuth module
-				Install-Module -Name "PSIntuneAuth" -Scope AllUsers -Force -ErrorAction Stop -Confirm:$false -Verbose:$false
-				Write-CMLogEntry -Value " - Successfully installed PSIntuneAuth module" -Severity 1
-			}
-			catch [System.Exception] {
-				Write-CMLogEntry -Value " - An error occurred while attempting to install PSIntuneAuth module. Error message: $($_.Exception.Message)" -Severity 3
-				
-				# Throw terminating error				
-				$PSCmdlet.ThrowTerminatingError((New-TerminatingErrorRecord))
-			}
+			# Handle return value
+			return $ErrorRecord.Exception.Message
 		}
 	}
-	
+
 	function Get-AuthToken {
+		<#
+		.SYNOPSIS
+			Retrieve an access token for the AdminService from Microsoft Entra ID.
+
+		.DESCRIPTION
+			Requests the token directly from the Entra ID token endpoint. This previously ran through
+			the PSIntuneAuth module, which loads ADAL out of the AzureAD module and installs both from
+			the PSGallery on demand. The AzureAD module was retired in October 2025, so that path no
+			longer works at all -- and installing modules inside WinPE required the NuGet provider, a
+			reachable PSGallery and a writable module path, three failure modes in the most fragile
+			part of a deployment, to obtain what is a single HTTPS POST.
+
+			The grant is unchanged: a delegated (user) token requested by the CMG native client app,
+			for the CMG server app as the audience, using the v1.0 endpoint and a 'resource' value.
+			That is precisely what the module was doing underneath, so no app registration or task
+			sequence variable has to change.
+		#>
+		# Reuse a cached token while more than five minutes of its lifetime remain. A driver package
+		# phase on a slow link can outlive a token, and nothing here refreshed one previously.
+		if (($null -ne $Script:AuthTokenExpiry) -and ((Get-Date) -lt $Script:AuthTokenExpiry.AddMinutes(-5))) {
+			Write-CMLogEntry -Value " - Reusing cached authentication token, valid until $($Script:AuthTokenExpiry.ToString("u"))" -Severity 1
+			return
+		}
+
+		$TokenEndpointUri = "https://login.microsoftonline.com/$($TenantName)/oauth2/token"
+		$TokenRequestBody = @{
+			grant_type = "password"
+			client_id  = $ClientID
+			resource   = $ApplicationIDURI
+			username   = $Credential.UserName
+			password   = $Credential.GetNetworkCredential().Password
+		}
+
 		try {
-			# Attempt to install PSIntuneAuth module, if already installed ensure the latest version is being used
-			Install-AuthModule
-			
 			# Retrieve authentication token
 			Write-CMLogEntry -Value " - Attempting to retrieve authentication token using native client with ID: $($ClientID)" -Severity 1
-			$Script:AuthToken = Get-MSIntuneAuthToken -TenantName $TenantName -ClientID $ClientID -Credential $Credential -Resource $ApplicationIDURI -RedirectUri "https://login.microsoftonline.com/common/oauth2/nativeclient" -ErrorAction Stop
-			Write-CMLogEntry -Value " - Successfully retrieved authentication token" -Severity 1
+			Write-CMLogEntry -Value " - Requesting token for resource: $($ApplicationIDURI)" -Severity 1
+			$TokenResponse = Invoke-RestMethod -Method Post -Uri $TokenEndpointUri -Body $TokenRequestBody -ContentType "application/x-www-form-urlencoded" -UseBasicParsing -ErrorAction Stop
+
+			# Headers only -- every value in this table is sent as an HTTP header on each AdminService
+			# call, so the token expiry is held separately rather than added here
+			$Script:AuthToken = @{
+				"Content-Type"  = "application/json"
+				"Authorization" = "Bearer $($TokenResponse.access_token)"
+			}
+			$Script:AuthTokenExpiry = (Get-Date).AddSeconds([int]$TokenResponse.expires_in)
+			Write-CMLogEntry -Value " - Successfully retrieved authentication token, valid until $($Script:AuthTokenExpiry.ToString("u"))" -Severity 1
 		}
 		catch [System.Exception] {
-			Write-CMLogEntry -Value " - Failed to retrieve authentication token. Error message: $($PSItem.Exception.Message)" -Severity 3
-			
-			# Throw terminating error			
+			Write-CMLogEntry -Value " - Failed to retrieve authentication token. Error message: $(Read-AuthErrorDetail -ErrorRecord $PSItem)" -Severity 3
+
+			# Throw terminating error
 			$PSCmdlet.ThrowTerminatingError((New-TerminatingErrorRecord))
 		}
 	}
 	
+	function Get-AuthDomainName {
+		<#
+		.SYNOPSIS
+			Determine the Active Directory DNS domain name used to qualify a non-UPN service account.
+
+		.DESCRIPTION
+			Returns an empty string when no domain name can be determined, in which case the configured
+			user name is used exactly as supplied. Sources are attempted in order of how explicitly they
+			state the AD DNS domain, so a value the operator has configured always wins over one that is
+			inferred from a host name.
+		#>
+		# 1. Task sequence domain join variables -- these are the AD DNS domain by definition
+		if ($null -ne $Script:TSEnvironment) {
+			foreach ($VariableName in @("OSDDOMAINNAME", "OSDJoinDomainName")) {
+				try {
+					$VariableValue = $Script:TSEnvironment.Value($VariableName)
+				}
+				catch [System.Exception] {
+					$VariableValue = [string]::Empty
+				}
+				if ((-not [string]::IsNullOrWhiteSpace($VariableValue)) -and ($VariableValue -match "\.")) {
+					return $VariableValue.Trim()
+				}
+			}
+		}
+
+		# 2. Domain membership of the running device -- available in full OS deployment types, but not
+		#    in WinPE where the computer is always reported as a workgroup member
+		try {
+			$ComputerSystem = Get-WmiObject -Class Win32_ComputerSystem -ErrorAction Stop
+			if (($ComputerSystem.PartOfDomain -eq $true) -and ($ComputerSystem.Domain -match "\.")) {
+				return $ComputerSystem.Domain
+			}
+		}
+		catch [System.Exception] {
+			# Fall through to the host name based sources below
+		}
+
+		# 3. DNS suffix of the site server hosting the AdminService and of the management point, e.g.
+		#    'CM01.corp.contoso.com' yields 'corp.contoso.com'. Available in WinPE, where neither of
+		#    the sources above is, and correct wherever the site server shares the account's domain.
+		$HostNameSources = New-Object -TypeName System.Collections.ArrayList
+		foreach ($EndpointValue in @($Script:Endpoint, $Script:ExternalEndpoint)) {
+			if (-not [string]::IsNullOrWhiteSpace($EndpointValue)) {
+				$null = $HostNameSources.Add($EndpointValue)
+			}
+		}
+		if ($null -ne $Script:TSEnvironment) {
+			try {
+				$ManagementPoint = $Script:TSEnvironment.Value("_SMSTSMP")
+			}
+			catch [System.Exception] {
+				$ManagementPoint = [string]::Empty
+			}
+			if (-not [string]::IsNullOrWhiteSpace($ManagementPoint)) {
+				$null = $HostNameSources.Add($ManagementPoint)
+			}
+		}
+		foreach ($HostNameSource in $HostNameSources) {
+			$HostName = ((($HostNameSource -replace "^https?://", "") -split "/")[0] -split ":")[0]
+			if ($HostName -match "^[^\.]+\.(?<Suffix>.+)$") {
+				return $Matches.Suffix
+			}
+		}
+
+		return [string]::Empty
+	}
+
+	function Get-AuthUserNameCandidate {
+		<#
+		.SYNOPSIS
+			Build the ordered list of user name formats to attempt against the AdminService.
+
+		.DESCRIPTION
+			The configured value is always first, so an environment that authenticates today is never
+			altered. It is followed by the UPN form (user@domain.com) and then the down-level logon
+			form (DOMAIN\user), both built from the detected AD DNS domain. Duplicates are removed, so
+			a value already in UPN form simply yields fewer candidates.
+		#>
+		param (
+			[parameter(Mandatory = $true, HelpMessage = "Specify the configured service account user name.")]
+			[ValidateNotNullOrEmpty()]
+			[string]$UserName
+		)
+		$Candidates = New-Object -TypeName System.Collections.ArrayList
+		$null = $Candidates.Add($UserName)
+
+		# Split the configured value into its account name and whatever domain qualifier it carries
+		$DomainName = Get-AuthDomainName
+		if ($UserName -match "^(?<Domain>[^\\]+)\\(?<Account>.+)$") {
+			$AccountName = $Matches.Account
+			$NetBIOSName = $Matches.Domain
+		}
+		elseif ($UserName -match "^(?<Account>[^@]+)@(?<Suffix>.+)$") {
+			$AccountName = $Matches.Account
+			$NetBIOSName = ($Matches.Suffix -split "\.")[0]
+			if ([string]::IsNullOrWhiteSpace($DomainName)) {
+				$DomainName = $Matches.Suffix
+			}
+		}
+		else {
+			$AccountName = $UserName
+			$NetBIOSName = [string]::Empty
+		}
+
+		# UPN form -- the format required from ConfigMgr 2603 onwards
+		if (-not [string]::IsNullOrWhiteSpace($DomainName)) {
+			$UserPrincipalName = "$($AccountName)@$($DomainName)"
+			if ($Candidates -notcontains $UserPrincipalName) {
+				$null = $Candidates.Add($UserPrincipalName)
+			}
+			if ([string]::IsNullOrWhiteSpace($NetBIOSName)) {
+				$NetBIOSName = ($DomainName -split "\.")[0]
+			}
+		}
+
+		# Down-level logon form, for sites that still accept it
+		if (-not [string]::IsNullOrWhiteSpace($NetBIOSName)) {
+			$DownLevelName = "$($NetBIOSName)\$($AccountName)"
+			if ($Candidates -notcontains $DownLevelName) {
+				$null = $Candidates.Add($DownLevelName)
+			}
+		}
+
+		# Handle return value
+		return $Candidates
+	}
+
+	function New-AuthCredential {
+		param (
+			[parameter(Mandatory = $true, HelpMessage = "Specify the user name to construct a credential object for.")]
+			[ValidateNotNullOrEmpty()]
+			[string]$UserName
+		)
+		$EncryptedPassword = ConvertTo-SecureString -String $Script:Password -AsPlainText -Force
+
+		# Handle return value
+		return (New-Object -TypeName System.Management.Automation.PSCredential -ArgumentList @($UserName, $EncryptedPassword))
+	}
+
+	function Expand-ArchiveSafely {
+		<#
+		.SYNOPSIS
+			Expands a .zip after verifying that no entry escapes the destination directory.
+
+		.DESCRIPTION
+			A zip entry may carry a traversing relative path ("..\..\Windows\System32\evil.dll").
+			Windows PowerShell 5.1's Expand-Archive does not reject one, so an archive can write
+			outside the folder it is expanded into, the flaw known as Zip Slip. This script runs as
+			SYSTEM in WinPE and in the full OS, so such a write lands with full privilege.
+
+			Every entry is resolved against the destination and the archive is rejected outright
+			unless all of them stay underneath it. Validation completes before anything is written,
+			so a rejected archive leaves no partial tree behind.
+		#>
+		param (
+			[parameter(Mandatory = $true)]
+			[ValidateNotNullOrEmpty()]
+			[string]$Path,
+
+			[parameter(Mandatory = $true)]
+			[ValidateNotNullOrEmpty()]
+			[string]$DestinationPath
+		)
+
+		Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction SilentlyContinue
+
+		$ArchivePath = (Resolve-Path -LiteralPath $Path -ErrorAction Stop).Path
+		if (-not (Test-Path -LiteralPath $DestinationPath)) {
+			New-Item -Path $DestinationPath -ItemType Directory -Force | Out-Null
+		}
+		$ResolvedDestination = (Resolve-Path -LiteralPath $DestinationPath -ErrorAction Stop).Path
+		$Separator = [System.IO.Path]::DirectorySeparatorChar
+		$DestinationRoot = [System.IO.Path]::GetFullPath($ResolvedDestination.TrimEnd('\', '/') + $Separator)
+
+		$Archive = [System.IO.Compression.ZipFile]::OpenRead($ArchivePath)
+		try {
+			foreach ($Entry in $Archive.Entries) {
+				$Candidate = [System.IO.Path]::GetFullPath([System.IO.Path]::Combine($DestinationRoot, $Entry.FullName))
+				if (-not $Candidate.StartsWith($DestinationRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+					throw "Archive entry '$($Entry.FullName)' resolves outside the destination directory and was rejected."
+				}
+			}
+
+			foreach ($Entry in $Archive.Entries) {
+				$Target = [System.IO.Path]::GetFullPath([System.IO.Path]::Combine($DestinationRoot, $Entry.FullName))
+				if ([string]::IsNullOrEmpty($Entry.Name)) {
+					if (-not (Test-Path -LiteralPath $Target)) {
+						New-Item -Path $Target -ItemType Directory -Force | Out-Null
+					}
+					continue
+				}
+				$Parent = Split-Path -Parent $Target
+				if ((-not [string]::IsNullOrEmpty($Parent)) -and (-not (Test-Path -LiteralPath $Parent))) {
+					New-Item -Path $Parent -ItemType Directory -Force | Out-Null
+				}
+				[System.IO.Compression.ZipFileExtensions]::ExtractToFile($Entry, $Target, $true)
+			}
+		}
+		finally {
+			$Archive.Dispose()
+		}
+	}
+
+	function Set-PinnedCertificateValidationCallback {
+		<#
+		.SYNOPSIS
+			Pin AdminService TLS validation to one expected certificate thumbprint.
+
+		.DESCRIPTION
+			This replaces the previous behaviour, which installed a callback that returned true for
+			every certificate presented by any host for the remainder of the process. Any machine that
+			could answer for the endpoint address was therefore trusted, and the service account
+			credential was sent to it, so that behaviour has been removed.
+
+			Pinning is the only supported way to keep using a certificate that does not chain to a
+			trusted root. The expected thumbprint comes from the MDMCertificateThumbprint task
+			sequence variable or the CertificateThumbprint parameter. When neither supplies one this
+			function changes nothing and returns false, so the caller fails with guidance instead of
+			authenticating to an endpoint whose identity it could not verify.
+
+			A certificate that already validates normally is unaffected -- the callback only rescues
+			the one pinned certificate, and every other validation failure stays a failure.
+		#>
+		if ([string]::IsNullOrWhiteSpace($Script:CertificateThumbprint)) {
+			return $false
+		}
+		if ($Script:CertificateValidationCallbackEnabled -eq $true) {
+			return $true
+		}
+
+		# Thumbprints are routinely copied out of the certificate UI carrying spaces and a leading
+		# invisible mark, so reduce the value to hex characters before checking its length
+		$ExpectedThumbprint = ($Script:CertificateThumbprint -replace '[^0-9A-Fa-f]', '').ToUpper()
+		if ($ExpectedThumbprint -notmatch '^[0-9A-F]{40}$') {
+			Write-CMLogEntry -Value " - The configured AdminService certificate thumbprint is not a 40 character SHA1 thumbprint and will be ignored" -Severity 3
+			return $false
+		}
+
+		$PinnedValidationType = @'
+using System;
+using System.Net;
+using System.Net.Security;
+using System.Security.Cryptography.X509Certificates;
+public class DATPinnedCertificateValidation
+{
+    public static string ExpectedThumbprint = String.Empty;
+    public static void Enable(string thumbprint)
+    {
+        ExpectedThumbprint = thumbprint;
+        ServicePointManager.ServerCertificateValidationCallback =
+            delegate(Object sender, X509Certificate certificate, X509Chain chain, SslPolicyErrors errors)
+            {
+                if (errors == SslPolicyErrors.None) { return true; }
+                if (certificate == null) { return false; }
+                if (String.IsNullOrEmpty(ExpectedThumbprint)) { return false; }
+                return String.Equals(certificate.GetCertHashString(), ExpectedThumbprint, StringComparison.OrdinalIgnoreCase);
+            };
+    }
+}
+'@
+
+		if (-not ("DATPinnedCertificateValidation" -as [type])) {
+			Add-Type -TypeDefinition $PinnedValidationType
+		}
+		[DATPinnedCertificateValidation]::Enable($ExpectedThumbprint)
+		$Script:CertificateValidationCallbackEnabled = $true
+		Write-CMLogEntry -Value " - AdminService certificate validation is pinned to thumbprint: $($ExpectedThumbprint)" -Severity 1
+
+		# Handle return value
+		return $true
+	}
+
+	function Test-AuthenticationFailure {
+		<#
+		.SYNOPSIS
+			Determine whether an AdminService request failed because the credentials were rejected.
+
+		.DESCRIPTION
+			Only a rejected authentication justifies retrying with a different user name format. The
+			HTTP status code is used where the exception carries a response; the message is only
+			inspected as a fallback, since its wording is localised.
+		#>
+		param (
+			[parameter(Mandatory = $false, HelpMessage = "Specify the error record from the failed AdminService request.")]
+			$ErrorRecord
+		)
+		if ($null -eq $ErrorRecord) {
+			return $false
+		}
+		try {
+			$Response = $ErrorRecord.Exception.Response
+			if (($null -ne $Response) -and ($null -ne $Response.StatusCode)) {
+				if ([int]$Response.StatusCode -eq 401) {
+					return $true
+				}
+
+				# A response carrying any other status code is a definitive non-authentication failure
+				return $false
+			}
+		}
+		catch [System.Exception] {
+			# Fall through to the message based check below
+		}
+
+		# Handle return value
+		return ($ErrorRecord.Exception.Message -match "\(401\)|Unauthorized")
+	}
 	function Get-AuthCredential {
 		# Construct PSCredential object for authentication
-		$EncryptedPassword = ConvertTo-SecureString -String $Script:Password -AsPlainText -Force
-		$Script:Credential = New-Object -TypeName System.Management.Automation.PSCredential -ArgumentList @($Script:UserName, $EncryptedPassword)
+		$Script:Credential = New-AuthCredential -UserName $Script:UserName
+
+		# Build the ordered list of user name formats to attempt against the AdminService. ConfigMgr
+		# 2603 introduced security changes that reject a service account supplied as a bare user name,
+		# a configuration that worked on earlier builds, so warn when the configured value is not a UPN
+		# and prepare the domain qualified alternatives for Get-AdminServiceItem to fall back on.
+		$Script:CredentialCandidates = Get-AuthUserNameCandidate -UserName $Script:UserName
+		if ($Script:UserName -notmatch "@") {
+			Write-CMLogEntry -Value " - WARNING: The service account user name is not in UPN format. ConfigMgr 2603 and later reject AdminService authentication that uses a bare user name, it is recommended that the service account is specified in the UPN format (user@domain.com)" -Severity 2
+			if (($Script:CredentialCandidates | Measure-Object).Count -gt 1) {
+				$AlternativeNames = ($Script:CredentialCandidates | Select-Object -Skip 1 | ForEach-Object { ConvertTo-ObfuscatedUserName -InputObject $PSItem }) -join ", "
+				Write-CMLogEntry -Value " - Alternative user name formats will be attempted automatically if the configured value is rejected: $($AlternativeNames)" -Severity 2
+			}
+			else {
+				Write-CMLogEntry -Value " - Unable to determine the Active Directory DNS domain name, no alternative user name formats can be attempted if the configured value is rejected" -Severity 2
+			}
+		}
 	}
 	
 	function Get-AdminServiceItem {
@@ -899,44 +1357,84 @@ Process {
 			"Internal" {
 				$AdminServiceUri = $AdminServiceURL + $Resource
 				Write-CMLogEntry -Value " - Calling AdminService endpoint with URI: $($AdminServiceUri)" -Severity 1
-				
-				try {
-					# Call AdminService endpoint to retrieve package data
-					$AdminServiceResponse = Invoke-RestMethod -Method Get -Uri $AdminServiceUri -Credential $Credential -ErrorAction Stop
+
+				# Attempt each user name format in turn. The configured value is always first, so a
+				# working environment is unaffected; the domain qualified alternatives are only used
+				# after the AdminService rejects the credentials with 401 Unauthorized, which is what
+				# ConfigMgr 2603 and later return for a service account supplied as a bare user name.
+				$CandidateList = @($Script:CredentialCandidates)
+				if ($CandidateList.Count -eq 0) {
+					$CandidateList = @($Script:UserName)
 				}
-				catch [System.Security.Authentication.AuthenticationException] {
-					Write-CMLogEntry -Value " - The remote AdminService endpoint certificate is invalid according to the validation procedure. Error message: $($PSItem.Exception.Message)" -Severity 2
-					Write-CMLogEntry -Value " - Will attempt to set the current session to ignore self-signed certificates and retry AdminService endpoint connection" -Severity 2
-					
-					# Attempt to ignore self-signed certificate binding for AdminService
-					# Convert encoded base64 string for ignore self-signed certificate validation functionality
-					$CertificationValidationCallbackEncoded = "DQAKACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAdQBzAGkAbgBnACAAUwB5AHMAdABlAG0AOwANAAoAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAB1AHMAaQBuAGcAIABTAHkAcwB0AGUAbQAuAE4AZQB0ADsADQAKACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAdQBzAGkAbgBnACAAUwB5AHMAdABlAG0ALgBOAGUAdAAuAFMAZQBjAHUAcgBpAHQAeQA7AA0ACgAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgAHUAcwBpAG4AZwAgAFMAeQBzAHQAZQBtAC4AUwBlAGMAdQByAGkAdAB5AC4AQwByAHkAcAB0AG8AZwByAGEAcABoAHkALgBYADUAMAA5AEMAZQByAHQAaQBmAGkAYwBhAHQAZQBzADsADQAKACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAcAB1AGIAbABpAGMAIABjAGwAYQBzAHMAIABTAGUAcgB2AGUAcgBDAGUAcgB0AGkAZgBpAGMAYQB0AGUAVgBhAGwAaQBkAGEAdABpAG8AbgBDAGEAbABsAGIAYQBjAGsADQAKACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAewANAAoAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgAHAAdQBiAGwAaQBjACAAcwB0AGEAdABpAGMAIAB2AG8AaQBkACAASQBnAG4AbwByAGUAKAApAA0ACgAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAewANAAoAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAaQBmACgAUwBlAHIAdgBpAGMAZQBQAG8AaQBuAHQATQBhAG4AYQBnAGUAcgAuAFMAZQByAHYAZQByAEMAZQByAHQAaQBmAGkAYwBhAHQAZQBWAGEAbABpAGQAYQB0AGkAbwBuAEMAYQBsAGwAYgBhAGMAawAgAD0APQBuAHUAbABsACkADQAKACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgAHsADQAKACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAUwBlAHIAdgBpAGMAZQBQAG8AaQBuAHQATQBhAG4AYQBnAGUAcgAuAFMAZQByAHYAZQByAEMAZQByAHQAaQBmAGkAYwBhAHQAZQBWAGEAbABpAGQAYQB0AGkAbwBuAEMAYQBsAGwAYgBhAGMAawAgACsAPQAgAA0ACgAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAZABlAGwAZQBnAGEAdABlAA0ACgAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAKAANAAoAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAATwBiAGoAZQBjAHQAIABvAGIAagAsACAADQAKACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgAFgANQAwADkAQwBlAHIAdABpAGYAaQBjAGEAdABlACAAYwBlAHIAdABpAGYAaQBjAGEAdABlACwAIAANAAoAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAWAA1ADAAOQBDAGgAYQBpAG4AIABjAGgAYQBpAG4ALAAgAA0ACgAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIABTAHMAbABQAG8AbABpAGMAeQBFAHIAcgBvAHIAcwAgAGUAcgByAG8AcgBzAA0ACgAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAKQANAAoAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgAHsADQAKACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgAHIAZQB0AHUAcgBuACAAdAByAHUAZQA7AA0ACgAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAfQA7AA0ACgAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAB9AA0ACgAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAfQANAAoAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAB9AA0ACgAgACAAIAAgACAAIAAgACAA"
-					$CertificationValidationCallback = [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($CertificationValidationCallbackEncoded))
-					
-					# Load required type definition to be able to ignore self-signed certificate to circumvent issues with AdminService running with ConfigMgr self-signed certificate binding
-					Add-Type -TypeDefinition $CertificationValidationCallback
-					[ServerCertificateValidationCallback]::Ignore()
-					
+				$RequestSucceeded = $false
+				$LastErrorRecord = $null
+
+				for ($CandidateIndex = 0; $CandidateIndex -lt $CandidateList.Count; $CandidateIndex++) {
+					$CandidateUserName = $CandidateList[$CandidateIndex]
+					$CandidateCredential = New-AuthCredential -UserName $CandidateUserName
+					$LastErrorRecord = $null
+					if ($CandidateIndex -gt 0) {
+						Write-CMLogEntry -Value " - Retrying AdminService endpoint connection using alternative user name format: $(ConvertTo-ObfuscatedUserName -InputObject $CandidateUserName)" -Severity 2
+					}
+
 					try {
 						# Call AdminService endpoint to retrieve package data
-						$AdminServiceResponse = Invoke-RestMethod -Method Get -Uri $AdminServiceUri -Credential $Credential -ErrorAction Stop
+						$AdminServiceResponse = Invoke-RestMethod -Method Get -Uri $AdminServiceUri -Credential $CandidateCredential -ErrorAction Stop
+						$RequestSucceeded = $true
 					}
-					catch [System.Exception] {
-						Write-CMLogEntry -Value " - Failed to retrieve available package items from AdminService endpoint. Error message: $($PSItem.Exception.Message)" -Severity 3
-						
-						# Throw terminating error						
-						$PSCmdlet.ThrowTerminatingError((New-TerminatingErrorRecord))
+					catch [System.Security.Authentication.AuthenticationException] {
+						Write-CMLogEntry -Value " - The remote AdminService endpoint certificate is invalid according to the validation procedure. Error message: $($PSItem.Exception.Message)" -Severity 2
+						if (Set-PinnedCertificateValidationCallback) {
+							Write-CMLogEntry -Value " - Retrying the AdminService endpoint connection against the pinned certificate thumbprint" -Severity 2
+
+							try {
+								# Call AdminService endpoint to retrieve package data
+								$AdminServiceResponse = Invoke-RestMethod -Method Get -Uri $AdminServiceUri -Credential $CandidateCredential -ErrorAction Stop
+								$RequestSucceeded = $true
+							}
+							catch [System.Exception] {
+								$LastErrorRecord = $PSItem
+							}
+						}
+						else {
+							Write-CMLogEntry -Value " - The AdminService endpoint identity could not be verified, so the service account credential was not sent. Trust the issuing CA on this machine (import the root certificate into the boot image for WinPE), or set the 'MDMCertificateThumbprint' task sequence variable to the expected AdminService certificate thumbprint" -Severity 3
+							$LastErrorRecord = $PSItem
+						}
 					}
+					catch {
+						$LastErrorRecord = $PSItem
+					}
+
+					if ($RequestSucceeded -eq $true) {
+						# Persist the working credential so any further calls in this run authenticate directly
+						$Script:Credential = $CandidateCredential
+						if ($CandidateIndex -gt 0) {
+							Write-CMLogEntry -Value " - Successfully authenticated against the AdminService using user name format: $(ConvertTo-ObfuscatedUserName -InputObject $CandidateUserName)" -Severity 2
+							Write-CMLogEntry -Value " - WARNING: Update the service account user name to the UPN format (user@domain.com) to avoid these additional authentication attempts" -Severity 2
+						}
+						break
+					}
+
+					# Only a rejected authentication justifies attempting another user name format
+					if (-not (Test-AuthenticationFailure -ErrorRecord $LastErrorRecord)) {
+						break
+					}
+					Write-CMLogEntry -Value " - AdminService endpoint rejected the credentials for user name: $(ConvertTo-ObfuscatedUserName -InputObject $CandidateUserName)" -Severity 2
 				}
-				catch {
-					Write-CMLogEntry -Value " - Failed to retrieve available package items from AdminService endpoint. Error message: $($PSItem.Exception.Message)" -Severity 3
-					
-					# Throw terminating error					
+
+				if ($RequestSucceeded -eq $false) {
+					$FailureMessage = if ($null -ne $LastErrorRecord) { $LastErrorRecord.Exception.Message } else { "No response was returned from the AdminService endpoint" }
+					Write-CMLogEntry -Value " - Failed to retrieve available package items from AdminService endpoint. Error message: $($FailureMessage)" -Severity 3
+					if (Test-AuthenticationFailure -ErrorRecord $LastErrorRecord) {
+						Write-CMLogEntry -Value " - All attempted user name formats were rejected by the AdminService. ConfigMgr 2603 introduced security changes that require the service account to be specified in UPN format (user@domain.com), update the MDMUserName task sequence variable or the UserName parameter accordingly" -Severity 3
+					}
+
+					# Throw terminating error
 					$PSCmdlet.ThrowTerminatingError((New-TerminatingErrorRecord))
 				}
 			}
 		}
-		
+
 		# Add returned driver package objects to array list
 		if ($AdminServiceResponse.value -ne $null) {
 			foreach ($Package in $AdminServiceResponse.value) {
@@ -988,6 +1486,12 @@ Process {
 		switch ($OSName) {
 			"Windows 11" {
 				switch (([System.Version]$InputObject).Build) {
+					"28000" {
+						$OSVersion = '26H1'
+					}
+					"26300" {
+						$OSVersion = '26H2'
+					}
 					"26200" {
 						$OSVersion = '25H2'
 					}
@@ -1004,11 +1508,32 @@ Process {
 						$OSVersion = '21H2'
 					}
 					default {
-						Write-CMLogEntry -Value " - Unable to translate OS version using input object: $($InputObject)" -Severity 3
-						Write-CMLogEntry -Value " - Unsupported OS version detected, please reach out to the developers of this script" -Severity 3
-						
-						# Throw terminating error						
-						$PSCmdlet.ThrowTerminatingError((New-TerminatingErrorRecord))
+						# Build number not in the table above. New Windows 11 releases keep arriving, so
+						# rather than failing on every build this script version predates, read the
+						# authoritative feature update token from the DisplayVersion value under
+						# CurrentVersion. It is present on every build from 20H2 onwards and always
+						# reflects the enablement package that is actually installed, which is exactly
+						# what driver package names are stamped with (e.g. 'Drivers - Dell Latitude
+						# 7455 - Windows 11 26H1 Arm64').
+						$DisplayVersion = $null
+						try {
+							$DisplayVersion = (Get-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion" -Name "DisplayVersion" -ErrorAction Stop).DisplayVersion
+						}
+						catch [System.Exception] {
+							Write-CMLogEntry -Value " - Unable to read DisplayVersion from registry to translate OS version. Error message: $($_.Exception.Message)" -Severity 2
+						}
+
+						if ($DisplayVersion -match "^\d{2}H\d$") {
+							$OSVersion = $DisplayVersion
+							Write-CMLogEntry -Value " - Translated OS version '$($OSVersion)' from registry DisplayVersion value, as build $(([System.Version]$InputObject).Build) is not known to this script version" -Severity 2
+						}
+						else {
+							Write-CMLogEntry -Value " - Unable to translate OS version using input object: $($InputObject)" -Severity 3
+							Write-CMLogEntry -Value " - Unsupported OS version detected, please reach out to the developers of this script" -Severity 3
+
+							# Throw terminating error
+							$PSCmdlet.ThrowTerminatingError((New-TerminatingErrorRecord))
+						}
 					}
 				}
 			}
@@ -1208,7 +1733,16 @@ Process {
 			"*Viglen*" {
 				$ComputerDetails.Manufacturer = "Viglen"
 				$ComputerDetails.Model = (Get-WmiObject -Class "Win32_ComputerSystem" | Select-Object -ExpandProperty Model).Trim()
-				$ComputerDetails.SystemSKU = (Get-WmiObject -Class "Win32_BaseBoard" | Select-Object -ExpandProperty SKU).Trim()
+				# Same unguarded Trim() as the Fujitsu branch above, so an empty SKU stops the run in
+				# the prerequisite phase. The property is only guarded here, not changed: whether
+				# Viglen reports its identifier in SKU or in BaseBoardProduct is unverified, and
+				# swapping it blind could trade a crash for a silent no-match. An empty value now
+				# leaves SystemSKU unset and falls back to computer model matching, as it does
+				# everywhere else.
+				$ViglenSystemSKU = (Get-WmiObject -Class "Win32_BaseBoard" -ErrorAction SilentlyContinue | Select-Object -ExpandProperty SKU -ErrorAction SilentlyContinue)
+				if (-not [string]::IsNullOrWhiteSpace($ViglenSystemSKU)) {
+					$ComputerDetails.SystemSKU = $ViglenSystemSKU.Trim()
+				}
 			}
 			"*AZW*" {
 				$ComputerDetails.Manufacturer = "AZW"
@@ -1218,7 +1752,27 @@ Process {
 			"*Fujitsu*" {
 				$ComputerDetails.Manufacturer = "Fujitsu"
 				$ComputerDetails.Model = (Get-WmiObject -Class "Win32_ComputerSystem" | Select-Object -ExpandProperty Model).Trim()
-				$ComputerDetails.SystemSKU = (Get-WmiObject -Class "Win32_BaseBoard" | Select-Object -ExpandProperty SKU).Trim()
+				# Win32_BaseBoard.SKU is empty on several Fujitsu models (ESPRIMO D757 among them), so
+				# Trim() threw and the run stopped in the prerequisite phase (#945, PR #946).
+				#
+				# BaseBoardProduct is also the value that has to be read here for matching to work at
+				# all: the build writes the Fujitsu catalog's SupportedDevices -- mainboard IDs such as
+				# D3531-A1 -- into the package description and the Intune detection rule, and that is
+				# BaseBoardProduct, not SKU. Guarding the Trim() alone would have turned the crash into
+				# a silent no-match against the package the tool itself created.
+				$FujitsuSystemSKU = (Get-CimInstance -ClassName "MS_SystemInformation" -NameSpace "root\WMI" -ErrorAction SilentlyContinue).BaseBoardProduct
+				if ([string]::IsNullOrWhiteSpace($FujitsuSystemSKU)) {
+					$FujitsuSystemSKU = (Get-WmiObject -Class "Win32_BaseBoard" -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Product -ErrorAction SilentlyContinue)
+				}
+				if (-not [string]::IsNullOrWhiteSpace($FujitsuSystemSKU)) {
+					$ComputerDetails.SystemSKU = $FujitsuSystemSKU.Trim()
+				}
+			}
+			"*ASUS*" {
+				# ASUS commercial (ExpertBook/ExpertCenter) packages are matched by ComputerModel;
+				# WMI reports Manufacturer 'ASUSTeK COMPUTER INC.' and Model as the model code (e.g. B5405CVA).
+				$ComputerDetails.Manufacturer = "ASUS"
+				$ComputerDetails.Model = (Get-WmiObject -Class "Win32_ComputerSystem" | Select-Object -ExpandProperty Model).Trim()
 			}
 			"*Getac*" {
 				$ComputerDetails.Manufacturer = "Getac"
@@ -1446,7 +2000,7 @@ Process {
 				PackageName = $DriverPackageItem.Name
 				PackageID = $DriverPackageItem.PackageID
 				PackageVersion = $DriverPackageItem.Version
-				DateCreated = $DriverPackageItem.SourceDate
+				DateCreated = ConvertTo-PackageSourceDate -Value $DriverPackageItem.SourceDate
 				Manufacturer = $DriverPackageItem.Manufacturer
 				Model = $null
 				SystemSKU = $DriverPackageItem.Description.Split(":").Replace("(", "").Replace(")", "")[1]
@@ -1619,7 +2173,7 @@ Process {
 						$DriverPackageDetails = [PSCustomObject]@{
 							PackageName = $DriverPackageItem.Name
 							PackageID = $DriverPackageItem.PackageID
-							DateCreated = $DriverPackageItem.SourceDate
+							DateCreated = ConvertTo-PackageSourceDate -Value $DriverPackageItem.SourceDate
 							Manufacturer = $DriverPackageItem.Manufacturer
 							OSName = $null
 							Architecture = $null
@@ -2091,7 +2645,7 @@ Process {
 						# Expand compressed driver package archive file
 						Write-CMLogEntry -Value " - Attempting to decompress driver package content file: $($DriverPackageCompressedFile.Name)" -Severity 1
 						Write-CMLogEntry -Value " - Decompression destination: $($ContentLocation)" -Severity 1
-						Expand-Archive -Path $DriverPackageCompressedFile.FullName -DestinationPath $ContentLocation -Force -ErrorAction Stop
+						Expand-ArchiveSafely -Path $DriverPackageCompressedFile.FullName -DestinationPath $ContentLocation
 						Write-CMLogEntry -Value " - Successfully decompressed driver package content file" -Severity 1
 					}
 					catch [System.Exception] {
@@ -2267,7 +2821,7 @@ Process {
 	}
 	
 	Write-CMLogEntry -Value "[ApplyDriverPackage]: Apply Driver Package process initiated" -Severity 1
-	Write-CMLogEntry -Value " - Script version: 4.2.8" -Severity 1
+	Write-CMLogEntry -Value " - Script version: 4.3.4" -Severity 1
 	if ($PSCmdLet.ParameterSetName -like "Debug") {
 		Write-CMLogEntry -Value " - Apply driver package process initiated in debug mode" -Severity 1
 	}
