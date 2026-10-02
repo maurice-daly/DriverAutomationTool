@@ -17,7 +17,10 @@
       Flash64W.exe is NOT used (it is a WinPE-only wrapper).
 #>
 param (
-    [switch]$WhatIf
+    [switch]$WhatIf,
+    # Run as the Intune / ConfigMgr uninstall command. A flashed BIOS cannot be rolled back by
+    # this script, so this logs and exits 0 without changing anything.
+    [switch]$Uninstall
 )
 
 # --- 64-bit Relaunch Guard ---
@@ -49,6 +52,7 @@ if (-not [Environment]::Is64BitProcess -and [Environment]::Is64BitOperatingSyste
 
     $relaunchArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$scriptPath`"")
     if ($WhatIf) { $relaunchArgs += '-WhatIf' }
+    if ($Uninstall) { $relaunchArgs += '-Uninstall' }
     Write-Host "INFO: Launching 64-bit process: $relaunchPath $($relaunchArgs -join ' ')" -ForegroundColor Cyan
     try {
         $proc = Start-Process -FilePath $relaunchPath -ArgumentList $relaunchArgs -Wait -PassThru -NoNewWindow -ErrorAction Stop
@@ -110,6 +114,9 @@ function Set-DATInstallStatus {
         Set-ItemProperty -Path $RegPath -Name 'LastScriptExitCode' -Value ([string]$ScriptExitCode) -Force
         Set-ItemProperty -Path $RegPath -Name 'LastErrorPhase'     -Value $Phase                    -Force
         Set-ItemProperty -Path $RegPath -Name 'LastError'          -Value $ErrorMessage             -Force
+        # Whether this run installed silently during Autopilot provisioning (Test-DATAutopilotProvisioning)
+        $installContext = if ($script:DATAutopilot -and $script:DATAutopilot.InProvisioning) { "AutopilotProvisioning:$($script:DATAutopilot.Phase)" } else { 'Standard' }
+        Set-ItemProperty -Path $RegPath -Name 'LastInstallContext' -Value $installContext           -Force
 
         # Running attempt counter -- lets reporting spot devices stuck retrying/failing
         $priorAttempts = 0
@@ -591,6 +598,20 @@ function Get-LenovoSystemFirmwareVersion {
     }
 }
 {{TOAST_FUNCTIONS}}
+{{PROGRESS_FUNCTIONS}}
+{{PROVISIONING_FUNCTIONS}}
+# Uninstall command. Older builds pointed the Intune uninstall command at this script without a
+# switch, so an uninstall assignment re-ran the flash. A BIOS cannot be rolled back from here
+# (most OEMs block downgrades), so record the request and leave the firmware alone.
+if ($Uninstall) {
+    Write-CMTraceLog "=========================================="
+    Write-CMTraceLog "Driver Automation Tool - BIOS Uninstall Requested"
+    Write-CMTraceLog "OEM: {{OEM}} | Model: {{Model}} | Package Version: {{Version}}"
+    Write-CMTraceLog "BIOS updates cannot be rolled back by the Driver Automation Tool -- nothing was changed. Use the OEM's own tooling if a downgrade is required and permitted." -Severity 2
+    Write-CMTraceLog "=========================================="
+    exit 0
+}
+
 try {
     Write-CMTraceLog "=========================================="
     if ($WhatIf) { Write-CMTraceLog "*** WHATIF MODE -- no BIOS changes will be applied ***" -Severity 2 }
@@ -624,6 +645,9 @@ try {
     $Manufacturer = '{{OEM}}'
     $installPhase = 'Init'
     $flashExitCode = $null
+    # Overwritten by Show-DATStatusToast; this default stands only when the package was built
+    # with toast notifications disabled (so the function never runs).
+    $script:DATLastStatusToastOutcome = 'NotShown: toast notifications disabled for this package'
 
     Write-CMTraceLog "Script directory: $ScriptDir"
     Write-CMTraceLog "WIM file path: $WimFile"
@@ -631,13 +655,24 @@ try {
     Write-CMTraceLog "Version registry path: $VersionRegPath"
     Write-CMTraceLog "Manufacturer: $Manufacturer"
 
-    if (-not (Test-Path $WimFile)) {
-        Write-CMTraceLog "ERROR: WIM file not found at $WimFile" -Severity 3
-        throw "WIM file not found at $WimFile"
+    # Intune packages carry the BIOS payload as DriverPackage.wim. A ConfigMgr Application shares
+    # its source folder with the legacy BIOS package, which holds the payload as loose files
+    # because the task sequence BIOS script reads them directly -- so loose files are accepted
+    # when there is no WIM. The DAT scripts and the HP password file are never payload.
+    $datContentFiles = @('Install-BIOS.ps1', 'Show-ToastNotification.ps1', 'HPPasswordFile.bin')
+    $looseContent = @()
+    if (Test-Path $WimFile) {
+        $wimSize = [math]::Round((Get-Item $WimFile).Length / 1MB, 2)
+        Write-CMTraceLog "WIM file size: $wimSize MB"
+    } else {
+        $looseContent = @(Get-ChildItem -Path $ScriptDir -Force -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -notin $datContentFiles -and $_.Name -notlike 'Show-StatusToast-*.ps1' })
+        if ($looseContent.Count -eq 0) {
+            Write-CMTraceLog "ERROR: No WIM file at $WimFile and no BIOS payload files in $ScriptDir" -Severity 3
+            throw "WIM file not found at $WimFile"
+        }
+        Write-CMTraceLog "No WIM file -- using $($looseContent.Count) loose payload item(s) from $ScriptDir"
     }
-
-    $wimSize = [math]::Round((Get-Item $WimFile).Length / 1MB, 2)
-    Write-CMTraceLog "WIM file size: $wimSize MB"
 
     # -- BIOS Version Check ------------------------------------------------------
     # Compare versions BEFORE prompting the user -- no point showing a toast if
@@ -658,8 +693,13 @@ try {
         Set-ItemProperty -Path $VersionRegPath -Name 'OS' -Value '{{OS}}' -Force
         # Real hardware confirms the BIOS is current -- clear any stale PendingReboot marker
         # left over from a prior staged update whose reboot has since completed.
-        Remove-ItemProperty -Path $VersionRegPath -Name 'PendingReboot' -ErrorAction SilentlyContinue
-        Remove-ItemProperty -Path $VersionRegPath -Name 'PendingRebootBootTime' -ErrorAction SilentlyContinue
+        $hadPendingRestart = $null -ne (Get-ItemProperty -Path $VersionRegPath -Name 'PendingReboot' -ErrorAction SilentlyContinue).PendingReboot
+        foreach ($pendingValue in @('PendingReboot', 'PendingRebootBootTime', 'RestartScheduledUtc', 'RestartDueUtc', 'RestartScheduleResult', 'RestartNotice')) {
+            Remove-ItemProperty -Path $VersionRegPath -Name $pendingValue -ErrorAction SilentlyContinue
+        }
+        if ($hadPendingRestart) {
+            Write-CMTraceLog "[RestartAudit] A previously prestaged BIOS update has now been applied -- the pending restart completed"
+        }
         Write-CMTraceLog "Version marker written to registry (already current): $VersionRegPath"
 
         Set-DATInstallStatus -RegPath $VersionRegPath -Result 'AlreadyCurrent' -ScriptExitCode 0 -Phase 'VersionCheck'
@@ -670,8 +710,53 @@ try {
         exit 0
     }
 
+    # -- Previous restart audit ----------------------------------------------------
+    # An update is still needed. If an earlier run prestaged this BIOS, say what became of the
+    # restart it relied on: never happened (aborted with 'shutdown /a', suppressed, or the user
+    # has not restarted) versus happened but the firmware did not take. Diagnostic only -- the
+    # run carries on to prompt and flash as normal.
+    try {
+        $prevRestart = Get-ItemProperty -Path $VersionRegPath -ErrorAction SilentlyContinue
+        if ($prevRestart -and $prevRestart.PendingReboot -eq 1) {
+            Write-CMTraceLog "[RestartAudit] A previous run prestaged BIOS '$($prevRestart.Version)' and was waiting for a restart"
+            Write-CMTraceLog "[RestartAudit] Previous outcome: phase '$($prevRestart.LastErrorPhase)' | restart schedule: '$($prevRestart.RestartScheduleResult)' | due (UTC): '$($prevRestart.RestartDueUtc)' | user notice: '$($prevRestart.RestartNotice)'"
+            $currentBoot = (Get-CimInstance -ClassName Win32_OperatingSystem -ErrorAction Stop).LastBootUpTime
+            if ($prevRestart.PendingRebootBootTime) {
+                $stagedBoot = [datetime]::Parse($prevRestart.PendingRebootBootTime, [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::RoundtripKind)
+                if ([math]::Abs(($currentBoot - $stagedBoot).TotalMinutes) -gt 1) {
+                    Write-CMTraceLog "[RestartAudit] The device HAS restarted since the prestage (booted $($currentBoot.ToString('yyyy-MM-dd HH:mm:ss'))) but the firmware still reports an older BIOS -- the prestaged update did not apply during that restart" -Severity 2
+                } elseif ($prevRestart.RestartDueUtc) {
+                    $prevDue = [datetime]::Parse($prevRestart.RestartDueUtc, [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::RoundtripKind)
+                    if ((Get-Date).ToUniversalTime() -gt $prevDue.ToUniversalTime()) {
+                        Write-CMTraceLog "[RestartAudit] The restart scheduled for $($prevDue.ToLocalTime().ToString('yyyy-MM-dd HH:mm:ss')) never happened -- the device has not rebooted since the prestage (restart aborted, e.g. 'shutdown /a', or blocked)" -Severity 2
+                    } else {
+                        Write-CMTraceLog "[RestartAudit] The scheduled restart is still pending (due $($prevDue.ToLocalTime().ToString('yyyy-MM-dd HH:mm:ss')))"
+                    }
+                } else {
+                    Write-CMTraceLog "[RestartAudit] The device has not rebooted since the prestage, and no automatic restart was scheduled -- waiting on the user to restart" -Severity 2
+                }
+            }
+        }
+    } catch {
+        Write-CMTraceLog "[RestartAudit] Could not audit the previous restart: $($_.Exception.Message)" -Severity 2
+    }
+
+    # -- Autopilot provisioning -------------------------------------------------
+    # Decided once, before the toast gate. Nobody can answer a prompt while the Enrollment Status
+    # Page runs, so the gate (prompt, deferrals, snooze) is skipped, the progress notification and
+    # status toasts stay hidden, and the firmware is staged without a self-scheduled restart (see
+    # the restart decision below). Deferral state is left untouched.
+    $script:DATAutopilot = Test-DATAutopilotProvisioning
+
     # -- Toast Notification Gate (only reached when an update IS needed) ----------
+    if ($script:DATAutopilot.InProvisioning) {
+        Write-CMTraceLog "[Autopilot] Installing without prompting during Autopilot provisioning ($($script:DATAutopilot.Phase))"
+    } else {
 {{TOAST_BLOCK}}
+    }
+
+    # Optional install progress notification (no-op unless enabled for this package)
+    Start-DATInstallProgress -ToastScript (Join-Path $ScriptDir 'Show-ProgressToast.ps1')
 
     # -- Extract WIM -------------------------------------------------------------
     if (Test-Path $ExtractPath) {
@@ -687,19 +772,34 @@ try {
     # WIM-mounted files have FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS causing
     # both Copy-Item and robocopy to fail with error 4350 / 0x10FE
     $installPhase = 'Extraction'
-    try {
-        Write-CMTraceLog "Extracting BIOS package WIM directly to: $ExtractPath"
-        Expand-WindowsImage -ImagePath $WimFile -ApplyPath $ExtractPath -Index 1 -ErrorAction Stop
-        Write-CMTraceLog "WIM extraction completed successfully"
-    } catch [System.Exception] {
-        Write-CMTraceLog "ERROR: Failed to extract BIOS package WIM file. Error: $($_.Exception.Message)" -Severity 3
-        throw "Failed to extract BIOS package WIM file: $($_.Exception.Message)"
+    if ($looseContent.Count -gt 0) {
+        try {
+            Write-CMTraceLog "Copying loose BIOS payload to: $ExtractPath"
+            foreach ($item in $looseContent) {
+                Copy-Item -Path $item.FullName -Destination $ExtractPath -Recurse -Force -ErrorAction Stop
+            }
+            Write-CMTraceLog "Payload copy completed successfully"
+        } catch [System.Exception] {
+            Write-CMTraceLog "ERROR: Failed to copy BIOS payload. Error: $($_.Exception.Message)" -Severity 3
+            throw "Failed to copy BIOS payload: $($_.Exception.Message)"
+        }
+    } else {
+        try {
+            Write-CMTraceLog "Extracting BIOS package WIM directly to: $ExtractPath"
+            Set-DATInstallProgress -Step 1 -MeasurePath $ExtractPath -WimFile $WimFile
+            Expand-WindowsImage -ImagePath $WimFile -ApplyPath $ExtractPath -Index 1 -ErrorAction Stop
+            Write-CMTraceLog "WIM extraction completed successfully"
+        } catch [System.Exception] {
+            Write-CMTraceLog "ERROR: Failed to extract BIOS package WIM file. Error: $($_.Exception.Message)" -Severity 3
+            throw "Failed to extract BIOS package WIM file: $($_.Exception.Message)"
+        }
     }
 
     $extractedFiles = (Get-ChildItem -Path $ExtractPath -Recurse -File -ErrorAction SilentlyContinue).Count
     Write-CMTraceLog "WIM extraction complete. Files extracted: $extractedFiles"
 
     # -- Suspend BitLocker -------------------------------------------------------
+    Set-DATInstallProgress -Step 2
     $script:BitLockerSuspended = $false
     $script:FlashSucceeded = $false
     $flashExitCode = $null
@@ -716,6 +816,7 @@ try {
     # -- Manufacturer-Specific BIOS Flash ----------------------------------------
 
     $installPhase = 'Flash'
+    Set-DATInstallProgress -Step 3
     switch -Wildcard ($Manufacturer) {
 
         # -- Dell ----------------------------------------------------------------
@@ -1106,6 +1207,7 @@ try {
     Remove-Item -Path $ExtractPath -Recurse -Force -ErrorAction SilentlyContinue
     Write-CMTraceLog "Cleanup complete."
 
+    Complete-DATInstallProgress -Outcome Success
 {{STATUS_TOAST_BLOCK}}
     Write-CMTraceLog "=========================================="
     if ($WhatIf) {
@@ -1117,12 +1219,40 @@ try {
             $RestartDelaySeconds = {{RESTART_DELAY_SECONDS}}
             $RestartDelayMinutes = [math]::Round($RestartDelaySeconds / 60, 0)
 
+            # -- What was the user told? --
+            # Recorded on every restart outcome below (and in the registry for reporting) so a
+            # device that restarted -- or never restarted -- can be traced back to whether the
+            # user actually saw DAT's prestaged/restart notice, and if not, why not.
+            $restartNotice = "$script:DATLastStatusToastOutcome"
+            $restartNoticeShown = $restartNotice -eq 'Shown'
+            Write-CMTraceLog "[RestartNotice] Prestaged/restart notice to user: $restartNotice" -Severity $(if ($restartNoticeShown) { 1 } else { 2 })
+            try { Set-ItemProperty -Path $VersionRegPath -Name 'RestartNotice' -Value $restartNotice -Force -ErrorAction Stop } catch { }
+            # Clear the previous cycle's schedule so the next-run audit never reads a stale time
+            foreach ($staleRestartValue in @('RestartScheduledUtc', 'RestartDueUtc', 'RestartScheduleResult')) {
+                Remove-ItemProperty -Path $VersionRegPath -Name $staleRestartValue -ErrorAction SilentlyContinue
+            }
+
+            # -- Autopilot provisioning: leave the restart to the Enrollment Status Page --
+            # A restart scheduled from here could land part-way through setup or BitLocker
+            # preparation. The firmware is staged and the PendingReboot marker written above, so it
+            # applies at the restart the ESP performs (exit 3010) or the next one after it.
+            if ($script:DATAutopilot -and $script:DATAutopilot.InProvisioning) {
+                Write-CMTraceLog "[Autopilot] Autopilot provisioning ($($script:DATAutopilot.Phase)) -- no restart scheduled. The BIOS update applies at the next restart."
+                Write-CMTraceLog "NOTE: BitLocker protection remains suspended until the device is restarted."
+                Set-DATInstallStatus -RegPath $VersionRegPath -Result 'PendingReboot' -ToolExitCode $flashExitCode -ScriptExitCode 3010 -Phase 'RestartDeferredAutopilot'
+                Write-CMTraceLog "=========================================="
+                exit 3010
+            }
+
             # -- Admin-configured: Disable Automatic Restart --
             # When enabled, the BIOS update is prestaged but no restart is initiated.
             # BitLocker remains suspended until the user manually restarts.
             if ($DisableRestart) {
                 Write-CMTraceLog "Automatic BIOS restart is DISABLED by admin policy. The update will apply on the next manual reboot."
                 Write-CMTraceLog "NOTE: BitLocker protection remains suspended until the device is restarted."
+                if (-not $restartNoticeShown) {
+                    Write-CMTraceLog "[RestartNotice] The user was NOT shown the 'restart to apply' notice -- the update will wait for a restart they have not been asked for" -Severity 2
+                }
                 Set-DATInstallStatus -RegPath $VersionRegPath -Result 'PendingReboot' -ToolExitCode $flashExitCode -ScriptExitCode 3010 -Phase 'RestartSuppressed'
                 Write-CMTraceLog "=========================================="
                 exit 3010
@@ -1187,13 +1317,17 @@ try {
                     if (Test-Path $focusStatePath) {
                         try {
                             $focusRaw   = ((Get-Content -Path $focusStatePath -TotalCount 1 -ErrorAction Stop) -join '').Trim()
+                            # <timestamp>|<state>[|<toast type>] -- the type field was added so this
+                            # log shows whether the reading came from the restart notice shown
+                            # moments ago (BIOSSuccess) or an older prompt earlier in the run.
                             $focusParts = $focusRaw -split '\|'
-                            if ($focusParts.Count -eq 2) {
+                            if ($focusParts.Count -in @(2, 3)) {
                                 $focusStamp = [datetime]::Parse($focusParts[0], [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::RoundtripKind)
                                 $focusAgeMinutes = ((Get-Date) - $focusStamp).TotalMinutes
+                                $focusToastType = if ($focusParts.Count -eq 3 -and $focusParts[2]) { "the $($focusParts[2]) toast" } else { 'the toast' }
                                 if ($focusAgeMinutes -ge 0 -and $focusAgeMinutes -le 15) {
                                     $focusState  = [int]$focusParts[1]
-                                    $focusSource = "recorded by the toast $([math]::Round($focusAgeMinutes, 1)) minute(s) ago"
+                                    $focusSource = "recorded by $focusToastType $([math]::Round($focusAgeMinutes, 1)) minute(s) ago"
                                 } else {
                                     Write-CMTraceLog "[FocusAssist] Recorded user-session state is stale ($([math]::Round($focusAgeMinutes, 1)) minutes old) -- ignoring it and proceeding with restart" -Severity 2
                                 }
@@ -1222,6 +1356,9 @@ try {
 
             if ($focusAssistBlocking) {
                 Write-CMTraceLog "BIOS update prestaged but restart suppressed due to Focus Assist. The update will apply on the next manual reboot."
+                if (-not $restartNoticeShown) {
+                    Write-CMTraceLog "[RestartNotice] The user was NOT shown the 'restart to apply' notice either -- nothing on screen tells them a restart is pending" -Severity 2
+                }
                 Set-DATInstallStatus -RegPath $VersionRegPath -Result 'PendingReboot' -ToolExitCode $flashExitCode -ScriptExitCode 3010 -Phase 'RestartSuppressedFocusAssist'
                 Write-CMTraceLog "=========================================="
                 # Exit 3010 signals soft-reboot-needed to Intune without forcing a restart
@@ -1240,9 +1377,48 @@ try {
             Write-CMTraceLog "Re-verifying BitLocker protector state before initiating restart..."
             Suspend-BitLockerForReboot
 
+            if (-not $restartNoticeShown) {
+                Write-CMTraceLog "[RestartNotice] Restarting WITHOUT DAT's restart notice having been shown ($restartNotice) -- the only warning the user gets is the Windows shutdown message" -Severity 2
+            }
+
+            $restartScheduledAt = Get-Date
             shutdown.exe /r /t $RestartDelaySeconds /c "BIOS firmware update prestaged by Driver Automation Tool. Your system will restart in $RestartDelayMinutes minute(s) to apply the update. Please save your work." /d p:1:18
-            Write-CMTraceLog "Restart scheduled -- shutdown.exe exit code: $LASTEXITCODE"
-            Set-DATInstallStatus -RegPath $VersionRegPath -Result 'PendingReboot' -ToolExitCode $flashExitCode -ScriptExitCode 3010 -Phase 'RestartScheduled'
+            $shutdownExitCode = $LASTEXITCODE
+            $restartDueAt = $restartScheduledAt.AddSeconds($RestartDelaySeconds)
+            $restartPhase = 'RestartScheduled'
+            switch ($shutdownExitCode) {
+                0 {
+                    Write-CMTraceLog "Restart scheduled for $($restartDueAt.ToString('yyyy-MM-dd HH:mm:ss')) -- shutdown.exe exit code: 0"
+                    $restartScheduleResult = 'Scheduled'
+                }
+                1190 {
+                    # ERROR_SHUTDOWN_IS_SCHEDULED -- ours was not registered; whatever is already
+                    # pending (e.g. Windows Update) will restart the device and apply the BIOS.
+                    Write-CMTraceLog "shutdown.exe exit code 1190 (ERROR_SHUTDOWN_IS_SCHEDULED) -- another restart was already scheduled, so this one was NOT registered. The BIOS will apply when that restart runs." -Severity 2
+                    $restartScheduleResult = 'AlreadyScheduledByOther'
+                }
+                1115 {
+                    Write-CMTraceLog "shutdown.exe exit code 1115 (ERROR_SHUTDOWN_IN_PROGRESS) -- the device is already shutting down; the BIOS will apply on this restart." -Severity 2
+                    $restartScheduleResult = 'ShutdownInProgress'
+                }
+                default {
+                    Write-CMTraceLog "shutdown.exe FAILED with exit code $shutdownExitCode -- NO restart is scheduled. The BIOS update will apply on the next manual reboot." -Severity 3
+                    $restartScheduleResult = "Failed ($shutdownExitCode)"
+                    $restartPhase = 'RestartScheduleFailed'
+                }
+            }
+            # Recorded so the next run (and custom reporting) can tell whether the restart
+            # actually happened -- a scheduled restart can still be aborted with 'shutdown /a'.
+            try {
+                Set-ItemProperty -Path $VersionRegPath -Name 'RestartScheduledUtc'   -Value $restartScheduledAt.ToUniversalTime().ToString('o') -Force -ErrorAction Stop
+                Set-ItemProperty -Path $VersionRegPath -Name 'RestartScheduleResult' -Value $restartScheduleResult -Force -ErrorAction Stop
+                if ($shutdownExitCode -eq 0) {
+                    Set-ItemProperty -Path $VersionRegPath -Name 'RestartDueUtc' -Value $restartDueAt.ToUniversalTime().ToString('o') -Force -ErrorAction Stop
+                }
+            } catch {
+                Write-CMTraceLog "WARNING: Failed to record the restart schedule -- $($_.Exception.Message)" -Severity 2
+            }
+            Set-DATInstallStatus -RegPath $VersionRegPath -Result 'PendingReboot' -ToolExitCode $flashExitCode -ScriptExitCode 3010 -Phase $restartPhase
             Write-CMTraceLog "=========================================="
             exit 3010
         }
@@ -1262,10 +1438,13 @@ catch {
         $toolCodeForStatus = if ($null -ne $flashExitCode) { $flashExitCode } else { 0 }
         Set-DATInstallStatus -RegPath $VersionRegPath -Result 'Failed' -Phase $phaseForStatus -ToolExitCode $toolCodeForStatus -ScriptExitCode 1 -ErrorMessage $_.Exception.Message
     }
+    Complete-DATInstallProgress -Outcome Failed
 {{STATUS_TOAST_ERROR_BLOCK}}
     exit 1
 }
 finally {
+    # Closes the progress notification on any exit path that did not report an outcome
+    Stop-DATInstallProgress
     # Re-enable BitLocker if it was suspended and the flash did not succeed
     if ($script:BitLockerSuspended -and -not $script:FlashSucceeded) {
         Resume-BitLockerProtection

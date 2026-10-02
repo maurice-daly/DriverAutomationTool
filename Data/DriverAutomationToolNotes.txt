@@ -3,6 +3,33 @@ Driver Automation Tool - Release Notes
 IMPORTANT
 ** DAT Downloads have been moved to GitHub - https://github.com/maurice-daly/DriverAutomationTool **
 
+Version 10.3.0
+What's New & Fixed
+
+- Autopilot — driver and BIOS installs now run silently while a device is in Autopilot provisioning: no prompts, toasts or progress window, nothing shown to the Windows setup account (defaultuser0), and a BIOS restart is left to the Enrollment Status Page. On by default; turn it off under Toast Behaviour.
+- ConfigMgr Applications — new option to create a ConfigMgr Application alongside each driver or BIOS package, with the same toast prompts, deferrals and restart handling as Intune; it shares the package's source folder and works in scheduled builds.
+- ConfigMgr Applications — Remind Me Later now re-runs the Application when the snooze ends (1-24 hours, default 4).
+- Driver rollback — uninstalling a driver app now rolls the device back to the drivers that version replaced, using rollback data recorded at install time and verified before use; driver apps can also be uninstalled from Company Portal.
+- Windows 11 26H1 and 26H2 — added as target versions; Intune apps for them use the closest supported minimum OS (25H2 for 26H2, 24H2 for 26H1) while Intune does not list them.
+- Package Management — new right-click action adds custom drivers to an existing ConfigMgr driver pack; the original WIM is kept until the updated one is in place, and the package is redistributed.
+- Notification theme — Dark (default), Light, Match Windows or Custom colours for every toast, with contrast warnings for custom colours.
+- Install progress — optional compact notification showing driver install or BIOS staging progress, handing over to the final status notice (Toast Behaviour, off by default).
+- Toast test package — builds an Intune app or ConfigMgr Application that walks through the real prompts, deferrals and status notices on any device without installing anything; Toast Notifications is now a top-level menu shared by Intune and ConfigMgr.
+- Build pause and resume — pause a build from the Build Progress window or the main window; it stops at the next safe point (before a model, its extraction, packaging, BIOS stage or Intune upload), and Abort still works while paused. (#964)
+- Low disk space — a build started from the UI pauses itself and shows a warning when the temp or package storage drive drops below 5 GB free; resume once space is freed, or confirm to continue anyway.
+- Custom Driver Pack — new Additional Drivers folder: pick a folder of INF drivers, see its INF count, and have it added to the pack alongside the captured or local-folder drivers; a capture with no third-party drivers can now build from the additional drivers alone.
+- Custom Driver Pack — Intune builds now show upload progress (percentage, speed, file size and current step), matching the Build view.
+- Restart notifications — with critical notifications enabled, the "restarting in N minutes" BIOS notice now shows even when the user has Focus Assist or Do Not Disturb on; previously the device restarted with only the Windows shutdown message as warning.
+- Restart notifications — the post-flash restart decision now waits for the restart notice to report back instead of a fixed five seconds, so it no longer relies on a Focus Assist reading from the earlier update prompt that could be up to fifteen minutes old.
+- Driver updates — when PNPUtil needs a restart to finish (exit code 3010), the user now sees a "Drivers Updated - Restart Required" notice instead of a success notice saying no restart is needed.
+- Notification tracking — every update prompt and status notice now records whether it appeared on screen, was held back, or failed; a prompt held back by Focus Assist, Do Not Disturb or a full-screen app is reported as suppressed rather than timed out, and a locked or unattended device is reported separately. Neither counts as consent to install.
+- Restart logging — each BIOS restart outcome now logs whether the user was shown the restart notice and why not, with the result stored in the registry (RestartNotice) for reporting; shutdown.exe results are interpreted, including an already-pending restart (1190) or a restart that could not be scheduled.
+- Restart follow-up — when a BIOS update is still pending on the next run, the log reports whether the scheduled restart never happened (for example cancelled with shutdown /a), happened without the firmware applying, or is still waiting on the user.
+- BIOS detection — a note about a stale install marker was written to the script output, which Intune and ConfigMgr read as "installed"; it is now logged only.
+- Security — the HP BIOS password file is never staged into ConfigMgr Application content, which is copied to every distribution point.
+- Toasts — the default subtitle is now "Driver Automation Tool", and Custom Driver Pack builds now use the notification theme.
+- Log viewer — rows now follow a live theme switch.
+
 Version 10.2.9
 What's New & Fixed
 

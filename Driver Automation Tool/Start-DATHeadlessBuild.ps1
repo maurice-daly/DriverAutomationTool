@@ -210,6 +210,16 @@ if ($config.AlarmMode) {
 }
 if ($config.CreateIntuneWinOnly) { $processingParams['CreateIntuneWinOnly'] = $true }
 if ($config.ShowBrandingBannerAllToasts) { $processingParams['ShowBrandingBannerAllToasts'] = $true }
+if (-not [string]::IsNullOrWhiteSpace($config.ToastThemeJson)) { $processingParams['ToastThemeJson'] = $config.ToastThemeJson }
+if ($config.ShowInstallProgress) { $processingParams['ShowInstallProgress'] = $true }
+# On by default (Import-DATBuildConfig fills it in for configs written before the option existed)
+if ($null -ne $config.SilentDuringAutopilot) { $processingParams['SilentDuringAutopilot'] = [bool]$config.SilentDuringAutopilot }
+if ($config.CreateConfigMgrApplication -and $config.Platform -in @('ConfigMgr', 'Configuration Manager')) {
+    $processingParams['CreateConfigMgrApplication'] = $true
+    if ($config.ConfigMgrReminderIntervalHours -ge 1 -and $config.ConfigMgrReminderIntervalHours -le 24) {
+        $processingParams['ConfigMgrReminderIntervalHours'] = [int]$config.ConfigMgrReminderIntervalHours
+    }
+}
 if ($null -ne $config.DownloadOnlyExtractContent -and -not $config.DownloadOnlyExtractContent) { $processingParams['ExtractDownloadOnlyContent'] = $false }
 if ($config.ToastTimeoutAction -ne 'RemindMeLater') { $processingParams['ToastTimeoutAction'] = $config.ToastTimeoutAction }
 if ($config.MaxDeferrals -gt 0) { $processingParams['MaxDeferrals'] = $config.MaxDeferrals }

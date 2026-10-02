@@ -4,7 +4,7 @@
      Organization:  MSEndpointMgr / Patch My PC
      Filename:      DriverAutomationToolCore.psm1
      Purpose:       Core functions for Driver Automation Tool v2.0
-     Version:       10.2.9.0
+     Version:       10.3.0.0
     ===========================================================================
 #>
 
@@ -37,7 +37,7 @@ if ($PSVersionTable.PSVersion.Major -le 5) {
 
 #region Variables
 
-[version]$global:ScriptRelease = "10.2.9.0"
+[version]$global:ScriptRelease = "10.3.0.0"
 $global:ScriptBuildDate = "22-09-2026"
 $global:ReleaseNotesURL = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/DriverAutomationToolNotes.txt"
 $global:DATConfigUrl = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/refs/heads/master/Data/DATAPIConfig.json"
@@ -1983,6 +1983,10 @@ function Invoke-DATDriverFilePackaging {
     $ModelPath = ConvertTo-DATSafePathSegment -Segment "$Model"
     $OSPath = ConvertTo-DATSafePathSegment -Segment "$OS"
 
+    # Pause point (Build Progress window) before extraction, the step that needs the most temp
+    # space -- a low-disk pause set during the download takes effect here, not after the model
+    if (Wait-DATBuildPause -Checkpoint "extracting $OEM $Model") { throw "Build aborted while paused before extracting $OEM $Model" }
+
     # Always use the temp directory for extraction and WIM creation, then copy the
     # final WIM to the package destination.  This keeps the Package path clean and
     # ensures temp files are cleaned up automatically.  Also handles UNC destinations
@@ -2396,6 +2400,10 @@ function Invoke-DATDriverFilePackaging {
 
     # Create WIM package for ConfigMgr/Intune modes
     if ($Platform -ne 'Download Only') {
+        # Pause point before packaging -- held before the space check below, so space freed while
+        # paused counts
+        if (Wait-DATBuildPause -Checkpoint "packaging $OEM $Model") { throw "Build aborted while paused before packaging $OEM $Model" }
+
         # Validate disk space before WIM creation
         $driverFolderSize = (Get-ChildItem -Path $DriverFolder -Recurse -File -ErrorAction SilentlyContinue |
             Measure-Object -Property Length -Sum).Sum
@@ -2420,7 +2428,14 @@ function Invoke-DATDriverFilePackaging {
         $skipConfigMgrWim = $false
         if ($Platform -eq 'Configuration Manager') {
             $disableCmWim = (Get-ItemProperty -Path $global:RegPath -Name 'DisableConfigMgrWim' -ErrorAction SilentlyContinue).DisableConfigMgrWim
-            if ($disableCmWim -eq 1) { $skipConfigMgrWim = $true }
+            if ($disableCmWim -eq 1) {
+                if ($script:DATForceConfigMgrWim) {
+                    # The ConfigMgr Application installs from DriverPackage.wim, so the WIM is kept.
+                    Write-DATLogEntry -Value "[$OEM] ConfigMgr WIM compression is disabled, but ConfigMgr Applications are enabled -- packaging as WIM" -Severity 2
+                } else {
+                    $skipConfigMgrWim = $true
+                }
+            }
         }
 
         if ($skipConfigMgrWim) {
@@ -4625,6 +4640,618 @@ function New-DATConfigMgrPkg {
     }
 }
 
+function Get-DATConfigMgrApplicationName {
+    <#
+    .SYNOPSIS
+        Returns the ConfigMgr Application name for a driver or BIOS package. Uses the same
+        naming as the legacy package (see New-DATConfigMgrPkg) so the two sit side by side.
+    #>
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory)][string]$OEM,
+        [Parameter(Mandatory)][string]$Model,
+        [string]$OS,
+        [string]$Architecture,
+        [ValidateSet('Drivers','BIOS')][string]$PackageType = 'Drivers',
+        [string]$NamePrefix
+    )
+    $prefix = if (-not [string]::IsNullOrEmpty($NamePrefix)) { $NamePrefix }
+              elseif ($PackageType -eq 'BIOS') { 'BIOS Update' }
+              else { 'Drivers' }
+    if ($PackageType -eq 'BIOS') { "$prefix - $OEM $Model" } else { "$prefix - $OEM $Model - $OS $Architecture" }
+}
+
+function Get-DATConfigMgrDeploymentTypeSettings {
+    <#
+    .SYNOPSIS
+        Returns the script deployment type settings used for DAT ConfigMgr Applications.
+    .DESCRIPTION
+        Kept separate from New-DATConfigMgrApplication so the settings can be tested without a
+        site. The install script is the same one the Intune Win32 app runs, so the return codes
+        mean the same thing: 0 success, 1 failure, 1618 deferral (Fast Retry), 3010 restart
+        pending. All four are in ConfigMgr's default table for script deployment types.
+
+        Drivers use "Determine behavior based on return codes": DAT never restarts for drivers,
+        so ConfigMgr's restart notification is how a 3010 gets its restart.
+
+        BIOS uses "The software install program might force a device restart": the install
+        script runs its own restart countdown (or deliberately none, when automatic restart is
+        disabled), so ConfigMgr must not add a second prompt. The script still exits 3010, so
+        ConfigMgr waits for the restart before running detection -- detection only trusts the
+        version marker once the device has restarted, and a 0 would be reported as
+        "not detected after installation".
+    #>
+    [CmdletBinding()]
+    param (
+        [ValidateSet('Drivers','BIOS')][string]$PackageType = 'Drivers'
+    )
+    $installScriptName = if ($PackageType -eq 'BIOS') { 'Install-BIOS.ps1' } else { 'Install-Drivers.ps1' }
+    @{
+        DeploymentTypeName       = if ($PackageType -eq 'BIOS') { 'DAT BIOS Install' } else { 'DAT Driver Install' }
+        InstallScriptName        = $installScriptName
+        # Relative path: the client runs the command from the cached content folder. The script
+        # relaunches itself under 64-bit PowerShell if the host is 32-bit.
+        InstallCommand           = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `".\$installScriptName`""
+        # Drivers roll back to the drivers the install replaced. BIOS has no uninstall command:
+        # a flash cannot be undone, and one would only give Software Center an Uninstall button
+        # that always fails.
+        UninstallCommand         = if ($PackageType -eq 'BIOS') { $null } else { "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `".\$installScriptName`" -Uninstall" }
+        InstallationBehaviorType = 'InstallForSystem'
+        LogonRequirementType     = 'WhetherOrNotUserLoggedOn'
+        UserInteractionMode      = 'Hidden'
+        RebootBehavior           = if ($PackageType -eq 'BIOS') { 'ProgramReboot' } else { 'BasedOnExitCode' }
+        # Toast wait (up to 6 minutes) + WIM expansion + PNPUtil / firmware staging.
+        MaximumRuntimeMins       = 120
+        EstimatedRuntimeMins     = if ($PackageType -eq 'BIOS') { 20 } else { 30 }
+    }
+}
+
+function Get-DATConfigMgrPackageSourcePath {
+    <#
+    .SYNOPSIS
+        Returns the PkgSourcePath of a ConfigMgr legacy package, or $null.
+    #>
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory)][string]$PackageID,
+        [Parameter(Mandatory)][string]$SiteServer,
+        [Parameter(Mandatory)][string]$SiteCode
+    )
+    if ($PackageID -notmatch '^[A-Za-z0-9]{8}$') { throw "Invalid ConfigMgr package ID '$PackageID'" }
+    $cimSess = New-DATCimSession -ComputerName $SiteServer
+    $pkg = Invoke-DATRemoteQuery -CimSession $cimSess -ComputerName $SiteServer -Namespace "root\SMS\Site_$SiteCode" `
+        -Query "SELECT PackageID, PkgSourcePath FROM SMS_Package WHERE PackageID = '$PackageID'" | Select-Object -First 1
+    if ($pkg) { return [string]$pkg.PkgSourcePath }
+    return $null
+}
+
+function Enter-DATConfigMgrSiteDrive {
+    <#
+    .SYNOPSIS
+        Makes the ConfigMgr console cmdlets available and pushes the site drive (e.g. PS1:\).
+        Callers must Pop-Location in a finally block. Throws when the console is not installed.
+    #>
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory)][string]$SiteServer,
+        [Parameter(Mandatory)][string]$SiteCode
+    )
+    if (-not (Get-Command New-CMApplication -ErrorAction SilentlyContinue)) {
+        if (-not [string]::IsNullOrEmpty($env:SMS_ADMIN_UI_PATH)) {
+            $cmModule = (Get-Item $env:SMS_ADMIN_UI_PATH | Split-Path -Parent) + "\ConfigurationManager.psd1"
+            Import-Module $cmModule -Global -ErrorAction Stop
+        }
+    }
+    if (-not (Get-Command New-CMApplication -ErrorAction SilentlyContinue)) {
+        throw "The ConfigMgr console PowerShell module is not available on this machine. Install the ConfigMgr console to create Applications."
+    }
+    if (-not (Get-PSDrive -Name $SiteCode -PSProvider CMSite -ErrorAction SilentlyContinue)) {
+        New-PSDrive -Name $SiteCode -PSProvider CMSite -Root $SiteServer -Scope Global -ErrorAction Stop | Out-Null
+    }
+    Push-Location "$($SiteCode):\"
+}
+
+function New-DATConfigMgrApplication {
+    <#
+    .SYNOPSIS
+        Creates or updates a ConfigMgr Application for a driver or BIOS package, so the update
+        can be deployed to running devices with the DAT toast notifications.
+    .DESCRIPTION
+        The Application uses the legacy package's source folder as its content location. That
+        folder must already hold DriverPackage.wim and the script set written by
+        New-DATPackageScriptSet -TargetPlatform ConfigMgr.
+
+        - Detection: the Intune detection script (version marker, trusted only after a restart).
+        - Requirement: a script global condition built from the Intune requirement script
+          (right OEM / model / OS), compared against 'Requirement met'.
+        - Deployment is left to the administrator.
+
+        Returns a hashtable: ApplicationName, Created, Updated, Skipped. Throws on failure.
+    #>
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory)][string]$SourcePath,
+        [Parameter(Mandatory)][string]$OEM,
+        [Parameter(Mandatory)][string]$Model,
+        [Parameter(Mandatory)][string]$Baseboards,
+        [Parameter(Mandatory)][string]$OS,
+        [Parameter(Mandatory)][string]$Architecture,
+        [Parameter(Mandatory)][string]$Version,
+        [Parameter(Mandatory)][string]$SiteServer,
+        [Parameter(Mandatory)][string]$SiteCode,
+        [ValidateSet('Drivers','BIOS')][string]$PackageType = 'Drivers',
+        [string]$ReleaseDate,
+        [string]$NamePrefix,
+        [string[]]$DistributionPointGroups,
+        [string[]]$DistributionPoints,
+        [ValidateSet('High','Normal','Low')][string]$Priority = 'Normal',
+        [switch]$ForceUpdate
+    )
+
+    $appName = Get-DATConfigMgrApplicationName -OEM $OEM -Model $Model -OS $OS -Architecture $Architecture `
+        -PackageType $PackageType -NamePrefix $NamePrefix
+    $dtSettings = Get-DATConfigMgrDeploymentTypeSettings -PackageType $PackageType
+    $dtName = $dtSettings.DeploymentTypeName
+    $gcName = "DAT Requirement - $appName"
+
+    Write-DATLogEntry -Value "- [ConfigMgr App] Preparing Application '$appName' (version $Version)" -Severity 1
+    Set-DATRegistryValue -Name "RunningMessage" -Value "Creating ConfigMgr Application: $OEM $Model..." -Type String
+
+    # The content folder must carry the install script -- without it every install fails.
+    $installScriptPath = Join-Path $SourcePath $dtSettings.InstallScriptName
+    if (-not (Test-Path -LiteralPath "FileSystem::$installScriptPath")) {
+        throw "Install script not found in the package source folder: $installScriptPath"
+    }
+
+    # Generate the detection and requirement scripts on the local file system before switching
+    # to the site drive.
+    $workDir = Join-Path $global:TempDirectory "ConfigMgrApp\$(ConvertTo-DATSafePathSegment -Segment "$OEM")\$(ConvertTo-DATSafePathSegment -Segment "$Model")"
+    if (-not (Test-Path $workDir)) { New-Item -Path $workDir -ItemType Directory -Force | Out-Null }
+    $detectionPath   = Join-Path $workDir "Detect-$PackageType.ps1"
+    $requirementPath = Join-Path $workDir "Require-$PackageType.ps1"
+    New-DATIntuneDetectionScript -OutputPath $detectionPath -OEM $OEM -Model $Model -Baseboards $Baseboards `
+        -OS $OS -Version $Version -UpdateType $PackageType -ReleaseDate $ReleaseDate | Out-Null
+    New-DATIntuneRequirementScript -OutputPath $requirementPath -OEM $OEM -Model $Model -Baseboards $Baseboards `
+        -OS $OS -Version $Version -UpdateType $PackageType -ReleaseDate $ReleaseDate -TargetPlatform ConfigMgr | Out-Null
+    $detectionText   = Get-Content -Path $detectionPath -Raw
+    $requirementText = Get-Content -Path $requirementPath -Raw
+
+    $releaseDateStamp = ConvertTo-DATReleaseDateStamp -ReleaseDate $ReleaseDate
+    $description = "$PackageType package for $OEM $Model. Baseboards/SKU: $Baseboards. Version: $Version"
+    if (-not [string]::IsNullOrEmpty($releaseDateStamp)) { $description += ". Release Date: $releaseDateStamp" }
+    $description += ". Created by Driver Automation Tool"
+    $cmPriority = if ($Priority -eq 'Normal') { 'Medium' } else { $Priority }
+
+    $result = @{ ApplicationName = $appName; Created = $false; Updated = $false; Skipped = $false }
+
+    Enter-DATConfigMgrSiteDrive -SiteServer $SiteServer -SiteCode $SiteCode
+    try {
+        $existingApp = Get-CMApplication -Name $appName -Fast -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($existingApp -and $existingApp.SoftwareVersion -eq $Version -and -not $ForceUpdate) {
+            Write-DATLogEntry -Value "- [ConfigMgr App] SKIPPED: '$appName' version $Version already exists (CI_ID $($existingApp.CI_ID))" -Severity 1
+            $result.Skipped = $true
+            return $result
+        }
+
+        # Requirement global condition -- one per Application, updated in place on a new version
+        # (the BIOS requirement compares against the package version).
+        $gc = Get-CMGlobalCondition -Name $gcName -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($gc) {
+            Set-CMGlobalConditionScript -Name $gcName -ScriptLanguage PowerShell -ScriptText $requirementText -ErrorAction Stop | Out-Null
+            $gc = Get-CMGlobalCondition -Name $gcName -ErrorAction Stop | Select-Object -First 1
+        } else {
+            $gc = New-CMGlobalConditionScript -Name $gcName -DataType String -ScriptLanguage PowerShell `
+                -ScriptText $requirementText -Description "Driver Automation Tool applicability check for $appName" -ErrorAction Stop
+        }
+        $requirementRule = $gc | New-CMRequirementRuleCommonValue -Value1 'Requirement met' -RuleOperator IsEquals -ErrorAction Stop
+
+        $dtParams = @{
+            ApplicationName          = $appName
+            DeploymentTypeName       = $dtName
+            InstallCommand           = $dtSettings.InstallCommand
+            ContentLocation          = $SourcePath
+            ScriptLanguage           = 'PowerShell'
+            ScriptText               = $detectionText
+            InstallationBehaviorType = $dtSettings.InstallationBehaviorType
+            LogonRequirementType     = $dtSettings.LogonRequirementType
+            UserInteractionMode      = $dtSettings.UserInteractionMode
+            RebootBehavior           = $dtSettings.RebootBehavior
+            MaximumRuntimeMins       = $dtSettings.MaximumRuntimeMins
+            EstimatedRuntimeMins     = $dtSettings.EstimatedRuntimeMins
+            SlowNetworkDeploymentMode = 'Download'
+            ErrorAction              = 'Stop'
+        }
+        if ($dtSettings.UninstallCommand) { $dtParams['UninstallCommand'] = $dtSettings.UninstallCommand }
+
+        if ($existingApp) {
+            Write-DATLogEntry -Value "- [ConfigMgr App] Updating '$appName' from version $($existingApp.SoftwareVersion) to $Version" -Severity 1
+            Set-CMApplication -Name $appName -SoftwareVersion $Version -Description $description -ErrorAction Stop | Out-Null
+            $existingDt = Get-CMDeploymentType -ApplicationName $appName -DeploymentTypeName $dtName -ErrorAction SilentlyContinue
+            if ($existingDt) {
+                Set-CMScriptDeploymentType @dtParams -ContentFallback $true | Out-Null
+            } else {
+                Add-CMScriptDeploymentType @dtParams -ContentFallback -AddRequirement $requirementRule | Out-Null
+            }
+            try {
+                Update-CMDistributionPoint -ApplicationName $appName -DeploymentTypeName $dtName -ErrorAction Stop | Out-Null
+                Write-DATLogEntry -Value "- [ConfigMgr App] Content update triggered for '$appName'" -Severity 1
+            } catch {
+                Write-DATLogEntry -Value "[Warning] - Failed to update distribution points for '$appName': $($_.Exception.Message)" -Severity 2
+            }
+            $result.Updated = $true
+        } else {
+            Write-DATLogEntry -Value "- [ConfigMgr App] Creating '$appName'" -Severity 1
+            New-CMApplication -Name $appName -Publisher $OEM -SoftwareVersion $Version -Description $description `
+                -AutoInstall $true -ErrorAction Stop | Out-Null
+            Add-CMScriptDeploymentType @dtParams -ContentFallback -AddRequirement $requirementRule | Out-Null
+
+            $distributed = $false
+            if ($DistributionPointGroups -and $DistributionPointGroups.Count -gt 0) {
+                try {
+                    Start-CMContentDistribution -ApplicationName $appName -DistributionPointGroupName $DistributionPointGroups -ErrorAction Stop | Out-Null
+                    $distributed = $true
+                } catch {
+                    Write-DATLogEntry -Value "[Warning] - Failed to distribute '$appName' to DP groups: $($_.Exception.Message)" -Severity 2
+                }
+            }
+            if ($DistributionPoints -and $DistributionPoints.Count -gt 0) {
+                try {
+                    Start-CMContentDistribution -ApplicationName $appName -DistributionPointName $DistributionPoints -ErrorAction Stop | Out-Null
+                    $distributed = $true
+                } catch {
+                    Write-DATLogEntry -Value "[Warning] - Failed to distribute '$appName' to DPs: $($_.Exception.Message)" -Severity 2
+                }
+            }
+            if ($distributed) {
+                Write-DATLogEntry -Value "- [ConfigMgr App] Content distribution started for '$appName'" -Severity 1
+            } else {
+                Write-DATLogEntry -Value "[Warning] - '$appName' was not distributed to any distribution point -- distribute it before deploying" -Severity 2
+            }
+            $result.Created = $true
+        }
+
+        try {
+            Set-CMApplication -Name $appName -DistributionPriority $cmPriority -ErrorAction Stop | Out-Null
+        } catch {
+            Write-DATLogEntry -Value "[Warning] - Could not set distribution priority on '$appName': $($_.Exception.Message)" -Severity 2
+        }
+
+        Write-DATLogEntry -Value "- [ConfigMgr App] '$appName' ready (deployment type '$dtName', restart behaviour $($dtSettings.RebootBehavior))" -Severity 1
+        return $result
+    } finally {
+        Pop-Location
+    }
+}
+
+function Invoke-DATConfigMgrApplicationPipeline {
+    <#
+    .SYNOPSIS
+        Build step run after New-DATConfigMgrPkg when ConfigMgr Applications are enabled.
+    .DESCRIPTION
+        1. Resolves the legacy package's source folder.
+        2. Writes the install + toast script set into it (New-DATPackageScriptSet). This runs on
+           every build because New-DATConfigMgrPkg empties the folder when it updates content.
+           The package's distributed copy is not refreshed for this: the task sequence scripts
+           only read DriverPackage.* (drivers) or the BIOS payload, so the extra .ps1 files make
+           no difference to them, and a refresh would make every task sequence client download
+           the package again.
+        3. Creates or updates the Application (New-DATConfigMgrApplication).
+
+        Never throws: a failure here is logged and reported, but does not fail the package,
+        which was already built successfully. Returns the New-DATConfigMgrApplication result,
+        or $null when the Application was not created.
+    #>
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory)][string]$PackageID,
+        [Parameter(Mandatory)][string]$OEM,
+        [Parameter(Mandatory)][string]$Model,
+        [Parameter(Mandatory)][string]$Baseboards,
+        [Parameter(Mandatory)][string]$OS,
+        [Parameter(Mandatory)][string]$Architecture,
+        [Parameter(Mandatory)][string]$Version,
+        [Parameter(Mandatory)][string]$SiteServer,
+        [Parameter(Mandatory)][string]$SiteCode,
+        [ValidateSet('Drivers','BIOS')][string]$PackageType = 'Drivers',
+        [string]$ReleaseDate,
+        [string]$NamePrefix,
+        [string[]]$DistributionPointGroups,
+        [string[]]$DistributionPoints,
+        [ValidateSet('High','Normal','Low')][string]$Priority = 'Normal',
+        [switch]$ForceUpdate,
+        [hashtable]$ScriptSetParams = @{}
+    )
+
+    try {
+        $sourcePath = Get-DATConfigMgrPackageSourcePath -PackageID $PackageID -SiteServer $SiteServer -SiteCode $SiteCode
+        if ([string]::IsNullOrEmpty($sourcePath)) {
+            throw "Could not read the source path of package $PackageID"
+        }
+        if ($PackageType -eq 'Drivers' -and -not (Test-Path -LiteralPath "FileSystem::$(Join-Path $sourcePath 'DriverPackage.wim')")) {
+            Write-DATLogEntry -Value "[Warning] - [ConfigMgr App] $OEM $Model -- package $PackageID has no DriverPackage.wim (expanded content), so no Application was created. Rebuild the package with ConfigMgr Applications enabled to package it as a WIM." -Severity 2
+            return $null
+        }
+
+        Write-DATLogEntry -Value "- [ConfigMgr App] Writing install and toast scripts to $sourcePath" -Severity 1
+        $setParams = @{} + $ScriptSetParams
+        # A plain path: the generators write with [System.IO.File], which does not accept a
+        # provider-qualified path.
+        $setParams['StagingDir']     = $sourcePath
+        $setParams['OEM']            = $OEM
+        $setParams['Model']          = $Model
+        $setParams['OS']             = $OS
+        $setParams['Version']        = $Version
+        $setParams['UpdateType']     = $PackageType
+        $setParams['TargetPlatform'] = 'ConfigMgr'
+        # The Application the "Remind Me Later" reminder task asks the client to run again --
+        # the same name New-DATConfigMgrApplication gives it.
+        $setParams['ConfigMgrApplicationName'] = Get-DATConfigMgrApplicationName -OEM $OEM -Model $Model -OS $OS `
+            -Architecture $Architecture -PackageType $PackageType -NamePrefix $NamePrefix
+        if (-not [string]::IsNullOrEmpty($ReleaseDate)) { $setParams['ReleaseDate'] = $ReleaseDate }
+        New-DATPackageScriptSet @setParams | Out-Null
+
+        $appParams = @{
+            SourcePath   = $sourcePath
+            OEM          = $OEM
+            Model        = $Model
+            Baseboards   = $Baseboards
+            OS           = $OS
+            Architecture = $Architecture
+            Version      = $Version
+            SiteServer   = $SiteServer
+            SiteCode     = $SiteCode
+            PackageType  = $PackageType
+            Priority     = $Priority
+        }
+        if (-not [string]::IsNullOrEmpty($ReleaseDate)) { $appParams['ReleaseDate'] = $ReleaseDate }
+        if (-not [string]::IsNullOrEmpty($NamePrefix)) { $appParams['NamePrefix'] = $NamePrefix }
+        if ($DistributionPointGroups -and $DistributionPointGroups.Count -gt 0) { $appParams['DistributionPointGroups'] = $DistributionPointGroups }
+        if ($DistributionPoints -and $DistributionPoints.Count -gt 0) { $appParams['DistributionPoints'] = $DistributionPoints }
+        if ($ForceUpdate) { $appParams['ForceUpdate'] = $true }
+        return (New-DATConfigMgrApplication @appParams)
+    } catch {
+        Write-DATLogEntry -Value "[Warning] - [ConfigMgr App] Application for $OEM $Model was not created: $($_.Exception.Message)" -Severity 2
+        return $null
+    }
+}
+
+function Invoke-DATDismExternal {
+    <#
+    .SYNOPSIS
+        Runs dism.exe as an external process through a cmd.exe wrapper and returns its exit code.
+    .DESCRIPTION
+        DISM needs a real console, so it is launched hidden through a batch wrapper that captures
+        stdout (the same pattern as the WIM capture in Invoke-DATDriverFilePackaging). The DISM
+        PowerShell cmdlets are not used: they run in-process through COM and a killed dismhost
+        corrupts the calling process. The process tree is killed if it outlives TimeoutSec.
+        Output is written to the DAT log.
+    #>
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory)][string]$Arguments,
+        [Parameter(Mandatory)][string]$WorkDir,
+        [string]$Label = 'DISM',
+        [int]$TimeoutSec = 3600
+    )
+    $stamp       = [System.IO.Path]::GetRandomFileName().Replace('.', '')
+    $stdoutFile  = Join-Path $WorkDir "DAT_DISM_$stamp.out"
+    $batchFile   = Join-Path $WorkDir "DAT_DISM_$stamp.cmd"
+    $dismExe     = "$env:SystemRoot\System32\dism.exe"
+    Set-Content -Path $batchFile -Value "@echo off`r`n`"$dismExe`" $Arguments > `"$stdoutFile`" 2>&1`r`nexit /b %ERRORLEVEL%" -Encoding ASCII
+    Write-DATLogEntry -Value "[$Label] dism.exe $Arguments" -Severity 1
+
+    $proc = Start-Process -FilePath "$env:SystemRoot\System32\cmd.exe" -ArgumentList "/c `"$batchFile`"" -WindowStyle Hidden -PassThru
+    $exitCode = $null
+    if (-not $proc.WaitForExit($TimeoutSec * 1000)) {
+        Write-DATLogEntry -Value "[$Label] dism.exe did not finish within $TimeoutSec seconds -- killing it" -Severity 3
+        try { & "$env:SystemRoot\System32\taskkill.exe" '/PID' "$($proc.Id)" '/T' '/F' 2>&1 | Out-Null } catch { }
+        $exitCode = 1460   # ERROR_TIMEOUT
+    } else {
+        $exitCode = $proc.ExitCode
+    }
+
+    if (Test-Path $stdoutFile) {
+        foreach ($line in @(Get-Content $stdoutFile -ErrorAction SilentlyContinue)) {
+            if (-not [string]::IsNullOrWhiteSpace($line)) { Write-DATLogEntry -Value "[$Label] DISM: $line" -Severity 1 }
+        }
+    }
+    Remove-Item $stdoutFile, $batchFile -Force -ErrorAction SilentlyContinue
+    Write-DATLogEntry -Value "[$Label] dism.exe exit code: $exitCode" -Severity $(if ($exitCode -eq 0) { 1 } else { 3 })
+    return $exitCode
+}
+
+function Invoke-DATConfigMgrPackageRefresh {
+    <#
+    .SYNOPSIS
+        Stamps a legacy package's SourceDate and triggers RefreshPkgSource (redistribution to
+        every distribution point that holds it). Returns the package name.
+    #>
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory)][string]$PackageID,
+        [Parameter(Mandatory)][string]$SiteServer,
+        [Parameter(Mandatory)][string]$SiteCode
+    )
+    if ($PackageID -notmatch '^[A-Za-z0-9]{8}$') { throw "Invalid ConfigMgr package ID '$PackageID'" }
+    $pkgWmi = [wmi]"\\$SiteServer\root\SMS\Site_$($SiteCode):SMS_Package.PackageID='$PackageID'"
+    $pkgWmi.SourceDate = [System.Management.ManagementDateTimeConverter]::ToDmtfDateTime((Get-Date))
+    $pkgWmi.Put() | Out-Null
+    $pkgWmi.RefreshPkgSource() | Out-Null
+    return [string]$pkgWmi.Name
+}
+
+function Add-DATCustomDriversToConfigMgrPackage {
+    <#
+    .SYNOPSIS
+        Adds a folder of custom drivers to an existing ConfigMgr driver package and redistributes it.
+    .DESCRIPTION
+        For a package whose source folder holds DriverPackage.wim:
+          1. copies the WIM to a local work folder (DISM cannot reliably mount over a share);
+          2. mounts it with dism.exe /Mount-Wim;
+          3. copies the driver folder into the image under Custom\<folder name>;
+          4. commits and unmounts (discarding on any failure, so the original is never touched);
+          5. replaces the WIM in the package source (keeping the original until the copy is in
+             place) and triggers redistribution with RefreshPkgSource.
+        For a package built with WIM compression disabled (expanded content), the drivers are
+        copied straight into the source folder under Custom\<folder name> instead.
+
+        A ConfigMgr Application built over the same source folder (Package Options > ConfigMgr
+        Applications) is refreshed too when the ConfigMgr console cmdlets are available.
+
+        Returns a PSCustomObject (PackageID, Mode = Wim|Expanded, InfCount, TargetFolder,
+        SourcePath). Throws on failure; the package content is left as it was.
+    #>
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory)][string]$PackageID,
+        [Parameter(Mandatory)][string]$DriverSourcePath,
+        [Parameter(Mandatory)][string]$SiteServer,
+        [Parameter(Mandatory)][string]$SiteCode,
+        [string]$WorkRoot = $global:TempDirectory
+    )
+
+    $label = "Custom Drivers $PackageID"
+    if (-not (Test-Path -LiteralPath $DriverSourcePath -PathType Container)) {
+        throw "Driver source folder not found: $DriverSourcePath"
+    }
+    $infCount = @(Get-ChildItem -LiteralPath $DriverSourcePath -Filter '*.inf' -Recurse -File -ErrorAction SilentlyContinue).Count
+    if ($infCount -eq 0) { throw "No .inf files found in $DriverSourcePath" }
+
+    $sourcePath = Get-DATConfigMgrPackageSourcePath -PackageID $PackageID -SiteServer $SiteServer -SiteCode $SiteCode
+    if ([string]::IsNullOrEmpty($sourcePath)) { throw "Could not read the source path of package $PackageID" }
+    if (-not (Test-Path -LiteralPath $sourcePath -PathType Container)) { throw "Package source folder not reachable: $sourcePath" }
+
+    # Drivers land in their own sub-folder so they never overwrite OEM drivers with the same
+    # file names; the task sequence and install scripts install every .inf recursively.
+    $leaf = ConvertTo-DATSafePathSegment -Segment (Split-Path -Leaf ($DriverSourcePath.TrimEnd('\', '/')))
+    if ([string]::IsNullOrWhiteSpace($leaf)) { $leaf = 'Drivers' }
+    $getTarget = {
+        param ($Root)
+        $target = Join-Path (Join-Path $Root 'Custom') $leaf
+        $n = 2
+        while (Test-Path -LiteralPath $target) { $target = Join-Path (Join-Path $Root 'Custom') "$leaf ($n)"; $n++ }
+        $target
+    }
+
+    Write-DATLogEntry -Value "[$label] Adding $infCount driver .inf file(s) from $DriverSourcePath to package source $sourcePath" -Severity 1
+    Set-DATRegistryValue -Name "RunningMessage" -Value "Adding custom drivers to $PackageID..." -Type String
+
+    $sourceWim = Join-Path $sourcePath 'DriverPackage.wim'
+    $mode = if (Test-Path -LiteralPath $sourceWim -PathType Leaf) { 'Wim' } else { 'Expanded' }
+    $relativeTarget = $null
+
+    if ($mode -eq 'Expanded') {
+        $target = & $getTarget $sourcePath
+        New-Item -Path $target -ItemType Directory -Force | Out-Null
+        Copy-Item -Path (Join-Path $DriverSourcePath '*') -Destination $target -Recurse -Force -ErrorAction Stop
+        $relativeTarget = $target.Substring($sourcePath.Length).TrimStart('\', '/')
+        Write-DATLogEntry -Value "[$label] Package has expanded content -- drivers copied to $target" -Severity 1
+    } else {
+        $workDir  = Join-Path $WorkRoot "CustomDriverInject\$PackageID-$([System.IO.Path]::GetRandomFileName().Replace('.', ''))"
+        $mountDir = Join-Path $workDir 'Mount'
+        $localWim = Join-Path $workDir 'DriverPackage.wim'
+        New-Item -Path $mountDir -ItemType Directory -Force | Out-Null
+
+        $mounted = $false
+        try {
+            # Space: the local WIM copy, the expanded image and the new drivers, with headroom.
+            $wimBytes    = (Get-Item -LiteralPath $sourceWim).Length
+            $driverBytes = [int64](Get-ChildItem -LiteralPath $DriverSourcePath -Recurse -File -ErrorAction SilentlyContinue | Measure-Object -Property Length -Sum).Sum
+            $needBytes   = ($wimBytes * 4) + ($driverBytes * 2)
+            $workDrive   = [System.IO.Path]::GetPathRoot((Resolve-Path $workDir).ProviderPath)
+            if ($workDrive -match '^[A-Za-z]:\\$') {
+                $freeBytes = ([System.IO.DriveInfo]::new($workDrive)).AvailableFreeSpace
+                if ($freeBytes -lt $needBytes) {
+                    throw ("Not enough free space on {0} to mount the WIM: {1:N1} GB needed, {2:N1} GB free" -f $workDrive, ($needBytes / 1GB), ($freeBytes / 1GB))
+                }
+            }
+
+            Write-DATLogEntry -Value ("[$label] Copying DriverPackage.wim ({0:N1} MB) to $workDir" -f ($wimBytes / 1MB)) -Severity 1
+            Set-DATRegistryValue -Name "RunningMessage" -Value "Copying WIM for $PackageID..." -Type String
+            Copy-Item -LiteralPath $sourceWim -Destination $localWim -Force -ErrorAction Stop
+
+            # Clear stale mounts left by an earlier crash; they block new mounts.
+            [void](Invoke-DATDismExternal -Arguments '/Cleanup-Wim' -WorkDir $workDir -Label $label -TimeoutSec 120)
+
+            Set-DATRegistryValue -Name "RunningMessage" -Value "Mounting WIM for $PackageID..." -Type String
+            $rc = Invoke-DATDismExternal -Arguments "/Mount-Wim /WimFile:`"$localWim`" /Index:1 /MountDir:`"$mountDir`"" -WorkDir $workDir -Label $label
+            if ($rc -ne 0) { throw "dism.exe /Mount-Wim failed (exit code $rc)" }
+            $mounted = $true
+
+            $target = & $getTarget $mountDir
+            New-Item -Path $target -ItemType Directory -Force | Out-Null
+            Set-DATRegistryValue -Name "RunningMessage" -Value "Adding drivers to $PackageID..." -Type String
+            Copy-Item -Path (Join-Path $DriverSourcePath '*') -Destination $target -Recurse -Force -ErrorAction Stop
+            $relativeTarget = $target.Substring($mountDir.Length).TrimStart('\', '/')
+            Write-DATLogEntry -Value "[$label] Drivers copied into the image at $relativeTarget" -Severity 1
+
+            Set-DATRegistryValue -Name "RunningMessage" -Value "Saving WIM for $PackageID..." -Type String
+            $rc = Invoke-DATDismExternal -Arguments "/Unmount-Wim /MountDir:`"$mountDir`" /Commit" -WorkDir $workDir -Label $label
+            if ($rc -ne 0) { throw "dism.exe /Unmount-Wim /Commit failed (exit code $rc)" }
+            $mounted = $false
+
+            # Replace the package WIM: copy under a temporary name first, so a failed copy never
+            # leaves the package without its WIM, then swap and keep the original until done.
+            Set-DATRegistryValue -Name "RunningMessage" -Value "Updating package source for $PackageID..." -Type String
+            $newWim    = "$sourceWim.new"
+            $backupWim = "$sourceWim.bak"
+            Copy-Item -LiteralPath $localWim -Destination $newWim -Force -ErrorAction Stop
+            if (Test-Path -LiteralPath $backupWim) { Remove-Item -LiteralPath $backupWim -Force -ErrorAction Stop }
+            Move-Item -LiteralPath $sourceWim -Destination $backupWim -Force -ErrorAction Stop
+            try {
+                Move-Item -LiteralPath $newWim -Destination $sourceWim -Force -ErrorAction Stop
+            } catch {
+                Move-Item -LiteralPath $backupWim -Destination $sourceWim -Force -ErrorAction SilentlyContinue
+                throw
+            }
+            Remove-Item -LiteralPath $backupWim -Force -ErrorAction SilentlyContinue
+            Write-DATLogEntry -Value ("[$label] Package WIM replaced ({0:N1} MB)" -f ((Get-Item -LiteralPath $sourceWim).Length / 1MB)) -Severity 1
+        } finally {
+            if ($mounted) {
+                Write-DATLogEntry -Value "[$label] Discarding the mounted image after a failure -- the package WIM was not changed" -Severity 2
+                [void](Invoke-DATDismExternal -Arguments "/Unmount-Wim /MountDir:`"$mountDir`" /Discard" -WorkDir $workDir -Label $label -TimeoutSec 900)
+            }
+            Remove-Item -LiteralPath "$sourceWim.new" -Force -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath $workDir -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    # Redistribute: stamp SourceDate (so Package Management shows the change) and refresh.
+    Set-DATRegistryValue -Name "RunningMessage" -Value "Redistributing $PackageID..." -Type String
+    try {
+        $pkgName = Invoke-DATConfigMgrPackageRefresh -PackageID $PackageID -SiteServer $SiteServer -SiteCode $SiteCode
+    } catch {
+        # The content has already changed at this point, so say so rather than implying it has not.
+        throw "The drivers were added to the package source, but redistribution failed: $($_.Exception.Message). Run 'Update Distribution Points' on package $PackageID in the ConfigMgr console."
+    }
+    Write-DATLogEntry -Value "[$label] Content redistribution triggered for $PackageID" -Severity 1
+
+    # An Application created over the same folder would otherwise keep serving the old content.
+    try {
+        $appName = [string]$pkgName
+        if (Get-Command Get-CMApplication -ErrorAction SilentlyContinue) {
+            Enter-DATConfigMgrSiteDrive -SiteServer $SiteServer -SiteCode $SiteCode
+            try {
+                if (Get-CMApplication -Name $appName -Fast -ErrorAction SilentlyContinue) {
+                    $dtName = (Get-DATConfigMgrDeploymentTypeSettings -PackageType Drivers).DeploymentTypeName
+                    Update-CMDistributionPoint -ApplicationName $appName -DeploymentTypeName $dtName -ErrorAction Stop | Out-Null
+                    Write-DATLogEntry -Value "[$label] ConfigMgr Application '$appName' content refreshed" -Severity 1
+                }
+            } finally { Pop-Location }
+        }
+    } catch {
+        Write-DATLogEntry -Value "[Warning] - [$label] Could not refresh the ConfigMgr Application for this package: $($_.Exception.Message)" -Severity 2
+    }
+
+    [PSCustomObject]@{
+        PackageID    = $PackageID
+        Mode         = $mode
+        InfCount     = $infCount
+        TargetFolder = $relativeTarget
+        SourcePath   = $sourcePath
+    }
+}
+
 function Publish-DATConfigMgrPkg {
     param ([string]$Product, [string]$PackageID, [string]$ImportInto)
     # Content distribution handled by New-DATConfigMgrPkg
@@ -5024,7 +5651,7 @@ function Install-DATDriverPackage {
     [CmdletBinding()]
     param (
         [Parameter(Mandatory)][ValidateSet('Windows 10', 'Windows 11')][string]$TargetOS,
-        [Parameter(Mandatory)][ValidateSet('21H2', '22H2', '23H2', '24H2', '25H2', '26H1')][string]$TargetOSBuild,
+        [Parameter(Mandatory)][ValidateSet('21H2', '22H2', '23H2', '24H2', '25H2', '26H2', '26H1')][string]$TargetOSBuild,
         [Parameter(Mandatory)][ValidatePattern('^[A-Z]:$')][string]$TargetDrive
     )
     Write-DATLogEntry -Value "[Driver Install] - $TargetOS $TargetOSBuild on $TargetDrive" -Severity 1
@@ -5255,13 +5882,25 @@ function Start-DATModelProcessing {
         [AllowEmptyString()]
         [string]$TeamsCustomText = '',
         [string]$CustomToastTextsJson,
+        # Toast colours (see Resolve-DATToastTheme); empty keeps the original dark toasts
+        [AllowEmptyString()][string]$ToastThemeJson = '',
+        # Show the compact install progress notification while an update installs
+        [switch]$ShowInstallProgress,
+        # Install silently during Autopilot provisioning (on by default, see docs/Autopilot.md)
+        [bool]$SilentDuringAutopilot = $true,
         [string]$MaintenanceWindowsJson,
         [switch]$AlarmMode,
         [switch]$AlarmSound,
         [switch]$CreateIntuneWinOnly,
         [switch]$GenerateXmlLogicPackage,
         [bool]$ExtractDownloadOnlyContent = $true,
-        [bool]$ShowBrandingBannerAllToasts = $false
+        [bool]$ShowBrandingBannerAllToasts = $false,
+        # Configuration Manager mode: also create a ConfigMgr Application (with the toast
+        # notifications) from each driver/BIOS package's source folder.
+        [switch]$CreateConfigMgrApplication,
+        # ConfigMgr Applications: hours "Remind Me Later" snoozes the prompt before the reminder
+        # task asks the client to run the Application again.
+        [ValidateRange(1, 24)][int]$ConfigMgrReminderIntervalHours = 4
     )
     $global:ScriptDirectory = $ScriptDirectory
     $global:LogDirectory = Join-Path $ScriptDirectory "Logs"
@@ -5309,6 +5948,81 @@ function Start-DATModelProcessing {
     $CustomBIOSFinalNoticeTitle = if ($customToastTexts.ContainsKey('Toast_BIOSFinalNotice')) { $customToastTexts['Toast_BIOSFinalNotice'].Title } else { '' }
     $CustomBIOSFinalNoticeBody  = if ($customToastTexts.ContainsKey('Toast_BIOSFinalNotice')) { $customToastTexts['Toast_BIOSFinalNotice'].Body } else { '' }
     $CustomBIOSFinalNoticeActionButton = if ($customToastTexts.ContainsKey('Toast_BIOSFinalNotice')) { $customToastTexts['Toast_BIOSFinalNotice'].ActionButton } else { '' }
+
+    # ConfigMgr Application: toast and restart settings for the script set staged into the
+    # package source folder. Mirrors what the Intune branches pass to Invoke-DATIntunePackageCreation.
+    # The Application needs DriverPackage.wim, so ConfigMgr WIM compression cannot be disabled
+    # while it is on (read by Invoke-DATDriverFilePackaging).
+    $script:DATForceConfigMgrWim = [bool]$CreateConfigMgrApplication
+
+    # Toast colours for every toast script this run generates (New-DATIntuneToastScript reads it),
+    # so the setting does not have to be threaded through each packaging function.
+    Set-DATBuildToastOptions -ToastThemeJson $ToastThemeJson -ShowInstallProgress ([bool]$ShowInstallProgress -and -not $DisableToast) `
+        -SilentDuringAutopilot $SilentDuringAutopilot
+    $cmAppScriptParams = @{ Drivers = @{}; BIOS = @{} }
+    $cmAppOutcomes = [System.Collections.Generic.List[object]]::new()
+    if ($CreateConfigMgrApplication) {
+        $sharedToastParams = @{}
+        if ($DisableToast) { $sharedToastParams['DisableToast'] = $true }
+        if ($DisableRestart) { $sharedToastParams['DisableRestart'] = $true }
+        if ($AlarmMode) { $sharedToastParams['AlarmMode'] = $true }
+        if ($AlarmSound) { $sharedToastParams['AlarmSound'] = $true }
+        if ($ToastTimeoutAction -ne 'RemindMeLater') { $sharedToastParams['ToastTimeoutAction'] = $ToastTimeoutAction }
+        if ($MaxDeferrals -gt 0) { $sharedToastParams['MaxDeferrals'] = $MaxDeferrals }
+        if ($RestartDelaySeconds -ne 600) { $sharedToastParams['RestartDelaySeconds'] = $RestartDelaySeconds }
+        if (-not [string]::IsNullOrEmpty($CustomBrandingPath)) { $sharedToastParams['CustomBrandingPath'] = $CustomBrandingPath }
+        if ($ShowBrandingBannerAllToasts) { $sharedToastParams['ShowBrandingBannerAllToasts'] = $true }
+        if ($ConfigMgrReminderIntervalHours -ne 4) { $sharedToastParams['ReminderIntervalHours'] = $ConfigMgrReminderIntervalHours }
+
+        $driverTexts = [ordered]@{
+            CustomToastTitle          = $CustomToastTitle
+            CustomToastBody           = $CustomToastBody
+            CustomToastGreeting       = $CustomToastGreeting
+            CustomToastSubtitle       = $CustomToastSubtitle
+            CustomToastActionButton   = $CustomToastActionButton
+            CustomToastDismissButton  = $CustomToastDismissButton
+            CustomSuccessTitle        = $CustomSuccessTitle
+            CustomSuccessBody         = $CustomSuccessBody
+            CustomSuccessActionButton = $CustomSuccessActionButton
+            CustomIssuesTitle         = $CustomIssuesTitle
+            CustomIssuesBody          = $CustomIssuesBody
+            CustomIssuesActionButton  = $CustomIssuesActionButton
+        }
+        # The BIOS pending-update toast takes the Toast_BIOS texts, as on the Intune BIOS path.
+        # HPPasswordBinPath is deliberately not passed: in Intune the BIN file travels inside the
+        # encrypted .intunewin, but here it would sit in the package source folder and be copied
+        # to every distribution point, where any client can read it. ConfigMgr devices get the
+        # BIOS password from the registry (BIOS Security page / password remediation) instead.
+        $biosTexts = [ordered]@{
+            CustomToastTitle                  = $CustomBIOSToastTitle
+            CustomToastBody                   = $CustomBIOSToastBody
+            CustomToastGreeting               = $CustomBIOSToastGreeting
+            CustomToastSubtitle               = $CustomBIOSToastSubtitle
+            CustomToastActionButton           = $CustomBIOSToastActionButton
+            CustomToastDismissButton          = $CustomBIOSToastDismissButton
+            CustomBIOSSuccessTitle            = $CustomBIOSSuccessTitle
+            CustomBIOSSuccessBody             = $CustomBIOSSuccessBody
+            CustomBIOSSuccessActionButton     = $CustomBIOSSuccessActionButton
+            CustomBIOSSuccessDismissButton    = $CustomBIOSSuccessDismissButton
+            CustomBIOSIssuesTitle             = $CustomBIOSIssuesTitle
+            CustomBIOSIssuesBody              = $CustomBIOSIssuesBody
+            CustomBIOSIssuesActionButton      = $CustomBIOSIssuesActionButton
+            CustomBIOSACPowerTitle            = $CustomBIOSACPowerTitle
+            CustomBIOSACPowerBody             = $CustomBIOSACPowerBody
+            CustomBIOSACPowerActionButton     = $CustomBIOSACPowerActionButton
+            CustomBIOSFinalNoticeTitle        = $CustomBIOSFinalNoticeTitle
+            CustomBIOSFinalNoticeBody         = $CustomBIOSFinalNoticeBody
+            CustomBIOSFinalNoticeActionButton = $CustomBIOSFinalNoticeActionButton
+        }
+        foreach ($type in @('Drivers', 'BIOS')) {
+            $cmAppScriptParams[$type] = @{} + $sharedToastParams
+            $texts = if ($type -eq 'BIOS') { $biosTexts } else { $driverTexts }
+            foreach ($key in $texts.Keys) {
+                if (-not [string]::IsNullOrEmpty($texts[$key])) { $cmAppScriptParams[$type][$key] = $texts[$key] }
+            }
+        }
+        Write-DATLogEntry -Value "[ConfigMgr App] ConfigMgr Applications will be created alongside packages (toast notifications: $(if ($DisableToast) { 'disabled' } else { 'enabled' }))" -Severity 1
+    }
 
     # Use user-configured paths if provided, otherwise default to ScriptDirectory sub-folders
     if ([string]::IsNullOrEmpty($StoragePath)) { $StoragePath = Join-Path $ScriptDirectory "Downloads" }
@@ -5458,10 +6172,18 @@ function Start-DATModelProcessing {
     Remove-ItemProperty -Path $global:RegPath -Name 'BuildSkippedCurrent' -ErrorAction SilentlyContinue
     Set-DATRegistryValue -Name "SkippedPackages" -Value "0" -Type String
 
+    # Pause / resume (Build Progress window). Cleared at the start of every run so a pause left
+    # behind by a closed UI can never hold a later build -- scheduled runs have no UI to resume.
+    Set-DATRegistryValue -Name 'BuildPauseRequested' -Value 0 -Type DWord
+    Set-DATRegistryValue -Name 'BuildPaused' -Value 0 -Type DWord
+    Set-DATRegistryValue -Name 'BuildPauseReason' -Value '' -Type String
+
     foreach ($model in $modelList) {
         $currentIndex++
         $oem = $model.OEM
         $modelName = $model.Model
+
+        if (Wait-DATBuildPause -Checkpoint "model $currentIndex of $totalModels ($oem $modelName)") { return }
 
         # Filesystem-safe copies of the OEM/model names for every folder built below. Catalog
         # model names are not guaranteed to be valid path segments -- Panasonic publishes
@@ -5776,6 +6498,7 @@ function Start-DATModelProcessing {
                         if ($ShowBrandingBannerAllToasts) { $intuneParams['ShowBrandingBannerAllToasts'] = $true }
                         if ($modelForceUpdate) { $intuneParams['ForceUpdate'] = $true }
                         if ($CreateIntuneWinOnly) { $intuneParams['CreateIntuneWinOnly'] = $true }
+                        if (Wait-DATBuildPause -Checkpoint "Intune driver packaging for $oem $modelName") { return }
                         $intuneResult = Invoke-DATIntunePackageCreation @intuneParams
 
                         Write-DATLogEntry -Value "- $oem $modelName Intune driver upload completed" -Severity 1
@@ -5974,6 +6697,32 @@ function Start-DATModelProcessing {
                             if ($cmResult) {
                                 Write-DATLogEntry -Value "- $oem $modelName ConfigMgr driver package created" -Severity 1
 
+                                if ($CreateConfigMgrApplication) {
+                                    $cmAppParams = @{
+                                        PackageID       = "$cmResult"
+                                        OEM             = $oem
+                                        Model           = $modelName
+                                        Baseboards      = $baseboards
+                                        OS              = $osPkgLabel
+                                        Architecture    = $arch
+                                        Version         = $version
+                                        SiteServer      = $SiteServer
+                                        SiteCode        = $SiteCode
+                                        PackageType     = 'Drivers'
+                                        NamePrefix      = $driverNamePrefix
+                                        Priority        = $DistributionPriority
+                                        ScriptSetParams = $cmAppScriptParams['Drivers']
+                                    }
+                                    if ($DistributionPointGroups -and $DistributionPointGroups.Count -gt 0) { $cmAppParams['DistributionPointGroups'] = $DistributionPointGroups }
+                                    if ($DistributionPoints -and $DistributionPoints.Count -gt 0) { $cmAppParams['DistributionPoints'] = $DistributionPoints }
+                                    if ($modelForceUpdate) { $cmAppParams['ForceUpdate'] = $true }
+                                    $cmAppResult = Invoke-DATConfigMgrApplicationPipeline @cmAppParams
+                                    $cmAppOutcomes.Add([pscustomobject]@{
+                                        Name    = "Drivers - $oem $modelName - $osPkgLabel $arch"
+                                        Outcome = if ($null -eq $cmAppResult) { 'Failed' } elseif ($cmAppResult.Skipped) { 'Skipped' } elseif ($cmAppResult.Updated) { 'Updated' } else { 'Created' }
+                                    })
+                                }
+
                                 # Record the ConfigMgr package id on the HP SoftPaq manifest so a
                                 # future run can confirm the package still exists before skipping.
                                 if ($oem -eq 'HP') {
@@ -6151,6 +6900,7 @@ function Start-DATModelProcessing {
                     Set-DATRegistryValue -Name "RunningMessage" -Value "BIOS skipped (already processed): $oem $modelName" -Type String
                     $biosPackageSuccessCount++
                 } else {
+                if (Wait-DATBuildPause -Checkpoint "BIOS for $oem $modelName") { return }
                 Set-DATRegistryValue -Name "PackagePhase" -Value "BIOS" -Type String
                 Write-DATLogEntry -Value "[$currentIndex/$totalModels] Starting BIOS processing for $oem $modelName" -Severity 1
                 Set-DATRegistryValue -Name "RunningMessage" -Value "[$currentIndex/$totalModels] BIOS: $oem $modelName" -Type String
@@ -6347,6 +7097,7 @@ function Start-DATModelProcessing {
                                 if ($ShowBrandingBannerAllToasts) { $intuneParams['ShowBrandingBannerAllToasts'] = $true }
                                 if ($modelForceUpdate) { $intuneParams['ForceUpdate'] = $true }
                                 if ($CreateIntuneWinOnly) { $intuneParams['CreateIntuneWinOnly'] = $true }
+                                if (Wait-DATBuildPause -Checkpoint "Intune BIOS packaging for $oem $modelName") { return }
                                 $biosIntuneResult = Invoke-DATIntunePackageCreation @intuneParams
 
                                 Write-DATLogEntry -Value "- $oem $modelName Intune BIOS upload completed" -Severity 1
@@ -6499,6 +7250,33 @@ function Start-DATModelProcessing {
 
                                     if ($cmResult) {
                                         Write-DATLogEntry -Value "- $oem $modelName ConfigMgr BIOS package created" -Severity 1
+
+                                        if ($CreateConfigMgrApplication) {
+                                            $cmAppParams = @{
+                                                PackageID       = "$cmResult"
+                                                OEM             = $oem
+                                                Model           = $modelName
+                                                Baseboards      = $baseboards
+                                                OS              = $osPkgLabel
+                                                Architecture    = $arch
+                                                Version         = "$biosVersion"
+                                                SiteServer      = $SiteServer
+                                                SiteCode        = $SiteCode
+                                                PackageType     = 'BIOS'
+                                                NamePrefix      = $biosUpdateNamePrefix
+                                                Priority        = $DistributionPriority
+                                                ScriptSetParams = $cmAppScriptParams['BIOS']
+                                            }
+                                            if (-not [string]::IsNullOrEmpty($biosEntry.ReleaseDate)) { $cmAppParams['ReleaseDate'] = $biosEntry.ReleaseDate }
+                                            if ($DistributionPointGroups -and $DistributionPointGroups.Count -gt 0) { $cmAppParams['DistributionPointGroups'] = $DistributionPointGroups }
+                                            if ($DistributionPoints -and $DistributionPoints.Count -gt 0) { $cmAppParams['DistributionPoints'] = $DistributionPoints }
+                                            if ($modelForceUpdate) { $cmAppParams['ForceUpdate'] = $true }
+                                            $cmAppResult = Invoke-DATConfigMgrApplicationPipeline @cmAppParams
+                                            $cmAppOutcomes.Add([pscustomobject]@{
+                                                Name    = "BIOS - $oem $modelName"
+                                                Outcome = if ($null -eq $cmAppResult) { 'Failed' } elseif ($cmAppResult.Skipped) { 'Skipped' } elseif ($cmAppResult.Updated) { 'Updated' } else { 'Created' }
+                                            })
+                                        }
 
                                         # Telemetry: BIOS report with the hash taken above, before distribution.
                                         try {
@@ -6756,6 +7534,14 @@ function Start-DATModelProcessing {
             Save-DATBuildResultData -Results $buildResultRowsForLog
         } catch {
             Write-DATLogEntry -Value "[Warning] Could not write the build summary table: $($_.Exception.Message)" -Severity 2
+        }
+        if ($CreateConfigMgrApplication -and $cmAppOutcomes.Count -gt 0) {
+            $cmAppSummary = ($cmAppOutcomes | Group-Object -Property Outcome | Sort-Object Name |
+                ForEach-Object { "$($_.Count) $($_.Name.ToLower())" }) -join ', '
+            Write-DATLogEntry -Value "--- ConfigMgr Applications: $cmAppSummary ---" -Severity 1
+            foreach ($failedApp in @($cmAppOutcomes | Where-Object { $_.Outcome -eq 'Failed' })) {
+                Write-DATLogEntry -Value "[Warning] ConfigMgr Application not created: $($failedApp.Name)" -Severity 2
+            }
         }
 
         # Send the Teams notification on every exit path -- completion, abort return, or a
@@ -7284,6 +8070,123 @@ function Send-DATTeamsNotification {
     Write-DATLogEntry -Value "[Teams] Notification posted to webhook" -Severity 1
 }
 
+function Wait-DATBuildPause {
+    <#
+    .SYNOPSIS
+        Holds the build at a safe point while the UI has a pause requested. Returns $true when the
+        build was aborted while paused (the caller stops), otherwise $false.
+    .DESCRIPTION
+        Pause is cooperative: the UI sets BuildPauseRequested = 1 and the build stops at the next
+        checkpoint -- before a model, before a model's BIOS stage, before an Intune upload -- so a
+        download, extraction or DISM capture is never frozen half way. BuildPaused = 1 tells the UI
+        the build is actually holding. Abort still works while paused: the UI stops the runspace,
+        and RunningState = 'Aborted' is also checked here.
+    #>
+    [CmdletBinding()]
+    param ([Parameter(Mandatory)][string]$Checkpoint)
+
+    $reg = Get-ItemProperty -Path $global:RegPath -ErrorAction SilentlyContinue
+    if ($reg.BuildPauseRequested -ne 1) { return $false }
+
+    $previousMessage = [string]$reg.RunningMessage
+    $pausedAt = Get-Date
+    # The UI also pauses on its own when a build drive runs low on space (BuildPauseReason)
+    if ([string]$reg.BuildPauseReason -eq 'LowDiskSpace') {
+        Write-DATLogEntry -Value "--- Build paused for low disk space before $Checkpoint ---" -Severity 2
+        Set-DATRegistryValue -Name 'BuildPaused' -Value 1 -Type DWord
+        Set-DATRegistryValue -Name 'RunningMessage' -Value "Paused (low disk space) -- next: $Checkpoint" -Type String
+    } else {
+        Write-DATLogEntry -Value "--- Build paused by user before $Checkpoint ---" -Severity 1
+        Set-DATRegistryValue -Name 'BuildPaused' -Value 1 -Type DWord
+        Set-DATRegistryValue -Name 'RunningMessage' -Value "Paused -- next: $Checkpoint" -Type String
+    }
+    $aborted = $false
+    try {
+        while ($true) {
+            Start-Sleep -Seconds 1
+            $reg = Get-ItemProperty -Path $global:RegPath -ErrorAction SilentlyContinue
+            if ($reg.RunningState -eq 'Aborted') { $aborted = $true; break }
+            if ($reg.BuildPauseRequested -ne 1) { break }
+        }
+    } finally {
+        Set-DATRegistryValue -Name 'BuildPaused' -Value 0 -Type DWord
+    }
+    $pausedFor = '{0:hh\:mm\:ss}' -f ((Get-Date) - $pausedAt)
+    if ($aborted) {
+        Write-DATLogEntry -Value "--- Build aborted by user while paused ($pausedFor) ---" -Severity 2
+        return $true
+    }
+    Write-DATLogEntry -Value "--- Build resumed after $pausedFor ---" -Severity 1
+    Set-DATRegistryValue -Name 'RunningMessage' -Value $previousMessage -Type String
+    return $false
+}
+
+function Get-DATDriveSpace {
+    <#
+    .SYNOPSIS
+        Free and total space of the local drive holding a path. Returns $null for a UNC path, a
+        relative path or a drive that is not ready -- network free space is managed remotely and
+        DriveInfo does not report it reliably.
+    #>
+    [CmdletBinding()]
+    param ([Parameter(Mandatory)][AllowEmptyString()][string]$Path)
+
+    if ([string]::IsNullOrWhiteSpace($Path) -or $Path -match '^\\\\') { return $null }
+    try {
+        $root = [System.IO.Path]::GetPathRoot($Path)
+        if (-not $root -or $root.StartsWith('\\')) { return $null }
+        $drive = [System.IO.DriveInfo]::new($root)
+        if (-not $drive.IsReady) { return $null }
+        return [PSCustomObject]@{
+            Root       = $root
+            FreeBytes  = [long]$drive.AvailableFreeSpace
+            TotalBytes = [long]$drive.TotalSize
+        }
+    } catch {
+        return $null
+    }
+}
+
+function Get-DATLowDiskSpace {
+    <#
+    .SYNOPSIS
+        Returns the drives, among the given build locations, with less free space than ThresholdGB.
+    .DESCRIPTION
+        Target is a list of objects with Label and Path (for example Temp storage and Package
+        storage). Locations on the same drive are checked once and their labels joined. Network and
+        unavailable locations are skipped (see Get-DATDriveSpace). Each result has Label, Root and
+        FreeGB (rounded to one decimal place; the comparison uses the exact byte count).
+    #>
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory)][AllowEmptyCollection()][AllowNull()][object[]]$Target,
+        [Parameter(Mandatory)][double]$ThresholdGB
+    )
+
+    $byRoot = [ordered]@{}
+    foreach ($location in $Target) {
+        if ($null -eq $location) { continue }
+        $space = Get-DATDriveSpace -Path ([string]$location.Path)
+        if ($null -eq $space) { continue }
+        $key = $space.Root.ToUpperInvariant()
+        if (-not $byRoot.Contains($key)) {
+            $byRoot[$key] = @{ Space = $space; Labels = [System.Collections.Generic.List[string]]::new() }
+        }
+        $label = [string]$location.Label
+        if ($label -and -not $byRoot[$key].Labels.Contains($label)) { $byRoot[$key].Labels.Add($label) }
+    }
+
+    foreach ($entry in $byRoot.Values) {
+        if (($entry.Space.FreeBytes / 1GB) -lt $ThresholdGB) {
+            [PSCustomObject]@{
+                Label  = ($entry.Labels -join ' and ')
+                Root   = $entry.Space.Root
+                FreeGB = [math]::Round($entry.Space.FreeBytes / 1GB, 1)
+            }
+        }
+    }
+}
+
 function Export-DATBuildConfig {
     [CmdletBinding()]
     param (
@@ -7312,6 +8215,11 @@ function Export-DATBuildConfig {
         [bool]$CleanTempOnExit = $true,
         [bool]$CreateIntuneWinOnly = $false,
         [bool]$ShowBrandingBannerAllToasts = $false,
+        [AllowEmptyString()][string]$ToastThemeJson = '',
+        [bool]$ShowInstallProgress = $false,
+        [bool]$SilentDuringAutopilot = $true,
+        [bool]$CreateConfigMgrApplication = $false,
+        [ValidateRange(1, 24)][int]$ConfigMgrReminderIntervalHours = 4,
         [bool]$DownloadOnlyExtractContent = $true,
         [bool]$PackageRetentionEnabled = $false,
         [int]$PackageRetentionCount = 0,
@@ -7349,10 +8257,16 @@ function Export-DATBuildConfig {
         BIOSRestartDelayMinutes    = $BIOSRestartDelayMinutes
         CreateIntuneWinOnly        = $CreateIntuneWinOnly
         ShowBrandingBannerAllToasts = $ShowBrandingBannerAllToasts
+        CreateConfigMgrApplication = $CreateConfigMgrApplication
+        ConfigMgrReminderIntervalHours = $ConfigMgrReminderIntervalHours
         DownloadOnlyExtractContent = $DownloadOnlyExtractContent
         TeamsWebhookUrl            = if ($TeamsWebhookUrl) { $TeamsWebhookUrl } else { '' }
         TeamsNotificationsEnabled  = $TeamsNotificationsEnabled
         TeamsCustomText            = if ($TeamsCustomText) { $TeamsCustomText } else { '' }
+        # Written as an object ({ Mode, Background, Text, Accent }) so it can be edited by hand
+        ToastTheme                 = if (-not [string]::IsNullOrWhiteSpace($ToastThemeJson)) { $ToastThemeJson | ConvertFrom-Json } else { $null }
+        ShowInstallProgress        = $ShowInstallProgress
+        SilentDuringAutopilot      = $SilentDuringAutopilot
         Intune                     = if ($Intune) { $Intune } else { [ordered]@{ TenantEnvironment = 'Commercial'; TenantId = ''; AppId = ''; AppSecret = '' } }
         ConfigMgr                  = if ($ConfigMgr) { $ConfigMgr } else { [ordered]@{ SiteServer = ''; SiteCode = ''; DistributionPointGroups = @(); DistributionPriority = 'Normal' } }
         MaintenanceWindowEnabled   = $MaintenanceWindowEnabled
@@ -7445,6 +8359,9 @@ function Import-DATBuildConfig {
         BIOSRestartDelayMinutes   = if ($config.BIOSRestartDelayMinutes) { [int]$config.BIOSRestartDelayMinutes } else { 3 }
         CreateIntuneWinOnly       = [bool]$config.CreateIntuneWinOnly
         ShowBrandingBannerAllToasts = [bool]$config.ShowBrandingBannerAllToasts
+        CreateConfigMgrApplication = [bool]$config.CreateConfigMgrApplication
+        ConfigMgrReminderIntervalHours = if ($config.ConfigMgrReminderIntervalHours -and [int]$config.ConfigMgrReminderIntervalHours -ge 1 -and
+            [int]$config.ConfigMgrReminderIntervalHours -le 24) { [int]$config.ConfigMgrReminderIntervalHours } else { 4 }
         DownloadOnlyExtractContent = if ($null -ne $config.DownloadOnlyExtractContent) { [bool]$config.DownloadOnlyExtractContent } else { $true }
         TeamsWebhookUrl           = $config.TeamsWebhookUrl
         TeamsNotificationsEnabled = [bool]$config.TeamsNotificationsEnabled
@@ -7453,6 +8370,11 @@ function Import-DATBuildConfig {
         # TeamsCustomText on export and omitted it here, so the headless card never had a
         # headline -- the same defect that hid package retention (#947).
         TeamsCustomText           = if ($null -ne $config.TeamsCustomText) { [string]$config.TeamsCustomText } else { '' }
+        # Back to the JSON string Start-DATModelProcessing takes; validated when the toasts are built
+        ToastThemeJson            = if ($null -ne $config.ToastTheme) { $config.ToastTheme | ConvertTo-Json -Compress } else { '' }
+        ShowInstallProgress       = [bool]$config.ShowInstallProgress
+        # On by default: a config written before the option existed keeps it on
+        SilentDuringAutopilot     = if ($null -ne $config.SilentDuringAutopilot) { [bool]$config.SilentDuringAutopilot } else { $true }
         WimEngine                 = if ($config.WimEngine) { $config.WimEngine } else { $null }
         CompressionLevel          = if ($config.CompressionLevel) { $config.CompressionLevel } else { $null }
         Models                    = @($models)
@@ -7593,7 +8515,7 @@ function Register-DATScheduledBuild {
   </Actions>
 </Task>
 "@
-        Unregister-ScheduledTask -TaskPath $taskFolder -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
+        Unregister-ScheduledTask -TaskPath "$taskFolder\" -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
         Register-ScheduledTask -TaskName $taskName -TaskPath $taskFolder -Xml $taskXml -User 'SYSTEM' -Force | Out-Null
         Write-DATLogEntry -Value "[Schedule] Registered scheduled build: Monthly on day $safeDayOfMonth at $Time" -Severity 1
 
@@ -7613,7 +8535,7 @@ function Register-DATScheduledBuild {
         'Weekly' { $trigger = New-ScheduledTaskTrigger -Weekly -DaysOfWeek $DayOfWeek @triggerParams }
     }
 
-    Unregister-ScheduledTask -TaskPath $taskFolder -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
+    Unregister-ScheduledTask -TaskPath "$taskFolder\" -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
     Register-ScheduledTask -TaskPath $taskFolder -TaskName $taskName -Action $taskAction `
         -Trigger $trigger -Settings $taskSettings -Principal $taskPrincipal -Force | Out-Null
     Write-DATLogEntry -Value "[Schedule] Registered scheduled build: $Frequency at $Time" -Severity 1
@@ -9359,7 +10281,7 @@ function Invoke-DATLenovoLatestDriverPackage {
 
     # Windows feature-update -> build number, for evaluating package <_WindowsBuildVersion> conditions.
     $winBuildMap = @{
-        'Win11' = @{ '21H2' = 22000; '22H2' = 22621; '23H2' = 22631; '24H2' = 26100; '25H2' = 26200; '26H1' = 28000 }
+        'Win11' = @{ '21H2' = 22000; '22H2' = 22621; '23H2' = 22631; '24H2' = 26100; '25H2' = 26200; '26H2' = 26300; '26H1' = 28000 }
         'Win10' = @{ '20H2' = 19042; '21H1' = 19043; '21H2' = 19044; '22H2' = 19045 }
     }
     $osMajor = if ($WindowsVersion -match '10') { '10' } else { '11' }
@@ -11422,6 +12344,26 @@ function ConvertTo-DATIntuneMinimumOS {
     $minOS[$mapped] = $true
     Write-DATLogEntry -Value "[Intune] Minimum OS set to $mapped (from: $OS)" -Severity 1
     return $minOS
+}
+
+function Get-DATIntuneMinimumOSFallback {
+    <#
+    .SYNOPSIS
+        Returns the minimumOperatingSystem to retry with when Graph rejects the newest Windows 11
+        flag, or $null when there is nothing older to fall back to.
+    .DESCRIPTION
+        Graph gains a v11_* flag some time after a Windows release ships, and a flag it does not
+        know fails the whole app creation. Each new release falls back to the release it is
+        serviced on, so the app is still created with a correct floor: 26H2 is an enablement
+        package on 25H2; 26H1 is a new-device release whose closest earlier floor is 24H2. The
+        requirement script's feature-update check still gates the exact build.
+    #>
+    [CmdletBinding()]
+    param ([Parameter(Mandatory)][hashtable]$MinimumOS)
+    $fallbackTo = @{ 'v11_26H2' = 'v11_25H2'; 'v11_26H1' = 'v11_24H2' }
+    $current = @($MinimumOS.Keys | Where-Object { $_ -ne '@odata.type' -and $MinimumOS[$_] -eq $true }) | Select-Object -First 1
+    if (-not $current -or -not $fallbackTo.ContainsKey($current)) { return $null }
+    return @{ '@odata.type' = '#microsoft.graph.windowsMinimumOperatingSystem'; $fallbackTo[$current] = $true }
 }
 
 function Connect-DATIntuneGraph {
@@ -14181,6 +15123,334 @@ function Invoke-DATCodeSign {
 
 #endregion Code Signing
 
+#region Toast Theme
+# The toast windows are generated scripts that run on the endpoint, outside the app's theme
+# system, so their colours are resolved here and written into each script as named slots.
+# Status toasts pick one of three semantic groups (Info / Success / Warning) for their accent.
+
+function ConvertFrom-DATHexColor {
+    # '#RRGGBB' -> @(r, g, b). Throws on anything else, so only validated colours reach a script.
+    param ([Parameter(Mandatory)][AllowEmptyString()][string]$Hex)
+    if ($Hex -notmatch '^#[0-9A-Fa-f]{6}$') { throw "'$Hex' is not a #RRGGBB colour" }
+    return @(
+        [Convert]::ToInt32($Hex.Substring(1, 2), 16),
+        [Convert]::ToInt32($Hex.Substring(3, 2), 16),
+        [Convert]::ToInt32($Hex.Substring(5, 2), 16)
+    )
+}
+
+function Get-DATColorMix {
+    # Blends From toward To by Amount (0 = From, 1 = To).
+    param (
+        [Parameter(Mandatory)][string]$From,
+        [Parameter(Mandatory)][string]$To,
+        [Parameter(Mandatory)][double]$Amount
+    )
+    $a = ConvertFrom-DATHexColor -Hex $From
+    $b = ConvertFrom-DATHexColor -Hex $To
+    $mixed = for ($i = 0; $i -lt 3; $i++) { [int][math]::Round($a[$i] + ($b[$i] - $a[$i]) * $Amount) }
+    return ('#{0:X2}{1:X2}{2:X2}' -f $mixed[0], $mixed[1], $mixed[2])
+}
+
+function Get-DATColorLuminance {
+    # WCAG relative luminance (0 = black, 1 = white).
+    param ([Parameter(Mandatory)][string]$Hex)
+    $linear = foreach ($channel in (ConvertFrom-DATHexColor -Hex $Hex)) {
+        $s = $channel / 255
+        if ($s -le 0.03928) { $s / 12.92 } else { [math]::Pow(($s + 0.055) / 1.055, 2.4) }
+    }
+    return (0.2126 * $linear[0] + 0.7152 * $linear[1] + 0.0722 * $linear[2])
+}
+
+function Get-DATColorContrastRatio {
+    <#
+    .SYNOPSIS
+        WCAG contrast ratio between two #RRGGBB colours, from 1 (none) to 21 (black on white).
+        4.5 is the minimum recommended for body text.
+    #>
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory)][string]$Foreground,
+        [Parameter(Mandatory)][string]$Background
+    )
+    $l1 = Get-DATColorLuminance -Hex $Foreground
+    $l2 = Get-DATColorLuminance -Hex $Background
+    $hi = [math]::Max($l1, $l2)
+    $lo = [math]::Min($l1, $l2)
+    return [math]::Round(($hi + 0.05) / ($lo + 0.05), 2)
+}
+
+function Get-DATToastPalette {
+    <#
+    .SYNOPSIS
+        Returns the full set of colour slots a toast notification uses, for the Dark or Light
+        preset or for an admin's Custom colours.
+    .DESCRIPTION
+        Custom takes three colours -- Background, Text and Accent -- and derives the rest:
+        secondary text, borders and button shades are blends of Background and Text, the
+        primary button is the Accent with whichever of white / near-black reads better on it,
+        and the success / warning colours come from whichever preset matches the background's
+        darkness so they keep their meaning.
+    #>
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory)][ValidateSet('Dark','Light','Custom')][string]$Mode,
+        [string]$Background,
+        [string]$Text,
+        [string]$Accent
+    )
+    $presets = @{
+        Dark = [ordered]@{
+            Background            = '#0F172A'
+            Border                = '#334155'
+            TextPrimary           = '#F8FAFC'
+            TextSecondary         = '#CBD5E1'
+            PrimaryButton         = '#0B84F1'
+            PrimaryButtonHover    = '#3B82F6'
+            PrimaryButtonText     = '#FFFFFF'
+            SecondaryButton       = '#334155'
+            SecondaryButtonBorder = '#475569'
+            SecondaryButtonHover  = '#475569'
+            SecondaryButtonText   = '#F8FAFC'
+            InfoIcon              = '#3B82F6'
+            InfoAccent            = '#2563EB'
+            InfoIconBackground    = '#172554'
+            SuccessIcon           = '#22C55E'
+            SuccessAccent         = '#16A34A'
+            SuccessIconBackground = '#052E16'
+            WarningIcon           = '#F59E0B'
+            WarningAccent         = '#D97706'
+            WarningIconBackground = '#451A03'
+            ShadowOpacity         = '0.5'
+        }
+        Light = [ordered]@{
+            Background            = '#FFFFFF'
+            Border                = '#CBD5E1'
+            TextPrimary           = '#0F172A'
+            TextSecondary         = '#475569'
+            PrimaryButton         = '#2563EB'
+            PrimaryButtonHover    = '#1D4ED8'
+            PrimaryButtonText     = '#FFFFFF'
+            SecondaryButton       = '#F1F5F9'
+            SecondaryButtonBorder = '#CBD5E1'
+            SecondaryButtonHover  = '#E2E8F0'
+            SecondaryButtonText   = '#0F172A'
+            InfoIcon              = '#2563EB'
+            InfoAccent            = '#2563EB'
+            InfoIconBackground    = '#DBEAFE'
+            SuccessIcon           = '#16A34A'
+            SuccessAccent         = '#16A34A'
+            SuccessIconBackground = '#DCFCE7'
+            WarningIcon           = '#D97706'
+            WarningAccent         = '#D97706'
+            WarningIconBackground = '#FEF3C7'
+            ShadowOpacity         = '0.22'
+        }
+    }
+    if ($Mode -ne 'Custom') { return $presets[$Mode] }
+
+    foreach ($pair in @(@('Background', $Background), @('Text', $Text), @('Accent', $Accent))) {
+        if ([string]::IsNullOrEmpty($pair[1]) -or $pair[1] -notmatch '^#[0-9A-Fa-f]{6}$') {
+            throw "Custom toast colour '$($pair[0])' must be a #RRGGBB value (got '$($pair[1])')"
+        }
+    }
+    $bg = $Background.ToUpperInvariant(); $fg = $Text.ToUpperInvariant(); $acc = $Accent.ToUpperInvariant()
+    $isDark = (Get-DATColorLuminance -Hex $bg) -lt (Get-DATColorLuminance -Hex $fg)
+    $base = if ($isDark) { $presets['Dark'] } else { $presets['Light'] }
+    $hoverToward = if ($isDark) { '#FFFFFF' } else { '#000000' }
+    $onAccent = if ((Get-DATColorContrastRatio -Foreground '#FFFFFF' -Background $acc) -ge (Get-DATColorContrastRatio -Foreground '#0F172A' -Background $acc)) { '#FFFFFF' } else { '#0F172A' }
+
+    return [ordered]@{
+        Background            = $bg
+        Border                = Get-DATColorMix -From $bg -To $fg -Amount 0.18
+        TextPrimary           = $fg
+        TextSecondary         = Get-DATColorMix -From $fg -To $bg -Amount 0.2
+        PrimaryButton         = $acc
+        PrimaryButtonHover    = Get-DATColorMix -From $acc -To $hoverToward -Amount 0.15
+        PrimaryButtonText     = $onAccent
+        SecondaryButton       = Get-DATColorMix -From $bg -To $fg -Amount 0.12
+        SecondaryButtonBorder = Get-DATColorMix -From $bg -To $fg -Amount 0.25
+        SecondaryButtonHover  = Get-DATColorMix -From $bg -To $fg -Amount 0.22
+        SecondaryButtonText   = $fg
+        InfoIcon              = $acc
+        InfoAccent            = $acc
+        InfoIconBackground    = Get-DATColorMix -From $bg -To $acc -Amount 0.18
+        SuccessIcon           = $base.SuccessIcon
+        SuccessAccent         = $base.SuccessAccent
+        SuccessIconBackground = Get-DATColorMix -From $bg -To $base.SuccessIcon -Amount 0.18
+        WarningIcon           = $base.WarningIcon
+        WarningAccent         = $base.WarningAccent
+        WarningIconBackground = Get-DATColorMix -From $bg -To $base.WarningIcon -Amount 0.18
+        ShadowOpacity         = $base.ShadowOpacity
+    }
+}
+
+function Get-DATToastThemeWarnings {
+    <#
+    .SYNOPSIS
+        Readability warnings for a toast palette: any text / background pair below the WCAG 4.5:1
+        contrast ratio recommended for body text. Empty when the palette reads well.
+    #>
+    [CmdletBinding()]
+    param ([Parameter(Mandatory)][System.Collections.IDictionary]$Palette)
+    $checks = @(
+        @('Text', 'TextPrimary', 'Background'),
+        @('Secondary text', 'TextSecondary', 'Background'),
+        @('Primary button text', 'PrimaryButtonText', 'PrimaryButton'),
+        @('Secondary button text', 'SecondaryButtonText', 'SecondaryButton')
+    )
+    $warnings = foreach ($c in $checks) {
+        $ratio = Get-DATColorContrastRatio -Foreground $Palette[$c[1]] -Background $Palette[$c[2]]
+        if ($ratio -lt 4.5) { "$($c[0]) has a contrast ratio of $($ratio):1 against its background (4.5:1 recommended) -- users may struggle to read it" }
+    }
+    return @($warnings)
+}
+
+function Resolve-DATToastTheme {
+    <#
+    .SYNOPSIS
+        Turns the stored toast theme setting into the palette(s) a toast script embeds.
+    .DESCRIPTION
+        ToastThemeJson: {"Mode":"Dark|Light|System|Custom","Background":"#RRGGBB","Text":"#RRGGBB","Accent":"#RRGGBB"}.
+        The colours are only read for Custom. Empty or unreadable input gives the Dark preset (the
+        original toast look), and Custom with an invalid colour falls back to Dark with a warning
+        rather than failing the build. System embeds both presets; the toast picks one per user.
+
+        Returns Mode, Palettes (name -> palette) and Warnings.
+    #>
+    [CmdletBinding()]
+    param ([AllowEmptyString()][string]$ToastThemeJson)
+
+    $warnings = New-Object System.Collections.Generic.List[string]
+    $mode = 'Dark'
+    $theme = $null
+    if (-not [string]::IsNullOrWhiteSpace($ToastThemeJson)) {
+        try {
+            $theme = $ToastThemeJson | ConvertFrom-Json -ErrorAction Stop
+            if ("$($theme.Mode)" -in @('Dark', 'Light', 'System', 'Custom')) { $mode = "$($theme.Mode)" }
+            else { $warnings.Add("Unknown toast theme mode '$($theme.Mode)' -- using Dark") }
+        } catch {
+            $warnings.Add("Toast theme setting could not be read ($($_.Exception.Message)) -- using Dark")
+        }
+    }
+
+    $palettes = [ordered]@{}
+    switch ($mode) {
+        'System' {
+            $palettes['Dark']  = Get-DATToastPalette -Mode Dark
+            $palettes['Light'] = Get-DATToastPalette -Mode Light
+        }
+        'Custom' {
+            try {
+                $palettes['Custom'] = Get-DATToastPalette -Mode Custom -Background "$($theme.Background)" -Text "$($theme.Text)" -Accent "$($theme.Accent)"
+                foreach ($w in (Get-DATToastThemeWarnings -Palette $palettes['Custom'])) { $warnings.Add($w) }
+            } catch {
+                $warnings.Add("$($_.Exception.Message) -- using Dark")
+                $mode = 'Dark'
+                $palettes['Dark'] = Get-DATToastPalette -Mode Dark
+            }
+        }
+        default { $palettes[$mode] = Get-DATToastPalette -Mode $mode }
+    }
+    return [pscustomobject]@{ Mode = $mode; Palettes = $palettes; Warnings = $warnings.ToArray() }
+}
+
+function Set-DATToastThemeForBuild {
+    # Sets the toast theme used by every toast script generated for the rest of this build and
+    # logs what was chosen, plus any readability warnings or fallback to Dark.
+    param ([AllowEmptyString()][string]$ToastThemeJson)
+    $script:DATToastThemeJson = [string]$ToastThemeJson
+    $resolved = Resolve-DATToastTheme -ToastThemeJson $script:DATToastThemeJson
+    Write-DATLogEntry -Value "[Toast Theme] Notification theme: $($resolved.Mode)" -Severity 1
+    foreach ($w in $resolved.Warnings) { Write-DATLogEntry -Value "[Toast Theme] $w" -Severity 2 }
+}
+
+function Set-DATBuildToastOptions {
+    <#
+    .SYNOPSIS
+        Sets the toast options every toast and install script generated for the rest of this build
+        uses: the notification theme, the install progress notification and the Autopilot
+        silent-install option. Called once per build
+        (Start-DATModelProcessing, and the UI's custom driver pack build) so the options do not have
+        to be threaded through each packaging function.
+    #>
+    [CmdletBinding()]
+    param (
+        [AllowEmptyString()][string]$ToastThemeJson = '',
+        [bool]$ShowInstallProgress = $false,
+        # Install silently during Autopilot provisioning (on by default, see docs/Autopilot.md)
+        [bool]$SilentDuringAutopilot = $true
+    )
+    Set-DATToastThemeForBuild -ToastThemeJson $ToastThemeJson
+    $script:DATShowInstallProgress = $ShowInstallProgress
+    $script:DATSilentDuringAutopilot = $SilentDuringAutopilot
+    Write-DATLogEntry -Value "[Toast] Install progress notification: $(if ($ShowInstallProgress) { 'On' } else { 'Off' })" -Severity 1
+    Write-DATLogEntry -Value "[Toast] Install silently during Autopilot provisioning: $(if ($SilentDuringAutopilot) { 'On' } else { 'Off' })" -Severity 1
+}
+
+function Get-DATBuildSilentDuringAutopilot {
+    <#
+    .SYNOPSIS
+        The Autopilot silent-install setting for the current build. On when no build has set it,
+        matching the option's default.
+    #>
+    [CmdletBinding()]
+    param ()
+    if ($null -eq $script:DATSilentDuringAutopilot) { return $true }
+    return [bool]$script:DATSilentDuringAutopilot
+}
+
+function Get-DATToastThemeScriptBlock {
+    # The generated toast script's theme section: the embedded palette(s), the runtime choice
+    # for System mode, and the $tp<Slot> variables the toast XAML expands. Values are validated
+    # hex (or the numeric shadow opacity), so nothing user-supplied reaches the script unchecked.
+    param (
+        [Parameter(Mandatory)]$Theme,
+        [ValidateSet('Info','Success','Warning')][string]$StatusKind = 'Info'
+    )
+    $lines = New-Object System.Collections.Generic.List[string]
+    $lines.Add('')
+    $lines.Add('# --- Toast Theme ---')
+    $lines.Add("# Colours are fixed when the package is built. 'System' picks the Dark or Light palette from")
+    $lines.Add("# the signed-in user's Windows app theme when the toast is shown.")
+    $lines.Add("`$DATToastThemeMode  = '$($Theme.Mode)'")
+    $lines.Add("`$DATToastStatusKind = '$StatusKind'")
+    $lines.Add('$DATToastPalettes = @{')
+    foreach ($name in $Theme.Palettes.Keys) {
+        $palette = $Theme.Palettes[$name]
+        $pairs = foreach ($slot in $palette.Keys) {
+            $value = "$($palette[$slot])"
+            if ($value -notmatch '^(#[0-9A-Fa-f]{6}|0(\.\d+)?|1(\.0+)?)$') { throw "Toast palette slot '$slot' has an invalid value '$value'" }
+            "$slot = '$value'"
+        }
+        $lines.Add("    $name = @{ $($pairs -join '; ') }")
+    }
+    $lines.Add('}')
+    $lines.Add(@'
+$DATToastThemeName = $DATToastThemeMode
+if ($DATToastThemeMode -eq 'System') {
+    # AppsUseLightTheme: 0 = dark; 1 or absent = light (the Windows default)
+    $DATToastThemeName = 'Light'
+    try {
+        $appsUseLightTheme = (Get-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize' -Name 'AppsUseLightTheme' -ErrorAction Stop).AppsUseLightTheme
+        if ($appsUseLightTheme -eq 0) { $DATToastThemeName = 'Dark' }
+    } catch {
+        Write-ToastLog "[Theme] Windows app theme not readable ($($_.Exception.Message)) -- using Light" 'WARN'
+    }
+}
+if (-not $DATToastPalettes.ContainsKey($DATToastThemeName)) { $DATToastThemeName = @($DATToastPalettes.Keys)[0] }
+$tp = $DATToastPalettes[$DATToastThemeName]
+# Flattened to $tp<Slot> variables -- the toast XAML below expands these
+foreach ($tpSlot in @($tp.Keys)) { Set-Variable -Name "tp$tpSlot" -Value $tp[$tpSlot] }
+$tpStatusIcon           = $tp["$($DATToastStatusKind)Icon"]
+$tpStatusAccent         = $tp["$($DATToastStatusKind)Accent"]
+$tpStatusIconBackground = $tp["$($DATToastStatusKind)IconBackground"]
+Write-ToastLog "[Theme] Mode: $DATToastThemeMode -- using the $DATToastThemeName palette"
+'@)
+    return ($lines -join "`n")
+}
+#endregion Toast Theme
+
 function New-DATIntuneToastScript {
     <#
     .SYNOPSIS
@@ -14192,12 +15462,13 @@ function New-DATIntuneToastScript {
           Drivers - Pending driver update prompt   (Update Now / Remind Me Later)
           BIOS    - Pending BIOS update prompt     (Update Now / Remind Me Later)
           Success - Driver update succeeded        (Close only -- Drivers only)
+          SuccessRestart - Driver update succeeded but needs a restart (Close only -- Drivers only)
           Issues  - Update encountered errors      (Close only)
     #>
     [CmdletBinding()]
     param (
         [Parameter(Mandatory)][string]$OutputPath,
-        [ValidateSet('Drivers','BIOS','Success','BIOSSuccess','Issues','BIOSIssues','BIOSFinalNotice')][string]$UpdateType = 'Drivers',
+        [ValidateSet('Drivers','BIOS','Success','SuccessRestart','BIOSSuccess','Issues','BIOSIssues','BIOSFinalNotice')][string]$UpdateType = 'Drivers',
         [string]$BrandingPath = '',
         [string]$CustomBrandingImagePath = '',
         [string]$CustomToastTitle = '',
@@ -14210,11 +15481,17 @@ function New-DATIntuneToastScript {
         [switch]$DisableRestart,
         [switch]$AlarmMode,
         [switch]$AlarmSound,
-        [switch]$ShowBrandingBanner
+        [switch]$ShowBrandingBanner,
+        # Toast colours (see Resolve-DATToastTheme). When not passed, the theme set for the current
+        # build by Start-DATModelProcessing / Invoke-DATToastTestPackageCreation is used.
+        [AllowEmptyString()][string]$ToastThemeJson
     )
 
     # Determine layout type and per-type content
-    $isStatusType = $UpdateType -in @('Success', 'BIOSSuccess', 'Issues', 'BIOSIssues', 'BIOSFinalNotice')
+    $isStatusType = $UpdateType -in @('Success', 'SuccessRestart', 'BIOSSuccess', 'Issues', 'BIOSIssues', 'BIOSFinalNotice')
+    $statusKind = 'Info'
+    if (-not $PSBoundParameters.ContainsKey('ToastThemeJson')) { $ToastThemeJson = [string]$script:DATToastThemeJson }
+    $toastTheme = Resolve-DATToastTheme -ToastThemeJson $ToastThemeJson
 
     switch ($UpdateType) {
         'BIOS' {
@@ -14234,33 +15511,34 @@ function New-DATIntuneToastScript {
                 $body       = if (-not [string]::IsNullOrEmpty($CustomToastBody))  { $CustomToastBody  } else { "Your system has a pending BIOS update and will be restarted in $RestartDelayMinutes minute(s), alternatively you can restart your device now or before this time to speed up the process. Please DO NOT power off the device during the update process." }
             }
             $statusIcon     = '&#xE835;'   # FirmwareUpdate (Segoe MDL2 Assets)
-            $iconColor      = '#3B82F6'    # blue-500
-            $accentColor    = '#2563EB'    # blue-600
-            $iconBackground = '#172554'    # blue-950
+            $statusKind     = 'Info'       # palette accent group (Get-DATToastPalette)
         }
         'Success' {
             $heading        = if (-not [string]::IsNullOrEmpty($CustomToastTitle)) { $CustomToastTitle } else { 'Drivers Successfully Updated' }
             $body           = if (-not [string]::IsNullOrEmpty($CustomToastBody))  { $CustomToastBody  } else { 'Your device drivers have been successfully updated. No restart is required unless indicated by your IT department.' }
             $statusIcon     = '&#xE930;'   # CompletedSolid (Segoe MDL2 Assets)
-            $iconColor      = '#22C55E'    # green-500
-            $accentColor    = '#16A34A'    # green-600
-            $iconBackground = '#052e16'    # green-950
+            $statusKind     = 'Success'
+        }
+        'SuccessRestart' {
+            # PNPUtil returned 3010 -- the new drivers are staged but the old ones stay loaded
+            # until the device restarts. No automatic restart is scheduled for drivers, so the
+            # plain Success wording ("No restart is required") would actively mislead the user.
+            $heading        = if (-not [string]::IsNullOrEmpty($CustomToastTitle)) { $CustomToastTitle } else { 'Drivers Updated - Restart Required' }
+            $body           = if (-not [string]::IsNullOrEmpty($CustomToastBody))  { $CustomToastBody  } else { 'Your device drivers have been updated, but a restart is required to finish the installation. Please save your work and restart your device at your earliest convenience.' }
+            $statusIcon     = '&#xE777;'   # UpdateRestore (Segoe MDL2 Assets)
+            $statusKind     = 'Info'       # palette accent group (Get-DATToastPalette)
         }
         'Issues' {
             $heading        = if (-not [string]::IsNullOrEmpty($CustomToastTitle)) { $CustomToastTitle } else { 'Driver Update Issues Detected' }
             $body           = if (-not [string]::IsNullOrEmpty($CustomToastBody))  { $CustomToastBody  } else { 'One or more driver updates encountered errors during installation. Please contact your IT department or check the device logs for details.' }
             $statusIcon     = '&#xE7BA;'   # Warning (Segoe MDL2 Assets)
-            $iconColor      = '#F59E0B'    # amber-500
-            $accentColor    = '#D97706'    # amber-600
-            $iconBackground = '#451a03'    # amber-950
+            $statusKind     = 'Warning'
         }
         'BIOSIssues' {
             $heading        = if (-not [string]::IsNullOrEmpty($CustomToastTitle)) { $CustomToastTitle } else { 'BIOS Update Issues Detected' }
             $body           = if (-not [string]::IsNullOrEmpty($CustomToastBody))  { $CustomToastBody  } else { 'The BIOS firmware update encountered errors during installation. Please contact your IT department or check the device logs for details.' }
             $statusIcon     = '&#xE7BA;'   # Warning (Segoe MDL2 Assets)
-            $iconColor      = '#F59E0B'    # amber-500
-            $accentColor    = '#D97706'    # amber-600
-            $iconBackground = '#451a03'    # amber-950
+            $statusKind     = 'Warning'
         }
         'BIOSFinalNotice' {
             # Final deferral notice -- shown (bypassing Focus Assist) when the maximum number
@@ -14268,9 +15546,7 @@ function New-DATIntuneToastScript {
             $heading        = if (-not [string]::IsNullOrEmpty($CustomToastTitle)) { $CustomToastTitle } else { 'Final Reminder - BIOS Update Pending' }
             $body           = if (-not [string]::IsNullOrEmpty($CustomToastBody))  { $CustomToastBody  } else { 'You have reached the maximum number of allowed deferrals. This BIOS update is now being pre-staged and will be applied on your next restart. Please save your work. Do NOT power off the device during the update process.' }
             $statusIcon     = '&#xE7BA;'   # Warning (Segoe MDL2 Assets)
-            $iconColor      = '#F59E0B'    # amber-500
-            $accentColor    = '#D97706'    # amber-600
-            $iconBackground = '#451a03'    # amber-950
+            $statusKind     = 'Warning'
         }
         default {
             $heading = if (-not [string]::IsNullOrEmpty($CustomToastTitle)) { $CustomToastTitle } else { 'Driver Updates Pending' }
@@ -14280,7 +15556,7 @@ function New-DATIntuneToastScript {
 
     # Resolve greeting prefix and subtitle
     $greetingPrefix = if (-not [string]::IsNullOrEmpty($CustomToastGreeting)) { $CustomToastGreeting } else { 'Hi' }
-    $subtitle = if (-not [string]::IsNullOrEmpty($CustomToastSubtitle)) { $CustomToastSubtitle } else { 'Driver Automation Tool V10' }
+    $subtitle = if (-not [string]::IsNullOrEmpty($CustomToastSubtitle)) { $CustomToastSubtitle } else { 'Driver Automation Tool' }
 
     # XML-safe body for embedding in XAML Text attributes.
     # Using element content collapses newlines via XAML whitespace normalization; the Text
@@ -14421,6 +15697,24 @@ try {
     # only state where we proceed.
     $focusAssistBlock = @'
 
+# --- Display-state marker ---
+# Records whether this toast was actually put on screen and, if not, why. The SYSTEM-context
+# install script waits for this file so its own log states plainly whether the user was told --
+# previously a toast skipped for Focus Assist, one that failed to render and one the user saw
+# all looked identical from the install log. Format: <o timestamp>|<toast type>|<state>|<detail>
+$displayStatePath = Join-Path $env:ProgramData 'DriverAutomationTool\DAT_ToastDisplayState.txt'
+function Write-ToastDisplayState {
+    param([string]$State, [string]$Detail = '')
+    try {
+        $displayStateDir = Split-Path $displayStatePath -Parent
+        if (-not (Test-Path $displayStateDir)) { New-Item -Path $displayStateDir -ItemType Directory -Force | Out-Null }
+        "$((Get-Date).ToString('o'))|$DATToastType|$State|$($Detail -replace '\|','/')" | Out-File -FilePath $displayStatePath -Encoding UTF8 -Force
+        Write-ToastLog "[DisplayState] $State$(if ($Detail) { " -- $Detail" })"
+    } catch {
+        Write-ToastLog "[DisplayState] Failed to record '$State': $($_.Exception.Message)" 'WARN'
+    }
+}
+
 # --- Focus Assist / DND Pre-check ---
 try {
     $focusAssistCSharp = 'using System; using System.Runtime.InteropServices; public class DATFocusAssist { [DllImport("shell32.dll")] public static extern int SHQueryUserNotificationState(out int state); }'
@@ -14445,29 +15739,40 @@ try {
     # station and always reports QUNS_BUSY -- so this file is the only trustworthy measurement
     # of the signed-in user's real notification state, and the restart decision is based on it.
     # Round-trip 'o' timestamp keeps the freshness check independent of the device's locale.
+    # The third field names the toast that took the reading, so the restart decision can log
+    # whether it is acting on the restart notice's reading or an older prompt's.
     try {
         $focusStatePath = Join-Path $env:ProgramData 'DriverAutomationTool\DAT_FocusState.txt'
         $focusStateDir = Split-Path $focusStatePath -Parent
         if (-not (Test-Path $focusStateDir)) { New-Item -Path $focusStateDir -ItemType Directory -Force | Out-Null }
-        "$((Get-Date).ToString('o'))|$focusState" | Out-File -FilePath $focusStatePath -Encoding UTF8 -Force
+        "$((Get-Date).ToString('o'))|$focusState|$DATToastType" | Out-File -FilePath $focusStatePath -Encoding UTF8 -Force
         Write-ToastLog "[FocusAssist] Recorded user-session state $focusState for the install script's restart decision"
     } catch {
         Write-ToastLog "[FocusAssist] Failed to record user-session state: $($_.Exception.Message)" 'WARN'
     }
 
     if ($focusState -ne 5) {
-        if ($DATToastAlarmMode -eq 'True' -and $DATToastType -in @('Drivers','BIOS','BIOSFinalNotice')) {
+        # QUNS_NOT_PRESENT is a locked screen / screensaver / away user -- not a DND choice.
+        # Name it separately so "the user was away" and "the user had DND on" stay distinguishable.
+        $suppressReason = if ($focusState -eq 1) { "user not present -- screen locked, screensaver or away ($focusStateName)" } else { "Focus Assist / Do Not Disturb / full-screen app ($focusStateName)" }
+        # BIOSSuccess is the "restarting in N minutes" notice. In alarm mode the install script
+        # restarts regardless of DND, so this notice must bypass DND too -- otherwise the device
+        # restarts with no DAT warning at all, only the shutdown.exe message.
+        if ($DATToastAlarmMode -eq 'True' -and $DATToastType -in @('Drivers','BIOS','BIOSFinalNotice','BIOSSuccess')) {
             # Critical / alarm mode -- override the user's DND preference for forced-update scenarios
-            Write-ToastLog "[FocusAssist] Notifications blocked (state: $focusStateName) but alarm mode is enabled -- overriding DND and displaying toast" 'WARN'
+            Write-ToastLog "[FocusAssist] Notifications blocked ($suppressReason) but alarm mode is enabled -- overriding DND and displaying toast" 'WARN'
         } else {
-            Write-ToastLog "[FocusAssist] Notifications blocked (state: $focusStateName) -- skipping toast to respect DND preference" 'WARN'
-            # For interactive toasts, write a fallback result so the install script applies its timeout action
+            Write-ToastLog "[FocusAssist] Notifications blocked ($suppressReason) -- skipping toast to respect DND preference" 'WARN'
+            Write-ToastDisplayState -State 'Suppressed' -Detail $suppressReason
+            # For interactive toasts, write a result the install script can tell apart from a
+            # timed-out prompt. It is still a non-response (never consent) and follows the
+            # configured timeout action.
             if ($DATToastType -in @('Drivers','BIOS')) {
                 $focusResultPath = Join-Path $env:ProgramData 'DriverAutomationTool\DAT_ToastResult.txt'
                 $focusResultDir = Split-Path $focusResultPath -Parent
                 if (-not (Test-Path $focusResultDir)) { New-Item -Path $focusResultDir -ItemType Directory -Force | Out-Null }
-                'Timeout' | Out-File -FilePath $focusResultPath -Encoding UTF8 -Force
-                Write-ToastLog "[FocusAssist] Wrote fallback result 'Timeout' -- install script will apply configured timeout action"
+                "Suppressed:$focusStateName" | Out-File -FilePath $focusResultPath -Encoding UTF8 -Force
+                Write-ToastLog "[FocusAssist] Wrote result 'Suppressed:$focusStateName' -- install script will apply configured timeout action"
             }
             try { Stop-Transcript } catch {}
             exit 0
@@ -14479,6 +15784,7 @@ try {
     Write-ToastLog "[FocusAssist] Pre-check failed: $($_.Exception.Message) -- proceeding with toast display" 'WARN'
 }
 '@
+    $scriptContent += "`n" + (Get-DATToastThemeScriptBlock -Theme $toastTheme -StatusKind $statusKind)
     $scriptContent += "`n" + $focusAssistBlock
 
     if ($isStatusType) {
@@ -14495,7 +15801,7 @@ try {
         AllowsTransparency="True" Background="Transparent"
         Topmost="True" ResizeMode="NoResize" ShowInTaskbar="False"
         Left="-9999" Top="-9999">
-    <Border CornerRadius="12" Background="#0F172A" Margin="10"
+    <Border CornerRadius="12" Background="$tpBackground" Margin="10"
 '@
         # Optional hero banner on status toasts when branding-on-all-notifications is enabled.
         # When active, the branding logo is decoded to disk and an extra top grid row hosts it.
@@ -14506,7 +15812,7 @@ try {
         $statusButtonRow      = 2
         # Accent strip is shown only when there is no hero banner; the banner replaces it.
         $statusStripRowDef    = "                <RowDefinition Height=`"4`"/>`n"
-        $statusStripMarkup    = "            <!-- Accent strip -->`n            <Border Grid.Row=`"0`" CornerRadius=`"11,11,0,0`" Background=`"$accentColor`"/>`n"
+        $statusStripMarkup    = "            <!-- Accent strip -->`n            <Border Grid.Row=`"0`" CornerRadius=`"11,11,0,0`" Background=`"`$tpStatusAccent`"/>`n"
         if ($ShowBrandingBanner) {
             $bannerLogoPath = $null
             if (-not [string]::IsNullOrEmpty($CustomBrandingImagePath) -and (Test-Path $CustomBrandingImagePath)) {
@@ -14551,9 +15857,9 @@ try {
             }
         }
         $statusXamlDynamic = @"
-            BorderBrush="$accentColor" BorderThickness="1">
+            BorderBrush="`$tpStatusAccent" BorderThickness="1">
         <Border.Effect>
-            <DropShadowEffect BlurRadius="20" Opacity="0.5" ShadowDepth="4"/>
+            <DropShadowEffect BlurRadius="20" Opacity="`$tpShadowOpacity" ShadowDepth="4"/>
         </Border.Effect>
         <Grid>
             <Grid.RowDefinitions>
@@ -14562,16 +15868,16 @@ $statusBannerRowDef$statusStripRowDef                <RowDefinition Height="Auto
             </Grid.RowDefinitions>
 $statusBannerMarkup$statusStripMarkup            <!-- Icon + text -->
             <StackPanel Grid.Row="$statusBodyRow" HorizontalAlignment="Center" Margin="24,28,24,16">
-                <Border Width="68" Height="68" CornerRadius="34" Background="$iconBackground"
+                <Border Width="68" Height="68" CornerRadius="34" Background="`$tpStatusIconBackground"
                         HorizontalAlignment="Center" Margin="0,0,0,16">
                     <TextBlock Text="$statusIcon" FontFamily="Segoe MDL2 Assets" FontSize="34"
-                               Foreground="$iconColor"
+                               Foreground="`$tpStatusIcon"
                                HorizontalAlignment="Center" VerticalAlignment="Center"/>
                 </Border>
                 <TextBlock Text="$heading" FontSize="18" FontWeight="Bold"
-                           Foreground="#F8FAFC" HorizontalAlignment="Center"
+                           Foreground="`$tpTextPrimary" HorizontalAlignment="Center"
                            TextAlignment="Center" TextWrapping="Wrap" Margin="0,0,0,10"/>
-                <TextBlock TextWrapping="Wrap" FontSize="13" Foreground="#CBD5E1"
+                <TextBlock TextWrapping="Wrap" FontSize="13" Foreground="`$tpTextSecondary"
                            HorizontalAlignment="Center" TextAlignment="Center"
                            LineHeight="20" Text="$bodyXamlSafe"/>
             </StackPanel>
@@ -14582,16 +15888,16 @@ $statusBannerMarkup$statusStripMarkup            <!-- Icon + text -->
                 <Button x:Name="btnClose" Content="$actionButtonText"
                         Height="40" Width="160" FontSize="14" FontWeight="SemiBold"
                         HorizontalAlignment="Center"
-                        Foreground="#F8FAFC" Cursor="Hand" BorderThickness="0">
+                        Foreground="`$tpSecondaryButtonText" Cursor="Hand" BorderThickness="0">
                     <Button.Template>
                         <ControlTemplate TargetType="Button">
-                            <Border x:Name="bd" CornerRadius="8" Background="#334155" Padding="16,8"
-                                    BorderBrush="#475569" BorderThickness="1">
+                            <Border x:Name="bd" CornerRadius="8" Background="`$tpSecondaryButton" Padding="16,8"
+                                    BorderBrush="`$tpSecondaryButtonBorder" BorderThickness="1">
                                 <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
                             </Border>
                             <ControlTemplate.Triggers>
                                 <Trigger Property="IsMouseOver" Value="True">
-                                    <Setter TargetName="bd" Property="Background" Value="#475569"/>
+                                    <Setter TargetName="bd" Property="Background" Value="`$tpSecondaryButtonHover"/>
                                 </Trigger>
                             </ControlTemplate.Triggers>
                         </ControlTemplate>
@@ -14615,18 +15921,24 @@ try {
         Write-ToastLog "Inner exception: $($_.Exception.InnerException.Message)" 'ERROR'
     }
     Write-ToastLog "Stack trace: $($_.ScriptStackTrace)" 'ERROR'
+    Write-ToastDisplayState -State 'Failed' -Detail "XAML parse error: $($_.Exception.Message)"
     exit 1
 }
 
 try {
-    # Position at bottom-right of the working area (above the taskbar) once rendered
+    # Position at bottom-right of the working area (above the taskbar) once rendered.
+    # ContentRendered is the first point at which the notice is genuinely on screen.
     $window.Add_ContentRendered({
         $workArea = [System.Windows.SystemParameters]::WorkArea
         $this.Left = $workArea.Right - $this.ActualWidth - 20
         $this.Top  = $workArea.Bottom - $this.ActualHeight - 20
+        Write-ToastDisplayState -State 'Shown'
     })
 
-    $window.FindName('btnClose').Add_Click({ $window.Close() })
+    $window.FindName('btnClose').Add_Click({
+        Write-ToastDisplayState -State 'Closed' -Detail 'user clicked the close button'
+        $window.Close()
+    })
 
     # Critical / alarm mode (e.g. final deferral notice) -- play an audible alert so the
     # user notices the toast even when Focus Assist / Do Not Disturb has been overridden.
@@ -14653,6 +15965,7 @@ try {
         Write-ToastLog "Inner exception: $($_.Exception.InnerException.Message)" 'ERROR'
     }
     Write-ToastLog "Stack trace: $($_.ScriptStackTrace)" 'ERROR'
+    Write-ToastDisplayState -State 'Failed' -Detail "display error: $($_.Exception.Message)"
     try { Stop-Transcript } catch {}
     exit 1
 }
@@ -14719,10 +16032,10 @@ try {
         AllowsTransparency="True" Background="Transparent"
         Topmost="True" ResizeMode="NoResize" ShowInTaskbar="False"
         Left="-9999" Top="-9999">
-    <Border CornerRadius="12" Background="#0F172A" Margin="10"
-            BorderBrush="#334155" BorderThickness="1">
+    <Border CornerRadius="12" Background="$tpBackground" Margin="10"
+            BorderBrush="$tpBorder" BorderThickness="1">
         <Border.Effect>
-            <DropShadowEffect BlurRadius="20" Opacity="0.5" ShadowDepth="4"/>
+            <DropShadowEffect BlurRadius="20" Opacity="$tpShadowOpacity" ShadowDepth="4"/>
         </Border.Effect>
         <Grid>
             <Grid.RowDefinitions>
@@ -14743,13 +16056,13 @@ try {
 
         $bodyXaml = @"
             <StackPanel Grid.Row="1" Margin="24,20,24,16">
-                <TextBlock x:Name="txtGreeting" Text="$greetingPrefix User" FontSize="16" Foreground="#F8FAFC"
+                <TextBlock x:Name="txtGreeting" Text="$greetingPrefix User" FontSize="16" Foreground="`$tpTextPrimary"
                            FontWeight="SemiBold" Margin="0,0,0,2"/>
                 <TextBlock Text="$subtitle" FontSize="12"
-                           Foreground="#CBD5E1" Margin="0,0,0,16"/>
+                           Foreground="`$tpTextSecondary" Margin="0,0,0,16"/>
                 <TextBlock Text="$heading" FontSize="20" FontWeight="Bold"
-                           Foreground="#F8FAFC" Margin="0,0,0,10"/>
-                <TextBlock TextWrapping="Wrap" FontSize="13" Foreground="#CBD5E1"
+                           Foreground="`$tpTextPrimary" Margin="0,0,0,10"/>
+                <TextBlock TextWrapping="Wrap" FontSize="13" Foreground="`$tpTextSecondary"
                            LineHeight="20" Text="$bodyXamlSafe"/>
             </StackPanel>
 "@
@@ -14765,15 +16078,15 @@ try {
                 </Grid.ColumnDefinitions>
                 <Button x:Name="btnUpdate" Grid.Column="0" Content="$actionButtonText"
                         Height="40" FontSize="14" FontWeight="SemiBold"
-                        Foreground="#FFFFFF" Cursor="Hand" BorderThickness="0">
+                        Foreground="`$tpPrimaryButtonText" Cursor="Hand" BorderThickness="0">
                     <Button.Template>
                         <ControlTemplate TargetType="Button">
-                            <Border x:Name="bd" CornerRadius="8" Background="#0B84F1" Padding="16,8">
+                            <Border x:Name="bd" CornerRadius="8" Background="`$tpPrimaryButton" Padding="16,8">
                                 <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
                             </Border>
                             <ControlTemplate.Triggers>
                                 <Trigger Property="IsMouseOver" Value="True">
-                                    <Setter TargetName="bd" Property="Background" Value="#3B82F6"/>
+                                    <Setter TargetName="bd" Property="Background" Value="`$tpPrimaryButtonHover"/>
                                 </Trigger>
                             </ControlTemplate.Triggers>
                         </ControlTemplate>
@@ -14781,16 +16094,16 @@ try {
                 </Button>
                 <Button x:Name="btnSnooze" Grid.Column="2" Content="$dismissButtonText"
                         Height="40" FontSize="14" FontWeight="SemiBold"
-                        Foreground="#F8FAFC" Cursor="Hand" BorderThickness="0">
+                        Foreground="`$tpSecondaryButtonText" Cursor="Hand" BorderThickness="0">
                     <Button.Template>
                         <ControlTemplate TargetType="Button">
-                            <Border x:Name="bd" CornerRadius="8" Background="#334155" Padding="16,8"
-                                    BorderBrush="#475569" BorderThickness="1">
+                            <Border x:Name="bd" CornerRadius="8" Background="`$tpSecondaryButton" Padding="16,8"
+                                    BorderBrush="`$tpSecondaryButtonBorder" BorderThickness="1">
                                 <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
                             </Border>
                             <ControlTemplate.Triggers>
                                 <Trigger Property="IsMouseOver" Value="True">
-                                    <Setter TargetName="bd" Property="Background" Value="#475569"/>
+                                    <Setter TargetName="bd" Property="Background" Value="`$tpSecondaryButtonHover"/>
                                 </Trigger>
                             </ControlTemplate.Triggers>
                         </ControlTemplate>
@@ -14816,6 +16129,7 @@ try {
         Write-ToastLog "Inner exception: $($_.Exception.InnerException.Message)" 'ERROR'
     }
     Write-ToastLog "Stack trace: $($_.ScriptStackTrace)" 'ERROR'
+    Write-ToastDisplayState -State 'Failed' -Detail "XAML parse error: $($_.Exception.Message)"
     exit 1
 }
 
@@ -14878,11 +16192,14 @@ try {
 
     $window.FindName('txtGreeting').Text = "$greetingPrefix $displayName"
 
-    # Position at bottom-right of the working area (above the taskbar) once rendered
+    # Position at bottom-right of the working area (above the taskbar) once rendered.
+    # ContentRendered is the first point at which the prompt is genuinely on screen -- it
+    # separates "the user saw it and ignored it" from "it never appeared" on a Timeout.
     $window.Add_ContentRendered({
         $workArea = [System.Windows.SystemParameters]::WorkArea
         $this.Left = $workArea.Right - $this.ActualWidth - 20
         $this.Top  = $workArea.Bottom - $this.ActualHeight - 20
+        Write-ToastDisplayState -State 'Shown'
     })
 
     $window.FindName('btnUpdate').Add_Click({
@@ -14973,6 +16290,7 @@ try {
         Write-ToastLog "Inner exception: $($_.Exception.InnerException.Message)" 'ERROR'
     }
     Write-ToastLog "Stack trace: $($_.ScriptStackTrace)" 'ERROR'
+    Write-ToastDisplayState -State 'Failed' -Detail "display error: $($_.Exception.Message)"
     # Write a fallback result file so the install script doesn't hang waiting
     try {
         $resultPath = Join-Path $env:ProgramData 'DriverAutomationTool\DAT_ToastResult.txt'
@@ -15001,6 +16319,947 @@ try { Stop-Transcript } catch {}
     return $OutputPath
 }
 
+#region Custom Driver Pack Sources
+# The Custom Driver Pack view packages drivers captured from the device (PNPUtil) or taken from a
+# local folder, plus optional "additional drivers" from a second folder. Every source is copied
+# into the build's temp staging folder, so a user's own folder is never changed by the build.
+
+function Get-DATDriverFolderInfo {
+    <#
+    .SYNOPSIS
+        Checks a folder offered as a driver source: it must exist and contain at least one INF
+        (searched recursively). Returns Valid, InfCount, Path (resolved) and a Message for the UI.
+    #>
+    [CmdletBinding()]
+    param ([AllowEmptyString()][string]$Path)
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        return [pscustomobject]@{ Valid = $false; InfCount = 0; Path = ''; Message = 'No folder selected' }
+    }
+    if (-not (Test-Path -LiteralPath $Path -PathType Container)) {
+        return [pscustomobject]@{ Valid = $false; InfCount = 0; Path = $Path; Message = 'Folder not found' }
+    }
+    $fullPath = (Resolve-Path -LiteralPath $Path).ProviderPath
+    $infCount = @(Get-ChildItem -LiteralPath $fullPath -Filter '*.inf' -Recurse -File -ErrorAction SilentlyContinue).Count
+    if ($infCount -eq 0) {
+        return [pscustomobject]@{ Valid = $false; InfCount = 0; Path = $fullPath; Message = 'No INF driver files found in this folder' }
+    }
+    return [pscustomobject]@{ Valid = $true; InfCount = $infCount; Path = $fullPath; Message = "$infCount INF driver file$(if ($infCount -ne 1) { 's' }) found" }
+}
+
+function Test-DATFolderOverlap {
+    <#
+    .SYNOPSIS
+        True when two folders are the same, or one contains the other. Two overlapping driver
+        sources would package the same drivers twice (or copy a folder into itself).
+    #>
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory)][AllowEmptyString()][string]$PathA,
+        [Parameter(Mandatory)][AllowEmptyString()][string]$PathB
+    )
+    if ([string]::IsNullOrWhiteSpace($PathA) -or [string]::IsNullOrWhiteSpace($PathB)) { return $false }
+    $a = [System.IO.Path]::GetFullPath($PathA).TrimEnd('\') + '\'
+    $b = [System.IO.Path]::GetFullPath($PathB).TrimEnd('\') + '\'
+    return $a.StartsWith($b, [System.StringComparison]::OrdinalIgnoreCase) -or $b.StartsWith($a, [System.StringComparison]::OrdinalIgnoreCase)
+}
+
+function Copy-DATDriverFolder {
+    <#
+    .SYNOPSIS
+        Copies a driver folder into <DestinationRoot>\<FolderName> for packaging and returns the
+        number of INF files copied. Throws if the source is not a valid driver folder or the copy
+        is incomplete, so a build never silently ships fewer drivers than were selected.
+    .DESCRIPTION
+        An existing <FolderName> under DestinationRoot (for example a PNPUtil export folder with
+        the same name) is never merged into: a numbered name is used instead.
+    #>
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory)][string]$SourcePath,
+        [Parameter(Mandatory)][string]$DestinationRoot,
+        [ValidatePattern('^[A-Za-z0-9_\-]+$')][string]$FolderName = 'AdditionalDrivers'
+    )
+    $source = Get-DATDriverFolderInfo -Path $SourcePath
+    if (-not $source.Valid) { throw "Driver folder '$SourcePath' cannot be used: $($source.Message)" }
+    if (-not (Test-Path -LiteralPath $DestinationRoot)) { New-Item -Path $DestinationRoot -ItemType Directory -Force | Out-Null }
+    if (Test-DATFolderOverlap -PathA $source.Path -PathB $DestinationRoot) {
+        throw "Driver folder '$($source.Path)' overlaps the staging folder '$DestinationRoot'"
+    }
+
+    $destination = Join-Path $DestinationRoot $FolderName
+    $suffix = 1
+    while (Test-Path -LiteralPath $destination) {
+        $suffix++
+        $destination = Join-Path $DestinationRoot "$FolderName$suffix"
+    }
+    New-Item -Path $destination -ItemType Directory -Force | Out-Null
+    # Piped items bind to -LiteralPath, so folder names with [ ] are copied as written
+    Get-ChildItem -LiteralPath $source.Path -Force | Copy-Item -Destination $destination -Recurse -Force -ErrorAction Stop
+
+    $copied = @(Get-ChildItem -LiteralPath $destination -Filter '*.inf' -Recurse -File -ErrorAction SilentlyContinue).Count
+    if ($copied -ne $source.InfCount) {
+        throw "Copied $copied of $($source.InfCount) INF files from '$($source.Path)' to '$destination'"
+    }
+    Write-DATLogEntry -Value "- [Driver Source] - Copied $copied INF driver file(s) from '$($source.Path)' to '$destination'" -Severity 1
+    return $copied
+}
+#endregion Custom Driver Pack Sources
+
+#region Autopilot Provisioning
+# Install silently during Autopilot provisioning (Toast Behaviour, on by default). While the Enrollment
+# Status Page is running nobody can answer a prompt, so the install script detects provisioning and
+# installs without the prompt, deferral, progress notification or status toasts, and a BIOS package
+# stages the firmware without scheduling its own restart. See docs/Autopilot.md.
+
+function Get-DATAutopilotProvisioningFunctions {
+    <#
+    .SYNOPSIS
+        The Test-DATAutopilotProvisioning and Test-DATSetupAccount functions embedded in a generated
+        install script, between the "Autopilot Provisioning" markers.
+    .DESCRIPTION
+        Test-DATAutopilotProvisioning returns InProvisioning, Phase (DeviceSetup, AccountSetup or
+        None) and the Evidence it read, and logs one line on every run. It requires a positive
+        Enrollment Status Page signal from a recent Intune enrolment, and falls back to "not
+        provisioning" -- the normal prompt -- whenever the signals are missing, disagree or cannot
+        be read. When the option is off it is a stub that reports "not provisioning".
+
+        Test-DATSetupAccount is emitted either way: the Windows setup account (defaultuser0) is
+        never prompted, whatever the option, because it is not a real user.
+
+        The registry values are not a documented Microsoft interface. Phase 0 of docs/Autopilot.md
+        validates them on real devices; the toast test package logs the same evidence as a probe.
+    #>
+    [CmdletBinding()]
+    param (
+        [switch]$Enabled
+    )
+    $setupAccount = @'
+function Test-DATSetupAccount {
+    # The Windows setup account (defaultuser0; defaultuser1 and up on some builds) owns a shell
+    # during out-of-box setup. It is not a real user, so it is never prompted or notified.
+    param ([string]$UserName)
+    if ([string]::IsNullOrWhiteSpace($UserName)) { return $false }
+    return ((($UserName -split '\\')[-1]) -match '^defaultuser\d+$')
+}
+'@
+
+    if (-not $Enabled) {
+        return @"
+
+# --- Autopilot Provisioning ---
+# Install silently during Autopilot provisioning is off for this package: the toast gate and the
+# notifications behave the same during provisioning as on a device in use.
+function Test-DATAutopilotProvisioning {
+    Write-CMTraceLog "[Autopilot] Provisioning check is off for this package (Install silently during Autopilot provisioning)"
+    return [pscustomobject]@{ InProvisioning = `$false; Phase = 'None'; Evidence = 'option off' }
+}
+$setupAccount
+# --- End Autopilot Provisioning ---
+"@
+    }
+
+    $detection = @'
+function Get-DATMdmEnrollmentAgeHours {
+    # Hours since the device enrolled in Intune, from the earliest Intune MDM device certificate.
+    # $null when there is no such certificate.
+    $mdmCert = @(Get-ChildItem -Path 'Cert:\LocalMachine\My' -ErrorAction SilentlyContinue |
+        Where-Object { $_.Issuer -match 'Microsoft Intune MDM Device CA' } | Sort-Object NotBefore)[0]
+    if (-not $mdmCert) { return $null }
+    return [math]::Round(((Get-Date) - $mdmCert.NotBefore).TotalHours, 1)
+}
+
+function Test-DATAutopilotProvisioning {
+    <#
+        Decides whether the device is still being provisioned by Windows Autopilot (the Enrollment
+        Status Page is running), so the install can proceed without prompting. Read-only, no network.
+
+        Provisioning needs a positive ESP signal from an Intune enrolment made within the last
+        24 hours ($maxEnrollmentAgeHours, pending the Phase 0 validation in docs/Autopilot.md):
+          - FirstSync IsSyncDone = 0 under the MDM enrolment (device phase), or under a user SID
+            subkey of it (account phase), or
+          - EnrollmentStatusTracking\Device\Setup HasProvisioningCompleted not yet complete.
+        Signals that disagree, an enrolment of unknown or greater age, or anything that cannot be
+        read means "not provisioning", so a missed detection gives the normal prompt rather than a
+        silent install on a device someone is using. SoftwareRoot only changes for tests.
+    #>
+    param ([string]$SoftwareRoot = 'HKLM:\SOFTWARE\Microsoft')
+    $maxEnrollmentAgeHours = 24
+    $result =[pscustomobject]@{ InProvisioning = $false; Phase = 'None'; Evidence = '' }
+    $evidence = New-Object System.Collections.Generic.List[string]
+    try {
+        # -- ESP first sync, per Intune MDM enrolment --
+        $deviceSync = 'absent'
+        $pendingUsers = New-Object System.Collections.Generic.List[string]
+        $mdmEnrollments = 0
+        foreach ($enrollment in @(Get-ChildItem -Path "$SoftwareRoot\Enrollments" -ErrorAction Stop)) {
+            $providerId = (Get-ItemProperty -LiteralPath $enrollment.PSPath -Name 'ProviderID' -ErrorAction SilentlyContinue).ProviderID
+            if ("$providerId" -ne 'MS DM Server') { continue }
+            $mdmEnrollments++
+            $firstSyncPath = "$($enrollment.PSPath)\FirstSync"
+            if (-not (Test-Path -LiteralPath $firstSyncPath)) { continue }
+            $isSyncDone = (Get-ItemProperty -LiteralPath $firstSyncPath -Name 'IsSyncDone' -ErrorAction SilentlyContinue).IsSyncDone
+            if ($null -ne $isSyncDone) {
+                if ([int64]$isSyncDone -eq 0) { $deviceSync = 'pending' } elseif ($deviceSync -ne 'pending') { $deviceSync = 'done' }
+            }
+            foreach ($userKey in @(Get-ChildItem -LiteralPath $firstSyncPath -ErrorAction SilentlyContinue | Where-Object { $_.PSChildName -match '^S-1-' })) {
+                $userSyncDone = (Get-ItemProperty -LiteralPath $userKey.PSPath -Name 'IsSyncDone' -ErrorAction SilentlyContinue).IsSyncDone
+                if ($null -ne $userSyncDone -and [int64]$userSyncDone -eq 0) { $pendingUsers.Add($userKey.PSChildName) }
+            }
+        }
+        $evidence.Add("Intune MDM enrolments: $mdmEnrollments")
+        $evidence.Add("device first sync: $deviceSync")
+        $evidence.Add("account first sync pending: $(if ($pendingUsers.Count -gt 0) { $pendingUsers -join ',' } else { 'none' })")
+
+        # -- Device setup phase tracking --
+        $deviceSetup = 'absent'
+        $setupValue = (Get-ItemProperty -LiteralPath "$SoftwareRoot\Windows\Autopilot\EnrollmentStatusTracking\Device\Setup" -Name 'HasProvisioningCompleted' -ErrorAction SilentlyContinue).HasProvisioningCompleted
+        if ($null -ne $setupValue) {
+            # A DWORD of 0xFFFFFFFF reads back as -1 in PowerShell
+            $deviceSetup = if ([int64]$setupValue -eq -1 -or [int64]$setupValue -eq 4294967295) { 'complete' } elseif ([int64]$setupValue -eq 0) { 'incomplete' } else { "unknown ($setupValue)" }
+        }
+        $evidence.Add("device setup: $deviceSetup")
+
+        # -- Enrolment age, from the Intune MDM device certificate --
+        $ageHours = Get-DATMdmEnrollmentAgeHours
+        if ($null -ne $ageHours) {
+            $evidence.Add("enrolled $ageHours h ago")
+        } else {
+            $evidence.Add('enrolment age unknown (no Intune MDM device certificate)')
+        }
+
+        $deviceSignal = ($deviceSync -eq 'pending') -or ($deviceSetup -eq 'incomplete')
+        $accountSignal = $pendingUsers.Count -gt 0
+        if (-not ($deviceSignal -or $accountSignal)) {
+            $evidence.Add('no Enrollment Status Page activity')
+        } elseif (($deviceSync -eq 'pending' -and $deviceSetup -eq 'complete') -or ($deviceSync -eq 'done' -and $deviceSetup -eq 'incomplete')) {
+            $evidence.Add('signals disagree -- not treated as provisioning')
+        } elseif ($null -eq $ageHours) {
+            $evidence.Add('cannot confirm a recent enrolment -- not treated as provisioning')
+        } elseif ($ageHours -gt $maxEnrollmentAgeHours) {
+            $evidence.Add("enrolment is older than $maxEnrollmentAgeHours h -- Enrollment Status Page state treated as stale")
+        } else {
+            $result.InProvisioning = $true
+            $result.Phase = if ($deviceSignal) { 'DeviceSetup' } else { 'AccountSetup' }
+        }
+    } catch {
+        $evidence.Add("could not read the provisioning state: $($_.Exception.Message) -- not treated as provisioning")
+    }
+    $result.Evidence = $evidence -join '; '
+    if ($result.InProvisioning) {
+        Write-CMTraceLog "[Autopilot] Provisioning detected ($($result.Phase)) -- $($result.Evidence)"
+    } else {
+        Write-CMTraceLog "[Autopilot] Not provisioning -- $($result.Evidence)"
+    }
+    return $result
+}
+'@
+
+    return @"
+
+# --- Autopilot Provisioning ---
+# Install silently during Autopilot provisioning: nobody can answer a prompt while the Enrollment
+# Status Page runs, so the install skips the prompt, deferral, progress notification and status
+# toasts, and a BIOS install leaves the restart to the ESP. Decided once per run (`$script:DATAutopilot).
+$detection
+$setupAccount
+# --- End Autopilot Provisioning ---
+"@
+}
+#endregion Autopilot Provisioning
+
+#region Install Progress Notification
+# Optional (Toast Behaviour > Show installation progress). The SYSTEM install script cannot draw
+# on the user's desktop, so it publishes progress to a status file and Show-ProgressToast.ps1,
+# started in the user's session, renders it. See Get-DATInstallProgressFunctions.
+
+function Get-DATInstallProgressFunctions {
+    <#
+    .SYNOPSIS
+        The Start / Set / Complete / Stop-DATInstallProgress functions embedded in a generated
+        install script, between the "Install Progress Notification" markers. When disabled they are
+        no-op stubs, so the template can call them unconditionally.
+    #>
+    [CmdletBinding()]
+    param (
+        [ValidateSet('Drivers','BIOS')][string]$UpdateType = 'Drivers',
+        [switch]$Enabled
+    )
+    if (-not $Enabled) {
+        return @'
+
+# --- Install Progress Notification ---
+# Off for this package (Toast Behaviour > Show installation progress) -- these calls do nothing.
+function Start-DATInstallProgress { param([string]$ToastScript) }
+function Set-DATInstallProgress { param([int]$Step, [int]$Total = 0, [int]$Done = 0, [string]$CountFile = '', [string]$MeasurePath = '', [string]$WimFile = '') }
+function Complete-DATInstallProgress { param([string]$Outcome) }
+function Stop-DATInstallProgress { }
+# --- End Install Progress Notification ---
+'@
+    }
+
+    $steps = if ($UpdateType -eq 'BIOS') {
+        "@('Preparing firmware', 'Getting your device ready', 'Staging BIOS firmware')"
+    } else {
+        "@('Preparing driver package', 'Installing drivers', 'Finishing up')"
+    }
+    # Where each step starts on the bar. Steps with nothing to measure stay at their start.
+    $starts = if ($UpdateType -eq 'BIOS') { '@(0, 30, 60)' } else { '@(0, 25, 95)' }
+    $doneLabel = if ($UpdateType -eq 'BIOS') { 'BIOS update staged' } else { 'Driver updates installed' }
+
+    $functions = @'
+
+# --- Install Progress Notification ---
+# Shows the signed-in user a compact notification with the install's progress. This script runs
+# as SYSTEM and cannot draw on the user's desktop, so it publishes the progress to a status file
+# that Show-ProgressToast.ps1 reads in the user's session. A background runspace rewrites the file
+# every 1.5 seconds -- measuring the WIM extraction and PNPUtil while this script is blocked in
+# them -- so the notification can tell a slow step from a script that has stopped. None of this
+# can fail the install: every error is logged and the install carries on.
+$script:DATProgress = $null
+
+function Start-DATInstallProgress {
+    param ([Parameter(Mandatory)][string]$ToastScript)
+    if ($WhatIf) { return }
+    try {
+        if ($script:DATAutopilot -and $script:DATAutopilot.InProvisioning) {
+            Write-CMTraceLog "[Progress] Autopilot provisioning ($($script:DATAutopilot.Phase)) -- no progress notification"
+            return
+        }
+        if (-not (Test-Path -LiteralPath $ToastScript)) {
+            Write-CMTraceLog "[Progress] Progress notification not staged in this package -- skipping it"
+            return
+        }
+        if (-not (Get-Process -Name explorer -ErrorAction SilentlyContinue)) {
+            Write-CMTraceLog "[Progress] No interactive user session -- no progress notification"
+            return
+        }
+        $progressUser = $null
+        try {
+            $explorerWmi = Get-CimInstance Win32_Process -Filter "Name = 'explorer.exe'" -ErrorAction Stop | Select-Object -First 1
+            $owner = Invoke-CimMethod -InputObject $explorerWmi -MethodName GetOwner -ErrorAction Stop
+            if ($owner.ReturnValue -eq 0 -and -not [string]::IsNullOrEmpty($owner.User)) { $progressUser = "$($owner.Domain)\$($owner.User)" }
+        } catch { }
+        if ([string]::IsNullOrEmpty($progressUser)) { $progressUser = (Get-CimInstance -ClassName Win32_ComputerSystem -ErrorAction SilentlyContinue).UserName }
+        if ([string]::IsNullOrEmpty($progressUser)) {
+            Write-CMTraceLog "[Progress] Could not determine the signed-in user -- no progress notification" -Severity 2
+            return
+        }
+        if (Test-DATSetupAccount -UserName $progressUser) {
+            Write-CMTraceLog "[Progress] The shell belongs to the Windows setup account ($progressUser), not a user -- no progress notification"
+            return
+        }
+
+        # The status folder lets SYSTEM and Administrators write and users only read, so a user
+        # cannot plant a link that redirects this SYSTEM write to another file. A folder already
+        # there but owned by anyone else was not made here: it is moved aside, never followed.
+        $statusDir = Join-Path $env:ProgramData 'DriverAutomationTool\Progress'
+        $trustedSids = @('S-1-5-18', 'S-1-5-32-544')
+        if (Test-Path -LiteralPath $statusDir) {
+            $dirOwner = $null
+            try { $dirOwner = (Get-Acl -LiteralPath $statusDir).GetOwner([System.Security.Principal.SecurityIdentifier]).Value } catch { }
+            if ($trustedSids -notcontains $dirOwner) {
+                $asideName = "Progress.untrusted-$([guid]::NewGuid().ToString('N'))"
+                Write-CMTraceLog "[Progress] '$statusDir' is owned by '$dirOwner', not SYSTEM or Administrators -- moving it aside as $asideName" -Severity 2
+                Rename-Item -LiteralPath $statusDir -NewName $asideName -Force -ErrorAction Stop
+            }
+        }
+        if (-not (Test-Path -LiteralPath $statusDir)) { New-Item -Path $statusDir -ItemType Directory -Force -ErrorAction Stop | Out-Null }
+        $statusAcl = New-Object System.Security.AccessControl.DirectorySecurity
+        $statusAcl.SetAccessRuleProtection($true, $false)
+        foreach ($sid in $trustedSids) {
+            $statusAcl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule(
+                (New-Object System.Security.Principal.SecurityIdentifier($sid)), 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow')))
+        }
+        $statusAcl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule(
+            (New-Object System.Security.Principal.SecurityIdentifier('S-1-5-32-545')), 'ReadAndExecute', 'ContainerInherit,ObjectInherit', 'None', 'Allow')))
+        Set-Acl -LiteralPath $statusDir -AclObject $statusAcl -ErrorAction Stop
+
+        $sync = [hashtable]::Synchronized(@{
+            Labels = __STEPS__; Starts = __STARTS__; DoneLabel = '__DONE_LABEL__'
+            Step = 1; Total = 0; Done = 0; CountFile = ''; MeasurePath = ''; ExpectedBytes = [long]0
+            State = 'running'; File = (Join-Path $statusDir 'DAT_InstallProgress.json')
+            Wake = (New-Object System.Threading.AutoResetEvent $false)
+        })
+        $writerRunspace = [runspacefactory]::CreateRunspace()
+        $writerRunspace.Open()
+        $writer = [powershell]::Create()
+        $writer.Runspace = $writerRunspace
+        [void]$writer.AddScript({
+            param($sync)
+            $tmpFile = "$($sync.File).tmp"
+            while ($true) {
+                try {
+                    $labels = @($sync.Labels); $starts = @($sync.Starts)
+                    $step = [Math]::Max(1, [Math]::Min($labels.Count, [int]$sync.Step))
+                    $label = $labels[$step - 1]
+                    $fraction = 0.0
+                    if ([int]$sync.Total -gt 0) {
+                        $done = [int]$sync.Done
+                        if ($sync.CountFile) {
+                            # PNPUtil prints one "<prefix>: <name>.inf" line per package it adds. The
+                            # prefix is localised; the line ending in .inf is not.
+                            $done = 0
+                            try {
+                                $fs = [System.IO.File]::Open($sync.CountFile, 'Open', 'Read', 'ReadWrite')
+                                $reader = New-Object System.IO.StreamReader($fs)
+                                while ($null -ne ($line = $reader.ReadLine())) { if ($line -match '\.inf\s*$') { $done++ } }
+                                $reader.Dispose()
+                            } catch { }
+                        }
+                        $done = [Math]::Min($done, [int]$sync.Total)
+                        $fraction = $done / [double]$sync.Total
+                        $label = "$label $([Math]::Min([int]$sync.Total, $done + 1))/$($sync.Total)"
+                    } elseif ($sync.MeasurePath -and [long]$sync.ExpectedBytes -gt 0) {
+                        $bytes = (Get-ChildItem -LiteralPath $sync.MeasurePath -Recurse -File -Force -ErrorAction SilentlyContinue | Measure-Object -Property Length -Sum).Sum
+                        $fraction = [Math]::Min(1.0, [double]$bytes / [long]$sync.ExpectedBytes)
+                    }
+                    $start = [int]$starts[$step - 1]
+                    $end = if ($step -lt $labels.Count) { [int]$starts[$step] } else { 99 }
+                    $percent = [int][Math]::Floor($start + ($end - $start) * $fraction)
+                    $counter = "Step $step of $($labels.Count)"
+                    if ($sync.State -eq 'success') { $label = $sync.DoneLabel; $counter = 'Done'; $percent = 100 }
+                    $json = @{ now = $label; counter = $counter; percent = $percent; state = $sync.State; heartbeat = [DateTime]::UtcNow.ToString('o') } | ConvertTo-Json -Compress
+                    [System.IO.File]::WriteAllText($tmpFile, $json, (New-Object System.Text.UTF8Encoding $false))
+                    # Swap the new state in whole so the notification never reads a half-written file.
+                    # [NullString]::Value: a plain $null reaches .NET as '' and Replace rejects it.
+                    if (Test-Path -LiteralPath $sync.File) { [System.IO.File]::Replace($tmpFile, $sync.File, [NullString]::Value) } else { [System.IO.File]::Move($tmpFile, $sync.File) }
+                } catch { }
+                if ($sync.State -ne 'running') { break }
+                [void]$sync.Wake.WaitOne(1500)
+            }
+        }).AddArgument($sync)
+        $writerHandle = $writer.BeginInvoke()
+        $script:DATProgress = @{ Sync = $sync; Writer = $writer; Runspace = $writerRunspace; Handle = $writerHandle; Completed = $false; TaskRegistered = $false }
+
+        # Same launch route as the other notifications: a one-off task in the user's session
+        $ps64 = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
+        $persistDir = Join-Path $env:ProgramData 'DriverAutomationTool'
+        $persistedScript = Join-Path $persistDir (Split-Path $ToastScript -Leaf)
+        Copy-Item -LiteralPath $ToastScript -Destination $persistedScript -Force
+        $taskAction = New-ScheduledTaskAction -Execute $ps64 -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -STA -File `"$persistedScript`""
+        $taskPrincipal = New-ScheduledTaskPrincipal -UserId $progressUser -LogonType Interactive -RunLevel Limited
+        # Backstop only: the notification closes itself when the install finishes or stops reporting
+        $taskSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Hours 3)
+        Unregister-ScheduledTask -TaskPath '\Driver Automation Tool\' -TaskName 'Install Progress Notification' -Confirm:$false -ErrorAction SilentlyContinue
+        Register-ScheduledTask -TaskPath '\Driver Automation Tool' -TaskName 'Install Progress Notification' -Action $taskAction -Principal $taskPrincipal -Settings $taskSettings -Force | Out-Null
+        $script:DATProgress.TaskRegistered = $true
+        Start-ScheduledTask -TaskPath '\Driver Automation Tool\' -TaskName 'Install Progress Notification'
+        Write-CMTraceLog "[Progress] Progress notification started for $progressUser"
+    } catch {
+        Write-CMTraceLog "[Progress] Could not start the progress notification: $($_.Exception.Message) -- the install continues without it" -Severity 2
+    }
+}
+
+function Set-DATInstallProgress {
+    # Moves the notification to a step. Total + CountFile (PNPUtil output) or Total + Done count
+    # items; MeasurePath + WimFile measure extraction against the image's expanded size.
+    param ([int]$Step, [int]$Total = 0, [int]$Done = 0, [string]$CountFile = '', [string]$MeasurePath = '', [string]$WimFile = '')
+    if (-not $script:DATProgress) { return }
+    try {
+        $expectedBytes = [long]0
+        if ($MeasurePath -and $WimFile) {
+            try { $expectedBytes = [long](Get-WindowsImage -ImagePath $WimFile -Index 1 -ErrorAction Stop).ImageSize } catch { }
+        }
+        $sync = $script:DATProgress.Sync
+        $sync.CountFile = $CountFile; $sync.MeasurePath = $MeasurePath; $sync.ExpectedBytes = $expectedBytes
+        $sync.Total = $Total; $sync.Done = $Done; $sync.Step = $Step
+        [void]$sync.Wake.Set()
+    } catch { }
+}
+
+function Complete-DATInstallProgress {
+    # Final state. Success shows "Done" briefly; Failed closes the notification straight away. Either
+    # way the outcome notification (success / restart / issues) takes over.
+    param ([ValidateSet('Success','Failed')][string]$Outcome)
+    if (-not $script:DATProgress -or $script:DATProgress.Completed) { return }
+    try {
+        $progress = $script:DATProgress
+        $progress.Completed = $true
+        $progress.Sync.State = $Outcome.ToLowerInvariant()
+        [void]$progress.Sync.Wake.Set()
+        # Publish the final state before the outcome notification is launched
+        if ($progress.Handle.AsyncWaitHandle.WaitOne(5000)) { try { [void]$progress.Writer.EndInvoke($progress.Handle) } catch { } }
+        try { $progress.Writer.Dispose(); $progress.Runspace.Dispose() } catch { }
+        Write-CMTraceLog "[Progress] Progress notification finished ($Outcome)"
+    } catch { }
+}
+
+function Stop-DATInstallProgress {
+    # Called from the script's finally block: closes the notification on any exit path that did
+    # not report an outcome, then removes the task and the status file.
+    if (-not $script:DATProgress) { return }
+    Complete-DATInstallProgress -Outcome Failed
+    try {
+        if ($script:DATProgress.TaskRegistered) {
+            Unregister-ScheduledTask -TaskPath '\Driver Automation Tool\' -TaskName 'Install Progress Notification' -Confirm:$false -ErrorAction SilentlyContinue
+        }
+        Remove-Item -LiteralPath $script:DATProgress.Sync.File -Force -ErrorAction SilentlyContinue
+    } catch { }
+    $script:DATProgress = $null
+}
+# --- End Install Progress Notification ---
+'@
+    return $functions.Replace('__STEPS__', $steps).Replace('__STARTS__', $starts).Replace('__DONE_LABEL__', $doneLabel)
+}
+
+function Get-DATProgressToastIconPath {
+    <#
+    .SYNOPSIS
+        The icon shown in the install progress notification: the custom Intune package icon when one
+        is set (Intune Package Options), otherwise the Driver Automation Tool logo. Empty when neither
+        exists, in which case the notification shows a glyph instead.
+    #>
+    [CmdletBinding()]
+    param ()
+    $custom = $null
+    if (-not [string]::IsNullOrEmpty($global:RegPath)) {
+        $custom = (Get-ItemProperty -Path $global:RegPath -Name 'IntuneCustomIconPath' -ErrorAction SilentlyContinue).IntuneCustomIconPath
+    }
+    if (-not [string]::IsNullOrEmpty($custom) -and (Test-Path -LiteralPath $custom)) { return [string]$custom }
+    $brandingRoot = if ($global:ScriptDirectory) { Join-Path $global:ScriptDirectory 'Branding' } else { Join-Path $PSScriptRoot '..\..\Branding' }
+    $logo = Join-Path $brandingRoot 'DATLogo.png'
+    if (Test-Path -LiteralPath $logo) { return $logo }
+    return ''
+}
+
+function ConvertTo-DATToastIconBase64 {
+    <#
+    .SYNOPSIS
+        Shrinks an image to fit a Size x Size box (never enlarging it) and returns it as a base64 PNG,
+        so a large custom icon does not bloat every generated toast script. Empty on any failure.
+    #>
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Path,
+        [int]$Size = 96
+    )
+    if ([string]::IsNullOrEmpty($Path) -or -not (Test-Path -LiteralPath $Path)) { return '' }
+    try {
+        Add-Type -AssemblyName System.Drawing -ErrorAction Stop
+        $source = [System.Drawing.Image]::FromFile((Resolve-Path -LiteralPath $Path).ProviderPath)
+        try {
+            $scale = [Math]::Min(1.0, [Math]::Min($Size / [double]$source.Width, $Size / [double]$source.Height))
+            $width = [Math]::Max(1, [int][Math]::Round($source.Width * $scale))
+            $height = [Math]::Max(1, [int][Math]::Round($source.Height * $scale))
+            $bitmap = New-Object System.Drawing.Bitmap $width, $height
+            $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+            try {
+                $graphics.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
+                $graphics.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::HighQuality
+                $graphics.PixelOffsetMode = [System.Drawing.Drawing2D.PixelOffsetMode]::HighQuality
+                $graphics.DrawImage($source, 0, 0, $width, $height)
+                $stream = New-Object System.IO.MemoryStream
+                $bitmap.Save($stream, [System.Drawing.Imaging.ImageFormat]::Png)
+                return [Convert]::ToBase64String($stream.ToArray())
+            } finally {
+                $graphics.Dispose(); $bitmap.Dispose()
+            }
+        } finally {
+            $source.Dispose()
+        }
+    } catch {
+        Write-DATLogEntry -Value "[Toast] Could not prepare the progress notification icon from '$Path': $($_.Exception.Message) -- using a glyph instead" -Severity 2
+        return ''
+    }
+}
+
+function New-DATIntuneProgressToastScript {
+    <#
+    .SYNOPSIS
+        Generates Show-ProgressToast.ps1: the compact install progress notification. It runs in the
+        signed-in user's session, reads the status file the install script keeps up to date, and
+        closes when the install reports its outcome, when the user dismisses it, or when the status
+        file stops updating for a minute.
+    #>
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory)][string]$OutputPath,
+        [ValidateSet('Drivers','BIOS')][string]$UpdateType = 'Drivers',
+        [string]$CustomToastSubtitle = '',
+        [switch]$AlarmMode,
+        [AllowEmptyString()][string]$ToastThemeJson,
+        # Icon for the notification's tile. When not passed: the custom Intune package icon, else
+        # the DAT logo (Get-DATProgressToastIconPath). Pass '' to show a glyph instead.
+        [AllowEmptyString()][string]$IconPath
+    )
+    if (-not $PSBoundParameters.ContainsKey('ToastThemeJson')) { $ToastThemeJson = [string]$script:DATToastThemeJson }
+    if (-not $PSBoundParameters.ContainsKey('IconPath')) { $IconPath = Get-DATProgressToastIconPath }
+    $iconBase64 = ConvertTo-DATToastIconBase64 -Path $IconPath
+    $theme = Resolve-DATToastTheme -ToastThemeJson $ToastThemeJson
+    $subtitle = if (-not [string]::IsNullOrWhiteSpace($CustomToastSubtitle)) { $CustomToastSubtitle.Trim() } else { 'Driver Automation Tool' }
+    $activity = if ($UpdateType -eq 'BIOS') { 'Installing BIOS update' } else { 'Installing driver updates' }
+    $glyph = if ($UpdateType -eq 'BIOS') { '0xE835' } else { '0xE7F8' }   # FirmwareUpdate / DeviceLaptopNoPic
+
+    $header = @"
+<#
+    Driver Automation Tool - Install Progress Notification
+    Update Type : $UpdateType
+    Built       : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
+    Runs in the signed-in user's session through a scheduled task. Shows the progress the SYSTEM
+    install script publishes to its status file. It only reads that file and never affects the
+    install: dismissing it just hides it.
+#>
+`$DATToastType      = 'Progress'
+`$DATToastAlarmMode = '$([bool]$AlarmMode)'
+`$progressContext   = ('$($subtitle -replace "'", "''")' + ' ' + [char]0xB7 + ' $activity').ToUpperInvariant()
+`$progressGlyph     = [string][char]$glyph
+`$progressPowerNote = `$$($UpdateType -eq 'BIOS')
+# Tile icon (custom Intune package icon or the DAT logo), embedded so nothing is written to disk
+`$progressIconBase64 = '$iconBase64'
+"@
+
+    $logging = @'
+
+$statusFile = Join-Path $env:ProgramData 'DriverAutomationTool\Progress\DAT_InstallProgress.json'
+$toastLogPath = Join-Path $env:ProgramData 'DriverAutomationTool\DAT_Toast.log'
+function Write-ToastLog {
+    param([string]$Message, [string]$Severity = 'INFO')
+    try { "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss.fff') [$Severity] [PID:$PID] [Progress] $Message" | Out-File -FilePath $toastLogPath -Encoding UTF8 -Append } catch { }
+}
+Write-ToastLog "Progress notification starting (user $env:USERNAME, session $([System.Diagnostics.Process]::GetCurrentProcess().SessionId))"
+'@
+
+    $body = @'
+
+try {
+    Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase -ErrorAction Stop
+} catch {
+    Write-ToastLog "Failed to load WPF -- $($_.Exception.Message)" 'ERROR'
+    exit 1
+}
+
+# Focus Assist / Do Not Disturb is respected as for the other notifications, unless critical
+# notification mode is on. The install carries on either way.
+try {
+    Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public class DATProgressFocus { [DllImport("shell32.dll")] public static extern int SHQueryUserNotificationState(out int state); }' -ErrorAction SilentlyContinue
+    $focusState = 0
+    [void][DATProgressFocus]::SHQueryUserNotificationState([ref]$focusState)
+    if ($focusState -ne 5 -and $DATToastAlarmMode -ne 'True') {
+        Write-ToastLog "Notifications are blocked (state $focusState) -- not showing progress"
+        exit 0
+    }
+} catch { }
+
+function Read-ProgressState {
+    try {
+        if (-not (Test-Path -LiteralPath $statusFile)) { return $null }
+        $raw = [System.IO.File]::ReadAllText($statusFile)
+        if ([string]::IsNullOrWhiteSpace($raw)) { return $null }
+        return ($raw | ConvertFrom-Json)
+    } catch { return $null }
+}
+function Test-ProgressStale($s) {
+    if ($null -eq $s) { return $true }
+    $hb = [DateTime]::MinValue
+    if ($s.heartbeat -is [datetime]) { $hb = $s.heartbeat.ToUniversalTime() }
+    elseif (-not [DateTime]::TryParse("$($s.heartbeat)", [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::AdjustToUniversal, [ref]$hb)) { return $true }
+    return (([DateTime]::UtcNow - $hb).TotalSeconds -gt 60)
+}
+
+# The install writes its first state before starting this task; allow a moment for it anyway
+$state = $null
+for ($i = 0; $i -lt 20 -and $null -eq $state; $i++) { $state = Read-ProgressState; if ($null -eq $state) { Start-Sleep -Milliseconds 500 } }
+if ($null -eq $state -or (Test-ProgressStale $state) -or "$($state.state)" -ne 'running') {
+    Write-ToastLog "No running install to show -- exiting"
+    exit 0
+}
+
+[xml]$xaml = @"
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Driver Automation Tool" Width="544" SizeToContent="Height"
+        WindowStyle="None" AllowsTransparency="True" Background="Transparent" ResizeMode="NoResize"
+        ShowInTaskbar="False" Topmost="True" ShowActivated="False" FontFamily="Segoe UI"
+        TextOptions.TextFormattingMode="Display" UseLayoutRounding="True" Left="-9999" Top="-9999">
+  <Border Background="$tpBackground" BorderBrush="$tpBorder" BorderThickness="1" CornerRadius="12" Margin="12" SnapsToDevicePixels="True">
+    <Border.Effect><DropShadowEffect BlurRadius="28" ShadowDepth="8" Direction="270" Opacity="$tpShadowOpacity" Color="Black"/></Border.Effect>
+    <Grid>
+      <Grid.RowDefinitions><RowDefinition Height="4"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+      <Border x:Name="Strip" Grid.Row="0" CornerRadius="11,11,0,0" Background="$tpInfoAccent"/>
+      <Grid Grid.Row="1">
+        <Grid Margin="17,15,44,16">
+          <Grid.ColumnDefinitions><ColumnDefinition Width="40"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+          <Border x:Name="IconTile" Width="40" Height="40" Background="$tpInfoIconBackground" CornerRadius="10" VerticalAlignment="Center">
+            <Grid>
+              <TextBlock x:Name="IconGlyph" FontFamily="Segoe MDL2 Assets" FontSize="19" Foreground="$tpInfoIcon" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+              <Image x:Name="IconImage" Stretch="Uniform" Margin="5" Visibility="Collapsed" RenderOptions.BitmapScalingMode="HighQuality"/>
+            </Grid>
+          </Border>
+          <StackPanel Grid.Column="1" Margin="14,0,0,0" VerticalAlignment="Center">
+            <TextBlock x:Name="Context" Foreground="$tpTextSecondary" FontSize="11" FontWeight="Bold" TextTrimming="CharacterEllipsis" Margin="0,0,0,3"/>
+            <Grid Margin="0,0,0,8">
+              <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+              <TextBlock x:Name="Now" Foreground="$tpTextPrimary" FontSize="14" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/>
+              <TextBlock x:Name="Counter" Grid.Column="1" Foreground="$tpTextSecondary" FontSize="12" Margin="8,0,0,0" VerticalAlignment="Bottom"/>
+            </Grid>
+            <Border x:Name="BarTrack" Height="5" CornerRadius="2.5" Background="$tpSecondaryButton">
+              <Border x:Name="BarFill" HorizontalAlignment="Left" CornerRadius="2.5" Background="$tpInfoAccent" Width="0"/>
+            </Border>
+            <StackPanel x:Name="PowerNote" Orientation="Horizontal" Margin="0,8,0,0" Visibility="Collapsed">
+              <TextBlock Text="&#xE7BA;" FontFamily="Segoe MDL2 Assets" FontSize="11" Foreground="$tpWarningIcon" VerticalAlignment="Center" Margin="0,0,6,0"/>
+              <TextBlock Text="Keep your device plugged in and powered on" FontSize="11.5" Foreground="$tpWarningIcon" VerticalAlignment="Center"/>
+            </StackPanel>
+          </StackPanel>
+        </Grid>
+        <Button x:Name="Dismiss" Content="&#x2715;" Width="26" Height="26" HorizontalAlignment="Right" VerticalAlignment="Top"
+                Margin="0,10,10,0" FontSize="13" Foreground="$tpTextSecondary" Cursor="Hand" Focusable="False" ToolTip="Hide -- the update carries on">
+          <Button.Template>
+            <ControlTemplate TargetType="Button">
+              <Border x:Name="Bd" Background="Transparent" CornerRadius="7">
+                <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+              </Border>
+              <ControlTemplate.Triggers>
+                <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Bd" Property="Background" Value="$tpSecondaryButton"/></Trigger>
+              </ControlTemplate.Triggers>
+            </ControlTemplate>
+          </Button.Template>
+        </Button>
+      </Grid>
+    </Grid>
+  </Border>
+</Window>
+"@
+
+try {
+    $window = [Windows.Markup.XamlReader]::Load((New-Object System.Xml.XmlNodeReader $xaml))
+} catch {
+    Write-ToastLog "Failed to parse XAML -- $($_.Exception.Message)" 'ERROR'
+    exit 1
+}
+$ui = @{}
+foreach ($name in @('Strip', 'IconTile', 'IconGlyph', 'IconImage', 'Context', 'Now', 'Counter', 'BarTrack', 'BarFill', 'PowerNote', 'Dismiss')) { $ui[$name] = $window.FindName($name) }
+# Text goes in through properties, never through markup
+$ui.Context.Text = $progressContext
+$ui.IconGlyph.Text = $progressGlyph
+if ($progressPowerNote) { $ui.PowerNote.Visibility = 'Visible' }
+
+# The icon sits on a white tile so any logo reads on any theme; the glyph is the fallback
+$script:hasIcon = $false
+if (-not [string]::IsNullOrEmpty($progressIconBase64)) {
+    try {
+        $iconStream = New-Object System.IO.MemoryStream (, [Convert]::FromBase64String($progressIconBase64))
+        $iconBitmap = New-Object System.Windows.Media.Imaging.BitmapImage
+        $iconBitmap.BeginInit()
+        $iconBitmap.CacheOption = [System.Windows.Media.Imaging.BitmapCacheOption]::OnLoad
+        $iconBitmap.StreamSource = $iconStream
+        $iconBitmap.EndInit()
+        $iconBitmap.Freeze()
+        $iconStream.Dispose()
+        $ui.IconImage.Source = $iconBitmap
+        $ui.IconImage.Visibility = 'Visible'
+        $ui.IconGlyph.Visibility = 'Collapsed'
+        $ui.IconTile.Background = [System.Windows.Media.Brushes]::White
+        $script:hasIcon = $true
+    } catch {
+        Write-ToastLog "Could not load the notification icon -- $($_.Exception.Message)" 'WARN'
+    }
+}
+
+$script:lastPercent = 0
+$script:closeAt = $null
+$script:closing = $false
+
+function Set-ProgressBar([double]$percent) {
+    $script:lastPercent = $percent
+    $width = $ui.BarTrack.ActualWidth
+    if ($width -le 0) { return }
+    $ui.BarFill.Width = [Math]::Max(0, [Math]::Min($width, $width * $percent / 100))
+}
+function Close-Progress([string]$Reason) {
+    if ($script:closing) { return }
+    $script:closing = $true
+    Write-ToastLog "Closing -- $Reason"
+    try { $timer.Stop() } catch { }
+    try { $window.Close() } catch { }
+}
+function Update-ProgressView($s) {
+    $ui.Now.Text = "$($s.now)"
+    $ui.Counter.Text = "$($s.counter)"
+    $percent = 0
+    [void][double]::TryParse("$($s.percent)", [ref]$percent)
+    if ("$($s.state)" -eq 'success') {
+        $successBrush = New-Object System.Windows.Media.SolidColorBrush ([System.Windows.Media.ColorConverter]::ConvertFromString($tpSuccessAccent))
+        $ui.Strip.Background = $successBrush
+        $ui.BarFill.Background = $successBrush
+        if (-not $script:hasIcon) {
+            # A logo stays put; the glyph tile turns into a green tick
+            $ui.IconTile.Background = New-Object System.Windows.Media.SolidColorBrush ([System.Windows.Media.ColorConverter]::ConvertFromString($tpSuccessIconBackground))
+            $ui.IconGlyph.Foreground = New-Object System.Windows.Media.SolidColorBrush ([System.Windows.Media.ColorConverter]::ConvertFromString($tpSuccessIcon))
+            $ui.IconGlyph.Text = [string][char]0xE930
+        }
+        $ui.PowerNote.Visibility = 'Collapsed'
+        $percent = 100
+    }
+    Set-ProgressBar $percent
+}
+
+$timer = New-Object System.Windows.Threading.DispatcherTimer
+$timer.Interval = [TimeSpan]::FromMilliseconds(500)
+$timer.Add_Tick({
+    if ($script:closing) { return }
+    if ($null -ne $script:closeAt) {
+        if ([DateTime]::UtcNow -ge $script:closeAt) { Close-Progress 'install finished' }
+        return
+    }
+    $s = Read-ProgressState
+    if ($null -eq $s) {
+        if (-not (Test-Path -LiteralPath $statusFile)) { Close-Progress 'status file removed' }
+        return
+    }
+    if (Test-ProgressStale $s) { Close-Progress 'the install stopped reporting progress'; return }
+    switch ("$($s.state)") {
+        'running' { Update-ProgressView $s }
+        'success' { Update-ProgressView $s; $script:closeAt = [DateTime]::UtcNow.AddMilliseconds(2500) }
+        default   { Close-Progress "install reported '$($s.state)'" }
+    }
+})
+
+$ui.Dismiss.Add_Click({ Close-Progress 'dismissed by the user' })
+$window.Add_Loaded({
+    $workArea = [System.Windows.SystemParameters]::WorkArea
+    $window.Left = $workArea.Right - $window.ActualWidth - 8
+    $window.Top  = $workArea.Bottom - $window.ActualHeight - 8
+    Update-ProgressView $state
+    Set-ProgressBar $script:lastPercent
+    $timer.Start()
+    Write-ToastLog "Shown"
+})
+$window.Add_SizeChanged({ Set-ProgressBar $script:lastPercent })
+$window.Add_Closed({ try { $timer.Stop() } catch { } })
+
+Update-ProgressView $state
+[void]$window.ShowDialog()
+exit 0
+'@
+
+    $content = $header + $logging + "`n" + (Get-DATToastThemeScriptBlock -Theme $theme -StatusKind Info) + "`n" + $body
+    [System.IO.File]::WriteAllText($OutputPath, $content, [System.Text.UTF8Encoding]::new($true))
+    Write-DATLogEntry -Value "[Toast] Install progress notification script generated: $OutputPath ($UpdateType)" -Severity 1
+    Invoke-DATCodeSign -ScriptPath $OutputPath
+    return $OutputPath
+}
+#endregion Install Progress Notification
+
+function ConvertTo-DATConfigMgrLogPath {
+    <#
+    .SYNOPSIS
+        Repoints the Intune Management Extension log paths in a generated install script at the
+        ConfigMgr client log folder (%WINDIR%\CCM\Logs), so the logs sit next to AppEnforce.log.
+        The templates keep the IME path so that Intune output is unchanged by this feature.
+    #>
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory)][AllowEmptyString()][string]$ScriptContent
+    )
+    $ScriptContent = $ScriptContent.Replace("Join-Path `$env:ProgramData 'Microsoft\IntuneManagementExtension\Logs\", "Join-Path `$env:SystemRoot 'CCM\Logs\")
+    $ScriptContent.Replace("Join-Path `$env:ProgramData `"Microsoft\IntuneManagementExtension\Logs\", "Join-Path `$env:SystemRoot `"CCM\Logs\")
+}
+
+function New-DATConfigMgrReminderFunctions {
+    <#
+    .SYNOPSIS
+        Returns the Register-/Unregister-DATInstallReminder functions for a ConfigMgr install script.
+    .DESCRIPTION
+        "Remind Me Later" makes the install exit 1618, which ConfigMgr retries every 2 hours up to
+        10 times. Runs that land inside the snooze exit 1618 again without prompting, so each
+        deferral spends two retries; once all 10 are gone the Application shows as failed until the
+        next deployment re-evaluation (7 days by default). The reminder is a one-off SYSTEM task
+        that fires when the snooze ends and asks the ConfigMgr client to install the Application
+        (CCM_Application.Install, falling back to the application deployment evaluation cycle), so
+        the prompt comes back on time. Fast Retry stays as the fallback.
+
+        The task's script is fixed at build time and passed as -EncodedCommand, so there is no
+        script file on disk for anyone to change before SYSTEM runs it.
+    #>
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory)][string]$ApplicationName,
+        [ValidateSet('Drivers','BIOS')][string]$UpdateType = 'Drivers'
+    )
+    $taskName = "Install Reminder - $UpdateType"
+    $reminderScript = @'
+$appName = '{{APP_NAME}}'
+$logFile = Join-Path $env:SystemRoot 'CCM\Logs\DriverAutomationTool-{{UPDATE_TYPE}}.log'
+function Write-ReminderLog ([string]$Message, [string]$Severity = '1') {
+    $entry = "<![LOG[[Reminder] $Message]LOG]!><time=""$(Get-Date -Format 'HH:mm:ss.fff')+000"" date=""$(Get-Date -Format 'MM-dd-yyyy')"" component=""DriverAutomationTool-{{UPDATE_TYPE}}"" context="""" type=""$Severity"" thread=""$PID"" file="""">"
+    Add-Content -Path $logFile -Value $entry -Encoding UTF8 -ErrorAction SilentlyContinue
+}
+function Invoke-EvaluationCycle {
+    Invoke-CimMethod -Namespace 'root\ccm' -ClassName 'SMS_Client' -MethodName 'TriggerSchedule' `
+        -Arguments @{ sScheduleID = '{00000000-0000-0000-0000-000000000121}' } -ErrorAction Stop | Out-Null
+    Write-ReminderLog 'Triggered the application deployment evaluation cycle'
+}
+try {
+    Write-ReminderLog "Snooze ended -- asking the ConfigMgr client to run '$appName' again"
+    $app = Get-CimInstance -Namespace 'root\ccm\ClientSDK' -ClassName 'CCM_Application' -ErrorAction Stop |
+        Where-Object { $_.Name -eq $appName } | Select-Object -First 1
+    if (-not $app) {
+        Write-ReminderLog "'$appName' is not deployed to this device (or not visible to the client yet)" '2'
+        Invoke-EvaluationCycle
+    } elseif ($app.InstallState -eq 'Installed') {
+        Write-ReminderLog "'$appName' is already installed -- nothing to do"
+    } else {
+        $result = Invoke-CimMethod -Namespace 'root\ccm\ClientSDK' -ClassName 'CCM_Application' -MethodName 'Install' -Arguments @{
+            Id = [string]$app.Id; Revision = [string]$app.Revision; IsMachineTarget = [bool]$app.IsMachineTarget
+            EnforcePreference = [uint32]0; Priority = 'High'; IsRebootIfNeeded = $false
+        } -ErrorAction Stop
+        Write-ReminderLog "Install requested for '$appName' (revision $($app.Revision), state $($app.InstallState)) -- return value $($result.ReturnValue)"
+        if ($result.ReturnValue -ne 0) { Invoke-EvaluationCycle }
+    }
+} catch {
+    Write-ReminderLog "Could not request the install: $($_.Exception.Message)" '2'
+    try { Invoke-EvaluationCycle } catch { Write-ReminderLog "Evaluation cycle trigger failed: $($_.Exception.Message) -- ConfigMgr Fast Retry remains the fallback" '3' }
+} finally {
+    Unregister-ScheduledTask -TaskPath '\Driver Automation Tool\' -TaskName '{{TASK_NAME}}' -Confirm:$false -ErrorAction SilentlyContinue
+}
+'@
+    # The name lands in a single-quoted literal: double any single quote (NamePrefix is free text).
+    $reminderScript = $reminderScript.Replace('{{APP_NAME}}', $ApplicationName.Replace("'", "''"))
+    $reminderScript = $reminderScript.Replace('{{UPDATE_TYPE}}', $UpdateType)
+    $reminderScript = $reminderScript.Replace('{{TASK_NAME}}', $taskName)
+    $encoded = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($reminderScript))
+
+    $functions = @'
+
+function Register-DATInstallReminder {
+    # ConfigMgr: when the snooze ends, ask the client to run this Application again (see the
+    # reminder task's own log lines, prefixed [Reminder]). Fast Retry remains the fallback.
+    param ([Parameter(Mandatory)][datetime]$At)
+    $reminderTaskPath = '\Driver Automation Tool\'
+    $reminderTaskName = '{{TASK_NAME}}'
+    # Two minutes after the snooze ends, so the install it triggers never finds the snooze active
+    $fireAt = $At.AddMinutes(2)
+    try {
+        $action = New-ScheduledTaskAction -Execute "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" `
+            -Argument '-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -EncodedCommand {{ENCODED}}'
+        $trigger = New-ScheduledTaskTrigger -Once -At $fireAt
+        $principal = New-ScheduledTaskPrincipal -UserId 'S-1-5-18' -LogonType ServiceAccount -RunLevel Highest
+        $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+            -ExecutionTimeLimit (New-TimeSpan -Minutes 10)
+        Register-ScheduledTask -TaskPath $reminderTaskPath -TaskName $reminderTaskName -Action $action -Trigger $trigger `
+            -Principal $principal -Settings $settings -Force -ErrorAction Stop | Out-Null
+        Write-CMTraceLog "[Reminder] '$reminderTaskPath$reminderTaskName' scheduled for $($fireAt.ToString('yyyy-MM-dd HH:mm')) -- asks ConfigMgr to run '{{APP_NAME_LOG}}' again"
+    } catch {
+        Write-CMTraceLog "[Reminder] Could not schedule the reminder task ($($_.Exception.Message)) -- ConfigMgr Fast Retry will re-run the install instead" -Severity 2
+    }
+}
+
+function Unregister-DATInstallReminder {
+    # The install is going ahead, so a pending reminder is no longer needed.
+    $existing = Get-ScheduledTask -TaskPath '\Driver Automation Tool\' -TaskName '{{TASK_NAME}}' -ErrorAction SilentlyContinue
+    if ($existing) {
+        Unregister-ScheduledTask -TaskPath '\Driver Automation Tool\' -TaskName '{{TASK_NAME}}' -Confirm:$false -ErrorAction SilentlyContinue
+        Write-CMTraceLog "[Reminder] Removed the pending reminder task -- the install is going ahead"
+    }
+}
+'@
+    $functions = $functions.Replace('{{TASK_NAME}}', $taskName)
+    $functions = $functions.Replace('{{ENCODED}}', $encoded)
+    # Log text only, inside a double-quoted string: keep it to characters that cannot expand.
+    $functions = $functions.Replace('{{APP_NAME_LOG}}', ($ApplicationName -replace '[^\w\s\.\-\(\)\[\]]', '_'))
+    return $functions
+}
+
 function New-DATIntuneInstallScript {
     <#
     .SYNOPSIS
@@ -15024,13 +17283,35 @@ function New-DATIntuneInstallScript {
         [switch]$AlarmMode,
         [ValidateSet('RemindMeLater','InstallNow')][string]$ToastTimeoutAction = 'RemindMeLater',
         [int]$MaxDeferrals = 0,
-        [int]$RestartDelaySeconds = 600
+        [int]$RestartDelaySeconds = 600,
+        # Which management agent runs the script. Only the client log location differs: Intune
+        # output is left byte-for-byte as the template has it, ConfigMgr output logs to CCM\Logs.
+        [ValidateSet('Intune','ConfigMgr')][string]$TargetPlatform = 'Intune',
+        # How long "Remind Me Later" snoozes the prompt. ConfigMgr only: Intune stays at 4 hours,
+        # the window its requirement script also enforces.
+        [ValidateRange(1, 24)][int]$ReminderIntervalHours = 4,
+        # ConfigMgr only: the Application the reminder task asks the client to run again when the
+        # snooze ends. Empty means no reminder task (ConfigMgr Fast Retry only).
+        [string]$ConfigMgrApplicationName,
+        # Show the install progress notification (Show-ProgressToast.ps1). When not passed, the
+        # setting for the current build (Start-DATModelProcessing) is used. Needs toasts enabled.
+        [switch]$ShowInstallProgress,
+        # Install silently during Autopilot provisioning (on by default). When not passed, the
+        # setting for the current build is used. Independent of toasts: it also stops a BIOS
+        # package scheduling its own restart during the Enrollment Status Page.
+        [bool]$SilentDuringAutopilot = $true
     )
+    if (-not $PSBoundParameters.ContainsKey('ShowInstallProgress')) { $ShowInstallProgress = [bool]$script:DATShowInstallProgress }
+    $progressEnabled = $ShowInstallProgress -and -not $DisableToast
+    if (-not $PSBoundParameters.ContainsKey('SilentDuringAutopilot')) { $SilentDuringAutopilot = Get-DATBuildSilentDuringAutopilot }
 
     # The template becomes a SYSTEM-privileged script on every targeted device, and nothing
     # downstream verifies it, so refuse before reading it if it sits somewhere a non-administrator
     # could have replaced it.
     Assert-DATTemplateSourceTrusted -Context 'Intune install script'
+
+    $snoozeHours = if ($TargetPlatform -eq 'ConfigMgr') { $ReminderIntervalHours } else { 4 }
+    $reminderEnabled = ($TargetPlatform -eq 'ConfigMgr') -and -not [string]::IsNullOrWhiteSpace($ConfigMgrApplicationName)
 
     # Select the correct template based on update type
     $templateName = if ($UpdateType -eq 'BIOS') { 'Install-BIOS.ps1' } else { 'Install-Drivers.ps1' }
@@ -15081,6 +17362,18 @@ function New-DATIntuneInstallScript {
         }
     }
 
+    # Deferral state belongs to the package version that recorded it. A newer version, or a
+    # deployment replaced before the old one installed, starts with a fresh count and no snooze
+    # rather than inheriting the old package's deferrals. State written before the version was
+    # recorded is kept, as there is no way to tell which package it came from.
+    $deferralVersion = (Get-ItemProperty -Path $snoozeRegPath -Name 'DeferralVersion' -ErrorAction SilentlyContinue).DeferralVersion
+    if ($deferralVersion -and $deferralVersion -ne '{{PACKAGE_VERSION}}') {
+        Write-CMTraceLog "[ToastGate] Deferral state was recorded for version $deferralVersion -- resetting it for version {{PACKAGE_VERSION}}"
+        Remove-ItemProperty -Path $snoozeRegPath -Name 'DeferralCount'   -Force -ErrorAction SilentlyContinue
+        Remove-ItemProperty -Path $snoozeRegPath -Name 'SnoozeUntil'     -Force -ErrorAction SilentlyContinue
+        Remove-ItemProperty -Path $snoozeRegPath -Name 'DeferralVersion' -Force -ErrorAction SilentlyContinue
+    }
+
     # Check whether the maximum deferral limit has been reached (when tracking is enabled)
     if ($maxDeferrals -gt 0) {
         $rawDeferralCount = (Get-ItemProperty -Path $snoozeRegPath -Name 'DeferralCount' -ErrorAction SilentlyContinue).DeferralCount
@@ -15117,8 +17410,15 @@ function New-DATIntuneInstallScript {
         if ($snoozeUntil) {
             try {
                 $snoozeTime = [datetime]::Parse($snoozeUntil)
-                if ((Get-Date) -lt $snoozeTime) {
+                if ($snoozeTime -gt (Get-Date).AddHours({{SNOOZE_HOURS}} + 1)) {
+                    # Further ahead than a deferral can set it: the clock moved back since (a
+                    # BIOS flash can reset it, or the time was wrong before it synchronised).
+                    # Honouring it would hold the update back silently until that date.
+                    Write-CMTraceLog "Snooze until $snoozeUntil is further ahead than the {{SNOOZE_HOURS}} hour reminder interval allows (the clock has changed since it was set) -- clearing it and continuing" -Severity 2
+                    Remove-ItemProperty -Path $snoozeRegPath -Name 'SnoozeUntil' -Force -ErrorAction SilentlyContinue
+                } elseif ((Get-Date) -lt $snoozeTime) {
                     Write-CMTraceLog "Snooze active until $snoozeUntil -- exiting with 1618 (another installation is pending)"
+{{REMINDER_ON_SNOOZED}}
                     # Record the deferral reason so custom reporting can see WHY the device is
                     # still pending. Cleared automatically on the next successful/current run.
                     Set-DATInstallStatus -RegPath $VersionRegPath -Result 'RetryScheduled' -Phase 'UserDeferral' -ScriptExitCode 1618 -ErrorMessage "User deferred BIOS update -- snoozed until $snoozeUntil"
@@ -15153,6 +17453,8 @@ function New-DATIntuneInstallScript {
                 Write-CMTraceLog "Copied toast script to persistent path: $toastScriptPath"
                 $toastResultFile = Join-Path $env:ProgramData 'DriverAutomationTool\DAT_ToastResult.txt'
                 if (Test-Path $toastResultFile) { Remove-Item $toastResultFile -Force }
+                $toastDisplayStateFile = Join-Path $env:ProgramData 'DriverAutomationTool\DAT_ToastDisplayState.txt'
+                Remove-Item $toastDisplayStateFile -Force -ErrorAction SilentlyContinue
 
                 # Get the logged-on user -- query explorer.exe process owner (reliable under SYSTEM)
                 $loggedOnUser = $null
@@ -15173,6 +17475,9 @@ function New-DATIntuneInstallScript {
                 }
                 if ([string]::IsNullOrEmpty($loggedOnUser)) {
                     Write-CMTraceLog "Could not determine logged-on user -- proceeding silently" -Severity 2
+                } elseif (Test-DATSetupAccount -UserName $loggedOnUser) {
+                    # Nobody can answer a prompt shown to the Windows setup account
+                    Write-CMTraceLog "[ToastGate] The shell belongs to the Windows setup account ($loggedOnUser), not a user -- proceeding silently"
                 } else {
                     Write-CMTraceLog "Running toast notification as $loggedOnUser"
 
@@ -15197,7 +17502,7 @@ function New-DATIntuneInstallScript {
 
                     Write-CMTraceLog "[ToastGate] Registering scheduled task '$taskFolder\$taskName' -- Execute: $ps64"
                     Write-CMTraceLog "[ToastGate] Toast script: $toastScriptPath"
-                    Unregister-ScheduledTask -TaskPath $taskFolder -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
+                    Unregister-ScheduledTask -TaskPath "$taskFolder\" -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
                     $toastLaunched = $false
                     $launchFailure  = $null
                     try {
@@ -15281,6 +17586,21 @@ function New-DATIntuneInstallScript {
                         if ($waited -ge $waitTimeout -and -not (Test-Path $toastResultFile)) {
                             Write-CMTraceLog "[ToastGate] Wait budget of ${waitTimeout}s exhausted with no result file" -Severity 2
                         }
+
+                        # Did the prompt actually reach the screen? Without this a 'Timeout' reads
+                        # the same whether the user ignored a visible prompt or never saw one.
+                        $promptDisplayState = 'not recorded (the toast exited before rendering -- see DAT_Toast.log)'
+                        try {
+                            if (Test-Path $toastDisplayStateFile) {
+                                $dsParts = ((Get-Content -Path $toastDisplayStateFile -TotalCount 1 -ErrorAction Stop) -join '').Trim() -split '\|', 4
+                                if ($dsParts.Count -ge 3) {
+                                    $promptDisplayState = if ($dsParts.Count -ge 4 -and $dsParts[3]) { "$($dsParts[2]) -- $($dsParts[3])" } else { $dsParts[2] }
+                                }
+                            }
+                        } catch {
+                            $promptDisplayState = "unreadable ($($_.Exception.Message))"
+                        }
+                        Write-CMTraceLog "[ToastGate] Prompt display state: $promptDisplayState"
                     }
 
                     # Read toast debug log if available for diagnostics
@@ -15300,7 +17620,7 @@ function New-DATIntuneInstallScript {
                     if ($taskInfo) {
                         Write-CMTraceLog ("[ToastGate] Task last result: 0x{0:X} (last run: {1})" -f $taskInfo.LastTaskResult, $taskInfo.LastRunTime)
                     }
-                    Unregister-ScheduledTask -TaskPath $taskFolder -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
+                    Unregister-ScheduledTask -TaskPath "$taskFolder\" -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
 
                     # ---- Interpret the response ---------------------------------------------
                     # DEFAULT DENY. Installing drivers or flashing a BIOS is disruptive, so ONLY
@@ -15338,6 +17658,19 @@ function New-DATIntuneInstallScript {
                             $noResponseReason = "the toast auto-closed after its timer expired"
                             Write-CMTraceLog "[ToastGate] Toast result: Timeout -- $noResponseReason"
                         }
+                        { $_ -like 'Suppressed:*' } {
+                            # The prompt was never shown: the user's session reported Focus Assist /
+                            # DND, a full-screen app, or a locked / away state. Still a non-response,
+                            # never consent -- but reported distinctly so it is not mistaken for a
+                            # user who saw the prompt and ignored it.
+                            $suppressedState = $toastResult.Substring('Suppressed:'.Length)
+                            $noResponseReason = if ($suppressedState -eq 'QUNS_NOT_PRESENT') {
+                                "the prompt was not shown because the user was not present (screen locked, screensaver or away)"
+                            } else {
+                                "the prompt was not shown because the user's session reported $suppressedState (Focus Assist / Do Not Disturb / full-screen app)"
+                            }
+                            Write-CMTraceLog "[ToastGate] Toast result: Suppressed -- $noResponseReason" -Severity 2
+                        }
                         'Pending' {
                             # 'Pending' is the toast window's INITIAL tag. Seeing it means the window
                             # closed before either button was pressed and before the auto-close timer
@@ -15371,7 +17704,8 @@ function New-DATIntuneInstallScript {
                         # Remind Me Later is still honoured -- it never reaches this branch.
                         Write-CMTraceLog "[ToastGate] No response after ${waited}s ($noResponseReason) -- proceeding with installation (timeout action: InstallNow)" -Severity 2
                     } else {
-                        # Deferral: count it, snooze for 4 hours, and tell Intune to retry later.
+                        # Deferral: count it, snooze for the reminder interval, and tell Intune /
+                        # ConfigMgr to retry later.
                         if ($maxDeferrals -gt 0) {
                             $rawCount  = (Get-ItemProperty -Path $snoozeRegPath -Name 'DeferralCount' -ErrorAction SilentlyContinue).DeferralCount
                             [int]$prev = if ($null -ne $rawCount) { $rawCount } else { 0 }
@@ -15382,9 +17716,10 @@ function New-DATIntuneInstallScript {
                                 Write-CMTraceLog "[ToastGate] Failed to record deferral count under '$snoozeRegPath': $($_.Exception.Message)" -Severity 3
                             }
                         }
-                        $snoozeExpiry = (Get-Date).AddHours(4).ToString('o')
+                        $snoozeExpiry = (Get-Date).AddHours({{SNOOZE_HOURS}}).ToString('o')
                         try {
                             Set-ItemProperty -Path $snoozeRegPath -Name 'SnoozeUntil' -Value $snoozeExpiry -Force -ErrorAction Stop
+                            Set-ItemProperty -Path $snoozeRegPath -Name 'DeferralVersion' -Value '{{PACKAGE_VERSION}}' -Force -ErrorAction Stop
                         } catch {
                             Write-CMTraceLog "[ToastGate] Failed to record snooze expiry under '$snoozeRegPath': $($_.Exception.Message)" -Severity 3
                         }
@@ -15397,6 +17732,7 @@ function New-DATIntuneInstallScript {
                         # Record the deferral reason so custom reporting can see WHY the device is
                         # still pending. Cleared automatically on the next successful/current run.
                         Set-DATInstallStatus -RegPath $VersionRegPath -Result 'RetryScheduled' -Phase 'UserDeferral' -ScriptExitCode 1618 -ErrorMessage $deferReason
+{{REMINDER_ON_DEFER}}
                         # 1618 = ERROR_INSTALL_ALREADY_RUNNING -- a built-in Intune Win32 return
                         # code mapped to 'retry', so the deferred install is re-attempted later
                         # instead of being recorded as a successful (completed) install.
@@ -15408,12 +17744,28 @@ function New-DATIntuneInstallScript {
             Write-CMTraceLog "No interactive user session detected -- proceeding silently"
         }
     }
+{{REMINDER_ON_PROCEED}}
     # --- End Toast Notification Gate ---
 '@
-        # Bake the timeout action, max deferral count and update-type key segment into the script
+        # Bake the timeout action, max deferral count, update-type key segment, package version
+        # and snooze length into the script
         $toastBlock = $toastBlock.Replace('{{TOAST_TIMEOUT_ACTION}}', $ToastTimeoutAction)
         $toastBlock = $toastBlock.Replace('{{MAX_DEFERRALS}}', [string]$MaxDeferrals)
         $toastBlock = $toastBlock.Replace('{{UPDATE_TYPE}}', $UpdateType)
+        $toastBlock = $toastBlock.Replace('{{PACKAGE_VERSION}}', $Version)
+        $toastBlock = $toastBlock.Replace('{{SNOOZE_HOURS}}', [string]$snoozeHours)
+
+        # ConfigMgr reminder: a deferral schedules a one-off task that asks the ConfigMgr client
+        # to run this Application again when the snooze ends (see Register-DATInstallReminder).
+        $reminderOnDefer = ''; $reminderOnSnoozed = ''; $reminderOnProceed = ''
+        if ($reminderEnabled) {
+            $reminderOnDefer   = '                        Register-DATInstallReminder -At ([datetime]::Parse($snoozeExpiry))'
+            $reminderOnSnoozed = '                    Register-DATInstallReminder -At $snoozeTime'
+            $reminderOnProceed = '    Unregister-DATInstallReminder'
+        }
+        $toastBlock = $toastBlock.Replace('{{REMINDER_ON_DEFER}}', $reminderOnDefer)
+        $toastBlock = $toastBlock.Replace('{{REMINDER_ON_SNOOZED}}', $reminderOnSnoozed)
+        $toastBlock = $toastBlock.Replace('{{REMINDER_ON_PROCEED}}', $reminderOnProceed)
     }
 
     # Build status toast blocks (Success on completion, Issues on error)
@@ -15426,6 +17778,15 @@ function New-DATIntuneInstallScript {
 
 function Show-DATStatusToast {
     param ([string]$ToastScript)
+    # The outcome is published in $script:DATLastStatusToastOutcome rather than returned, so a
+    # bare call in the template does not leak a value onto the script's output stream. Callers
+    # (the BIOS restart path) use it to state in the log whether the user was actually told.
+    $script:DATLastStatusToastOutcome = 'NotShown: unknown'
+    if ($script:DATAutopilot -and $script:DATAutopilot.InProvisioning) {
+        Write-CMTraceLog "[StatusToast] Autopilot provisioning ($($script:DATAutopilot.Phase)) -- not showing $(Split-Path $ToastScript -Leaf)"
+        $script:DATLastStatusToastOutcome = 'NotShown: Autopilot provisioning'
+        return
+    }
     # Always use System32 -- Task Scheduler is 64-bit; Sysnative doesn't exist from its context
     $ps64 = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
     $is64 = [Environment]::Is64BitProcess
@@ -15433,10 +17794,12 @@ function Show-DATStatusToast {
     $explorerProc = Get-Process -Name explorer -ErrorAction SilentlyContinue | Select-Object -First 1
     if (-not $explorerProc) {
         Write-CMTraceLog "No interactive user session -- skipping status toast"
+        $script:DATLastStatusToastOutcome = 'NotShown: no interactive user session'
         return
     }
     if (-not (Test-Path $ToastScript)) {
         Write-CMTraceLog "Status toast script not found: $ToastScript" -Severity 2
+        $script:DATLastStatusToastOutcome = "NotShown: toast script not staged ($(Split-Path $ToastScript -Leaf))"
         return
     }
     # Copy toast script to persistent location -- IMECache can be purged at any time
@@ -15464,9 +17827,17 @@ function Show-DATStatusToast {
     }
     if ([string]::IsNullOrEmpty($loggedOnUser)) {
         Write-CMTraceLog "Could not determine logged-on user -- skipping status toast" -Severity 2
+        $script:DATLastStatusToastOutcome = 'NotShown: could not determine the logged-on user'
+        return
+    }
+    if (Test-DATSetupAccount -UserName $loggedOnUser) {
+        Write-CMTraceLog "[StatusToast] The shell belongs to the Windows setup account ($loggedOnUser), not a user -- skipping status toast"
+        $script:DATLastStatusToastOutcome = 'NotShown: Windows setup account'
         return
     }
     Write-CMTraceLog "Showing status toast to $loggedOnUser"
+    $displayStateFile = Join-Path $env:ProgramData 'DriverAutomationTool\DAT_ToastDisplayState.txt'
+    Remove-Item -Path $displayStateFile -Force -ErrorAction SilentlyContinue
     try {
         $taskName = 'User Toast Notification'
         $taskFolder = '\Driver Automation Tool'
@@ -15483,12 +17854,45 @@ function Show-DATStatusToast {
         Start-ScheduledTask -TaskPath "$taskFolder\" -TaskName $taskName
         $taskState = (Get-ScheduledTask -TaskPath "$taskFolder\" -TaskName $taskName -ErrorAction SilentlyContinue).State
         Write-CMTraceLog "[StatusToast] Task started -- state: $taskState"
-        # Brief delay then clean up the task registration (toast is already running)
-        Start-Sleep -Seconds 5
+
+        # Wait until the toast reports that it is on screen, was suppressed, or failed. The old
+        # fixed 5s delay usually returned before the toast had even loaded WPF, so the install
+        # log could never say whether the user saw the notice. It also matters for the BIOS
+        # restart decision that follows: the toast records the user's Focus Assist state just
+        # before this marker, so waiting for it means the restart acts on THIS reading rather
+        # than an older one left by the earlier update prompt. Bounded well inside the task's
+        # 2-minute ExecutionTimeLimit.
+        $displayWaitLimit = 45
+        $displayWaited = 0
+        $displayState = $null
+        $displayDetail = ''
+        while ($displayWaited -lt $displayWaitLimit) {
+            Start-Sleep -Seconds 1
+            $displayWaited++
+            if (-not (Test-Path $displayStateFile)) { continue }
+            try {
+                $dsParts = ((Get-Content -Path $displayStateFile -TotalCount 1 -ErrorAction Stop) -join '').Trim() -split '\|', 4
+                if ($dsParts.Count -ge 3 -and $dsParts[2] -in @('Shown','Suppressed','Failed','Closed')) {
+                    $displayState  = $dsParts[2]
+                    $displayDetail = if ($dsParts.Count -ge 4) { $dsParts[3] } else { '' }
+                    break
+                }
+            } catch { }
+        }
+        switch ($displayState) {
+            'Shown'      { $script:DATLastStatusToastOutcome = 'Shown' }
+            'Closed'     { $script:DATLastStatusToastOutcome = 'Shown' }
+            'Suppressed' { $script:DATLastStatusToastOutcome = "NotShown: suppressed -- $displayDetail" }
+            'Failed'     { $script:DATLastStatusToastOutcome = "NotShown: toast failed -- $displayDetail" }
+            default      { $script:DATLastStatusToastOutcome = "NotShown: no display confirmation within ${displayWaitLimit}s (toast did not start or crashed -- see DAT_Toast.log)" }
+        }
+        $outcomeSeverity = if ($script:DATLastStatusToastOutcome -eq 'Shown') { 1 } else { 2 }
+        Write-CMTraceLog "[StatusToast] Display outcome after ${displayWaited}s: $($script:DATLastStatusToastOutcome)" -Severity $outcomeSeverity
+
         $taskStateAfter = (Get-ScheduledTask -TaskPath "$taskFolder\" -TaskName $taskName -ErrorAction SilentlyContinue).State
         $taskInfoObj = Get-ScheduledTaskInfo -TaskPath "$taskFolder\" -TaskName $taskName -ErrorAction SilentlyContinue
         $lastResult = if ($taskInfoObj) { "0x{0:X}" -f $taskInfoObj.LastTaskResult } else { 'N/A' }
-        Write-CMTraceLog "[StatusToast] After 5s wait -- state: $taskStateAfter, last result: $lastResult"
+        Write-CMTraceLog "[StatusToast] Task state: $taskStateAfter, last result: $lastResult"
 
         # Read toast debug log if available
         $toastDebugLog = Join-Path $env:ProgramData 'DriverAutomationTool\DAT_Toast.log'
@@ -15502,9 +17906,10 @@ function Show-DATStatusToast {
             }
         }
 
-        Unregister-ScheduledTask -TaskPath $taskFolder -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
+        Unregister-ScheduledTask -TaskPath "$taskFolder\" -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
     } catch {
         Write-CMTraceLog "Failed to show status toast: $($_.Exception.Message)" -Severity 2
+        $script:DATLastStatusToastOutcome = "NotShown: could not launch the toast task ($($_.Exception.Message))"
     }
 }
 '@
@@ -15521,9 +17926,26 @@ function Show-DATStatusToast {
             @"
 
     # --- Show Success Status Toast ---
+    # A 3010 from PNPUtil leaves the old drivers loaded until a restart that is NOT scheduled
+    # for driver packages, so the user is shown the restart-required variant instead of the
+    # plain success notice (which says no restart is needed). Packages built before the
+    # variant existed fall back to the plain notice.
     if (-not `$WhatIf) {
         `$successToastScript = Join-Path `$ScriptDir "Show-StatusToast-Success.ps1"
+        if (`$driverRebootRequired) {
+            `$restartToastScript = Join-Path `$ScriptDir "Show-StatusToast-SuccessRestart.ps1"
+            if (Test-Path `$restartToastScript) {
+                `$successToastScript = `$restartToastScript
+            } else {
+                Write-CMTraceLog "[RestartNotice] Restart-required toast not staged in this package -- falling back to the standard success toast" -Severity 2
+            }
+        }
         Show-DATStatusToast -ToastScript `$successToastScript
+        if (`$driverRebootRequired) {
+            `$restartNoticeSeverity = if (`$script:DATLastStatusToastOutcome -eq 'Shown') { 1 } else { 2 }
+            Write-CMTraceLog "[RestartNotice] Driver install needs a restart (PNPUtil 3010). No automatic restart is scheduled for drivers. User notification: `$(`$script:DATLastStatusToastOutcome)" -Severity `$restartNoticeSeverity
+            try { Set-ItemProperty -Path `$VersionRegPath -Name 'RestartNotice' -Value "`$(`$script:DATLastStatusToastOutcome)" -Force -ErrorAction Stop } catch { }
+        }
     }
 "@
         }
@@ -15549,6 +17971,7 @@ function Show-DATStatusToast {
         $statusToastACPowerBlock = if ($UpdateType -eq 'BIOS') {
             @"
 
+                            Complete-DATInstallProgress -Outcome Failed
                             `$acPowerToastScript = Join-Path `$ScriptDir "Show-StatusToast-BIOSACPower.ps1"
                             Show-DATStatusToast -ToastScript `$acPowerToastScript
 "@
@@ -15556,6 +17979,9 @@ function Show-DATStatusToast {
         # Place the helper function BEFORE the try block (PS 5.1 compatibility --
         # function definitions inside try{} cause MissingCatchOrFinally parse errors)
         $toastFunctions = $statusToastFunction
+        if ($reminderEnabled) {
+            $toastFunctions += New-DATConfigMgrReminderFunctions -ApplicationName $ConfigMgrApplicationName -UpdateType $UpdateType
+        }
         # Toast gate code stays inside the try block
     }
 
@@ -15603,6 +18029,8 @@ function Show-DATStatusToast {
     $scriptContent = $scriptContent.Replace('{{ReleaseDate}}', $releaseDate8)
     $scriptContent = $scriptContent.Replace('{{Generated}}', (Get-Date -Format "yyyy-MM-dd HH:mm:ss"))
     $scriptContent = $scriptContent.Replace('{{TOAST_FUNCTIONS}}', $toastFunctions)
+    $scriptContent = $scriptContent.Replace('{{PROGRESS_FUNCTIONS}}', (Get-DATInstallProgressFunctions -UpdateType $UpdateType -Enabled:$progressEnabled))
+    $scriptContent = $scriptContent.Replace('{{PROVISIONING_FUNCTIONS}}', (Get-DATAutopilotProvisioningFunctions -Enabled:$SilentDuringAutopilot))
     $scriptContent = $scriptContent.Replace('{{TOAST_BLOCK}}', $toastBlock)
     $scriptContent = $scriptContent.Replace('{{STATUS_TOAST_BLOCK}}', $statusToastBlock)
     $scriptContent = $scriptContent.Replace('{{STATUS_TOAST_ERROR_BLOCK}}', $statusToastErrorBlock)
@@ -15610,10 +18038,13 @@ function Show-DATStatusToast {
     $scriptContent = $scriptContent.Replace('{{RESTART_DELAY_SECONDS}}', [string]$RestartDelaySeconds)
     $scriptContent = $scriptContent.Replace('{{DISABLE_RESTART}}', $(if ($DisableRestart) { '$true' } else { '$false' }))
     $scriptContent = $scriptContent.Replace('{{ALARM_MODE}}', $(if ($AlarmMode) { '$true' } else { '$false' }))
+    if ($TargetPlatform -eq 'ConfigMgr') {
+        $scriptContent = ConvertTo-DATConfigMgrLogPath -ScriptContent $scriptContent
+    }
 
     # UTF-8 with BOM ensures PS 5.1 reads non-ASCII characters correctly
     [System.IO.File]::WriteAllText($OutputPath, $scriptContent, [System.Text.UTF8Encoding]::new($true))
-    Write-DATLogEntry -Value "[Intune] Install script generated: $OutputPath (Toast: $(if ($DisableToast) { 'Disabled' } else { 'Enabled' }))" -Severity 1
+    Write-DATLogEntry -Value "[$TargetPlatform] Install script generated: $OutputPath (Toast: $(if ($DisableToast) { 'Disabled' } else { 'Enabled' }), install progress: $(if ($progressEnabled) { 'On' } else { 'Off' }), silent during Autopilot: $(if ($SilentDuringAutopilot) { 'On' } else { 'Off' }))" -Severity 1
     Invoke-DATCodeSign -ScriptPath $OutputPath
     return $OutputPath
 }
@@ -15687,7 +18118,12 @@ function New-DATIntuneRequirementScript {
         [Parameter(Mandatory)][string]$Version,
         [string]$ReleaseDate,
         [ValidateSet('Drivers','BIOS')][string]$UpdateType = 'Drivers',
-        [string]$MaintenanceWindowsJson = ''
+        [string]$MaintenanceWindowsJson = '',
+        # ConfigMgr evaluates this script as a global condition. There, a "Remind Me Later"
+        # deferral is handled by the install exiting 1618 (Fast Retry), so the snooze gate is
+        # left out -- a not-applicable device is only re-evaluated on the deployment
+        # re-evaluation cycle (7 days by default), which would outlast any snooze.
+        [ValidateSet('Intune','ConfigMgr')][string]$TargetPlatform = 'Intune'
     )
 
     # Parse OS version (Windows 10/11)
@@ -15735,7 +18171,7 @@ function New-DATIntuneRequirementScript {
     `$cvKey = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion' -ErrorAction Stop
     `$deviceFeatureUpdate = `$cvKey.DisplayVersion
     if ([string]::IsNullOrWhiteSpace(`$deviceFeatureUpdate)) {
-        `$fuMap = @{ '19044'='21H2'; '19045'='22H2'; '22000'='21H2'; '22621'='22H2'; '22631'='23H2'; '26100'='24H2'; '26200'='25H2'; '28000'='26H1' }
+        `$fuMap = @{ '19044'='21H2'; '19045'='22H2'; '22000'='21H2'; '22621'='22H2'; '22631'='23H2'; '26100'='24H2'; '26200'='25H2'; '26300'='26H2'; '28000'='26H1' }
         `$deviceFeatureUpdate = `$fuMap["`$(`$cvKey.CurrentBuildNumber)"]
         if (-not `$deviceFeatureUpdate) { `$deviceFeatureUpdate = "Build`$(`$cvKey.CurrentBuildNumber)" }
     }
@@ -15813,13 +18249,21 @@ function New-DATIntuneRequirementScript {
     # The block is always emitted; it is a no-op when no snooze value is present (e.g. toast
     # disabled, or the deferral has expired and been cleared).
     $deferralSnoozeBlock = @'
-    # Check 0.5: Deferral snooze -- not applicable while a "Remind Me Later" deferral is active
-    $datSnoozeRegPath = 'HKLM:\SOFTWARE\DriverAutomationTool\Toast'
-    $datSnoozeUntil = (Get-ItemProperty -Path $datSnoozeRegPath -Name 'SnoozeUntil' -ErrorAction SilentlyContinue).SnoozeUntil
+    # Check 0.5: Deferral snooze -- not applicable while a "Remind Me Later" deferral is active.
+    # The install's toast gate keeps deferral state per update type (Toast\Drivers, Toast\BIOS).
+    $datSnoozeRegPath = 'HKLM:\SOFTWARE\DriverAutomationTool\Toast\%%SNOOZE_SUBKEY%%'
+    $datSnoozeUntil =(Get-ItemProperty -Path $datSnoozeRegPath -Name 'SnoozeUntil' -ErrorAction SilentlyContinue).SnoozeUntil
+    # A snooze recorded for another package version does not hold this one back, and one further
+    # ahead than a deferral can set (4 hours, plus a margin) means the clock has moved back since
+    # -- the install clears both, so here they are simply ignored.
+    $datSnoozeVersion = (Get-ItemProperty -Path $datSnoozeRegPath -Name 'DeferralVersion' -ErrorAction SilentlyContinue).DeferralVersion
+    if ($datSnoozeVersion -and $datSnoozeVersion -ne '%%PKG_VERSION%%') { $datSnoozeUntil = $null }
     if ($datSnoozeUntil) {
         try {
             $datSnoozeTime = [datetime]::Parse($datSnoozeUntil)
-            if ((Get-Date) -lt $datSnoozeTime) {
+            if ($datSnoozeTime -gt (Get-Date).AddHours(5)) {
+                # Clock moved back -- ignore it (see above)
+            } elseif ((Get-Date) -lt $datSnoozeTime) {
                 Write-Output "Deferred until $datSnoozeUntil (Remind Me Later active) -- not applicable"
                 Set-DATApplicability -Result 'NotApplicable' -Reason "Deferred until $datSnoozeUntil (Remind Me Later active)"
                 exit 0
@@ -15965,6 +18409,10 @@ if ($RequirementMet) {{
 '@ -f $OEM, $Model, $OS, $Version, $bbValues, (Get-Date -Format "yyyy-MM-dd HH:mm:ss"), $osNumber, $UpdateType, $osCheckBlock, $regSubKey
 
     $scriptContent = $scriptContent.Replace('%%MAINTENANCE_WINDOW%%', $maintenanceWindowBlock)
+    $deferralSnoozeBlock = $deferralSnoozeBlock.Replace('%%SNOOZE_SUBKEY%%', $regSubKey)
+    # Lands inside a single-quoted literal
+    $deferralSnoozeBlock = $deferralSnoozeBlock.Replace('%%PKG_VERSION%%', "$Version".Replace("'", "''"))
+    if ($TargetPlatform -eq 'ConfigMgr') { $deferralSnoozeBlock = '    # Check 0.5: Deferral snooze -- not evaluated for ConfigMgr (the install exits 1618 and the reminder task / Fast Retry re-runs it)' }
     $scriptContent = $scriptContent.Replace('%%DEFERRAL_SNOOZE%%', $deferralSnoozeBlock)
     $scriptContent = $scriptContent.Replace('%%BIOS_COMPARE_FUNCS%%', $biosCompareFuncs)
     $scriptContent = $scriptContent.Replace('%%BIOS_RECENCY%%', $biosRecencyBlock)
@@ -15973,7 +18421,7 @@ if ($RequirementMet) {{
     # UTF-8 WITHOUT BOM -- Intune requirement rule scripts must not carry a BOM, otherwise
     # the portal/IME treats it as literal content (surfaces as mojibake at the top of the script).
     [System.IO.File]::WriteAllText($OutputPath, $scriptContent, [System.Text.UTF8Encoding]::new($false))
-    Write-DATLogEntry -Value "[Intune] Requirement script generated: $OutputPath (UpdateType: $UpdateType)" -Severity 1
+    Write-DATLogEntry -Value "[$TargetPlatform] Requirement script generated: $OutputPath (UpdateType: $UpdateType)" -Severity 1
     Invoke-DATCodeSign -ScriptPath $OutputPath
     return $OutputPath
 }
@@ -16033,7 +18481,7 @@ function New-DATIntuneDetectionScript {
     `$cvKey = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion' -ErrorAction Stop
     `$deviceFeatureUpdate = `$cvKey.DisplayVersion
     if ([string]::IsNullOrWhiteSpace(`$deviceFeatureUpdate)) {
-        `$fuMap = @{ '19044'='21H2'; '19045'='22H2'; '22000'='21H2'; '22621'='22H2'; '22631'='23H2'; '26100'='24H2'; '26200'='25H2'; '28000'='26H1' }
+        `$fuMap = @{ '19044'='21H2'; '19045'='22H2'; '22000'='21H2'; '22621'='22H2'; '22631'='23H2'; '26100'='24H2'; '26200'='25H2'; '26300'='26H2'; '28000'='26H1' }
         `$deviceFeatureUpdate = `$fuMap["`$(`$cvKey.CurrentBuildNumber)"]
         if (-not `$deviceFeatureUpdate) { `$deviceFeatureUpdate = "Build`$(`$cvKey.CurrentBuildNumber)" }
     }
@@ -16114,7 +18562,9 @@ $pendingRebootGuard
                     # Live version unreadable -- trust the marker as a last resort.
                     `$detected = `$true
                 } elseif (`$mkTrusted -and `$liveBiosReadable) {
-                    Write-Output "Registry marker (`$installedVer) is ahead of the live BIOS -- ignoring stale marker so the update can run"
+                    # Write-Verbose, not Write-Output: any STDOUT from a detection script means
+                    # "installed" to both Intune and ConfigMgr, which is the opposite of this branch.
+                    Write-Verbose "Registry marker (`$installedVer) is ahead of the live BIOS -- ignoring stale marker so the update can run"
                 }
             }
         }
@@ -16735,6 +19185,49 @@ function Invoke-DATAzCopyBlobUpload {
     }
 }
 
+function Get-DATTransferProgress {
+    <#
+    .SYNOPSIS
+        Turns the shared transfer values in the registry into a percent, speed and size for display.
+    .DESCRIPTION
+        Downloads and Invoke-DATIntuneWin32AppUpload report progress through RunningMode,
+        RunningMessage, DownloadSize, DownloadBytes, BytesTransferred and DownloadSpeed. Pass one
+        Get-ItemProperty snapshot of the DAT registry key. Percent is -1 when the total is unknown,
+        so a caller can leave its bar where it is instead of dropping it to zero.
+    #>
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory)][AllowNull()][object]$RegistryValues
+    )
+
+    $result = [PSCustomObject]@{
+        IsUpload = $false
+        Percent  = -1
+        Size     = ''
+        Speed    = ''
+        Message  = ''
+    }
+    if ($null -eq $RegistryValues) { return $result }
+
+    # Same test the Build view uses for its Upload/Download label
+    $mode = [string]$RegistryValues.RunningMode
+    $result.IsUpload = ($mode -like 'Intune*' -or $mode -like 'Upload*')
+    $result.Message  = [string]$RegistryValues.RunningMessage
+    $result.Size     = [string]$RegistryValues.DownloadSize
+
+    $speed = [string]$RegistryValues.DownloadSpeed
+    if (-not [string]::IsNullOrWhiteSpace($speed) -and $speed -ne '---') { $result.Speed = $speed }
+
+    # Cast to [long]: the values are stored as strings, and comparing them as strings misorders sizes
+    $total = [long]0
+    $done  = [long]0
+    if ([long]::TryParse([string]$RegistryValues.DownloadBytes, [ref]$total) -and
+        [long]::TryParse([string]$RegistryValues.BytesTransferred, [ref]$done) -and $total -gt 0) {
+        $result.Percent = [int][math]::Min(100, [math]::Max(0, [math]::Round(($done / $total) * 100, 0)))
+    }
+    return $result
+}
+
 function Invoke-DATIntuneWin32AppUpload {
     <#
     .SYNOPSIS
@@ -16763,7 +19256,10 @@ function Invoke-DATIntuneWin32AppUpload {
         [Parameter(Mandatory)][string]$DetectionScriptPath,
         [Parameter(Mandatory)][string]$OS,
         [string]$InstallCommandLine = "powershell.exe -ExecutionPolicy Bypass -File Install-Drivers.ps1",
-        [string]$UninstallCommandLine = "powershell.exe -ExecutionPolicy Bypass -File Install-Drivers.ps1",
+        [string]$UninstallCommandLine = "powershell.exe -ExecutionPolicy Bypass -File Install-Drivers.ps1 -Uninstall",
+        # Shows an Uninstall button in Company Portal for Available assignments. Only meaningful
+        # when the uninstall command does something (driver rollback); a BIOS flash cannot be undone.
+        [bool]$AllowAvailableUninstall = $false,
         [int]$ChunkSizeMB = 50,
         [int]$ParallelUploads = 2,
         [ValidateRange(1, 10)]
@@ -16829,7 +19325,7 @@ function Invoke-DATIntuneWin32AppUpload {
             displayName                              = $DisplayName
             description                              = $Description
             publisher                                = $Publisher
-            developer                                = "Maurice Daly"
+            developer                                = "Driver Automation Tool"
             notes                                    = (Get-DATIntunePackageNotes)
             informationUrl                           = "https://www.driverautomationtool.com"
             displayVersion                           = $Version
@@ -16837,6 +19333,7 @@ function Invoke-DATIntuneWin32AppUpload {
             setupFilePath                            = $encInfo.SetupFile
             installCommandLine                       = $InstallCommandLine
             uninstallCommandLine                     = $UninstallCommandLine
+            allowAvailableUninstall                  = $AllowAvailableUninstall
             applicableArchitectures                  = "x64"
             minimumOperatingSystem                    = (ConvertTo-DATIntuneMinimumOS -OS $OS)
             roleScopeTagIds                          = @($scopeTagIds)
@@ -16876,7 +19373,22 @@ function Invoke-DATIntuneWin32AppUpload {
             )
         }
 
-        $app = Invoke-DATGraphRequest -Uri "/deviceAppManagement/mobileApps" -Method POST -Body $appBody
+        try {
+            $app = Invoke-DATGraphRequest -Uri "/deviceAppManagement/mobileApps" -Method POST -Body $appBody
+        } catch {
+            # A Windows 11 release newer than the Graph schema: retry once with the release it is
+            # serviced on (see Get-DATIntuneMinimumOSFallback). Authentication failures, and any
+            # error with no newer minimum OS flag to blame, are rethrown unchanged.
+            $createError = $_
+            $fallbackMinOS = Get-DATIntuneMinimumOSFallback -MinimumOS $appBody.minimumOperatingSystem
+            if (-not $fallbackMinOS -or "$($createError.Exception.Message)" -match '(?i)authenticat|401|403') { throw $createError }
+            $rejectedFlag = @($appBody.minimumOperatingSystem.Keys | Where-Object { $_ -ne '@odata.type' }) -join ', '
+            $fallbackFlag = @($fallbackMinOS.Keys | Where-Object { $_ -ne '@odata.type' }) -join ', '
+            Write-DATLogEntry -Value "[Intune Upload] App creation failed with minimum OS $rejectedFlag ($($createError.Exception.Message)) -- Graph may not know this Windows release yet; retrying with $fallbackFlag" -Severity 2
+            $appBody.minimumOperatingSystem = $fallbackMinOS
+            $app = Invoke-DATGraphRequest -Uri "/deviceAppManagement/mobileApps" -Method POST -Body $appBody
+            Write-DATLogEntry -Value "[Intune Upload] App created with minimum OS $fallbackFlag" -Severity 2
+        }
         $appId = $app.id
         Write-DATLogEntry -Value "[Intune Upload] App created with ID: $appId" -Severity 1
 
@@ -17423,6 +19935,751 @@ function Invoke-DATIntuneWin32AppUpload {
     }
 }
 
+function New-DATPackageScriptSet {
+    <#
+    .SYNOPSIS
+        Generates the client-side script set for a driver or BIOS package into a staging folder:
+        the install script, the pending-update toast, every status toast variant and (HP BIOS
+        only) the password BIN file. The folder must already hold DriverPackage.wim.
+        Shared by the Intune Win32 pipeline and the ConfigMgr Application pipeline so the two
+        can never drift apart; TargetPlatform only changes the client log location.
+    #>
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory)][string]$StagingDir,
+        [Parameter(Mandatory)][string]$OEM,
+        [Parameter(Mandatory)][string]$Model,
+        [Parameter(Mandatory)][string]$OS,
+        [Parameter(Mandatory)][string]$Version,
+        [ValidateSet('Drivers','BIOS')][string]$UpdateType = 'Drivers',
+        [ValidateSet('Intune','ConfigMgr')][string]$TargetPlatform = 'Intune',
+        [string]$ReleaseDate,
+        [string]$HPPasswordBinPath,
+        [switch]$DisableToast,
+        [switch]$DisableRestart,
+        [ValidateSet('RemindMeLater','InstallNow')][string]$ToastTimeoutAction = 'RemindMeLater',
+        [int]$MaxDeferrals = 0,
+        [int]$RestartDelaySeconds = 600,
+        [string]$CustomBrandingPath,
+        [string]$CustomToastTitle,
+        [string]$CustomToastBody,
+        [string]$CustomToastGreeting,
+        [string]$CustomToastSubtitle,
+        [string]$CustomSuccessTitle,
+        [string]$CustomSuccessBody,
+        [string]$CustomBIOSSuccessTitle,
+        [string]$CustomBIOSSuccessBody,
+        [string]$CustomIssuesTitle,
+        [string]$CustomIssuesBody,
+        [string]$CustomBIOSIssuesTitle,
+        [string]$CustomBIOSIssuesBody,
+        [string]$CustomToastActionButton,
+        [string]$CustomToastDismissButton,
+        [string]$CustomSuccessActionButton,
+        [string]$CustomIssuesActionButton,
+        [string]$CustomBIOSSuccessActionButton,
+        [string]$CustomBIOSSuccessDismissButton,
+        [string]$CustomBIOSIssuesActionButton,
+        [string]$CustomBIOSACPowerTitle,
+        [string]$CustomBIOSACPowerBody,
+        [string]$CustomBIOSACPowerActionButton,
+        [string]$CustomBIOSFinalNoticeTitle,
+        [string]$CustomBIOSFinalNoticeBody,
+        [string]$CustomBIOSFinalNoticeActionButton,
+        [switch]$AlarmMode,
+        [switch]$AlarmSound,
+        [switch]$ShowBrandingBannerAllToasts,
+        # ConfigMgr only: Remind Me Later snooze length, and the Application the reminder task
+        # asks the client to run again (see New-DATConfigMgrReminderFunctions).
+        [ValidateRange(1, 24)][int]$ReminderIntervalHours = 4,
+        [string]$ConfigMgrApplicationName,
+        # Install progress notification. When not passed, the setting for the current build is used.
+        [switch]$ShowInstallProgress,
+        # Install silently during Autopilot provisioning. When not passed, the build's setting is used.
+        [bool]$SilentDuringAutopilot = $true
+    )
+    if (-not $PSBoundParameters.ContainsKey('ShowInstallProgress')) { $ShowInstallProgress = [bool]$script:DATShowInstallProgress }
+    if (-not $PSBoundParameters.ContainsKey('SilentDuringAutopilot')) { $SilentDuringAutopilot = Get-DATBuildSilentDuringAutopilot }
+
+    $installScriptName = if ($UpdateType -eq 'BIOS') { 'Install-BIOS.ps1' } else { 'Install-Drivers.ps1' }
+
+    # Step 1b: Copy HP password BIN file into staging (if provided for HP BIOS packages)
+    if ($UpdateType -eq 'BIOS' -and $OEM -match 'HP' -and -not [string]::IsNullOrEmpty($HPPasswordBinPath) -and (Test-Path $HPPasswordBinPath)) {
+        $destBinFile = Join-Path $stagingDir 'HPPasswordFile.bin'
+        Copy-Item -Path $HPPasswordBinPath -Destination $destBinFile -Force
+        Write-DATLogEntry -Value "[$TargetPlatform Pipeline] HP password BIN file copied to staging: $destBinFile" -Severity 1
+    }
+
+    # Step 2: Generate install script into staging
+    Set-DATRegistryValue -Name "RunningMessage" -Value "Generating install script for $OEM $Model..." -Type String
+    $installScriptPath = Join-Path $stagingDir $installScriptName
+    $installScriptParams = @{
+        OutputPath  = $installScriptPath
+        OEM         = $OEM
+        Model       = $Model
+        OS          = $OS
+        Version     = $version
+        UpdateType  = $UpdateType
+    }
+    if ($TargetPlatform -ne 'Intune') { $installScriptParams['TargetPlatform'] = $TargetPlatform }
+    if (-not [string]::IsNullOrEmpty($ReleaseDate)) { $installScriptParams['ReleaseDate'] = $ReleaseDate }
+    if ($DisableToast) { $installScriptParams['DisableToast'] = $true }
+    if ($DisableRestart) { $installScriptParams['DisableRestart'] = $true }
+    if ($AlarmMode) { $installScriptParams['AlarmMode'] = $true }
+    if ($ToastTimeoutAction -ne 'RemindMeLater') { $installScriptParams['ToastTimeoutAction'] = $ToastTimeoutAction }
+    if ($MaxDeferrals -gt 0) { $installScriptParams['MaxDeferrals'] = $MaxDeferrals }
+    if ($RestartDelaySeconds -ne 600) { $installScriptParams['RestartDelaySeconds'] = $RestartDelaySeconds }
+    if ($TargetPlatform -eq 'ConfigMgr') {
+        if ($ReminderIntervalHours -ne 4) { $installScriptParams['ReminderIntervalHours'] = $ReminderIntervalHours }
+        if (-not [string]::IsNullOrWhiteSpace($ConfigMgrApplicationName)) { $installScriptParams['ConfigMgrApplicationName'] = $ConfigMgrApplicationName }
+    }
+    $installScriptParams['ShowInstallProgress'] = [bool]$ShowInstallProgress
+    $installScriptParams['SilentDuringAutopilot'] = [bool]$SilentDuringAutopilot
+    New-DATIntuneInstallScript @installScriptParams
+    Write-DATLogEntry -Value "[$TargetPlatform Pipeline] Install script created: $installScriptPath" -Severity 1 -UpdateUI
+
+    # Step 2b: Generate toast notification scripts into staging (unless disabled)
+    if (-not $DisableToast) {
+        $toastScriptPath = Join-Path $stagingDir "Show-ToastNotification.ps1"
+        $toastParams = @{
+            OutputPath   = $toastScriptPath
+            UpdateType   = $UpdateType
+            BrandingPath = Join-Path $global:ScriptDirectory 'Branding'
+        }
+        if (-not [string]::IsNullOrEmpty($CustomBrandingPath)) { $toastParams['CustomBrandingImagePath'] = $CustomBrandingPath }
+        if (-not [string]::IsNullOrEmpty($CustomToastTitle)) { $toastParams['CustomToastTitle'] = $CustomToastTitle }
+        if (-not [string]::IsNullOrEmpty($CustomToastBody))  { $toastParams['CustomToastBody']  = $CustomToastBody  }
+        if (-not [string]::IsNullOrEmpty($CustomToastGreeting))  { $toastParams['CustomToastGreeting']  = $CustomToastGreeting  }
+        if (-not [string]::IsNullOrEmpty($CustomToastSubtitle))  { $toastParams['CustomToastSubtitle']  = $CustomToastSubtitle  }
+        if (-not [string]::IsNullOrEmpty($CustomToastActionButton))  { $toastParams['CustomActionButton']  = $CustomToastActionButton  }
+        if (-not [string]::IsNullOrEmpty($CustomToastDismissButton)) { $toastParams['CustomDismissButton'] = $CustomToastDismissButton }
+        if ($AlarmMode) { $toastParams['AlarmMode'] = $true }
+        if ($AlarmSound) { $toastParams['AlarmSound'] = $true }
+        New-DATIntuneToastScript @toastParams
+        Write-DATLogEntry -Value "[$TargetPlatform Pipeline] Toast script created: $toastScriptPath" -Severity 1 -UpdateUI
+
+        # Install progress notification (optional) -- shown while the update installs
+        if ($ShowInstallProgress) {
+            $progressToastPath = Join-Path $stagingDir 'Show-ProgressToast.ps1'
+            New-DATIntuneProgressToastScript -OutputPath $progressToastPath -UpdateType $UpdateType `
+                -CustomToastSubtitle $CustomToastSubtitle -AlarmMode:$AlarmMode | Out-Null
+            Write-DATLogEntry -Value "[$TargetPlatform Pipeline] Install progress toast script created: $progressToastPath" -Severity 1 -UpdateUI
+        }
+
+        # Generate completion status toast scripts (Success / Issues)
+        $statusToastParams = @{
+            BrandingPath = Join-Path $global:ScriptDirectory 'Branding'
+        }
+        if (-not [string]::IsNullOrEmpty($CustomBrandingPath)) { $statusToastParams['CustomBrandingImagePath'] = $CustomBrandingPath }
+        if ($ShowBrandingBannerAllToasts) { $statusToastParams['ShowBrandingBanner'] = $true }
+        if ($UpdateType -eq 'BIOS' -and $RestartDelaySeconds -gt 0) {
+            $statusToastParams['RestartDelayMinutes'] = [math]::Round($RestartDelaySeconds / 60, 0)
+        }
+
+        $successToastPath = Join-Path $stagingDir "Show-StatusToast-Success.ps1"
+        $successParams = @{} + $statusToastParams
+        if (-not [string]::IsNullOrEmpty($CustomSuccessTitle)) { $successParams['CustomToastTitle'] = $CustomSuccessTitle }
+        if (-not [string]::IsNullOrEmpty($CustomSuccessBody))  { $successParams['CustomToastBody']  = $CustomSuccessBody  }
+        if (-not [string]::IsNullOrEmpty($CustomSuccessActionButton)) { $successParams['CustomActionButton'] = $CustomSuccessActionButton }
+        New-DATIntuneToastScript -OutputPath $successToastPath -UpdateType 'Success' @successParams
+        Write-DATLogEntry -Value "[$TargetPlatform Pipeline] Success toast script created: $successToastPath" -Severity 1 -UpdateUI
+
+        # Restart-required variant (Drivers only): shown instead of the success toast when
+        # PNPUtil returns 3010. The custom success wording is deliberately not reused -- it
+        # typically tells the user no restart is needed.
+        if ($UpdateType -ne 'BIOS') {
+            $successRestartToastPath = Join-Path $stagingDir "Show-StatusToast-SuccessRestart.ps1"
+            New-DATIntuneToastScript -OutputPath $successRestartToastPath -UpdateType 'SuccessRestart' @statusToastParams
+            Write-DATLogEntry -Value "[$TargetPlatform Pipeline] Restart-required toast script created: $successRestartToastPath" -Severity 1 -UpdateUI
+        }
+
+        # Generate BIOS-specific prestaged toast (used only by BIOS install scripts)
+        if ($UpdateType -eq 'BIOS') {
+            $biosSuccessToastPath = Join-Path $stagingDir "Show-StatusToast-BIOSSuccess.ps1"
+            $biosSuccessParams = @{} + $statusToastParams
+            if (-not [string]::IsNullOrEmpty($CustomBIOSSuccessTitle)) { $biosSuccessParams['CustomToastTitle'] = $CustomBIOSSuccessTitle }
+            if (-not [string]::IsNullOrEmpty($CustomBIOSSuccessBody))  { $biosSuccessParams['CustomToastBody']  = $CustomBIOSSuccessBody  }
+            if (-not [string]::IsNullOrEmpty($CustomBIOSSuccessActionButton))  { $biosSuccessParams['CustomActionButton']  = $CustomBIOSSuccessActionButton  }
+            if (-not [string]::IsNullOrEmpty($CustomBIOSSuccessDismissButton)) { $biosSuccessParams['CustomDismissButton'] = $CustomBIOSSuccessDismissButton }
+            if ($DisableRestart) { $biosSuccessParams['DisableRestart'] = $true }
+            # Critical notification restarts the device even under Focus Assist / DND, so the
+            # "restarting in N minutes" notice must be allowed through DND as well.
+            if ($AlarmMode) { $biosSuccessParams['AlarmMode'] = $true }
+            New-DATIntuneToastScript -OutputPath $biosSuccessToastPath -UpdateType 'BIOSSuccess' @biosSuccessParams
+            Write-DATLogEntry -Value "[$TargetPlatform Pipeline] BIOS prestaged toast script created: $biosSuccessToastPath" -Severity 1 -UpdateUI
+        }
+
+        $issuesToastPath = Join-Path $stagingDir "Show-StatusToast-Issues.ps1"
+        $issuesParams = @{} + $statusToastParams
+        if (-not [string]::IsNullOrEmpty($CustomIssuesTitle)) { $issuesParams['CustomToastTitle'] = $CustomIssuesTitle }
+        if (-not [string]::IsNullOrEmpty($CustomIssuesBody))  { $issuesParams['CustomToastBody']  = $CustomIssuesBody  }
+        if (-not [string]::IsNullOrEmpty($CustomIssuesActionButton)) { $issuesParams['CustomActionButton'] = $CustomIssuesActionButton }
+        New-DATIntuneToastScript -OutputPath $issuesToastPath -UpdateType 'Issues' @issuesParams
+        Write-DATLogEntry -Value "[$TargetPlatform Pipeline] Issues toast script created: $issuesToastPath" -Severity 1 -UpdateUI
+
+        # Generate BIOS-specific issues toast (used only by BIOS install scripts)
+        if ($UpdateType -eq 'BIOS') {
+            $biosIssuesToastPath = Join-Path $stagingDir "Show-StatusToast-BIOSIssues.ps1"
+            $biosIssuesParams = @{} + $statusToastParams
+            if (-not [string]::IsNullOrEmpty($CustomBIOSIssuesTitle)) { $biosIssuesParams['CustomToastTitle'] = $CustomBIOSIssuesTitle }
+            if (-not [string]::IsNullOrEmpty($CustomBIOSIssuesBody))  { $biosIssuesParams['CustomToastBody']  = $CustomBIOSIssuesBody  }
+            if (-not [string]::IsNullOrEmpty($CustomBIOSIssuesActionButton)) { $biosIssuesParams['CustomActionButton'] = $CustomBIOSIssuesActionButton }
+            New-DATIntuneToastScript -OutputPath $biosIssuesToastPath -UpdateType 'BIOSIssues' @biosIssuesParams
+            Write-DATLogEntry -Value "[$TargetPlatform Pipeline] BIOS issues toast script created: $biosIssuesToastPath" -Severity 1 -UpdateUI
+
+            # AC-power-required toast: shown when a BIOS update is deferred because the
+            # device is running on battery. Reuses the BIOS Issues warning styling but
+            # carries an actionable, self-remediable message (connect AC power).
+            $biosACPowerToastPath = Join-Path $stagingDir "Show-StatusToast-BIOSACPower.ps1"
+            $biosACPowerParams = @{} + $statusToastParams
+            $biosACPowerParams['CustomToastTitle'] = if (-not [string]::IsNullOrEmpty($CustomBIOSACPowerTitle)) { $CustomBIOSACPowerTitle } else { 'BIOS Update Paused - Connect Power' }
+            $biosACPowerParams['CustomToastBody']  = if (-not [string]::IsNullOrEmpty($CustomBIOSACPowerBody)) { $CustomBIOSACPowerBody } else { 'Your device needs to install a BIOS firmware update, but it must be connected to AC power first. Please plug in your charger - the update will continue automatically the next time it runs.' }
+            if (-not [string]::IsNullOrEmpty($CustomBIOSACPowerActionButton)) { $biosACPowerParams['CustomActionButton'] = $CustomBIOSACPowerActionButton }
+            New-DATIntuneToastScript -OutputPath $biosACPowerToastPath -UpdateType 'BIOSIssues' @biosACPowerParams
+            Write-DATLogEntry -Value "[$TargetPlatform Pipeline] BIOS AC-power toast script created: $biosACPowerToastPath" -Severity 1 -UpdateUI
+
+            # Final deferral notice: shown (bypassing Focus Assist via alarm mode) on the
+            # forced-install path when the maximum number of deferrals has been reached, so
+            # the user is always informed that the BIOS update is now being pre-staged.
+            $biosFinalNoticeToastPath = Join-Path $stagingDir "Show-StatusToast-BIOSFinalNotice.ps1"
+            $biosFinalNoticeParams = @{} + $statusToastParams
+            $biosFinalNoticeParams['AlarmMode'] = $true
+            if ($AlarmSound) { $biosFinalNoticeParams['AlarmSound'] = $true }
+            if (-not [string]::IsNullOrEmpty($CustomBIOSFinalNoticeTitle)) { $biosFinalNoticeParams['CustomToastTitle'] = $CustomBIOSFinalNoticeTitle }
+            if (-not [string]::IsNullOrEmpty($CustomBIOSFinalNoticeBody))  { $biosFinalNoticeParams['CustomToastBody']  = $CustomBIOSFinalNoticeBody }
+            if (-not [string]::IsNullOrEmpty($CustomBIOSFinalNoticeActionButton)) { $biosFinalNoticeParams['CustomActionButton'] = $CustomBIOSFinalNoticeActionButton }
+            New-DATIntuneToastScript -OutputPath $biosFinalNoticeToastPath -UpdateType 'BIOSFinalNotice' @biosFinalNoticeParams
+            Write-DATLogEntry -Value "[$TargetPlatform Pipeline] BIOS final-notice toast script created: $biosFinalNoticeToastPath" -Severity 1 -UpdateUI
+        }
+    }
+}
+
+#region Toast Test Package
+
+function ConvertFrom-DATCustomToastTextsJson {
+    <#
+    .SYNOPSIS
+        Turns the per-notification custom toast texts the UI stores (Toast_Drivers, Toast_BIOS,
+        Toast_Success, ...) into New-DATPackageScriptSet parameters for one update type. Mirrors the
+        mapping Start-DATModelProcessing applies for a real build. Empty values are left out.
+    #>
+    [CmdletBinding()]
+    param (
+        [AllowEmptyString()][string]$CustomToastTextsJson,
+        [ValidateSet('Drivers','BIOS')][string]$UpdateType = 'Drivers'
+    )
+    $params = @{}
+    if ([string]::IsNullOrWhiteSpace($CustomToastTextsJson)) { return $params }
+    try {
+        $texts = $CustomToastTextsJson | ConvertFrom-Json -ErrorAction Stop
+    } catch {
+        Write-DATLogEntry -Value "[Toast Test] Custom toast texts could not be read ($($_.Exception.Message)) -- using the default wording" -Severity 2
+        return $params
+    }
+
+    # JSON type key -> (field -> script set parameter). The pending-update prompt takes the texts
+    # of its own update type; every other notification has its own key.
+    $promptKey = if ($UpdateType -eq 'BIOS') { 'Toast_BIOS' } else { 'Toast_Drivers' }
+    $map = [ordered]@{
+        $promptKey = @{ Title = 'CustomToastTitle'; Body = 'CustomToastBody'; Greeting = 'CustomToastGreeting'; Subtitle = 'CustomToastSubtitle'; ActionButton = 'CustomToastActionButton'; DismissButton = 'CustomToastDismissButton' }
+    }
+    if ($UpdateType -eq 'BIOS') {
+        $map['Toast_BIOSSuccess']     = @{ Title = 'CustomBIOSSuccessTitle'; Body = 'CustomBIOSSuccessBody'; ActionButton = 'CustomBIOSSuccessActionButton'; DismissButton = 'CustomBIOSSuccessDismissButton' }
+        $map['Toast_BIOSIssues']      = @{ Title = 'CustomBIOSIssuesTitle'; Body = 'CustomBIOSIssuesBody'; ActionButton = 'CustomBIOSIssuesActionButton' }
+        $map['Toast_BIOSACPower']     = @{ Title = 'CustomBIOSACPowerTitle'; Body = 'CustomBIOSACPowerBody'; ActionButton = 'CustomBIOSACPowerActionButton' }
+        $map['Toast_BIOSFinalNotice'] = @{ Title = 'CustomBIOSFinalNoticeTitle'; Body = 'CustomBIOSFinalNoticeBody'; ActionButton = 'CustomBIOSFinalNoticeActionButton' }
+    } else {
+        $map['Toast_Success'] = @{ Title = 'CustomSuccessTitle'; Body = 'CustomSuccessBody'; ActionButton = 'CustomSuccessActionButton' }
+        $map['Toast_Issues']  = @{ Title = 'CustomIssuesTitle'; Body = 'CustomIssuesBody'; ActionButton = 'CustomIssuesActionButton' }
+    }
+    foreach ($typeKey in $map.Keys) {
+        $entry = $texts.$typeKey
+        if ($null -eq $entry) { continue }
+        foreach ($field in $map[$typeKey].Keys) {
+            $value = [string]$entry.$field
+            if (-not [string]::IsNullOrEmpty($value)) { $params[$map[$typeKey][$field]] = $value }
+        }
+    }
+    return $params
+}
+
+function Get-DATToastTestScriptParts {
+    <#
+    .SYNOPSIS
+        Pulls the toast gate, the status toast launcher and (BIOS) the restart Focus Assist check out
+        of a generated install script, ready to be placed in the toast test script.
+    .DESCRIPTION
+        Taking them from real generated output, rather than keeping a copy, means the test package
+        always runs the code a real package with the same settings would ship. Two edits are made
+        to the gate so it cannot affect a real package: its deferral state key is moved under
+        HKLM:\SOFTWARE\DriverAutomationTool\ToastTest, and 'exit 1618' becomes 'return 1618'. Throws
+        when a region cannot be found, so a change to the install script cannot silently produce a
+        test package that skips the gate.
+    #>
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory)][AllowEmptyString()][string]$InstallScriptContent,
+        [ValidateSet('Drivers','BIOS')][string]$UpdateType = 'Drivers',
+        [switch]$DisableToast
+    )
+    $parts = @{ ToastGate = ''; ToastFunctions = ''; FocusAssistBlock = '' }
+
+    if (-not $DisableToast) {
+        $gateMatch = [regex]::Match($InstallScriptContent, '(?ms)^[ \t]*# --- Toast Notification Gate ---.*?# --- End Toast Notification Gate ---')
+        if (-not $gateMatch.Success) { throw "The toast gate was not found in the generated $UpdateType install script" }
+        $gate = $gateMatch.Value
+
+        $realStateKey = "'HKLM:\SOFTWARE\DriverAutomationTool\Toast\$UpdateType'"
+        if (-not $gate.Contains($realStateKey)) { throw "The toast gate's deferral state key ($realStateKey) was not found -- the test package cannot isolate its state" }
+        $gate = $gate.Replace($realStateKey, "'HKLM:\SOFTWARE\DriverAutomationTool\ToastTest\$UpdateType\GateState'")
+        if ($gate -notmatch '\bexit 1618\b') { throw "The toast gate's deferral exit was not found -- the test package cannot report deferrals" }
+        $parts.ToastGate = [regex]::Replace($gate, '\bexit 1618\b', 'return 1618')
+
+        $fnMatch = [regex]::Match($InstallScriptContent, '(?ms)^function Show-DATStatusToast \{.*?^\}[ \t]*\r?$')
+        if (-not $fnMatch.Success) { throw "Show-DATStatusToast was not found in the generated $UpdateType install script" }
+        $parts.ToastFunctions = $fnMatch.Value
+    }
+
+    if ($UpdateType -eq 'BIOS') {
+        $focusMatch = [regex]::Match($InstallScriptContent, '(?ms)^[ \t]*# -- Focus Assist / DND Check Before Restart --.*?(?=^[ \t]*if \(\$focusAssistBlocking\) \{)')
+        if (-not $focusMatch.Success) { throw 'The restart Focus Assist check was not found in the generated BIOS install script' }
+        $parts.FocusAssistBlock = $focusMatch.Value
+    }
+    return $parts
+}
+
+function New-DATToastTestScript {
+    <#
+    .SYNOPSIS
+        Writes the toast test package content into a staging folder: Invoke-DATToastTest.ps1 and
+        the toast scripts it shows. The real install script is generated only to take the gate from
+        and is removed again, so the folder can never install anything.
+    .DESCRIPTION
+        ScriptSetParams carries the same toast settings a real build passes to New-DATPackageScriptSet
+        (DisableToast, AlarmMode, MaxDeferrals, custom texts, branding, ...). SimulatedOutcome picks
+        which status notification the test shows after the user agrees: Success, SuccessRestart
+        (drivers only: PNPUtil 3010) or Failure.
+    #>
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory)][string]$StagingDir,
+        [Parameter(Mandatory)][string]$Version,
+        [ValidateSet('Drivers','BIOS')][string]$UpdateType = 'Drivers',
+        [ValidateSet('Success','SuccessRestart','Failure')][string]$SimulatedOutcome = 'Success',
+        [ValidateSet('Intune','ConfigMgr')][string]$TargetPlatform = 'Intune',
+        [hashtable]$ScriptSetParams = @{}
+    )
+    if ($UpdateType -eq 'BIOS' -and $SimulatedOutcome -eq 'SuccessRestart') {
+        throw "The SuccessRestart outcome applies to driver packages only -- BIOS packages always restart to apply"
+    }
+    Assert-DATTemplateSourceTrusted -Context 'Toast test script'
+    $templatePath = Join-Path $PSScriptRoot 'Templates\Invoke-DATToastTest.ps1'
+    if (-not (Test-Path $templatePath)) { throw "Invoke-DATToastTest.ps1 template not found at: $templatePath" }
+
+    $setParams = @{} + $ScriptSetParams
+    foreach ($notForTests in @('HPPasswordBinPath', 'StagingDir', 'OEM', 'Model', 'OS', 'Version', 'UpdateType', 'TargetPlatform')) {
+        $setParams.Remove($notForTests)
+    }
+    New-DATPackageScriptSet -StagingDir $StagingDir -OEM 'DAT' -Model 'Toast Test' -OS 'Windows 11' -Version $Version `
+        -UpdateType $UpdateType -TargetPlatform $TargetPlatform @setParams | Out-Null
+
+    $installScriptName = if ($UpdateType -eq 'BIOS') { 'Install-BIOS.ps1' } else { 'Install-Drivers.ps1' }
+    $installScriptPath = Join-Path $StagingDir $installScriptName
+    $installContent = Get-Content -Path $installScriptPath -Raw
+    Remove-Item -Path $installScriptPath -Force
+
+    $disableToast = [bool]$setParams['DisableToast']
+    $parts = Get-DATToastTestScriptParts -InstallScriptContent $installContent -UpdateType $UpdateType -DisableToast:$disableToast
+
+    $timeoutAction = if ($setParams.ContainsKey('ToastTimeoutAction')) { [string]$setParams['ToastTimeoutAction'] } else { 'RemindMeLater' }
+    $maxDeferrals = if ($setParams.ContainsKey('MaxDeferrals')) { [int]$setParams['MaxDeferrals'] } else { 0 }
+    $restartDelaySeconds = if ($setParams.ContainsKey('RestartDelaySeconds')) { [int]$setParams['RestartDelaySeconds'] } else { 600 }
+
+    $content = Get-Content -Path $templatePath -Raw
+    $content = $content.Replace('{{TOAST_FUNCTIONS}}', $parts.ToastFunctions)
+    $content = $content.Replace('{{TOAST_GATE}}', $parts.ToastGate)
+    # The install progress functions (real or no-op stubs) exactly as the install script has them
+    $progressMatch = [regex]::Match($installContent, '(?ms)^# --- Install Progress Notification ---.*?^# --- End Install Progress Notification ---')
+    if (-not $progressMatch.Success) { throw "The install progress functions were not found in the generated $UpdateType install script" }
+    $content = $content.Replace('{{PROGRESS_FUNCTIONS}}', $progressMatch.Value)
+    # The Autopilot provisioning check (real or the option-off stub), run for real by the test
+    $provisioningMatch = [regex]::Match($installContent, '(?ms)^# --- Autopilot Provisioning ---.*?^# --- End Autopilot Provisioning ---')
+    if (-not $provisioningMatch.Success) { throw "The Autopilot provisioning functions were not found in the generated $UpdateType install script" }
+    $content = $content.Replace('{{PROVISIONING_FUNCTIONS}}', $provisioningMatch.Value)
+    $silentDuringAutopilot = if ($setParams.ContainsKey('SilentDuringAutopilot')) { [bool]$setParams['SilentDuringAutopilot'] } else { Get-DATBuildSilentDuringAutopilot }
+    $content = $content.Replace('{{SILENT_DURING_AUTOPILOT}}', $(if ($silentDuringAutopilot) { '$true' } else { '$false' }))
+    $content = $content.Replace('{{FOCUS_ASSIST_BLOCK}}', $parts.FocusAssistBlock)
+    $content = $content.Replace('{{UPDATE_TYPE}}', $UpdateType)
+    $content = $content.Replace('{{SIMULATED_OUTCOME}}', $SimulatedOutcome)
+    $content = $content.Replace('{{TARGET_PLATFORM}}', $TargetPlatform)
+    $content = $content.Replace('{{Version}}', $Version)
+    $content = $content.Replace('{{Generated}}', (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'))
+    $content = $content.Replace('{{TOAST_ENABLED}}', $(if ($disableToast) { '$false' } else { '$true' }))
+    $content = $content.Replace('{{DISABLE_RESTART}}', $(if ($setParams['DisableRestart']) { '$true' } else { '$false' }))
+    $content = $content.Replace('{{ALARM_MODE}}', $(if ($setParams['AlarmMode']) { '$true' } else { '$false' }))
+    $content = $content.Replace('{{RESTART_DELAY_SECONDS}}', [string]$restartDelaySeconds)
+    $content = $content.Replace('{{TOAST_TIMEOUT_ACTION}}', $timeoutAction)
+    $content = $content.Replace('{{MAX_DEFERRALS}}', [string]$maxDeferrals)
+    if ($TargetPlatform -eq 'ConfigMgr') {
+        $content = ConvertTo-DATConfigMgrLogPath -ScriptContent $content
+    }
+
+    $testScriptPath = Join-Path $StagingDir 'Invoke-DATToastTest.ps1'
+    [System.IO.File]::WriteAllText($testScriptPath, $content, [System.Text.UTF8Encoding]::new($true))
+    Invoke-DATCodeSign -ScriptPath $testScriptPath
+    Write-DATLogEntry -Value "[Toast Test] Test script created: $testScriptPath ($UpdateType, outcome $SimulatedOutcome, $TargetPlatform)" -Severity 1
+    return $testScriptPath
+}
+
+function New-DATToastTestWim {
+    <#
+    .SYNOPSIS
+        Captures a small DriverPackage.wim holding a read-me, so the test package carries the same
+        content layout as a real package and the device can try the WIM expansion step.
+    #>
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory)][string]$DestinationFolder,
+        [Parameter(Mandatory)][string]$WorkDir,
+        [ValidateSet('Drivers','BIOS')][string]$UpdateType = 'Drivers'
+    )
+    $captureDir = Join-Path $WorkDir 'ToastTestWimContent'
+    if (Test-Path $captureDir) { Remove-Item -Path $captureDir -Recurse -Force }
+    New-Item -Path $captureDir -ItemType Directory -Force | Out-Null
+    Set-Content -Path (Join-Path $captureDir 'README.txt') -Encoding ASCII -Value @(
+        'Driver Automation Tool - toast notification test package'
+        ''
+        "This WIM stands in for a $UpdateType package. It holds no drivers or firmware; the test"
+        'script expands it to check that WIM expansion works on the device, then removes it.'
+    )
+    $wimPath = Join-Path $DestinationFolder 'DriverPackage.wim'
+    try {
+        $rc = Invoke-DATDismExternal -Arguments "/Capture-Image /ImageFile:`"$wimPath`" /CaptureDir:`"$captureDir`" /Name:`"DAT Toast Test`" /Compress:fast" `
+            -WorkDir $WorkDir -Label 'Toast Test WIM' -TimeoutSec 300
+        if ($rc -ne 0 -or -not (Test-Path $wimPath)) { throw "DISM could not capture the test WIM (exit code $rc)" }
+    } finally {
+        Remove-Item -Path $captureDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    return $wimPath
+}
+
+function Get-DATToastTestDetectionScript {
+    <#
+    .SYNOPSIS
+        Returns the detection script for a toast test package: installed once this build of the
+        test has completed on the device.
+    #>
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory)][string]$Version,
+        [ValidateSet('Drivers','BIOS')][string]$UpdateType = 'Drivers'
+    )
+    if ($Version -notmatch '^[\w\.\-]+$') { throw "Invalid toast test version '$Version'" }
+    @"
+# Driver Automation Tool - toast test detection ($UpdateType, version $Version)
+`$ranVersion = (Get-ItemProperty -Path 'HKLM:\SOFTWARE\DriverAutomationTool\ToastTest\$UpdateType' -Name 'PackageVersion' -ErrorAction SilentlyContinue).PackageVersion
+if (`$ranVersion -eq '$Version') { Write-Output "DAT toast test $Version completed" }
+exit 0
+"@
+}
+
+function Get-DATToastTestRequirementScript {
+    <#
+    .SYNOPSIS
+        Returns the requirement script for a toast test package. The test applies to every device.
+    #>
+    [CmdletBinding()]
+    param ()
+    @'
+# Driver Automation Tool - toast test requirement: applies to every device
+Write-Output 'Requirement met'
+exit 0
+'@
+}
+
+function Get-DATToastTestPackageName {
+    <#
+    .SYNOPSIS
+        Returns the Intune app / ConfigMgr Application name of a toast test package.
+    #>
+    [CmdletBinding()]
+    param (
+        [ValidateSet('Drivers','BIOS')][string]$UpdateType = 'Drivers',
+        [ValidateSet('Success','SuccessRestart','Failure')][string]$SimulatedOutcome = 'Success'
+    )
+    "DAT Toast Test - $UpdateType ($SimulatedOutcome)"
+}
+
+function New-DATConfigMgrToastTestApplication {
+    <#
+    .SYNOPSIS
+        Creates or updates the ConfigMgr Application for a toast test package. No requirement rule
+        (the test applies to every device) and no deployment -- the administrator deploys it.
+    #>
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory)][string]$SourcePath,
+        [Parameter(Mandatory)][string]$ApplicationName,
+        [Parameter(Mandatory)][string]$Version,
+        [Parameter(Mandatory)][AllowEmptyString()][string]$DetectionScriptText,
+        [Parameter(Mandatory)][string]$SiteServer,
+        [Parameter(Mandatory)][string]$SiteCode,
+        [string[]]$DistributionPointGroups,
+        [string[]]$DistributionPoints
+    )
+    $dtName = 'DAT Toast Test'
+    $description = "Driver Automation Tool toast notification test. Shows the notifications a real package would show and logs what it would do. Installs nothing. Version: $Version"
+    $dtParams = @{
+        ApplicationName          = $ApplicationName
+        DeploymentTypeName       = $dtName
+        InstallCommand           = 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".\Invoke-DATToastTest.ps1"'
+        UninstallCommand         = 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".\Invoke-DATToastTest.ps1" -Uninstall'
+        ContentLocation          = $SourcePath
+        ScriptLanguage           = 'PowerShell'
+        ScriptText               = $DetectionScriptText
+        InstallationBehaviorType = 'InstallForSystem'
+        LogonRequirementType     = 'WhetherOrNotUserLoggedOn'
+        UserInteractionMode      = 'Hidden'
+        RebootBehavior           = 'NoAction'
+        MaximumRuntimeMins       = 30
+        EstimatedRuntimeMins     = 10
+        ErrorAction              = 'Stop'
+    }
+    $result = @{ ApplicationName = $ApplicationName; Created = $false; Updated = $false }
+
+    Enter-DATConfigMgrSiteDrive -SiteServer $SiteServer -SiteCode $SiteCode
+    $step = 'Looking up the Application'
+    try {
+        $existingApp = Get-CMApplication -Name $ApplicationName -Fast -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($existingApp) {
+            Write-DATLogEntry -Value "- [Toast Test] Updating ConfigMgr Application '$ApplicationName' to version $Version" -Severity 1
+            $step = 'Updating the Application'
+            Set-CMApplication -Name $ApplicationName -SoftwareVersion $Version -Description $description -ErrorAction Stop | Out-Null
+            # An earlier run that failed after New-CMApplication leaves the Application without a
+            # deployment type; adding it here completes that run.
+            if (Get-CMDeploymentType -ApplicationName $ApplicationName -DeploymentTypeName $dtName -ErrorAction SilentlyContinue) {
+                $step = 'Updating the deployment type'
+                Set-CMScriptDeploymentType @dtParams -ContentFallback $true | Out-Null
+            } else {
+                $step = 'Adding the deployment type'
+                Add-CMScriptDeploymentType @dtParams -ContentFallback | Out-Null
+            }
+            try {
+                Update-CMDistributionPoint -ApplicationName $ApplicationName -DeploymentTypeName $dtName -ErrorAction Stop | Out-Null
+            } catch {
+                Write-DATLogEntry -Value "[Warning] - Failed to update distribution points for '$ApplicationName': $($_.Exception.Message)" -Severity 2
+            }
+            $result.Updated = $true
+        } else {
+            Write-DATLogEntry -Value "- [Toast Test] Creating ConfigMgr Application '$ApplicationName'" -Severity 1
+            $step = 'Creating the Application'
+            New-CMApplication -Name $ApplicationName -Publisher 'Driver Automation Tool' -SoftwareVersion $Version `
+                -Description $description -AutoInstall $true -ErrorAction Stop | Out-Null
+            $step = 'Adding the deployment type'
+            Add-CMScriptDeploymentType @dtParams -ContentFallback | Out-Null
+            $distributed = $false
+            if ($DistributionPointGroups -and $DistributionPointGroups.Count -gt 0) {
+                try {
+                    Start-CMContentDistribution -ApplicationName $ApplicationName -DistributionPointGroupName $DistributionPointGroups -ErrorAction Stop | Out-Null
+                    $distributed = $true
+                } catch {
+                    Write-DATLogEntry -Value "[Warning] - Failed to distribute '$ApplicationName' to DP groups: $($_.Exception.Message)" -Severity 2
+                }
+            }
+            if ($DistributionPoints -and $DistributionPoints.Count -gt 0) {
+                try {
+                    Start-CMContentDistribution -ApplicationName $ApplicationName -DistributionPointName $DistributionPoints -ErrorAction Stop | Out-Null
+                    $distributed = $true
+                } catch {
+                    Write-DATLogEntry -Value "[Warning] - Failed to distribute '$ApplicationName' to DPs: $($_.Exception.Message)" -Severity 2
+                }
+            }
+            if (-not $distributed) {
+                Write-DATLogEntry -Value "[Warning] - '$ApplicationName' was not distributed to any distribution point -- distribute it before deploying" -Severity 2
+            }
+            $result.Created = $true
+        }
+        return $result
+    } catch {
+        $reason = if (-not [string]::IsNullOrWhiteSpace($_.Exception.Message)) { $_.Exception.Message } else { "$($_.Exception.GetType().FullName) ($($_.FullyQualifiedErrorId))" }
+        Write-DATLogEntry -Value "[Error] - [Toast Test] $step failed for '$ApplicationName': $reason" -Severity 3
+        throw "$step failed: $reason"
+    } finally {
+        Pop-Location
+    }
+}
+
+function Invoke-DATToastTestPackageCreation {
+    <#
+    .SYNOPSIS
+        Builds a toast notification test package and publishes it to Intune or ConfigMgr.
+    .DESCRIPTION
+        The package installs on any device, runs the toast gate and status notifications of a real
+        driver or BIOS package with the given toast settings, and logs what the real package would
+        do next. Nothing is installed, flashed or restarted. See Templates\Invoke-DATToastTest.ps1.
+
+        Intune: the content is packed into a .intunewin and uploaded as an unassigned Win32 app. Each
+        build is a new app version, so assigning the new app runs the test again on devices that
+        already ran an older build.
+
+        ConfigMgr: the content (the test script, the toast scripts and a small DriverPackage.wim) is
+        written to <PackageDestination>\DAT Toast Test\<type> and an Application is created or
+        updated in place. It is not deployed.
+
+        Returns a hashtable: Platform, Name, Version, ContentPath, AppId (Intune), Created/Updated
+        (ConfigMgr). Throws on failure.
+    #>
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory)][ValidateSet('Intune','ConfigMgr')][string]$Platform,
+        [Parameter(Mandatory)][string]$PackageDestination,
+        [ValidateSet('Drivers','BIOS')][string]$UpdateType = 'Drivers',
+        [ValidateSet('Success','SuccessRestart','Failure')][string]$SimulatedOutcome = 'Success',
+        [switch]$DisableToast,
+        [switch]$DisableRestart,
+        [switch]$AlarmMode,
+        [switch]$AlarmSound,
+        [switch]$ShowBrandingBannerAllToasts,
+        [ValidateSet('RemindMeLater','InstallNow')][string]$ToastTimeoutAction = 'RemindMeLater',
+        [int]$MaxDeferrals = 0,
+        [int]$RestartDelaySeconds = 600,
+        [string]$CustomBrandingPath,
+        [AllowEmptyString()][string]$CustomToastTextsJson,
+        [AllowEmptyString()][string]$ToastThemeJson = '',
+        [switch]$ShowInstallProgress,
+        # Install silently during Autopilot provisioning, as a real package with these settings
+        [bool]$SilentDuringAutopilot = $true,
+        [string]$SiteServer,
+        [string]$SiteCode,
+        [string[]]$DistributionPointGroups,
+        [string[]]$DistributionPoints
+    )
+    if ($UpdateType -eq 'BIOS' -and $SimulatedOutcome -eq 'SuccessRestart') {
+        throw "The SuccessRestart outcome applies to driver packages only"
+    }
+    if ($Platform -eq 'Intune' -and -not (Test-DATIntuneAuth)) {
+        throw "Sign in to Intune before building a toast test package."
+    }
+    if ($Platform -eq 'ConfigMgr' -and ([string]::IsNullOrEmpty($SiteServer) -or [string]::IsNullOrEmpty($SiteCode))) {
+        throw "Connect to a ConfigMgr site before building a toast test package."
+    }
+
+    $version = Get-Date -Format 'yyyy.MM.dd.HHmm'
+    $name = Get-DATToastTestPackageName -UpdateType $UpdateType -SimulatedOutcome $SimulatedOutcome
+    Write-DATLogEntry -Value "[Toast Test] Building '$name' version $version for $Platform" -Severity 1 -UpdateUI
+    Set-DATRegistryValue -Name "RunningMessage" -Value "Building toast test package ($UpdateType)..." -Type String
+
+    Set-DATToastThemeForBuild -ToastThemeJson $ToastThemeJson
+    $scriptSetParams = ConvertFrom-DATCustomToastTextsJson -CustomToastTextsJson $CustomToastTextsJson -UpdateType $UpdateType
+    if ($DisableToast) { $scriptSetParams['DisableToast'] = $true }
+    if ($DisableRestart) { $scriptSetParams['DisableRestart'] = $true }
+    if ($AlarmMode) { $scriptSetParams['AlarmMode'] = $true }
+    if ($AlarmSound) { $scriptSetParams['AlarmSound'] = $true }
+    if ($ShowBrandingBannerAllToasts) { $scriptSetParams['ShowBrandingBannerAllToasts'] = $true }
+    $scriptSetParams['ShowInstallProgress'] = [bool]$ShowInstallProgress
+    $scriptSetParams['SilentDuringAutopilot'] = [bool]$SilentDuringAutopilot
+    if ($ToastTimeoutAction -ne 'RemindMeLater') { $scriptSetParams['ToastTimeoutAction'] = $ToastTimeoutAction }
+    if ($MaxDeferrals -gt 0) { $scriptSetParams['MaxDeferrals'] = $MaxDeferrals }
+    if ($RestartDelaySeconds -ne 600) { $scriptSetParams['RestartDelaySeconds'] = $RestartDelaySeconds }
+    if (-not [string]::IsNullOrEmpty($CustomBrandingPath)) { $scriptSetParams['CustomBrandingPath'] = $CustomBrandingPath }
+
+    $workDir = Join-Path $global:TempDirectory "ToastTest\$UpdateType"
+    if (-not (Test-Path $workDir)) { New-Item -Path $workDir -ItemType Directory -Force | Out-Null }
+    $detectionText = Get-DATToastTestDetectionScript -Version $version -UpdateType $UpdateType
+    $result = @{ Platform = $Platform; Name = $name; Version = $version; ContentPath = $null; AppId = $null; Created = $false; Updated = $false }
+
+    if ($Platform -eq 'ConfigMgr') {
+        # The content folder is read by the site server when it distributes the content, so it lives
+        # with the packages and keeps the share's permissions (as legacy package folders do).
+        $contentDir = Join-Path $PackageDestination "DAT Toast Test\$UpdateType"
+        if (Test-Path -LiteralPath "FileSystem::$contentDir") { Remove-Item -LiteralPath "FileSystem::$contentDir" -Recurse -Force }
+        New-Item -Path "FileSystem::$contentDir" -ItemType Directory -Force | Out-Null
+        New-DATToastTestScript -StagingDir $contentDir -Version $version -UpdateType $UpdateType `
+            -SimulatedOutcome $SimulatedOutcome -TargetPlatform ConfigMgr -ScriptSetParams $scriptSetParams | Out-Null
+        New-DATToastTestWim -DestinationFolder $contentDir -WorkDir $workDir -UpdateType $UpdateType | Out-Null
+
+        # ConfigMgr only accepts a UNC content location, and the content was written by this
+        # process -- resolve it against this machine's shares, as legacy packages do (#934).
+        $contentSource = $contentDir
+        if ($contentDir -notmatch '^\\\\') {
+            $contentSource = ConvertTo-DATPackageSourcePath -Path $contentDir
+            if ([string]::IsNullOrEmpty($contentSource)) {
+                throw "The toast test content folder '$contentDir' could not be converted to a UNC path, which ConfigMgr requires. Set the Package Storage Path to a UNC path."
+            }
+            Write-DATLogEntry -Value "[Toast Test] Local content path converted to UNC: $contentSource" -Severity 1
+        }
+        $result.ContentPath = $contentSource
+
+        Set-DATRegistryValue -Name "RunningMessage" -Value "Creating ConfigMgr Application: $name..." -Type String
+        try {
+            $appResult = New-DATConfigMgrToastTestApplication -SourcePath $contentSource -ApplicationName $name -Version $version `
+                -DetectionScriptText $detectionText -SiteServer $SiteServer -SiteCode $SiteCode `
+                -DistributionPointGroups $DistributionPointGroups -DistributionPoints $DistributionPoints
+        } catch {
+            # Some ConfigMgr cmdlets throw with an empty message; name the error so it can be acted on.
+            $reason = if (-not [string]::IsNullOrWhiteSpace($_.Exception.Message)) { $_.Exception.Message } else { "$($_.Exception.GetType().FullName) ($($_.FullyQualifiedErrorId))" }
+            throw "Creating the ConfigMgr Application '$name' from '$contentSource' failed: $reason"
+        }
+        $result.Created = $appResult.Created
+        $result.Updated = $appResult.Updated
+        Write-DATLogEntry -Value "[Toast Test] ConfigMgr Application '$name' $(if ($appResult.Created) { 'created' } else { 'updated' }) -- content: $contentDir" -Severity 1 -UpdateUI
+        Set-DATRegistryValue -Name "RunningMessage" -Value "Toast test Application ready: $name" -Type String
+        return $result
+    }
+
+    # Intune: stage, pack and upload. The staging folder is what IntuneWinAppUtil packs verbatim.
+    $stagingDir = Join-Path $PackageDestination "IntuneStaging\DAT Toast Test\$UpdateType"
+    $scriptsDir = Join-Path $PackageDestination "IntuneScripts\DAT Toast Test\$UpdateType"
+    $outputDir  = Join-Path $PackageDestination "IntuneWin\DAT Toast Test\$UpdateType"
+    foreach ($dir in @($stagingDir, $scriptsDir, $outputDir)) {
+        if (Test-Path $dir) { Remove-Item $dir -Recurse -Force }
+        [void](New-DATProtectedDirectory -Path $dir -Context 'Toast test package')
+    }
+    try {
+        New-DATToastTestScript -StagingDir $stagingDir -Version $version -UpdateType $UpdateType `
+            -SimulatedOutcome $SimulatedOutcome -TargetPlatform Intune -ScriptSetParams $scriptSetParams | Out-Null
+        New-DATToastTestWim -DestinationFolder $stagingDir -WorkDir $workDir -UpdateType $UpdateType | Out-Null
+
+        $detectionPath   = Join-Path $scriptsDir "Detect-ToastTest-$UpdateType.ps1"
+        $requirementPath = Join-Path $scriptsDir "Require-ToastTest-$UpdateType.ps1"
+        [System.IO.File]::WriteAllText($detectionPath, $detectionText, [System.Text.UTF8Encoding]::new($false))
+        [System.IO.File]::WriteAllText($requirementPath, (Get-DATToastTestRequirementScript), [System.Text.UTF8Encoding]::new($false))
+
+        Set-DATRegistryValue -Name "RunningMessage" -Value "Creating IntuneWin package: $name..." -Type String
+        $intuneWinFile = New-DATIntuneWinPackage -SourceFolder $stagingDir -SetupFile 'Invoke-DATToastTest.ps1' -OutputFolder $outputDir
+        if (-not $intuneWinFile -or -not (Test-Path $intuneWinFile)) { throw "IntuneWin package creation failed - output file not found" }
+        $result.ContentPath = $intuneWinFile
+
+        $savedConfig = Get-ItemProperty -Path $global:RegPath -ErrorAction SilentlyContinue
+        $scopeTagIds = if ($savedConfig.IntuneScopeTagsEnabled -eq 1 -and -not [string]::IsNullOrWhiteSpace($savedConfig.IntuneScopeTagIds)) {
+            @(([string]$savedConfig.IntuneScopeTagIds).Split(',') | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+        } else { @('0') }
+        if ($scopeTagIds.Count -eq 0) { $scopeTagIds = @('0') }
+
+        Set-DATRegistryValue -Name "RunningMessage" -Value "Uploading to Intune: $name..." -Type String
+        $upload = Invoke-DATIntuneWin32AppUpload -IntuneWinFile $intuneWinFile `
+            -DisplayName $name `
+            -Publisher 'Driver Automation Tool' `
+            -Description "Toast notification test for $UpdateType packages. Shows the notifications a real package would show (simulated outcome: $SimulatedOutcome) and logs what it would do to DriverAutomationTool-ToastTest.log. Installs nothing.`nVersion: $version`nCreated by Driver Automation Tool" `
+            -Version $version `
+            -RequirementScriptPath $requirementPath `
+            -DetectionScriptPath $detectionPath `
+            -OS 'Windows 10' `
+            -InstallCommandLine 'powershell.exe -ExecutionPolicy Bypass -File Invoke-DATToastTest.ps1' `
+            -UninstallCommandLine 'powershell.exe -ExecutionPolicy Bypass -File Invoke-DATToastTest.ps1 -Uninstall' `
+            -ChunkSizeMB 6 -ParallelUploads 1 `
+            -RoleScopeTagIds $scopeTagIds
+        $result.AppId = $upload.AppId
+        Write-DATLogEntry -Value "[Toast Test] '$name' uploaded to Intune (App ID: $($upload.AppId)) -- assign it to a test group to run it" -Severity 1 -UpdateUI
+        Set-DATRegistryValue -Name "RunningMessage" -Value "Toast test app uploaded: $name" -Type String
+        return $result
+    } finally {
+        if (Test-Path $stagingDir) { Remove-Item $stagingDir -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+}
+
+#endregion Toast Test Package
+
 function Invoke-DATIntunePackageCreation {
     <#
     .SYNOPSIS
@@ -17619,128 +20876,16 @@ function Invoke-DATIntunePackageCreation {
         $wimSize = [math]::Round((Get-Item $WimFilePath).Length / 1MB, 2)
         Write-DATLogEntry -Value "[Intune Pipeline] WIM staged: $wimSize MB" -Severity 1
 
-        # Step 1b: Copy HP password BIN file into staging (if provided for HP BIOS packages)
-        if ($UpdateType -eq 'BIOS' -and $OEM -match 'HP' -and -not [string]::IsNullOrEmpty($HPPasswordBinPath) -and (Test-Path $HPPasswordBinPath)) {
-            $destBinFile = Join-Path $stagingDir 'HPPasswordFile.bin'
-            Copy-Item -Path $HPPasswordBinPath -Destination $destBinFile -Force
-            Write-DATLogEntry -Value "[Intune Pipeline] HP password BIN file copied to staging: $destBinFile" -Severity 1
-        }
-
-        # Step 2: Generate install script into staging
-        Set-DATRegistryValue -Name "RunningMessage" -Value "Generating install script for $OEM $Model..." -Type String
-        $installScriptPath = Join-Path $stagingDir $installScriptName
-        $installScriptParams = @{
-            OutputPath  = $installScriptPath
-            OEM         = $OEM
-            Model       = $Model
-            OS          = $OS
-            Version     = $version
-            UpdateType  = $UpdateType
-        }
-        if (-not [string]::IsNullOrEmpty($ReleaseDate)) { $installScriptParams['ReleaseDate'] = $ReleaseDate }
-        if ($DisableToast) { $installScriptParams['DisableToast'] = $true }
-        if ($DisableRestart) { $installScriptParams['DisableRestart'] = $true }
-        if ($AlarmMode) { $installScriptParams['AlarmMode'] = $true }
-        if ($ToastTimeoutAction -ne 'RemindMeLater') { $installScriptParams['ToastTimeoutAction'] = $ToastTimeoutAction }
-        if ($MaxDeferrals -gt 0) { $installScriptParams['MaxDeferrals'] = $MaxDeferrals }
-        if ($RestartDelaySeconds -ne 600) { $installScriptParams['RestartDelaySeconds'] = $RestartDelaySeconds }
-        New-DATIntuneInstallScript @installScriptParams
-        Write-DATLogEntry -Value "[Intune Pipeline] Install script created: $installScriptPath" -Severity 1 -UpdateUI
-
-        # Step 2b: Generate toast notification scripts into staging (unless disabled)
-        if (-not $DisableToast) {
-            $toastScriptPath = Join-Path $stagingDir "Show-ToastNotification.ps1"
-            $toastParams = @{
-                OutputPath   = $toastScriptPath
-                UpdateType   = $UpdateType
-                BrandingPath = Join-Path $global:ScriptDirectory 'Branding'
-            }
-            if (-not [string]::IsNullOrEmpty($CustomBrandingPath)) { $toastParams['CustomBrandingImagePath'] = $CustomBrandingPath }
-            if (-not [string]::IsNullOrEmpty($CustomToastTitle)) { $toastParams['CustomToastTitle'] = $CustomToastTitle }
-            if (-not [string]::IsNullOrEmpty($CustomToastBody))  { $toastParams['CustomToastBody']  = $CustomToastBody  }
-            if (-not [string]::IsNullOrEmpty($CustomToastGreeting))  { $toastParams['CustomToastGreeting']  = $CustomToastGreeting  }
-            if (-not [string]::IsNullOrEmpty($CustomToastSubtitle))  { $toastParams['CustomToastSubtitle']  = $CustomToastSubtitle  }
-            if (-not [string]::IsNullOrEmpty($CustomToastActionButton))  { $toastParams['CustomActionButton']  = $CustomToastActionButton  }
-            if (-not [string]::IsNullOrEmpty($CustomToastDismissButton)) { $toastParams['CustomDismissButton'] = $CustomToastDismissButton }
-            if ($AlarmMode) { $toastParams['AlarmMode'] = $true }
-            if ($AlarmSound) { $toastParams['AlarmSound'] = $true }
-            New-DATIntuneToastScript @toastParams
-            Write-DATLogEntry -Value "[Intune Pipeline] Toast script created: $toastScriptPath" -Severity 1 -UpdateUI
-
-            # Generate completion status toast scripts (Success / Issues)
-            $statusToastParams = @{
-                BrandingPath = Join-Path $global:ScriptDirectory 'Branding'
-            }
-            if (-not [string]::IsNullOrEmpty($CustomBrandingPath)) { $statusToastParams['CustomBrandingImagePath'] = $CustomBrandingPath }
-            if ($ShowBrandingBannerAllToasts) { $statusToastParams['ShowBrandingBanner'] = $true }
-            if ($UpdateType -eq 'BIOS' -and $RestartDelaySeconds -gt 0) {
-                $statusToastParams['RestartDelayMinutes'] = [math]::Round($RestartDelaySeconds / 60, 0)
-            }
-
-            $successToastPath = Join-Path $stagingDir "Show-StatusToast-Success.ps1"
-            $successParams = @{} + $statusToastParams
-            if (-not [string]::IsNullOrEmpty($CustomSuccessTitle)) { $successParams['CustomToastTitle'] = $CustomSuccessTitle }
-            if (-not [string]::IsNullOrEmpty($CustomSuccessBody))  { $successParams['CustomToastBody']  = $CustomSuccessBody  }
-            if (-not [string]::IsNullOrEmpty($CustomSuccessActionButton)) { $successParams['CustomActionButton'] = $CustomSuccessActionButton }
-            New-DATIntuneToastScript -OutputPath $successToastPath -UpdateType 'Success' @successParams
-            Write-DATLogEntry -Value "[Intune Pipeline] Success toast script created: $successToastPath" -Severity 1 -UpdateUI
-
-            # Generate BIOS-specific prestaged toast (used only by BIOS install scripts)
-            if ($UpdateType -eq 'BIOS') {
-                $biosSuccessToastPath = Join-Path $stagingDir "Show-StatusToast-BIOSSuccess.ps1"
-                $biosSuccessParams = @{} + $statusToastParams
-                if (-not [string]::IsNullOrEmpty($CustomBIOSSuccessTitle)) { $biosSuccessParams['CustomToastTitle'] = $CustomBIOSSuccessTitle }
-                if (-not [string]::IsNullOrEmpty($CustomBIOSSuccessBody))  { $biosSuccessParams['CustomToastBody']  = $CustomBIOSSuccessBody  }
-                if (-not [string]::IsNullOrEmpty($CustomBIOSSuccessActionButton))  { $biosSuccessParams['CustomActionButton']  = $CustomBIOSSuccessActionButton  }
-                if (-not [string]::IsNullOrEmpty($CustomBIOSSuccessDismissButton)) { $biosSuccessParams['CustomDismissButton'] = $CustomBIOSSuccessDismissButton }
-                if ($DisableRestart) { $biosSuccessParams['DisableRestart'] = $true }
-                New-DATIntuneToastScript -OutputPath $biosSuccessToastPath -UpdateType 'BIOSSuccess' @biosSuccessParams
-                Write-DATLogEntry -Value "[Intune Pipeline] BIOS prestaged toast script created: $biosSuccessToastPath" -Severity 1 -UpdateUI
-            }
-
-            $issuesToastPath = Join-Path $stagingDir "Show-StatusToast-Issues.ps1"
-            $issuesParams = @{} + $statusToastParams
-            if (-not [string]::IsNullOrEmpty($CustomIssuesTitle)) { $issuesParams['CustomToastTitle'] = $CustomIssuesTitle }
-            if (-not [string]::IsNullOrEmpty($CustomIssuesBody))  { $issuesParams['CustomToastBody']  = $CustomIssuesBody  }
-            if (-not [string]::IsNullOrEmpty($CustomIssuesActionButton)) { $issuesParams['CustomActionButton'] = $CustomIssuesActionButton }
-            New-DATIntuneToastScript -OutputPath $issuesToastPath -UpdateType 'Issues' @issuesParams
-            Write-DATLogEntry -Value "[Intune Pipeline] Issues toast script created: $issuesToastPath" -Severity 1 -UpdateUI
-
-            # Generate BIOS-specific issues toast (used only by BIOS install scripts)
-            if ($UpdateType -eq 'BIOS') {
-                $biosIssuesToastPath = Join-Path $stagingDir "Show-StatusToast-BIOSIssues.ps1"
-                $biosIssuesParams = @{} + $statusToastParams
-                if (-not [string]::IsNullOrEmpty($CustomBIOSIssuesTitle)) { $biosIssuesParams['CustomToastTitle'] = $CustomBIOSIssuesTitle }
-                if (-not [string]::IsNullOrEmpty($CustomBIOSIssuesBody))  { $biosIssuesParams['CustomToastBody']  = $CustomBIOSIssuesBody  }
-                if (-not [string]::IsNullOrEmpty($CustomBIOSIssuesActionButton)) { $biosIssuesParams['CustomActionButton'] = $CustomBIOSIssuesActionButton }
-                New-DATIntuneToastScript -OutputPath $biosIssuesToastPath -UpdateType 'BIOSIssues' @biosIssuesParams
-                Write-DATLogEntry -Value "[Intune Pipeline] BIOS issues toast script created: $biosIssuesToastPath" -Severity 1 -UpdateUI
-
-                # AC-power-required toast: shown when a BIOS update is deferred because the
-                # device is running on battery. Reuses the BIOS Issues warning styling but
-                # carries an actionable, self-remediable message (connect AC power).
-                $biosACPowerToastPath = Join-Path $stagingDir "Show-StatusToast-BIOSACPower.ps1"
-                $biosACPowerParams = @{} + $statusToastParams
-                $biosACPowerParams['CustomToastTitle'] = if (-not [string]::IsNullOrEmpty($CustomBIOSACPowerTitle)) { $CustomBIOSACPowerTitle } else { 'BIOS Update Paused - Connect Power' }
-                $biosACPowerParams['CustomToastBody']  = if (-not [string]::IsNullOrEmpty($CustomBIOSACPowerBody)) { $CustomBIOSACPowerBody } else { 'Your device needs to install a BIOS firmware update, but it must be connected to AC power first. Please plug in your charger - the update will continue automatically the next time it runs.' }
-                if (-not [string]::IsNullOrEmpty($CustomBIOSACPowerActionButton)) { $biosACPowerParams['CustomActionButton'] = $CustomBIOSACPowerActionButton }
-                New-DATIntuneToastScript -OutputPath $biosACPowerToastPath -UpdateType 'BIOSIssues' @biosACPowerParams
-                Write-DATLogEntry -Value "[Intune Pipeline] BIOS AC-power toast script created: $biosACPowerToastPath" -Severity 1 -UpdateUI
-
-                # Final deferral notice: shown (bypassing Focus Assist via alarm mode) on the
-                # forced-install path when the maximum number of deferrals has been reached, so
-                # the user is always informed that the BIOS update is now being pre-staged.
-                $biosFinalNoticeToastPath = Join-Path $stagingDir "Show-StatusToast-BIOSFinalNotice.ps1"
-                $biosFinalNoticeParams = @{} + $statusToastParams
-                $biosFinalNoticeParams['AlarmMode'] = $true
-                if ($AlarmSound) { $biosFinalNoticeParams['AlarmSound'] = $true }
-                if (-not [string]::IsNullOrEmpty($CustomBIOSFinalNoticeTitle)) { $biosFinalNoticeParams['CustomToastTitle'] = $CustomBIOSFinalNoticeTitle }
-                if (-not [string]::IsNullOrEmpty($CustomBIOSFinalNoticeBody))  { $biosFinalNoticeParams['CustomToastBody']  = $CustomBIOSFinalNoticeBody }
-                if (-not [string]::IsNullOrEmpty($CustomBIOSFinalNoticeActionButton)) { $biosFinalNoticeParams['CustomActionButton'] = $CustomBIOSFinalNoticeActionButton }
-                New-DATIntuneToastScript -OutputPath $biosFinalNoticeToastPath -UpdateType 'BIOSFinalNotice' @biosFinalNoticeParams
-                Write-DATLogEntry -Value "[Intune Pipeline] BIOS final-notice toast script created: $biosFinalNoticeToastPath" -Severity 1 -UpdateUI
+        # Steps 1b-2b: HP password BIN, install script and toast scripts. Shared with the
+        # ConfigMgr Application pipeline -- see New-DATPackageScriptSet.
+        $scriptSetParams = @{ StagingDir = $stagingDir; Version = $version }
+        $scriptSetCmd = Get-Command New-DATPackageScriptSet
+        foreach ($key in $PSBoundParameters.Keys) {
+            if ($scriptSetCmd.Parameters.ContainsKey($key) -and -not $scriptSetParams.ContainsKey($key)) {
+                $scriptSetParams[$key] = $PSBoundParameters[$key]
             }
         }
+        New-DATPackageScriptSet @scriptSetParams
 
         # Step 3: Generate requirement script (stored separately, not in the .intunewin)
         Set-DATRegistryValue -Name "RunningMessage" -Value "Generating requirement script for $OEM $Model..." -Type String
@@ -17849,7 +20994,8 @@ function Invoke-DATIntunePackageCreation {
             -DetectionScriptPath $detectionScriptPath `
             -OS $OS `
             -InstallCommandLine "powershell.exe -ExecutionPolicy Bypass -File $installScriptName" `
-            -UninstallCommandLine "powershell.exe -ExecutionPolicy Bypass -File $installScriptName" `
+            -UninstallCommandLine "powershell.exe -ExecutionPolicy Bypass -File $installScriptName -Uninstall" `
+            -AllowAvailableUninstall ($UpdateType -ne 'BIOS') `
             -ChunkSizeMB $uploadChunkSizeMB `
             -ParallelUploads $uploadParallelCount `
             -MaxUploadAttempts $uploadMaxAttempts `

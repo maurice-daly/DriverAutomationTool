@@ -1006,7 +1006,7 @@
                                    Foreground="{DynamicResource AccentColor}" VerticalAlignment="Center" Margin="0,0,8,0"/>
                         <TextBlock Text="Driver Automation Tool" FontSize="13" FontWeight="SemiBold"
                                    Foreground="{DynamicResource WindowForeground}" VerticalAlignment="Center"/>
-                        <TextBlock x:Name="txt_Version" Text=" Version 10.2.9" FontSize="11"
+                        <TextBlock x:Name="txt_Version" Text=" Version 10.3.0" FontSize="11"
                                    Foreground="{DynamicResource InputPlaceholder}" VerticalAlignment="Center" Margin="4,0"/>
                     </StackPanel>
 
@@ -1134,10 +1134,6 @@
                                         <Ellipse x:Name="dot_IntunePackageMgmt" Width="7" Height="7" Fill="{DynamicResource AccentColor}" Margin="8,0,0,0" VerticalAlignment="Center" Visibility="Collapsed"/>
                                     </StackPanel>
                                 </Button>
-                                <Button x:Name="nav_ToastNotifications"
-                                        Style="{StaticResource SubNavButton}">
-                                    <TextBlock><Run Text="&#xE8BD;" FontFamily="Segoe MDL2 Assets"/><Run Text="  Toast Notifications"/></TextBlock>
-                                </Button>
                                 <Button x:Name="nav_BIOSSecurity"
                                         Style="{StaticResource SubNavButton}">
                                     <TextBlock><Run Text="&#xE72E;" FontFamily="Segoe MDL2 Assets"/><Run Text="  BIOS Security"/></TextBlock>
@@ -1147,6 +1143,11 @@
                                     <TextBlock><Run Text="&#xE823;" FontFamily="Segoe MDL2 Assets"/><Run Text="  Maintenance Window"/></TextBlock>
                                 </Button>
                             </StackPanel>
+                            <!-- Top level: the toast settings apply to Intune packages and ConfigMgr Applications alike -->
+                            <Button x:Name="nav_ToastNotifications"
+                                    Style="{StaticResource NavButton}">
+                                <TextBlock><Run Text="&#xE8BD;" FontFamily="Segoe MDL2 Assets"/><Run Text="  Toast Notifications"/></TextBlock>
+                            </Button>
                             <Button x:Name="nav_CommonSettings"
                                     Style="{StaticResource NavButton}">
                                 <StackPanel Orientation="Horizontal">
@@ -1391,6 +1392,18 @@
                                                         Padding="4"
                                                         MinWidth="{Binding ActualWidth, ElementName=btn_OSToggle}">
                                                     <StackPanel>
+                                                        <Border x:Name="border_OS_Win11_26H2" Background="Transparent" CornerRadius="8" Padding="12,7" Margin="0,1" Cursor="Hand">
+                                                            <Border.Style>
+                                                                <Style TargetType="Border">
+                                                                    <Style.Triggers>
+                                                                        <Trigger Property="IsMouseOver" Value="True">
+                                                                            <Setter Property="Background" Value="{DynamicResource SidebarHover}"/>
+                                                                        </Trigger>
+                                                                    </Style.Triggers>
+                                                                </Style>
+                                                            </Border.Style>
+                                                            <CheckBox x:Name="chk_OS_Win11_26H2" Content="Windows 11 26H2" Margin="0"/>
+                                                        </Border>
                                                         <Border x:Name="border_OS_Win11_26H1" Background="Transparent" CornerRadius="8" Padding="12,7" Margin="0,1" Cursor="Hand">
                                                             <Border.Style>
                                                                 <Style TargetType="Border">
@@ -2145,11 +2158,22 @@
                                     </StackPanel>
 
                                     <!-- Action Buttons -->
-                                    <Button x:Name="btn_Abort" Grid.Column="1"
-                                            Style="{StaticResource DangerButton}"
-                                            IsEnabled="False" Margin="0,0,8,0" Height="36">
-                                        <TextBlock><Run Text="&#xE711;" FontFamily="Segoe MDL2 Assets"/><Run Text="  Abort"/></TextBlock>
-                                    </Button>
+                                    <StackPanel Grid.Column="1" Orientation="Horizontal">
+                                        <!-- Pause / Resume: follows the Abort button's visibility and enabled state -->
+                                        <Button x:Name="btn_PauseBuild"
+                                                Style="{StaticResource SecondaryButton}"
+                                                IsEnabled="{Binding IsEnabled, ElementName=btn_Abort}"
+                                                Visibility="{Binding Visibility, ElementName=btn_Abort}"
+                                                Margin="0,0,8,0" Height="36"
+                                                ToolTip="Pause the build after the current step -- downloads and packaging in progress finish first">
+                                            <TextBlock><Run Text="&#xE769;" FontFamily="Segoe MDL2 Assets"/><Run Text="  Pause"/></TextBlock>
+                                        </Button>
+                                        <Button x:Name="btn_Abort"
+                                                Style="{StaticResource DangerButton}"
+                                                IsEnabled="False" Margin="0,0,8,0" Height="36">
+                                            <TextBlock><Run Text="&#xE711;" FontFamily="Segoe MDL2 Assets"/><Run Text="  Abort"/></TextBlock>
+                                        </Button>
+                                    </StackPanel>
                                     <Button x:Name="btn_Build" Grid.Column="2"
                                             Style="{StaticResource RoundedButton}"
                                             IsEnabled="False" Height="36">
@@ -2258,6 +2282,7 @@
                                 </ComboBox>
                                 <ComboBox x:Name="cmb_CmPkgOS" Grid.Column="1" Grid.Row="1" Margin="8,0,0,0" Height="34">
                                     <ComboBoxItem Content="All" IsSelected="True"/>
+                                    <ComboBoxItem Content="Windows 11 26H2"/>
                                     <ComboBoxItem Content="Windows 11 26H1"/>
                                     <ComboBoxItem Content="Windows 11 25H2"/>
                                     <ComboBoxItem Content="Windows 11 24H2"/>
@@ -2298,6 +2323,118 @@
 
                             <Border Grid.Row="5" Style="{StaticResource CardPanel}">
                                 <DataGrid x:Name="grid_Packages" Style="{StaticResource ModernDataGrid}">
+                                    <DataGrid.ContextMenu>
+                                        <ContextMenu x:Name="ctx_PackageMenu"
+                                                     HasDropShadow="True"
+                                                     Padding="0">
+                                            <ContextMenu.Template>
+                                                <ControlTemplate TargetType="ContextMenu">
+                                                    <Border Background="{DynamicResource CardBackground}"
+                                                            BorderBrush="{DynamicResource CardBorder}"
+                                                            BorderThickness="1"
+                                                            CornerRadius="8"
+                                                            Padding="4,6"
+                                                            SnapsToDevicePixels="True">
+                                                        <Border.Effect>
+                                                            <DropShadowEffect BlurRadius="16" Opacity="0.35" ShadowDepth="4" Color="Black"/>
+                                                        </Border.Effect>
+                                                        <StackPanel IsItemsHost="True" KeyboardNavigation.DirectionalNavigation="Cycle"/>
+                                                    </Border>
+                                                </ControlTemplate>
+                                            </ContextMenu.Template>
+                                            <ContextMenu.Resources>
+                                                <!-- Styled MenuItem template matching app theme -->
+                                                <Style TargetType="MenuItem">
+                                                    <Setter Property="Foreground" Value="{DynamicResource SidebarForeground}"/>
+                                                    <Setter Property="FontFamily" Value="Segoe UI"/>
+                                                    <Setter Property="FontSize" Value="12"/>
+                                                    <Setter Property="Padding" Value="12,8"/>
+                                                    <Setter Property="Template">
+                                                        <Setter.Value>
+                                                            <ControlTemplate TargetType="MenuItem">
+                                                                <Border x:Name="MenuItemBorder"
+                                                                        Background="Transparent"
+                                                                        Padding="{TemplateBinding Padding}"
+                                                                        CornerRadius="4"
+                                                                        Margin="2,1">
+                                                                    <Grid>
+                                                                        <Grid.ColumnDefinitions>
+                                                                            <ColumnDefinition Width="Auto"/>
+                                                                            <ColumnDefinition Width="*"/>
+                                                                        </Grid.ColumnDefinitions>
+                                                                        <ContentPresenter Grid.Column="0"
+                                                                                          Content="{TemplateBinding Icon}"
+                                                                                          VerticalAlignment="Center"
+                                                                                          Margin="0,0,10,0"/>
+                                                                        <ContentPresenter Grid.Column="1"
+                                                                                          ContentSource="Header"
+                                                                                          VerticalAlignment="Center"/>
+                                                                    </Grid>
+                                                                </Border>
+                                                                <ControlTemplate.Triggers>
+                                                                    <Trigger Property="IsHighlighted" Value="True">
+                                                                        <Setter TargetName="MenuItemBorder" Property="Background"
+                                                                                Value="{DynamicResource SidebarHover}"/>
+                                                                    </Trigger>
+                                                                    <Trigger Property="IsEnabled" Value="False">
+                                                                        <Setter Property="Opacity" Value="0.4"/>
+                                                                    </Trigger>
+                                                                </ControlTemplate.Triggers>
+                                                            </ControlTemplate>
+                                                        </Setter.Value>
+                                                    </Setter>
+                                                </Style>
+                                                <!-- Themed Separator -->
+                                                <Style TargetType="Separator">
+                                                    <Setter Property="Background" Value="{DynamicResource CardBorder}"/>
+                                                    <Setter Property="Margin" Value="8,4"/>
+                                                    <Setter Property="Height" Value="1"/>
+                                                    <Setter Property="Template">
+                                                        <Setter.Value>
+                                                            <ControlTemplate TargetType="Separator">
+                                                                <Border Background="{TemplateBinding Background}"
+                                                                        Height="{TemplateBinding Height}"
+                                                                        Margin="{TemplateBinding Margin}"
+                                                                        SnapsToDevicePixels="True"/>
+                                                            </ControlTemplate>
+                                                        </Setter.Value>
+                                                    </Setter>
+                                                </Style>
+                                            </ContextMenu.Resources>
+
+                                            <!-- Header: DAT logo + "Package Options" -->
+                                            <MenuItem IsHitTestVisible="False" IsEnabled="False" Padding="10,8">
+                                                <MenuItem.Template>
+                                                    <ControlTemplate>
+                                                        <StackPanel Orientation="Horizontal" Margin="10,4,10,2">
+                                                            <Image x:Name="ctx_PkgHeaderLogo"
+                                                                   Width="20" Height="20"
+                                                                   VerticalAlignment="Center"
+                                                                   Margin="0,0,8,0"
+                                                                   RenderOptions.BitmapScalingMode="HighQuality"/>
+                                                            <TextBlock Text="Package Options"
+                                                                       FontFamily="Segoe UI"
+                                                                       FontSize="13"
+                                                                       FontWeight="Bold"
+                                                                       Foreground="{DynamicResource SidebarForeground}"
+                                                                       VerticalAlignment="Center"/>
+                                                        </StackPanel>
+                                                    </ControlTemplate>
+                                                </MenuItem.Template>
+                                            </MenuItem>
+
+                                            <!-- Divider -->
+                                            <Separator/>
+
+                                            <!-- Menu items -->
+                                            <MenuItem x:Name="ctx_PkgAddCustomDrivers" Header="Add Custom Drivers to Driver Pack">
+                                                <MenuItem.Icon>
+                                                    <TextBlock Text="&#xE710;" FontFamily="Segoe MDL2 Assets" FontSize="14"
+                                                               Foreground="{DynamicResource AccentColor}"/>
+                                                </MenuItem.Icon>
+                                            </MenuItem>
+                                        </ContextMenu>
+                                    </DataGrid.ContextMenu>
                                     <DataGrid.Columns>
                                         <DataGridCheckBoxColumn Header="&#x2611;" Width="40" Binding="{Binding Selected, UpdateSourceTrigger=PropertyChanged, Mode=TwoWay}"
                                                                 ElementStyle="{StaticResource DataGridCheckBox}"
@@ -2787,6 +2924,67 @@
                                                 Content="Browse..." Height="34" MinWidth="90"
                                                 Style="{StaticResource SecondaryButton}"/>
                                     </Grid>
+                                </StackPanel>
+                            </Border>
+
+                            <!-- ConfigMgr Applications (user notifications) -->
+                            <Border Style="{StaticResource CardPanel}" Margin="0,0,0,12">
+                                <StackPanel>
+                                    <TextBlock FontSize="13" FontWeight="SemiBold"
+                                               Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,8">
+                                        <Run Text="&#xE8BD;" FontFamily="Segoe MDL2 Assets" FontSize="13"/><Run Text="  ConfigMgr Applications (user notifications)"/>
+                                    </TextBlock>
+                                    <TextBlock TextWrapping="Wrap" FontSize="12"
+                                               Foreground="{DynamicResource InputPlaceholder}" Margin="0,0,0,16" LineHeight="20">
+                                        Also create a ConfigMgr Application for each driver and BIOS package, so updates can be deployed to running devices through Software Center with the same toast notifications as Intune (Update Now / Remind Me Later, deferrals, status toasts). The Application shares the package's source folder, so no extra copy of the content is kept. Driver packages are always built as WIM while this is on. Requires the ConfigMgr console on this machine; deploy the Applications yourself. Toast settings are on the Toast Notifications page.
+                                    </TextBlock>
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <CheckBox x:Name="chk_CreateConfigMgrApplication"
+                                                  Style="{StaticResource ToggleSwitch}"
+                                                  VerticalAlignment="Center"
+                                                  Margin="0,0,12,0"/>
+                                        <TextBlock x:Name="txt_CreateConfigMgrApplicationState" Grid.Column="1"
+                                                   Text="Off" FontSize="12" FontWeight="SemiBold"
+                                                   Foreground="{DynamicResource InputPlaceholder}"
+                                                   VerticalAlignment="Center"/>
+                                    </Grid>
+
+                                    <!-- Remind Me Later interval (ConfigMgr Applications only) -->
+                                    <Grid Margin="0,16,0,0">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="230"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                            <ColumnDefinition Width="60"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Text="Remind Me Later interval (hours):"
+                                                   FontSize="12" Foreground="{DynamicResource WindowForeground}"
+                                                   VerticalAlignment="Center" Margin="0,0,12,0"/>
+                                        <Button x:Name="btn_ReminderIntervalDown" Grid.Column="1" Width="32" Height="32"
+                                                Style="{StaticResource SecondaryButton}" Padding="0">
+                                            <TextBlock Text="&#xE738;" FontFamily="Segoe MDL2 Assets" FontSize="10"/>
+                                        </Button>
+                                        <TextBox x:Name="txt_ReminderInterval" Grid.Column="2" Height="32"
+                                                 Text="4" TextAlignment="Center" VerticalContentAlignment="Center"
+                                                 FontSize="13" FontWeight="SemiBold" Margin="6,0"
+                                                 Background="{DynamicResource InputBackground}"
+                                                 Foreground="{DynamicResource WindowForeground}"
+                                                 BorderBrush="{DynamicResource CardBorder}"
+                                                 BorderThickness="1" MaxLength="2"
+                                                 ToolTip="Hours before the prompt returns after the user chooses Remind Me Later (1 to 24)"/>
+                                        <Button x:Name="btn_ReminderIntervalUp" Grid.Column="3" Width="32" Height="32"
+                                                Style="{StaticResource SecondaryButton}" Padding="0">
+                                            <TextBlock Text="&#xE710;" FontFamily="Segoe MDL2 Assets" FontSize="10"/>
+                                        </Button>
+                                    </Grid>
+                                    <TextBlock TextWrapping="Wrap" FontSize="11"
+                                               Foreground="{DynamicResource InputPlaceholder}" Margin="0,4,0,0">
+                                        When a user chooses Remind Me Later, a scheduled task asks the ConfigMgr client to run the Application again after this many hours, so the prompt comes back on time. 1 to 24 hours. Intune packages always use 4 hours.
+                                    </TextBlock>
                                 </StackPanel>
                             </Border>
 
@@ -4472,6 +4670,8 @@
                                             <ComboBoxItem Content="BIOS Issues"/>
                                             <ComboBoxItem Content="BIOS AC Power"/>
                                             <ComboBoxItem Content="BIOS Deferral Expired"/>
+                                            <ComboBoxItem Content="Driver Install Progress"/>
+                                            <ComboBoxItem Content="BIOS Install Progress"/>
                                         </ComboBox>
                                         <Button x:Name="btn_ShowToastPreview" Content="Show Preview" Height="30" Margin="12,0,0,0"
                                                 Padding="12,0" FontSize="11" VerticalAlignment="Center" Cursor="Hand"
@@ -4503,7 +4703,7 @@
 
                                     <!-- Update toast mockup (Driver / BIOS) -->
                                     <Grid x:Name="panel_ToastUpdateMockup" HorizontalAlignment="Center" Margin="0,0,0,8">
-                                        <Border CornerRadius="12" Background="#0F172A" Width="420"
+                                        <Border x:Name="bd_ToastUpdateOuter" CornerRadius="12" Background="#0F172A" Width="420"
                                                 BorderBrush="#334155" BorderThickness="1">
                                             <Border.Effect>
                                                 <DropShadowEffect BlurRadius="20" Opacity="0.4" ShadowDepth="4" Color="#000000"/>
@@ -4524,7 +4724,7 @@
                                                 <StackPanel Grid.Row="1" Margin="20,16,20,12">
                                                     <TextBlock x:Name="txt_ToastGreeting" Text="Hi User" FontSize="14" Foreground="#F8FAFC"
                                                                FontWeight="SemiBold" Margin="0,0,0,2"/>
-                                                    <TextBlock x:Name="txt_ToastSubtitle" Text="Driver Automation Tool V10" FontSize="11"
+                                                    <TextBlock x:Name="txt_ToastSubtitle" Text="Driver Automation Tool" FontSize="11"
                                                                Foreground="#CBD5E1" Margin="0,0,0,12"/>
                                                     <TextBlock x:Name="txt_ToastHeading" Text="Driver Updates Pending"
                                                                FontSize="17" FontWeight="Bold"
@@ -4540,13 +4740,13 @@
                                                         <ColumnDefinition Width="10"/>
                                                         <ColumnDefinition Width="*"/>
                                                     </Grid.ColumnDefinitions>
-                                                    <Border Grid.Column="0" CornerRadius="8" Background="#0B84F1"
+                                                    <Border x:Name="bd_ToastActionBtn" Grid.Column="0" CornerRadius="8" Background="#0B84F1"
                                                             Height="36" Cursor="Arrow">
                                                         <TextBlock x:Name="txt_ToastActionBtn" Text="Update Now" HorizontalAlignment="Center"
                                                                    VerticalAlignment="Center" FontSize="13"
                                                                    FontWeight="SemiBold" Foreground="#FFFFFF"/>
                                                     </Border>
-                                                    <Border Grid.Column="2" CornerRadius="8" Background="#334155"
+                                                    <Border x:Name="bd_ToastDismissBtn" Grid.Column="2" CornerRadius="8" Background="#334155"
                                                             Height="36" BorderBrush="#475569" BorderThickness="1"
                                                             Cursor="Arrow">
                                                         <TextBlock x:Name="txt_ToastDismissBtn" Text="Remind Me Later" HorizontalAlignment="Center"
@@ -4560,7 +4760,7 @@
 
                                     <!-- Status toast mockup (Success / Issues) -->
                                     <Grid x:Name="panel_ToastStatusMockup" HorizontalAlignment="Center" Margin="0,0,0,8" Visibility="Collapsed">
-                                        <Border CornerRadius="12" Background="#0F172A" Width="380">
+                                        <Border x:Name="bd_ToastStatusBg" CornerRadius="12" Background="#0F172A" Width="380">
                                             <Border.Effect>
                                                 <DropShadowEffect BlurRadius="20" Opacity="0.4" ShadowDepth="4" Color="#000000"/>
                                             </Border.Effect>
@@ -4602,7 +4802,7 @@
                                                             <ColumnDefinition x:Name="col_ToastRestartGap" Width="0"/>
                                                             <ColumnDefinition x:Name="col_ToastRestart" Width="0"/>
                                                         </Grid.ColumnDefinitions>
-                                                        <Border Grid.Column="0" CornerRadius="8" Background="#334155" Height="34"
+                                                        <Border x:Name="bd_ToastStatusCloseBtn" Grid.Column="0" CornerRadius="8" Background="#334155" Height="34"
                                                                 HorizontalAlignment="Stretch"
                                                                 BorderBrush="#475569" BorderThickness="1" Cursor="Arrow">
                                                             <TextBlock x:Name="txt_ToastStatusCloseBtn" Text="Close" HorizontalAlignment="Center"
@@ -4623,14 +4823,174 @@
                                         </Border>
                                     </Grid>
 
+                                    <!-- Install progress mockup (Show installation progress) -->
+                                    <Grid x:Name="panel_ToastProgressMockup" HorizontalAlignment="Center" Margin="0,0,0,8" Visibility="Collapsed">
+                                        <Border x:Name="bd_ToastProgressOuter" CornerRadius="12" Background="#0F172A" Width="520"
+                                                BorderBrush="#334155" BorderThickness="1">
+                                            <Border.Effect>
+                                                <DropShadowEffect BlurRadius="20" Opacity="0.4" ShadowDepth="4" Color="#000000"/>
+                                            </Border.Effect>
+                                            <Grid>
+                                                <Grid.RowDefinitions>
+                                                    <RowDefinition Height="4"/>
+                                                    <RowDefinition Height="Auto"/>
+                                                </Grid.RowDefinitions>
+                                                <Border x:Name="bd_ToastProgressStrip" Grid.Row="0" CornerRadius="11,11,0,0" Background="#2563EB"/>
+                                                <Grid Grid.Row="1">
+                                                    <Grid Margin="17,15,44,16">
+                                                        <Grid.ColumnDefinitions>
+                                                            <ColumnDefinition Width="40"/>
+                                                            <ColumnDefinition Width="*"/>
+                                                        </Grid.ColumnDefinitions>
+                                                        <Border x:Name="bd_ToastProgressIcon" Width="40" Height="40" CornerRadius="10" Background="#172554" VerticalAlignment="Center">
+                                                            <Grid>
+                                                                <TextBlock x:Name="txt_ToastProgressIcon" FontFamily="Segoe MDL2 Assets" FontSize="19" Foreground="#3B82F6"
+                                                                           Text="&#xE7F8;" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                                                <Image x:Name="img_ToastProgressIcon" Stretch="Uniform" Margin="5" Visibility="Collapsed"
+                                                                       RenderOptions.BitmapScalingMode="HighQuality"/>
+                                                            </Grid>
+                                                        </Border>
+                                                        <StackPanel Grid.Column="1" Margin="14,0,0,0" VerticalAlignment="Center">
+                                                            <TextBlock x:Name="txt_ToastProgressContext" FontSize="11" FontWeight="Bold" Foreground="#CBD5E1"
+                                                                       TextTrimming="CharacterEllipsis" Margin="0,0,0,3"/>
+                                                            <Grid Margin="0,0,0,8">
+                                                                <Grid.ColumnDefinitions>
+                                                                    <ColumnDefinition Width="*"/>
+                                                                    <ColumnDefinition Width="Auto"/>
+                                                                </Grid.ColumnDefinitions>
+                                                                <TextBlock x:Name="txt_ToastProgressNow" FontSize="14" FontWeight="SemiBold" Foreground="#F8FAFC"
+                                                                           TextTrimming="CharacterEllipsis"/>
+                                                                <TextBlock x:Name="txt_ToastProgressCounter" Grid.Column="1" FontSize="12" Foreground="#CBD5E1"
+                                                                           Margin="8,0,0,0" VerticalAlignment="Bottom"/>
+                                                            </Grid>
+                                                            <Grid x:Name="grid_ToastProgressBar" Height="5">
+                                                                <Border x:Name="bd_ToastProgressTrack" CornerRadius="2.5" Background="#334155"/>
+                                                                <Border x:Name="bd_ToastProgressFill" CornerRadius="2.5" Background="#2563EB" HorizontalAlignment="Left" Width="0"/>
+                                                            </Grid>
+                                                            <StackPanel x:Name="panel_ToastProgressPower" Orientation="Horizontal" Margin="0,8,0,0" Visibility="Collapsed">
+                                                                <TextBlock x:Name="txt_ToastProgressPowerIcon" Text="&#xE7BA;" FontFamily="Segoe MDL2 Assets" FontSize="11"
+                                                                           Foreground="#F59E0B" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                                                                <TextBlock x:Name="txt_ToastProgressPowerText" Text="Keep your device plugged in and powered on" FontSize="11.5"
+                                                                           Foreground="#F59E0B" VerticalAlignment="Center"/>
+                                                            </StackPanel>
+                                                        </StackPanel>
+                                                    </Grid>
+                                                    <TextBlock x:Name="txt_ToastProgressDismiss" Text="&#x2715;" FontSize="13" Foreground="#CBD5E1"
+                                                               HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,14,17,0"/>
+                                                </Grid>
+                                            </Grid>
+                                        </Border>
+                                    </Grid>
+
                                     <!-- Notification Options -->
                                     <TextBlock FontSize="14" FontWeight="SemiBold"
                                                Foreground="{DynamicResource WindowForeground}" Margin="0,24,0,8">
                                         <Run Text="&#xE7E7;" FontFamily="Segoe MDL2 Assets" FontSize="14"/><Run Text="  Notification Options"/>
                                     </TextBlock>
 
-                                    <!-- Custom Toast Text -->
+                                    <!-- Notification Theme -->
                                     <Border Style="{StaticResource CardPanel}" Margin="0,0,0,12" Padding="16,12">
+                                        <StackPanel>
+                                            <TextBlock FontSize="13" FontWeight="SemiBold"
+                                                       Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,4">
+                                                <Run Text="&#xE790;" FontFamily="Segoe MDL2 Assets" FontSize="13"/><Run Text="  Notification Theme"/>
+                                            </TextBlock>
+                                            <TextBlock Text="Colours used by every toast notification. Match Windows follows each user's light / dark app setting when the toast appears. The theme is built into the package, so rebuild packages after changing it."
+                                                       FontSize="11" Foreground="{DynamicResource InputPlaceholder}" TextWrapping="Wrap" Margin="0,0,0,10" LineHeight="16"/>
+
+                                            <Grid Margin="0,0,0,4">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="Auto"/>
+                                                    <ColumnDefinition Width="*"/>
+                                                </Grid.ColumnDefinitions>
+                                                <TextBlock Text="Theme:" FontSize="12" Foreground="{DynamicResource WindowForeground}"
+                                                           VerticalAlignment="Center" Margin="0,0,10,0"/>
+                                                <ComboBox x:Name="cmb_ToastTheme" Grid.Column="1"
+                                                          Height="32" FontSize="12"
+                                                          Background="{DynamicResource InputBackground}"
+                                                          Foreground="{DynamicResource WindowForeground}"
+                                                          BorderBrush="{DynamicResource WindowBorder}"
+                                                          VerticalContentAlignment="Center">
+                                                    <ComboBoxItem Content="Dark" Tag="Dark" IsSelected="True"/>
+                                                    <ComboBoxItem Content="Light" Tag="Light"/>
+                                                    <ComboBoxItem Content="Match Windows" Tag="System"/>
+                                                    <ComboBoxItem Content="Custom" Tag="Custom"/>
+                                                </ComboBox>
+                                            </Grid>
+
+                                            <!-- Custom colours (shown for Custom) -->
+                                            <StackPanel x:Name="panel_ToastThemeCustom" Margin="0,10,0,0" Visibility="Collapsed">
+                                                <TextBlock Text="Pick three colours -- borders, button shades and secondary text are derived from them. Success and warning notifications keep their green and amber."
+                                                           FontSize="11" Foreground="{DynamicResource InputPlaceholder}" TextWrapping="Wrap" Margin="0,0,0,8" LineHeight="16"/>
+                                                <Grid>
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="*"/>
+                                                        <ColumnDefinition Width="8"/>
+                                                        <ColumnDefinition Width="*"/>
+                                                        <ColumnDefinition Width="8"/>
+                                                        <ColumnDefinition Width="*"/>
+                                                    </Grid.ColumnDefinitions>
+                                                    <StackPanel Grid.Column="0">
+                                                        <TextBlock Text="Background" FontSize="10" Foreground="{DynamicResource InputPlaceholder}" Margin="0,0,0,3"/>
+                                                        <Grid>
+                                                            <Grid.ColumnDefinitions>
+                                                                <ColumnDefinition Width="*"/>
+                                                                <ColumnDefinition Width="Auto"/>
+                                                            </Grid.ColumnDefinitions>
+                                                            <TextBox x:Name="txt_ToastThemeBackground" Style="{StaticResource RoundedTextBox}" Height="34" MaxLength="7"/>
+                                                            <Border x:Name="btn_ToastThemeBackground" Grid.Column="1" Width="34" Height="34" CornerRadius="6" Margin="6,0,0,0"
+                                                                    BorderBrush="{DynamicResource CardBorder}" BorderThickness="1" Cursor="Hand" ToolTip="Pick a colour"/>
+                                                        </Grid>
+                                                    </StackPanel>
+                                                    <StackPanel Grid.Column="2">
+                                                        <TextBlock Text="Text" FontSize="10" Foreground="{DynamicResource InputPlaceholder}" Margin="0,0,0,3"/>
+                                                        <Grid>
+                                                            <Grid.ColumnDefinitions>
+                                                                <ColumnDefinition Width="*"/>
+                                                                <ColumnDefinition Width="Auto"/>
+                                                            </Grid.ColumnDefinitions>
+                                                            <TextBox x:Name="txt_ToastThemeText" Style="{StaticResource RoundedTextBox}" Height="34" MaxLength="7"/>
+                                                            <Border x:Name="btn_ToastThemeText" Grid.Column="1" Width="34" Height="34" CornerRadius="6" Margin="6,0,0,0"
+                                                                    BorderBrush="{DynamicResource CardBorder}" BorderThickness="1" Cursor="Hand" ToolTip="Pick a colour"/>
+                                                        </Grid>
+                                                    </StackPanel>
+                                                    <StackPanel Grid.Column="4">
+                                                        <TextBlock Text="Accent / Buttons" FontSize="10" Foreground="{DynamicResource InputPlaceholder}" Margin="0,0,0,3"/>
+                                                        <Grid>
+                                                            <Grid.ColumnDefinitions>
+                                                                <ColumnDefinition Width="*"/>
+                                                                <ColumnDefinition Width="Auto"/>
+                                                            </Grid.ColumnDefinitions>
+                                                            <TextBox x:Name="txt_ToastThemeAccent" Style="{StaticResource RoundedTextBox}" Height="34" MaxLength="7"/>
+                                                            <Border x:Name="btn_ToastThemeAccent" Grid.Column="1" Width="34" Height="34" CornerRadius="6" Margin="6,0,0,0"
+                                                                    BorderBrush="{DynamicResource CardBorder}" BorderThickness="1" Cursor="Hand" ToolTip="Pick a colour"/>
+                                                        </Grid>
+                                                    </StackPanel>
+                                                </Grid>
+                                                <StackPanel x:Name="panel_ToastThemeWarning" Orientation="Horizontal" Margin="0,8,0,0" Visibility="Collapsed">
+                                                    <TextBlock Text="&#xE7BA;" FontFamily="Segoe MDL2 Assets" FontSize="14" Foreground="{DynamicResource StatusWarning}"
+                                                               VerticalAlignment="Top" Margin="0,1,6,0"/>
+                                                    <TextBlock x:Name="txt_ToastThemeWarning" FontSize="11" Foreground="{DynamicResource WindowForeground}"
+                                                               TextWrapping="Wrap" MaxWidth="560" LineHeight="16"/>
+                                                </StackPanel>
+                                            </StackPanel>
+                                        </StackPanel>
+                                    </Border>
+
+                                    <!-- Shown instead of Custom Toast Text while an install progress preview is selected -->
+                                    <Border x:Name="card_ToastProgressTextNote" Style="{StaticResource CardPanel}" Margin="0,0,0,12" Padding="16,12" Visibility="Collapsed">
+                                        <StackPanel>
+                                            <TextBlock FontSize="13" FontWeight="SemiBold"
+                                                       Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,4">
+                                                <Run Text="&#xE8AC;" FontFamily="Segoe MDL2 Assets" FontSize="13"/><Run Text="  Install Progress Text"/>
+                                            </TextBlock>
+                                            <TextBlock Text="The progress notification shows the install's own steps, so its wording is fixed. The top line uses the Subtitle set for the Driver Update or BIOS Update prompt. Turn it on with Show installation progress under Toast Behaviour."
+                                                       FontSize="11" Foreground="{DynamicResource InputPlaceholder}" TextWrapping="Wrap" LineHeight="16"/>
+                                        </StackPanel>
+                                    </Border>
+
+                                    <!-- Custom Toast Text -->
+                                    <Border x:Name="card_CustomToastText" Style="{StaticResource CardPanel}" Margin="0,0,0,12" Padding="16,12">
                                         <StackPanel>
                                             <TextBlock FontSize="13" FontWeight="SemiBold"
                                                        Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,4">
@@ -4766,6 +5126,20 @@
                                                       Style="{StaticResource ToggleSwitch}"
                                                       Foreground="{DynamicResource WindowForeground}"
                                                       FontSize="13" Margin="0,0,0,12"/>
+
+                                            <CheckBox x:Name="chk_ShowInstallProgress" Content="Show installation progress"
+                                                      Style="{StaticResource ToggleSwitch}"
+                                                      Foreground="{DynamicResource WindowForeground}"
+                                                      FontSize="13" Margin="0,0,0,4"/>
+                                            <TextBlock Text="While the update installs, a compact notification shows what is being installed and how far along it is. It hands over to the success, restart or issues notification when the install finishes. The user can hide it without stopping the update."
+                                                       FontSize="11" Foreground="{DynamicResource InputPlaceholder}" TextWrapping="Wrap" Margin="0,0,0,12" LineHeight="16"/>
+
+                                            <CheckBox x:Name="chk_SilentDuringAutopilot" Content="Install silently during Autopilot provisioning"
+                                                      Style="{StaticResource ToggleSwitch}" IsChecked="True"
+                                                      Foreground="{DynamicResource WindowForeground}"
+                                                      FontSize="13" Margin="0,0,0,4"/>
+                                            <TextBlock Text="While Windows Autopilot is still setting up the device (the Enrollment Status Page), nobody can answer a prompt. The package then installs straight away, without the prompt, deferrals or notifications, and a BIOS update waits for the next restart instead of scheduling its own. Once setup has finished the same package prompts as normal."
+                                                       FontSize="11" Foreground="{DynamicResource InputPlaceholder}" TextWrapping="Wrap" Margin="0,0,0,12" LineHeight="16"/>
 
                                             <CheckBox x:Name="chk_CriticalNotification" Content="Critical Notification (bypass Focus Assist)"
                                                       Style="{StaticResource ToggleSwitch}"
@@ -4907,6 +5281,55 @@
                                 </StackPanel>
                             </Border>
 
+                            <!-- Toast Test Package -->
+                            <Border Style="{StaticResource CardPanel}" Margin="0,0,0,12">
+                                <StackPanel>
+                                    <TextBlock FontSize="14" FontWeight="SemiBold"
+                                               Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,4">
+                                        <Run Text="&#xEBE8;" FontFamily="Segoe MDL2 Assets" FontSize="14"/><Run Text="  Test Package"/>
+                                    </TextBlock>
+                                    <TextBlock x:Name="txt_ToastTestDescription"
+                                               Text="Build a package that installs on any device and walks through the notification flow with the settings on this page. The user sees the real prompts and status notifications, and everything a real package would do next is written to DriverAutomationTool-ToastTest.log. Nothing is installed, flashed or restarted."
+                                               FontSize="12" Foreground="{DynamicResource InputPlaceholder}" Margin="0,0,0,12" TextWrapping="Wrap"/>
+
+                                    <Grid Margin="0,0,0,12">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                            <ColumnDefinition Width="*"/>
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Grid.Column="0" Text="Update Type" FontSize="11"
+                                                   Foreground="{DynamicResource InputPlaceholder}" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                                        <ComboBox x:Name="cmb_ToastTestType" Grid.Column="1" Height="30" Width="140"
+                                                  ToolTip="Which package's notification flow to test">
+                                            <ComboBoxItem Content="Drivers" IsSelected="True"/>
+                                            <ComboBoxItem Content="BIOS"/>
+                                        </ComboBox>
+                                        <TextBlock Grid.Column="2" Text="Simulated Outcome" FontSize="11"
+                                                   Foreground="{DynamicResource InputPlaceholder}" VerticalAlignment="Center" Margin="16,0,8,0"/>
+                                        <ComboBox x:Name="cmb_ToastTestOutcome" Grid.Column="3" Height="30" Width="220"
+                                                  ToolTip="The install result the test pretends to get after the user agrees, which decides the status notification shown">
+                                            <ComboBoxItem Content="Success" Tag="Success" IsSelected="True"/>
+                                            <ComboBoxItem Content="Success - restart required" Tag="SuccessRestart"/>
+                                            <ComboBoxItem Content="Failure" Tag="Failure"/>
+                                        </ComboBox>
+                                    </Grid>
+
+                                    <StackPanel Orientation="Horizontal">
+                                        <Button x:Name="btn_BuildToastTestPackage" Style="{StaticResource RoundedButton}"
+                                                Height="32" Padding="16,0" FontSize="12">
+                                            <TextBlock>
+                                                <Run Text="&#xE7B8;" FontFamily="Segoe MDL2 Assets" FontSize="12"/><Run Text="  Build Test Package"/>
+                                            </TextBlock>
+                                        </Button>
+                                        <TextBlock x:Name="txt_ToastTestStatus" FontSize="12" Margin="12,0,0,0" VerticalAlignment="Center"
+                                                   TextWrapping="Wrap" Foreground="{DynamicResource InputPlaceholder}" Visibility="Collapsed"/>
+                                    </StackPanel>
+                                </StackPanel>
+                            </Border>
+
                             </StackPanel>
                             </ScrollViewer>
                         </Grid>
@@ -5000,6 +5423,7 @@
                                 </ComboBox>
                                 <ComboBox x:Name="cmb_IntunePkgOS" Grid.Column="1" Grid.Row="1" Margin="8,0,0,0" Height="34">
                                     <ComboBoxItem Content="All" IsSelected="True"/>
+                                    <ComboBoxItem Content="Windows 11 26H2"/>
                                     <ComboBoxItem Content="Windows 11 26H1"/>
                                     <ComboBoxItem Content="Windows 11 25H2"/>
                                     <ComboBoxItem Content="Windows 11 24H2"/>
@@ -7101,6 +7525,7 @@
                                                 <TextBlock Grid.Column="4" Grid.Row="0" Text="Windows Version" FontSize="12"
                                                            Foreground="{DynamicResource WindowForeground}" Margin="10,0,0,6"/>
                                                 <ComboBox x:Name="cmb_CustomOS" Grid.Column="4" Grid.Row="1" Height="34">
+                                                    <ComboBoxItem Content="Windows 11 26H2"/>
                                                     <ComboBoxItem Content="Windows 11 26H1"/>
                                                     <ComboBoxItem Content="Windows 11 25H2" IsSelected="True"/>
                                                     <ComboBoxItem Content="Windows 11 24H2"/>
@@ -7131,6 +7556,38 @@
                                                         Style="{StaticResource SecondaryButton}" Height="34">
                                                     <TextBlock><Run Text="&#xED25;" FontFamily="Segoe MDL2 Assets"/><Run Text="  Browse"/></TextBlock>
                                                 </Button>
+                                            </Grid>
+
+                                            <!-- Additional drivers (optional, either method): copied into the pack next to the captured / local-folder drivers -->
+                                            <Grid Margin="0,12,0,0">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*"/>
+                                                    <ColumnDefinition Width="8"/>
+                                                    <ColumnDefinition Width="Auto"/>
+                                                    <ColumnDefinition Width="8"/>
+                                                    <ColumnDefinition Width="Auto"/>
+                                                </Grid.ColumnDefinitions>
+                                                <Grid.RowDefinitions>
+                                                    <RowDefinition Height="Auto"/>
+                                                    <RowDefinition Height="Auto"/>
+                                                    <RowDefinition Height="Auto"/>
+                                                </Grid.RowDefinitions>
+                                                <TextBlock Grid.Column="0" Grid.Row="0" Grid.ColumnSpan="5" Text="Additional Drivers (optional)" FontSize="12"
+                                                           Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,6"/>
+                                                <TextBox x:Name="txt_CustomAdditionalDrivers" Grid.Column="0" Grid.Row="1"
+                                                         Style="{StaticResource RoundedTextBox}" Height="34" IsReadOnly="True"
+                                                         ToolTip="A folder of INF drivers added to the package alongside the captured or local-folder drivers"/>
+                                                <Button x:Name="btn_CustomBrowseAdditional" Grid.Column="2" Grid.Row="1"
+                                                        Style="{StaticResource SecondaryButton}" Height="34">
+                                                    <TextBlock><Run Text="&#xED25;" FontFamily="Segoe MDL2 Assets"/><Run Text="  Browse"/></TextBlock>
+                                                </Button>
+                                                <Button x:Name="btn_CustomClearAdditional" Grid.Column="4" Grid.Row="1"
+                                                        Style="{StaticResource SecondaryButton}" Height="34" ToolTip="Do not add additional drivers">
+                                                    <TextBlock><Run Text="&#xE711;" FontFamily="Segoe MDL2 Assets"/><Run Text="  Clear"/></TextBlock>
+                                                </Button>
+                                                <TextBlock x:Name="txt_CustomAdditionalDriversStatus" Grid.Column="0" Grid.Row="2" Grid.ColumnSpan="5"
+                                                           FontSize="11" Foreground="{DynamicResource InputPlaceholder}" TextWrapping="Wrap" Margin="0,6,0,0"
+                                                           Text="Optional. Pick a folder of INF drivers to add to the package as well as the captured or local-folder drivers."/>
                                             </Grid>
 
                                             <!-- Driver Source description -->
@@ -7174,6 +7631,37 @@
                                                                  IsIndeterminate="False" Value="0"/>
                                                     <TextBlock x:Name="txt_CustomBuildStep" FontSize="11" Margin="0,6,0,0"
                                                                Foreground="{DynamicResource InputPlaceholder}"/>
+
+                                                    <!-- Intune upload (shown while the package is created in Intune), same layout as the Build view's Upload row -->
+                                                    <StackPanel x:Name="panel_CustomUploadProgress" Visibility="Collapsed" Margin="0,12,0,0">
+                                                        <Grid Margin="0,0,0,6">
+                                                            <Grid.ColumnDefinitions>
+                                                                <ColumnDefinition Width="Auto"/>
+                                                                <ColumnDefinition Width="*"/>
+                                                                <ColumnDefinition Width="Auto"/>
+                                                                <ColumnDefinition Width="Auto"/>
+                                                            </Grid.ColumnDefinitions>
+                                                            <TextBlock Grid.Column="0" Text="Upload:" FontSize="11" Foreground="{DynamicResource InputPlaceholder}" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                                                            <ProgressBar x:Name="progress_CustomUpload" Grid.Column="1" Height="8"
+                                                                         Background="{DynamicResource ProgressBackground}"
+                                                                         Foreground="{DynamicResource ProgressForeground}"
+                                                                         Minimum="0" Maximum="100" Value="0"/>
+                                                            <TextBlock x:Name="txt_CustomUploadPercent" Grid.Column="2" Text="0%" FontSize="11" Foreground="{DynamicResource InputPlaceholder}" VerticalAlignment="Center" Margin="8,0,0,0" MinWidth="35"/>
+                                                            <TextBlock x:Name="txt_CustomUploadSpeed" Grid.Column="3" Text="" FontSize="11" Foreground="{DynamicResource InputPlaceholder}" VerticalAlignment="Center" Margin="8,0,0,0" MinWidth="70"/>
+                                                        </Grid>
+                                                        <Grid>
+                                                            <Grid.ColumnDefinitions>
+                                                                <ColumnDefinition Width="*"/>
+                                                                <ColumnDefinition Width="Auto"/>
+                                                                <ColumnDefinition Width="Auto"/>
+                                                            </Grid.ColumnDefinitions>
+                                                            <TextBlock x:Name="txt_CustomUploadStatus" Grid.Column="0" Text="" FontSize="12"
+                                                                       Foreground="{DynamicResource StatusSuccess}" TextWrapping="Wrap"
+                                                                       TextTrimming="CharacterEllipsis" MaxHeight="40"/>
+                                                            <TextBlock Grid.Column="1" Text="File Size:" FontSize="12" Foreground="{DynamicResource InputPlaceholder}" VerticalAlignment="Top" Margin="16,0,6,0"/>
+                                                            <TextBlock x:Name="txt_CustomUploadSize" Grid.Column="2" Text="---" FontSize="12" FontWeight="SemiBold" Foreground="{DynamicResource StatusSuccess}" VerticalAlignment="Top"/>
+                                                        </Grid>
+                                                    </StackPanel>
                                                 </StackPanel>
                                             </Border>
 
@@ -7365,7 +7853,7 @@
                                     <StackPanel>
                                         <TextBlock Text="Driver Automation Tool" FontSize="22" FontWeight="Bold"
                                                    Foreground="{DynamicResource AccentColor}" Margin="0,0,0,4"/>
-                                        <TextBlock x:Name="txt_AboutVersion" Text="Version 10.2.9" FontSize="14"
+                                        <TextBlock x:Name="txt_AboutVersion" Text="Version 10.3.0" FontSize="14"
                                                    Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,16"/>
 
                                         <TextBlock TextWrapping="Wrap" FontSize="13"
