@@ -74,6 +74,14 @@
 .PARAMETER OSVersionFallback
 	Use this switch to check for drivers packages that matches earlier versions of Windows than what's specified as input for TargetOSVersion.
 
+.PARAMETER AllowVirtualMachine
+	Allow the script to run its normal matching, download and install process on a virtual machine. Without this switch virtual machines are handled exactly as before.
+	When the switch is passed and a virtual machine is detected, the hypervisor (Hyper-V, VMware, VirtualBox, Parallels, KVM, Xen or Nutanix) is identified and only virtual machine driver packages are considered, never a physical OEM package:
+	 - A hypervisor specific package: Manufacturer set to the hypervisor name, e.g. 'VMware', named like 'Drivers - VMware Virtual Machine - Windows 11 x64'
+	 - A generic package for any hypervisor: Manufacturer set to 'Generic', named like 'Drivers - Generic Virtual Machine - Windows 11 x64'
+	A hypervisor specific package is preferred over a generic one. Both need a non-empty description, as every driver package does. QEMU and Proxmox virtual machines are identified as 'KVM'.
+	Driver fallback packages are not used for virtual machines; the generic virtual machine package takes that role. On a physical device the switch has no effect.
+
 .EXAMPLE
 	# Detect, download and apply drivers during OS deployment with ConfigMgr:
 	.\Invoke-CMApplyDriverPackage.ps1 -BareMetal -Endpoint 'CM01.domain.com' -TargetOSName 'Windows 10' -TargetOSVersion '1909'
@@ -101,6 +109,9 @@
 
 	# Run in a debug mode for testing purposes and overriding the automatically detected computer details (could be executed basically anywhere):
 	.\Invoke-CMApplyDriverPackage.ps1 -DebugMode -Endpoint 'CM01.domain.com' -UserName 'svc@domain.com' -Password 'svc-password' -TargetOSName 'Windows 10' -TargetOSVersion '1909' -Manufacturer 'Dell' -ComputerModel 'Precision 5520' -SystemSKU '07BF'
+
+	# Detect, download and apply drivers during OS deployment on a virtual machine, using a package for its hypervisor or a generic virtual machine package:
+	.\Invoke-CMApplyDriverPackage.ps1 -BareMetal -Endpoint 'CM01.domain.com' -TargetOSName 'Windows 11' -TargetOSVersion '25H2' -AllowVirtualMachine
 
 	# Detect, download and apply drivers during OS deployment with ConfigMgr and use an XML package as the source of driver package details instead of the AdminService:
 	.\Invoke-CMApplyDriverPackage.ps1 -XMLPackage -XMLDeploymentType BareMetal -TargetOSName 'Windows 10' -TargetOSVersion '1909' -TargetOSArchitecture 'x64'
@@ -247,6 +258,14 @@
 						 - Get-OSBuild translates OS build 26300 to '26H2' (per the Microsoft Windows 11 release information page; 26H2 reached general availability on 2026-09-29 and is serviced alongside 25H2).
 						 - No change was needed for package matching: the OSVersionFallback comparison already orders 26H2 (2610) above 26H1 (2605) and 25H2 (2510).
 						 - The startup banner now reports the current script version (it still said 4.3.2).
+	4.3.5 - (2026-10-06) - Added opt-in virtual machine support (ModernDriverManagement issue #334):
+						 - New -AllowVirtualMachine switch. Without it nothing changes: the same virtual machine models are refused, and DebugMode still lets them through for testing.
+						 - With it, a virtual machine runs the normal matching, download and install process. The hypervisor is identified from Win32_ComputerSystem (Hyper-V, VMware, VirtualBox, Parallels, KVM for QEMU and Proxmox, Xen, Nutanix) and logged with the raw manufacturer and model values.
+						 - A virtual machine is matched by its hypervisor, never by the hardware it imitates, so it cannot select a physical OEM package. This matters most for Hyper-V and Azure, which report Microsoft Corporation and would otherwise be matched against Surface packages.
+						 - A package whose Manufacturer is the hypervisor name is preferred, then a package whose Manufacturer is 'Generic'; the model token is 'Virtual Machine' for both. With OSVersionFallback, both are tried at the target version before either is tried at an earlier one.
+						 - Driver fallback packages are not used for virtual machines, and the selected package is checked against the virtual machine package manufacturers before download, so a run that finds no virtual machine package fails with guidance instead of installing something else.
+						 - In DebugMode, passing -Manufacturer, -ComputerModel or -SystemSKU simulates that physical device as before and virtual machine matching is not used.
+						 - Driver package WIM files are now mounted read-only (MSEndpointMgr/ModernDriverManagement PR #339, contributed by Nodiaque). A read-write mount fails on some devices with "You do not have permissions to mount and modify this image", and the content is only copied out, so nothing needs write access.
 #>
 [CmdletBinding(SupportsShouldProcess = $true, DefaultParameterSetName = "BareMetal")]
 param(
@@ -378,7 +397,15 @@ param(
 	[parameter(Mandatory = $false, ParameterSetName = "OSUpgrade")]
 	[parameter(Mandatory = $false, ParameterSetName = "PreCache")]
 	[parameter(Mandatory = $false, ParameterSetName = "Debug")]
-	[switch]$OSVersionFallback
+	[switch]$OSVersionFallback,
+
+	[parameter(Mandatory = $false, ParameterSetName = "BareMetal", HelpMessage = "Allow the normal matching, download and install process on a virtual machine, using a package for its hypervisor or a generic virtual machine package.")]
+	[parameter(Mandatory = $false, ParameterSetName = "DriverUpdate")]
+	[parameter(Mandatory = $false, ParameterSetName = "OSUpgrade")]
+	[parameter(Mandatory = $false, ParameterSetName = "PreCache")]
+	[parameter(Mandatory = $false, ParameterSetName = "Debug")]
+	[parameter(Mandatory = $false, ParameterSetName = "XMLPackage")]
+	[switch]$AllowVirtualMachine
 )
 Begin {
 	# Load Microsoft.SMS.TSEnvironment COM object
@@ -1687,9 +1714,22 @@ public class DATPinnedCertificateValidation
 			SystemSKU = $null
 			FallbackSKU = $null
 		}
-		
+
+		# A virtual machine allowed by -AllowVirtualMachine is identified by its hypervisor, not by the
+		# hardware it imitates. The OEM branches below are skipped: Hyper-V reports Microsoft Corporation
+		# and would be matched against Surface packages, and no SystemSKU is read, so matching is by
+		# model ('Virtual Machine') within the hypervisor or Generic manufacturer only.
+		if ($null -ne $Script:VirtualMachine) {
+			$ComputerDetails.Manufacturer = $Script:VirtualMachine.PackageManufacturers[0]
+			$ComputerDetails.Model = $Script:VirtualMachine.Model
+			Write-CMLogEntry -Value " - Computer manufacturer determined as: $($ComputerDetails.Manufacturer) (virtual machine, hypervisor: $($Script:VirtualMachine.Hypervisor))" -Severity 1
+			Write-CMLogEntry -Value " - Computer model determined as: $($ComputerDetails.Model)" -Severity 1
+			Write-CMLogEntry -Value " - Computer SystemSKU not used for virtual machine matching" -Severity 1
+			return $ComputerDetails
+		}
+
 		# Gather computer details based upon specific computer manufacturer
-		$ComputerManufacturer = (Get-WmiObject -Class "Win32_ComputerSystem" | Select-Object -ExpandProperty Manufacturer).Trim()
+		$ComputerManufacturer =(Get-WmiObject -Class "Win32_ComputerSystem" | Select-Object -ExpandProperty Manufacturer).Trim()
 		
 		# Wrapped in try/catch so a failure in any manufacturer-specific WMI/parse step (e.g. a null
 		# BaseBoardProduct, a short Lenovo Model for SubString, or a Dell OEMString without a bracketed
@@ -1878,9 +1918,80 @@ public class DATPinnedCertificateValidation
 		return $ComputerDetails
 	}
 	
+	function Get-VirtualMachineHypervisor {
+		param(
+			[parameter(Mandatory = $false, HelpMessage = "Specify the Win32_ComputerSystem Manufacturer value.")]
+			[AllowEmptyString()]
+			[string]$Manufacturer = "",
+
+			[parameter(Mandatory = $false, HelpMessage = "Specify the Win32_ComputerSystem Model value.")]
+			[AllowEmptyString()]
+			[string]$Model = ""
+		)
+		# Returns the hypervisor name used as the Manufacturer of its driver packages, or $null for a
+		# physical device. Values come from Win32_ComputerSystem, which is available in WinPE and the
+		# full OS. Hyper-V is only recognised with both values: Surface devices also report Microsoft
+		# Corporation, and only the model tells them apart.
+		$Manufacturer = $Manufacturer.Trim()
+		$Model = $Model.Trim()
+		if (($Manufacturer -like "Microsoft*") -and ($Model -eq "Virtual Machine")) { return "Hyper-V" }
+		if (($Manufacturer -like "VMware*") -or ($Model -like "VMware*")) { return "VMware" }
+		if (($Manufacturer -eq "innotek GmbH") -or ($Model -eq "VirtualBox")) { return "VirtualBox" }
+		if (($Manufacturer -like "Parallels*") -or ($Model -like "Parallels*")) { return "Parallels" }
+		# QEMU covers Proxmox and other KVM hosts that keep the default SMBIOS values. A host that sets
+		# custom SMBIOS values to look like a physical model is matched as that model instead.
+		if (($Manufacturer -eq "QEMU") -or ($Model -eq "KVM")) { return "KVM" }
+		if (($Manufacturer -eq "Xen") -or ($Model -eq "HVM domU")) { return "Xen" }
+		if (($Manufacturer -eq "Nutanix") -and ($Model -eq "AHV")) { return "Nutanix" }
+		return $null
+	}
+
 	function Get-ComputerSystemType {
-		$ComputerSystemType = Get-WmiObject -Class "Win32_ComputerSystem" | Select-Object -ExpandProperty "Model"
-		if ($ComputerSystemType -notin @("Virtual Machine", "VMware Virtual Platform", "VirtualBox", "HVM domU", "KVM", "VMWare7,1")) {
+		$ComputerSystem = Get-WmiObject -Class "Win32_ComputerSystem"
+		$ComputerSystemType = $ComputerSystem | Select-Object -ExpandProperty "Model"
+		$Hypervisor = Get-VirtualMachineHypervisor -Manufacturer "$($ComputerSystem.Manufacturer)" -Model "$($ComputerSystemType)"
+
+		# The models refused without -AllowVirtualMachine are unchanged from earlier versions, so the
+		# default behaviour is too. Hypervisor identification is wider (VMware20,1, QEMU 'Standard PC')
+		# but is only acted on when virtual machine support is enabled.
+		$BlockedVirtualMachineModel = $ComputerSystemType -in @("Virtual Machine", "VMware Virtual Platform", "VirtualBox", "HVM domU", "KVM", "VMWare7,1")
+
+		if ($null -ne $Hypervisor) {
+			Write-CMLogEntry -Value " - Virtual machine detected, hypervisor: $($Hypervisor) (Manufacturer: '$($ComputerSystem.Manufacturer)', Model: '$($ComputerSystemType)')" -Severity 1
+		}
+
+		if ($AllowVirtualMachine -and (($null -ne $Hypervisor) -or $BlockedVirtualMachineModel)) {
+			$DebugOverride = ($Script:PSCmdlet.ParameterSetName -like "Debug") -and ((-not [string]::IsNullOrEmpty($Manufacturer)) -or (-not [string]::IsNullOrEmpty($ComputerModel)) -or (-not [string]::IsNullOrEmpty($SystemSKU)))
+			if ($DebugOverride) {
+				Write-CMLogEntry -Value " - AllowVirtualMachine was passed, but DebugMode computer detail overrides were also specified; simulating that physical device instead of matching virtual machine driver packages" -Severity 2
+			}
+			else {
+				# A model on the refused list with no recognised hypervisor can still use a generic package
+				if ($null -eq $Hypervisor) {
+					$PackageManufacturers = @("Generic")
+					Write-CMLogEntry -Value " - Virtual machine model '$($ComputerSystemType)' detected, but the hypervisor could not be identified from manufacturer '$($ComputerSystem.Manufacturer)'; only generic virtual machine driver packages will be considered" -Severity 2
+				}
+				else {
+					$PackageManufacturers = @($Hypervisor, "Generic")
+				}
+				$Script:VirtualMachine = [PSCustomObject]@{
+					Hypervisor = if ($null -ne $Hypervisor) { $Hypervisor } else { "Unknown" }
+					Model = "Virtual Machine"
+					PackageManufacturers = $PackageManufacturers
+				}
+				Write-CMLogEntry -Value " - AllowVirtualMachine was passed, virtual machine driver package matching enabled. Package manufacturers considered, in order of preference: $($PackageManufacturers -join ', ')" -Severity 1
+				return
+			}
+		}
+
+		if (-not $BlockedVirtualMachineModel) {
+			if (($null -ne $Hypervisor) -and (-not $AllowVirtualMachine)) {
+				# Not refused by earlier versions either, so it continues as a physical device would
+				Write-CMLogEntry -Value " - Virtual machine is not on the list of refused models and continues with physical device matching, as in earlier versions. Pass -AllowVirtualMachine to match virtual machine driver packages instead" -Severity 2
+			}
+			elseif ($AllowVirtualMachine) {
+				Write-CMLogEntry -Value " - AllowVirtualMachine was passed, but this is not a virtual machine; the switch has no effect" -Severity 1
+			}
 			Write-CMLogEntry -Value " - Supported computer platform detected, script execution allowed to continue" -Severity 1
 		}
 		else {
@@ -1888,9 +1999,9 @@ public class DATPinnedCertificateValidation
 				Write-CMLogEntry -Value " - Unsupported computer platform detected, virtual machines are not supported but will be allowed in DebugMode" -Severity 2
 			}
 			else {
-				Write-CMLogEntry -Value " - Unsupported computer platform detected, virtual machines are not supported" -Severity 3
-				
-				# Throw terminating error				
+				Write-CMLogEntry -Value " - Unsupported computer platform detected, virtual machines are not supported unless -AllowVirtualMachine is passed" -Severity 3
+
+				# Throw terminating error
 				$PSCmdlet.ThrowTerminatingError((New-TerminatingErrorRecord))
 			}
 		}
@@ -2460,6 +2571,49 @@ public class DATPinnedCertificateValidation
 		}
 	}
 	
+	function Invoke-DriverPackageMatching {
+		param(
+			[parameter(Mandatory = $false, HelpMessage = "Set to True to check for drivers packages that matches earlier versions of Windows than what's detected from admin service call.")]
+			[bool]$OSVersionFallback = $false
+		)
+		# A physical device is matched once, exactly as before
+		if ($null -eq $Script:VirtualMachine) {
+			Confirm-DriverPackage -ComputerData $ComputerData -OSImageData $OSImageDetails -DriverPackage $DriverPackages -OSVersionFallback $OSVersionFallback
+			return
+		}
+
+		# A virtual machine tries each package manufacturer in order of preference (hypervisor, then
+		# Generic) and stops at the first that matches. Called once for the target OS version and again
+		# for OSVersionFallback, so both are tried at the target version before either at an earlier one.
+		foreach ($PackageManufacturer in $Script:VirtualMachine.PackageManufacturers) {
+			$PackageScope = if ($PackageManufacturer -eq "Generic") { "generic" } else { "$($PackageManufacturer) specific" }
+			Write-CMLogEntry -Value "[VirtualMachine]: Matching $($PackageScope) virtual machine driver packages (Manufacturer: '$($PackageManufacturer)', Model: '$($Script:VirtualMachine.Model)')" -Severity 1
+			$ComputerData.Manufacturer = $PackageManufacturer
+			Confirm-DriverPackage -ComputerData $ComputerData -OSImageData $OSImageDetails -DriverPackage $DriverPackages -OSVersionFallback $OSVersionFallback
+			if ($DriverPackageList.Count -ge 1) {
+				Write-CMLogEntry -Value "[VirtualMachine]: Matched $($DriverPackageList.Count) $($PackageScope) virtual machine driver package(s)" -Severity 1
+				return
+			}
+			Write-CMLogEntry -Value "[VirtualMachine]: No $($PackageScope) virtual machine driver package matched" -Severity 2
+		}
+
+		$ExampleManufacturer = $Script:VirtualMachine.PackageManufacturers[0]
+		Write-CMLogEntry -Value "[VirtualMachine]: No virtual machine driver package matched. Create a package with Manufacturer '$($ExampleManufacturer)' and a name such as 'Drivers - $($ExampleManufacturer) $($Script:VirtualMachine.Model) - $($OSImageDetails.Name) $($OSImageDetails.Architecture)', or use Manufacturer 'Generic' for any hypervisor. Physical OEM packages are never used for a virtual machine" -Severity 2
+	}
+
+	function Confirm-VirtualMachineDriverPackage {
+		# Last check before download: whatever path selected the package, a virtual machine only ever
+		# installs a package for its hypervisor or a generic virtual machine package
+		$SelectedPackage = @($DriverPackageList)[0]
+		if (($null -eq $SelectedPackage) -or ($SelectedPackage.Manufacturer -notin $Script:VirtualMachine.PackageManufacturers)) {
+			Write-CMLogEntry -Value " - Selected driver package '$($SelectedPackage.PackageName)' has manufacturer '$($SelectedPackage.Manufacturer)', which is not a virtual machine package manufacturer ($($Script:VirtualMachine.PackageManufacturers -join ', ')); script execution will be terminated" -Severity 3
+
+			# Throw terminating error
+			$PSCmdlet.ThrowTerminatingError((New-TerminatingErrorRecord))
+		}
+		Write-CMLogEntry -Value " - Virtual machine driver package confirmed: '$($SelectedPackage.PackageName)' (Manufacturer: '$($SelectedPackage.Manufacturer)', hypervisor: $($Script:VirtualMachine.Hypervisor))" -Severity 1
+	}
+
 	function Confirm-DriverPackageList {
 		switch ($DriverPackageList.Count) {
 			0 {
@@ -2471,7 +2625,7 @@ public class DATPinnedCertificateValidation
 					
 					# Attempt to match all drivers packages again but this time where OSVersion from driver packages is lower than what's detected from web service call
 					Write-CMLogEntry -Value "[DriverPackageFallback]: Starting driver package OS version fallback matching phase" -Severity 1
-					Confirm-DriverPackage -ComputerData $ComputerData -OSImageData $OSImageDetails -DriverPackage $DriverPackages -OSVersionFallback $true
+					Invoke-DriverPackageMatching -OSVersionFallback $true
 					
 					if ($DriverPackageList.Count -ge 1) {
 						# Sort driver packages descending based on OSVersion, DateCreated properties and select the most recently created one
@@ -2482,7 +2636,7 @@ public class DATPinnedCertificateValidation
 						Write-CMLogEntry -Value "[DriverPackageFallback]: Completed driver package OS version fallback matching phase" -Severity 1
 					}
 					else {
-						if ($Script:PSBoundParameters["UseDriverFallback"]) {
+						if ($Script:UseDriverFallbackEnabled) {
 							Write-CMLogEntry -Value " - Validation process detected an empty list of matched driver packages, however the UseDriverFallback parameter was specified" -Severity 1
 						}
 						else {
@@ -2494,7 +2648,7 @@ public class DATPinnedCertificateValidation
 					}
 				}
 				else {
-					if ($Script:PSBoundParameters["UseDriverFallback"]) {
+					if ($Script:UseDriverFallbackEnabled) {
 						Write-CMLogEntry -Value " - Validation process detected an empty list of matched driver packages, however the UseDriverFallback parameter was specified" -Severity 1
 					}
 					else {
@@ -2704,7 +2858,9 @@ public class DATPinnedCertificateValidation
 						# Expand compressed driver package WIM file
 						Write-CMLogEntry -Value " - Attempting to mount driver package content WIM file: $($DriverPackageCompressedFile.Name)" -Severity 1
 						Write-CMLogEntry -Value " - Mount location: $($DriverPackageMountLocation)" -Severity 1
-						Mount-WindowsImage -ImagePath $DriverPackageCompressedFile.FullName -Path $DriverPackageMountLocation -Index 1 -ErrorAction Stop
+						# Read-only: the content is only copied out, and a read-write mount fails on some devices with
+						# "You do not have permissions to mount and modify this image" (upstream PR #339)
+						Mount-WindowsImage -ImagePath $DriverPackageCompressedFile.FullName -Path $DriverPackageMountLocation -Index 1 -ReadOnly -ErrorAction Stop
 						Write-CMLogEntry -Value " - Successfully mounted driver package content WIM file" -Severity 1
 						Write-CMLogEntry -Value " - Copying items from mount directory" -Severity 1
 						Get-ChildItem -Path $DriverPackageMountLocation | Copy-Item -destination $ContentLocation -Recurse -container
@@ -2821,7 +2977,7 @@ public class DATPinnedCertificateValidation
 	}
 	
 	Write-CMLogEntry -Value "[ApplyDriverPackage]: Apply Driver Package process initiated" -Severity 1
-	Write-CMLogEntry -Value " - Script version: 4.3.4" -Severity 1
+	Write-CMLogEntry -Value " - Script version: 4.3.5" -Severity 1
 	if ($PSCmdLet.ParameterSetName -like "Debug") {
 		Write-CMLogEntry -Value " - Apply driver package process initiated in debug mode" -Severity 1
 	}
@@ -2829,26 +2985,37 @@ public class DATPinnedCertificateValidation
 	Write-CMLogEntry -Value " - Apply driver package operational mode: $($OperationalMode)" -Severity 1
 	Write-CMLogEntry -Value " - Endpoint: '$($Endpoint)' | Filter: '$($Filter)' | DriverInstallMode: '$($DriverInstallMode)'" -Severity 1
 	Write-CMLogEntry -Value " - Target OS: '$($TargetOSName)' | Version: '$($TargetOSVersion)' | Architecture: '$($TargetOSArchitecture)'" -Severity 1
-	Write-CMLogEntry -Value " - UseDriverFallback: $($UseDriverFallback.IsPresent) | OSVersionFallback: $($OSVersionFallback.IsPresent)" -Severity 1
-	
+	Write-CMLogEntry -Value " - UseDriverFallback: $($UseDriverFallback.IsPresent) | OSVersionFallback: $($OSVersionFallback.IsPresent) | AllowVirtualMachine: $($AllowVirtualMachine.IsPresent)" -Severity 1
+
 	# Set script error preference variable
 	$ErrorActionPreference = "Stop"
-	
+
 	# Construct array list for matched drivers packages
 	$DriverPackageList = New-Object -TypeName "System.Collections.ArrayList"
-	
+
 	# Set initial values that control whether some functions should be executed or not
 	$SkipFallbackDriverPackageValidation = $false
-	
+
+	# Set by Get-ComputerSystemType when -AllowVirtualMachine is passed on a virtual machine
+	$Script:VirtualMachine = $null
+	$Script:UseDriverFallbackEnabled = $UseDriverFallback.IsPresent
+
 	try {
 		Write-CMLogEntry -Value "[PrerequisiteChecker]: Starting environment prerequisite checker" -Severity 1
-		
+
 		# Determine the deployment type mode for driver package installation
 		Get-DeploymentType
-		
+
 		# Determine if running on supported computer system type
 		Get-ComputerSystemType
-		
+
+		# Driver fallback packages are keyed to physical OEMs; for a virtual machine the generic virtual
+		# machine package takes that role, so a run with no match fails rather than installing one
+		if (($null -ne $Script:VirtualMachine) -and $Script:UseDriverFallbackEnabled) {
+			Write-CMLogEntry -Value " - UseDriverFallback is ignored for virtual machines; a generic virtual machine driver package (Manufacturer 'Generic') is used when no package for the hypervisor matches" -Severity 2
+			$Script:UseDriverFallbackEnabled = $false
+		}
+
 		# Determine if running on supported operating system version
 		Get-OperatingSystemVersion
 		
@@ -2898,7 +3065,7 @@ public class DATPinnedCertificateValidation
 		Write-CMLogEntry -Value "[DriverPackage]: Starting driver package matching phase" -Severity 1
 		
 		# Match detected driver packages from web service call with computer details and OS image details gathered previously
-		Confirm-DriverPackage -ComputerData $ComputerData -OSImageData $OSImageDetails -DriverPackage $DriverPackages
+		Invoke-DriverPackageMatching
 		
 		Write-CMLogEntry -Value "[DriverPackage]: Completed driver package matching phase" -Severity 1
 		Write-CMLogEntry -Value "[DriverPackageValidation]: Starting driver package validation phase" -Severity 1
@@ -2911,7 +3078,7 @@ public class DATPinnedCertificateValidation
 		
 		# Handle UseDriverFallback parameter if it was passed on the command line and attempt to detect if there's any available fallback packages
 		# This function will only run in the case that the parameter UseDriverFallback was specified and if the $DriverPackageList is empty at the point of execution
-		if ($PSBoundParameters["UseDriverFallback"]) {
+		if ($Script:UseDriverFallbackEnabled) {
 			Write-CMLogEntry -Value "[DriverPackageFallback]: Starting fallback driver package detection phase" -Severity 1
 			
 			# Match detected fallback driver packages from web service call with computer details and OS image details
@@ -2925,7 +3092,12 @@ public class DATPinnedCertificateValidation
 			
 			Write-CMLogEntry -Value "[DriverPackageFallbackValidation]: Completed fallback driver package validation phase" -Severity 1
 		}
-		
+
+		# A virtual machine only ever installs a package for its hypervisor or a generic one
+		if ($null -ne $Script:VirtualMachine) {
+			Confirm-VirtualMachineDriverPackage
+		}
+
 		# At this point, the code below here is not allowed to be executed in debug mode, as it requires access to the Microsoft.SMS.TSEnvironment COM object
 		if ($PSCmdLet.ParameterSetName -notlike "Debug") {
 			Write-CMLogEntry -Value "[DriverPackageDownload]: Starting driver package download phase" -Severity 1

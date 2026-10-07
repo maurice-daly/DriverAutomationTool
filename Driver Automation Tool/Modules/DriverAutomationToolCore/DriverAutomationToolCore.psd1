@@ -1,6 +1,6 @@
 @{
     RootModule        = 'DriverAutomationToolCore.psm1'
-    ModuleVersion     = '10.3.0.0'
+    ModuleVersion     = '10.3.1.0'
     GUID              = 'a3e0e746-8e3a-4c5b-b8d0-3b2e4f6a9c1d'
     Author            = 'Maurice Daly'
     CompanyName       = 'MSEndpointMgr'
@@ -162,6 +162,9 @@
         'Get-DATNonAdminWriteAccess',
         'New-DATProtectedDirectory',
         'Assert-DATTemplateSourceTrusted',
+        'Get-DATTemplateSourceExposure',
+        'Set-DATTemplateSourceProtection',
+        'Test-DATUnprotectedTemplatesAllowed',
         'Invoke-DATPackageRetention',
         'Send-DATReportIssue',
         'ConvertTo-DATIntuneMinimumOS',

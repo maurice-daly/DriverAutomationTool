@@ -355,6 +355,25 @@ Set-DATApplicationTheme -ThemeName $Theme
 
 #region Window Chrome (Custom Title Bar)
 
+# Puts a dialog's rounded card into its borderless, transparent window. A drop shadow is clipped at
+# the window edge, so a card filling its window shows the clipped shadow as grey square corners
+# around its rounded ones. The card gets a transparent margin as wide as its shadow, and the window
+# grows to match, so the card keeps its size and the shadow fades out inside the window. Call it
+# once the window's size is set and before it is shown, so it is centred at its final size.
+function Set-DATDialogCard {
+    param(
+        [Parameter(Mandatory)][System.Windows.Window]$Dialog,
+        [Parameter(Mandatory)][System.Windows.FrameworkElement]$Card
+    )
+    $Dialog.Content = $Card
+    $shadow = $Card.Effect
+    if (-not $Dialog.AllowsTransparency -or $shadow -isnot [System.Windows.Media.Effects.DropShadowEffect]) { return }
+    $reach = [Math]::Ceiling($shadow.BlurRadius + $shadow.ShadowDepth)
+    $Card.Margin = [System.Windows.Thickness]::new($reach)
+    if (-not [double]::IsNaN($Dialog.Width))  { $Dialog.Width  += 2 * $reach }
+    if (-not [double]::IsNaN($Dialog.Height)) { $Dialog.Height += 2 * $reach }
+}
+
 # Enable dragging on title bar
 $TitleBar.Add_MouseLeftButtonDown({
     $Window.DragMove()
@@ -821,7 +840,7 @@ $btn_FeedbackDown.Add_Click({
 
     $panel.Children.Add($btnGrid) | Out-Null
     $border.Child = $panel
-    $dlg.Content = $border
+    Set-DATDialogCard -Dialog $dlg -Card $border
     $dlg.ShowDialog() | Out-Null
 })
 
@@ -1183,7 +1202,7 @@ function Show-DATConfirmDialog {
 
     $panel.Children.Add($btnGrid) | Out-Null
     $border.Child = $panel
-    $dlg.Content = $border
+    Set-DATDialogCard -Dialog $dlg -Card $border
 
     $dlg.ShowDialog() | Out-Null
     return $script:dialogResult
@@ -1301,7 +1320,7 @@ function Show-DATInfoDialog {
     $panel.Children.Add($btnOk) | Out-Null
 
     $border.Child = $panel
-    $dlg.Content = $border
+    Set-DATDialogCard -Dialog $dlg -Card $border
     $dlg.ShowDialog() | Out-Null
 }
 
@@ -1458,7 +1477,7 @@ function Show-DATInputDialog {
     })
 
     $border.Child = $panel
-    $dlg.Content = $border
+    Set-DATDialogCard -Dialog $dlg -Card $border
     $dlg.Add_Loaded({ $inputBox.Focus(); $inputBox.SelectAll() })
     $dlg.ShowDialog() | Out-Null
 
@@ -1583,7 +1602,7 @@ function Show-DATProgressDialog {
     $grid.Children.Add($btnClose) | Out-Null
 
     $border.Child = $grid
-    $dlg.Content = $border
+    Set-DATDialogCard -Dialog $dlg -Card $border
 
     # Show non-blocking so caller can continue work then close
     $dlg.Show()
@@ -1972,7 +1991,7 @@ function Show-DATConnectivityWarningDialog {
     $panel.Children.Add($btnPanel) | Out-Null
 
     $border.Child = $panel
-    $dlg.Content = $border
+    Set-DATDialogCard -Dialog $dlg -Card $border
     $dlg.ShowDialog() | Out-Null
 }
 
@@ -2072,9 +2091,9 @@ function Show-DATConfirmDialog {
     $btnConfirm.Cursor = [System.Windows.Input.Cursors]::Hand
     $btnConfirm.Margin = [System.Windows.Thickness]::new(0, 0, 6, 0)
     if ($Type -eq 'Warning') {
-        $confirmBg = $theme['StatusWarning']
-        $confirmHover = '#E69530'
-        $confirmFg = '#000000'
+        $confirmBg = $theme['ButtonWarning']
+        $confirmHover = $theme['ButtonWarningHover']
+        $confirmFg = $theme['ButtonWarningForeground']
     } else {
         $confirmBg = $theme['ButtonPrimary']
         $confirmHover = $theme['ButtonPrimaryHover']
@@ -2132,7 +2151,7 @@ function Show-DATConfirmDialog {
     $panel.Children.Add($btnPanel) | Out-Null
 
     $border.Child = $panel
-    $dlg.Content = $border
+    Set-DATDialogCard -Dialog $dlg -Card $border
     $dlg.ShowDialog() | Out-Null
     return ($dlg.Tag -eq $true)
 }
@@ -2297,7 +2316,7 @@ function Show-DATToastTestPlatformDialog {
     $panel.Children.Add($btnCancel) | Out-Null
 
     $border.Child = $panel
-    $dlg.Content = $border
+    Set-DATDialogCard -Dialog $dlg -Card $border
     $dlg.ShowDialog() | Out-Null
     return $dlg.Tag
 }
@@ -2481,7 +2500,7 @@ function Show-DATLoadingSourcesModal {
     $grid.Children.Add($closeBtn) | Out-Null
 
     $border.Child = $grid
-    $dlg.Content = $border
+    Set-DATDialogCard -Dialog $dlg -Card $border
 
     # Store reference so the refresh timer can update/close it
     $script:LoadingSourcesDlg = $dlg
@@ -2664,7 +2683,7 @@ function Show-DATLenovoFlashKilledModal {
     $grid.Children.Add($closeBtn) | Out-Null
 
     $border.Child = $grid
-    $dlg.Content = $border
+    Set-DATDialogCard -Dialog $dlg -Card $border
 
     $script:LenovoFlashKilledDlg = $dlg
     $dlg.Show()
@@ -3081,7 +3100,7 @@ function Show-DATBuildFailuresDialog {
     $panel.Children.Add($btnClose) | Out-Null
 
     $border.Child = $panel
-    $dlg.Content = $border
+    Set-DATDialogCard -Dialog $dlg -Card $border
     $dlg.ShowDialog() | Out-Null
 }
 
@@ -3579,7 +3598,7 @@ function Show-DATBuildSummaryDialog {
     $panel.Children.Add($btnOk) | Out-Null
 
     $border.Child = $panel
-    $dlg.Content = $border
+    Set-DATDialogCard -Dialog $dlg -Card $border
     $dlg.ShowDialog() | Out-Null
 }
 
@@ -3852,7 +3871,7 @@ function Show-DATBiosNamePromptModal {
 
     $panel.Children.Add($btnGrid) | Out-Null
     $border.Child = $panel
-    $dlg.Content = $border
+    Set-DATDialogCard -Dialog $dlg -Card $border
 
     $dlg.ShowDialog() | Out-Null
     return $script:biosPromptResult
@@ -4051,7 +4070,7 @@ function Show-DATBugNoticeModal {
     $panel.Children.Add($btnAck) | Out-Null
 
     $border.Child = $panel
-    $dlg.Content = $border
+    Set-DATDialogCard -Dialog $dlg -Card $border
     $dlg.ShowDialog() | Out-Null
 }
 
@@ -4331,7 +4350,7 @@ function Show-DATTelemetryInviteModal {
     $panel.Children.Add($buttonRow) | Out-Null
 
     $border.Child = $panel
-    $dlg.Content = $border
+    Set-DATDialogCard -Dialog $dlg -Card $border
     $dlg.ShowDialog() | Out-Null
 }
 
@@ -4523,7 +4542,7 @@ function Show-DATBiosNameRepairModal {
     $panel.Children.Add($btnClose) | Out-Null
 
     $border.Child = $panel
-    $dlg.Content = $border
+    Set-DATDialogCard -Dialog $dlg -Card $border
 
     # Run repair in a background runspace after dialog is loaded
     $repairState = [hashtable]::Synchronized(@{
@@ -4750,7 +4769,7 @@ function Show-DATCustomDriverDialog {
         BlurRadius = 30; Opacity = 0.4; ShadowDepth = 0
         Color = [System.Windows.Media.Colors]::Black
     }
-    $dlg.Content = $border
+    Set-DATDialogCard -Dialog $dlg -Card $border
 
     $panel = [System.Windows.Controls.StackPanel]::new()
     $border.Child = $panel
@@ -5023,7 +5042,7 @@ function Show-DATEntraGroupSearchDialog {
         BlurRadius = 30; Opacity = 0.4; ShadowDepth = 0
         Color = [System.Windows.Media.Colors]::Black
     }
-    $dlg.Content = $outerBorder
+    Set-DATDialogCard -Dialog $dlg -Card $outerBorder
 
     # Merge theme brushes + the app's pill ComboBox styles so the filter dropdown matches the theme.
     $entraDlgResources = Get-DATThemeResourceDictionary -ThemeName $script:CurrentTheme
@@ -5993,7 +6012,7 @@ function Show-DATPackageRetentionModal {
     $panel.Children.Add($btnClose) | Out-Null
 
     $border.Child  = $panel
-    $dlg.Content   = $border
+    Set-DATDialogCard -Dialog $dlg -Card $border
 
     # Run retention in a background runspace so the UI stays responsive
     $dlg.Add_ContentRendered({
@@ -6471,7 +6490,7 @@ function Show-DATCustomBuildCompleteDialog {
 
     $panel.Children.Add($btnGrid) | Out-Null
     $border.Child = $panel
-    $dlg.Content = $border
+    Set-DATDialogCard -Dialog $dlg -Card $border
 
     $dlg.ShowDialog() | Out-Null
 }
@@ -7439,7 +7458,7 @@ function Show-DATBuildProgressModal {
     $outerPanel.Children.Add($buildButtons) | Out-Null
 
     $border.Child = $outerPanel
-    $dlg.Content = $border
+    Set-DATDialogCard -Dialog $dlg -Card $border
 
     # Allow dragging
     $border.Add_MouseLeftButtonDown({
@@ -8397,6 +8416,99 @@ foreach ($navKey in $navMap.Keys) {
         $navName = $navKey
         $btn.Add_Click([scriptblock]::Create("Set-DATActiveView -ViewName '$viewTarget' -NavButtonName '$navName'"))
     }
+}
+
+# ---- Collapsible sidebar ----------------------------------------------------------------------
+# The sidebar collapses to an icon-only rail. Its nav items, section headers and footer text read
+# their layout from a few window resources (label visibility, item padding, sub-item indent, content
+# alignment), so swapping those collapses the whole sidebar at once. Collapsed, each item shows its
+# name as a tooltip; sub-items include their group, as ConfigMgr and Intune both have an Environment.
+$script:SidebarWidths = @{ Expanded = 220; Collapsed = 68 }
+$script:SidebarState = [hashtable]::Synchronized(@{ Collapsed = $false; Tooltips = @{} })
+
+function Initialize-DATSidebarTooltips {
+    $labelStyle = $Window.FindResource('NavLabel')
+    foreach ($name in @($allNavButtons) + @($subNavButtons)) {
+        $btn = $Window.FindName($name)
+        if ($null -eq $btn -or $btn.Content -isnot [System.Windows.Controls.Panel]) { continue }
+        $label = @($btn.Content.Children | Where-Object { $_ -is [System.Windows.Controls.TextBlock] -and [object]::ReferenceEquals($_.Style, $labelStyle) }) | Select-Object -First 1
+        if ($null -eq $label) { continue }
+        $text = $label.Text
+        if ([object]::ReferenceEquals($btn.Parent, $configMgrSubPanel)) { $text = "ConfigMgr Settings: $text" }
+        elseif ([object]::ReferenceEquals($btn.Parent, $intuneSubPanel)) { $text = "Intune Settings: $text" }
+        $script:SidebarState.Tooltips[$name] = $text
+        [System.Windows.Controls.ToolTipService]::SetPlacement($btn, [System.Windows.Controls.Primitives.PlacementMode]::Right)
+        [System.Windows.Controls.ToolTipService]::SetInitialShowDelay($btn, 250)
+    }
+}
+
+function Set-DATSidebarCollapsed {
+    param(
+        [Parameter(Mandatory)][bool]$Collapsed,
+        [switch]$Animate
+    )
+    $script:SidebarState.Collapsed = $Collapsed
+    $res = $Window.Resources
+    if ($Collapsed) {
+        $res['NavLabelVisibility']     = [System.Windows.Visibility]::Collapsed
+        $res['NavCollapsedVisibility'] = [System.Windows.Visibility]::Visible
+        $res['NavContentAlignment']    = [System.Windows.HorizontalAlignment]::Center
+        $res['NavItemPadding']         = [System.Windows.Thickness]::new(0, 10, 0, 10)
+        $res['SubNavItemPadding']      = [System.Windows.Thickness]::new(0, 8, 0, 8)
+        $res['SubNavItemMargin']       = [System.Windows.Thickness]::new(4, 1, 4, 1)
+    } else {
+        $res['NavLabelVisibility']     = [System.Windows.Visibility]::Visible
+        $res['NavCollapsedVisibility'] = [System.Windows.Visibility]::Collapsed
+        $res['NavContentAlignment']    = [System.Windows.HorizontalAlignment]::Left
+        $res['NavItemPadding']         = [System.Windows.Thickness]::new(14, 10, 14, 10)
+        $res['SubNavItemPadding']      = [System.Windows.Thickness]::new(14, 8, 14, 8)
+        $res['SubNavItemMargin']       = [System.Windows.Thickness]::new(20, 1, 4, 1)
+    }
+
+    # Logo shrinks to an icon; the toggle centres under the rail and points the other way
+    $img_Logo.Height = if ($Collapsed) { 36 } else { 120 }
+    $img_Logo.Margin = if ($Collapsed) { [System.Windows.Thickness]::new(0, 0, 0, 10) } else { [System.Windows.Thickness]::new(0, 0, 0, 16) }
+    $bd_SidebarLogo.Padding = if ($Collapsed) { [System.Windows.Thickness]::new(10, 14, 10, 4) } else { [System.Windows.Thickness]::new(16, 16, 16, 8) }
+    $bd_SidebarFooter.Padding = if ($Collapsed) { [System.Windows.Thickness]::new(10, 8, 10, 10) } else { [System.Windows.Thickness]::new(16, 8, 10, 10) }
+    $zone_SidebarToggle.HorizontalAlignment = if ($Collapsed) { 'Center' } else { 'Right' }
+    $btn_SidebarToggle.Content = if ($Collapsed) { [string][char]0xE76C } else { [string][char]0xE76B }
+    $toggleTip = if ($Collapsed) { 'Expand the menu' } else { 'Collapse the menu to icons' }
+    $btn_SidebarToggle.ToolTip = $toggleTip
+    [System.Windows.Automation.AutomationProperties]::SetName($btn_SidebarToggle, $toggleTip)
+
+    # Names show as tooltips only while the labels are hidden
+    foreach ($name in @($script:SidebarState.Tooltips.Keys)) {
+        $btn = $Window.FindName($name)
+        if ($null -ne $btn) { $btn.ToolTip = if ($Collapsed) { $script:SidebarState.Tooltips[$name] } else { $null } }
+    }
+
+    $width = if ($Collapsed) { $script:SidebarWidths.Collapsed } else { $script:SidebarWidths.Expanded }
+    if ($Animate) {
+        $anim = New-Object System.Windows.Media.Animation.DoubleAnimation
+        $anim.From = $bd_Sidebar.ActualWidth
+        $anim.To = $width
+        $anim.Duration = [System.Windows.Duration]::new([TimeSpan]::FromMilliseconds(160))
+        $ease = New-Object System.Windows.Media.Animation.QuadraticEase
+        $ease.EasingMode = [System.Windows.Media.Animation.EasingMode]::EaseInOut
+        $anim.EasingFunction = $ease
+        $bd_Sidebar.BeginAnimation([System.Windows.FrameworkElement]::WidthProperty, $anim)
+    } else {
+        $bd_Sidebar.BeginAnimation([System.Windows.FrameworkElement]::WidthProperty, $null)
+        $bd_Sidebar.Width = $width
+    }
+}
+
+if ($null -ne $bd_Sidebar -and $null -ne $btn_SidebarToggle) {
+    try {
+        Initialize-DATSidebarTooltips
+        $savedSidebar = (Get-ItemProperty -Path $global:RegPath -Name 'SidebarCollapsed' -ErrorAction SilentlyContinue).SidebarCollapsed
+        if ([int]$savedSidebar -eq 1) { Set-DATSidebarCollapsed -Collapsed $true }
+        $btn_SidebarToggle.Add_Click({
+            $collapse = -not $script:SidebarState.Collapsed
+            Set-DATSidebarCollapsed -Collapsed $collapse -Animate
+            Set-DATRegistryValue -Name 'SidebarCollapsed' -Value ([int]$collapse) -Type DWord
+        })
+    } catch { Write-DATActivityLog "Sidebar collapse init failed: $($_.Exception.Message)" -Level Warn }
 }
 
 #endregion Navigation
@@ -11538,6 +11650,13 @@ $btn_Build.Add_Click({
         return
     }
 
+    # Pre-flight: Intune packages and ConfigMgr applications generate an install script from the
+    # tool's templates, and packaging refuses templates other accounts can change. Catch that here,
+    # before the download / extract / WIM capture, instead of after them.
+    $pfGeneratesScripts = ($buildPlatform -eq 'Intune') -or
+        ($buildPlatform -eq 'Configuration Manager' -and $null -ne $chk_CreateConfigMgrApplication -and $chk_CreateConfigMgrApplication.IsChecked -eq $true)
+    if ($pfGeneratesScripts -and -not (Confirm-DATTemplatePermissionsPreflight -Activity 'build')) { return }
+
     # Pre-flight: check for paths that may exceed MAX_PATH (260 chars)
     $pfSelectedOSes = Get-DATSelectedOSes
     $pfSelectedOS = if ($pfSelectedOSes.Count -gt 0) { $pfSelectedOSes[0] } else { 'Windows 11' }
@@ -12269,12 +12388,11 @@ $btn_Build.Add_Click({
             if ($isNoMatch) {
                 # BIOS-only build with no catalog matches -- show warning amber state
                 $theme = Get-DATTheme -ThemeName $script:CurrentTheme
-                $pill_BuildStatus.Background = [System.Windows.Media.SolidColorBrush]::new(
-                    [System.Windows.Media.ColorConverter]::ConvertFromString($theme['StatusWarning']))
+                $pill_BuildStatus.SetResourceReference([System.Windows.Controls.Border]::BackgroundProperty, 'ButtonWarning')
                 $txt_BuildStatusIcon.Text = [string][char]0xE7BA  # Warning icon
-                $txt_BuildStatusIcon.Foreground = [System.Windows.Media.Brushes]::Black
+                $txt_BuildStatusIcon.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty, 'ButtonWarningForeground')
                 $txt_BuildStatusText.Text = "No Match"
-                $txt_BuildStatusText.Foreground = [System.Windows.Media.Brushes]::Black
+                $txt_BuildStatusText.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty, 'ButtonWarningForeground')
                 $txt_Status.Foreground = [System.Windows.Media.SolidColorBrush]::new(
                     [System.Windows.Media.ColorConverter]::ConvertFromString($theme['StatusWarning']))
                 $txt_Status.Tag = 'StatusWarning'
@@ -12291,14 +12409,18 @@ $btn_Build.Add_Click({
                         (Get-DATTheme -ThemeName $script:CurrentTheme)['StatusError']))
                 $txt_Status.Tag = 'StatusError'
             } else {
-                $successKey = if ($createWinOnlyActive) { 'StatusWarning' } else { 'ButtonSuccess' }
-                $pill_BuildStatus.Background = [System.Windows.Media.SolidColorBrush]::new(
-                    [System.Windows.Media.ColorConverter]::ConvertFromString(
-                        (Get-DATTheme -ThemeName $script:CurrentTheme)[$successKey]))
+                # Built-not-uploaded uses the warning button colours, whose text colour suits the amber
+                $successKey = if ($createWinOnlyActive) { 'ButtonWarning' } else { 'ButtonSuccess' }
+                $pill_BuildStatus.SetResourceReference([System.Windows.Controls.Border]::BackgroundProperty, $successKey)
                 $txt_BuildStatusIcon.Text = if ($createWinOnlyActive) { [string][char]0xE896 } else { [string][char]0xE73E }
-                $txt_BuildStatusIcon.Foreground = [System.Windows.Media.Brushes]::White
                 $txt_BuildStatusText.Text = if ($createWinOnlyActive) { "Built (not uploaded)" } else { "Succeeded" }
-                $txt_BuildStatusText.Foreground = [System.Windows.Media.Brushes]::White
+                if ($createWinOnlyActive) {
+                    $txt_BuildStatusIcon.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty, 'ButtonWarningForeground')
+                    $txt_BuildStatusText.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty, 'ButtonWarningForeground')
+                } else {
+                    $txt_BuildStatusIcon.Foreground = [System.Windows.Media.Brushes]::White
+                    $txt_BuildStatusText.Foreground = [System.Windows.Media.Brushes]::White
+                }
                 $statusFgKey = if ($createWinOnlyActive) { 'StatusWarning' } else { 'StatusSuccess' }
                 $txt_Status.Foreground = [System.Windows.Media.SolidColorBrush]::new(
                     [System.Windows.Media.ColorConverter]::ConvertFromString(
@@ -12846,14 +12968,14 @@ function Invoke-DATConfigMgrConnect {
     param ([string]$SiteServer, [bool]$UseSSL)
 
     if ([string]::IsNullOrEmpty($SiteServer)) {
-        $txt_SiteCode.Foreground = $Window.FindResource('StatusWarning')
+        $txt_SiteCode.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'StatusWarning')
         $txt_SiteCode.Text = "Please enter a site server."
         Reset-DATSiteServerInfoPanel
         return
     }
 
     # Show attempting status
-    $txt_SiteCode.Foreground = $Window.FindResource('StatusInfo')
+    $txt_SiteCode.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'StatusInfo')
     $txt_SiteCode.Text = "Attempting connection..."
     Reset-DATSiteServerInfoPanel
     # Clear stale connection globals before attempting new connection
@@ -12869,7 +12991,7 @@ function Invoke-DATConfigMgrConnect {
     try {
         Connect-DATConfigMgr -SiteServer $SiteServer | Out-Null
         if (-not [string]::IsNullOrEmpty($global:SiteCode)) {
-            $txt_SiteCode.Foreground = $Window.FindResource('StatusSuccess')
+            $txt_SiteCode.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'StatusSuccess')
             $txt_SiteCode.Text = "Connected - Site Code: $($global:SiteCode)"
             Set-DATRegistryValue -Name "SiteServer" -Value $SiteServer -Type String
             Set-DATRegistryValue -Name "WinRMSSL" -Value ([int]$UseSSL) -Type DWord
@@ -13062,11 +13184,11 @@ function Invoke-DATConfigMgrConnect {
             # Inventory class check is a read-only diagnostic -- available whenever connected.
             if ($null -ne $btn_CheckInventoryClasses) { $btn_CheckInventoryClasses.IsEnabled = $true }
         } else {
-            $txt_SiteCode.Foreground = $Window.FindResource('StatusWarning')
+            $txt_SiteCode.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'StatusWarning')
             $txt_SiteCode.Text = "Connection failed - no site code returned."
         }
     } catch {
-        $txt_SiteCode.Foreground = $Window.FindResource('StatusError')
+        $txt_SiteCode.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'StatusError')
         $txt_SiteCode.Text = "Error: $($_.Exception.Message)"
     }
 }
@@ -13445,7 +13567,7 @@ function Show-DATConfigMgrKnownModelsDialog {
     $mainPanel.Children.Add($footerGrid) | Out-Null
 
     $border.Child = $mainPanel
-    $dlg.Content = $border
+    Set-DATDialogCard -Dialog $dlg -Card $border
 
     $dlg.ShowDialog() | Out-Null
 }
@@ -13453,7 +13575,7 @@ function Show-DATConfigMgrKnownModelsDialog {
 $chk_KnownModels.Add_Checked({
     Set-DATRegistryValue -Name 'KnownModelsOnly' -Value 1 -Type DWord
     $txt_KnownModelsState.Text = 'On'
-    $txt_KnownModelsState.Foreground = $Window.FindResource('AccentColor')
+    $txt_KnownModelsState.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'AccentColor')
     Update-DATSelectKnownModelsVisibility
     if (-not [string]::IsNullOrEmpty($global:SiteCode)) {
         $btn_ConfigMgrKnownModelLookup.IsEnabled = $true
@@ -13463,7 +13585,7 @@ $chk_KnownModels.Add_Checked({
 $chk_KnownModels.Add_Unchecked({
     Set-DATRegistryValue -Name 'KnownModelsOnly' -Value 0 -Type DWord
     $txt_KnownModelsState.Text = 'Off'
-    $txt_KnownModelsState.Foreground = $Window.FindResource('InputPlaceholder')
+    $txt_KnownModelsState.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'InputPlaceholder')
     $btn_ConfigMgrKnownModelLookup.IsEnabled = $false
     $btn_ConfigMgrViewModels.IsEnabled = $false
     Update-DATSelectKnownModelsVisibility
@@ -13522,7 +13644,7 @@ function Show-DATInventoryClassResults {
         if (-not [string]::IsNullOrWhiteSpace($class.Detail)) {
             [void]$text.Inlines.Add([System.Windows.Documents.LineBreak]::new())
             $detailRun = [System.Windows.Documents.Run]::new($class.Detail)
-            $detailRun.Foreground = $Window.FindResource('InputPlaceholder')
+            $detailRun.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'InputPlaceholder')
             [void]$text.Inlines.Add($detailRun)
         }
         [void]$row.Children.Add($text)
@@ -13861,7 +13983,7 @@ function Invoke-DATIntuneKnownModelLookup {
 $chk_IntuneKnownModels.Add_Checked({
     Set-DATRegistryValue -Name 'IntuneKnownModelsOnly' -Value 1 -Type DWord
     $txt_IntuneKnownModelsState.Text = 'On'
-    $txt_IntuneKnownModelsState.Foreground = $Window.FindResource('AccentColor')
+    $txt_IntuneKnownModelsState.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'AccentColor')
     Update-DATSelectKnownModelsVisibility
     if (Test-DATIntuneAuth) {
         $btn_IntuneKnownModelLookup.IsEnabled = $true
@@ -13871,7 +13993,7 @@ $chk_IntuneKnownModels.Add_Checked({
 $chk_IntuneKnownModels.Add_Unchecked({
     Set-DATRegistryValue -Name 'IntuneKnownModelsOnly' -Value 0 -Type DWord
     $txt_IntuneKnownModelsState.Text = 'Off'
-    $txt_IntuneKnownModelsState.Foreground = $Window.FindResource('InputPlaceholder')
+    $txt_IntuneKnownModelsState.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'InputPlaceholder')
     $btn_IntuneKnownModelLookup.IsEnabled = $false
     $btn_IntuneViewModels.IsEnabled = $false
     Update-DATSelectKnownModelsVisibility
@@ -14079,7 +14201,7 @@ function Show-DATIntuneKnownModelsDialog {
     $mainPanel.Children.Add($footerGrid) | Out-Null
 
     $border.Child = $mainPanel
-    $dlg.Content = $border
+    Set-DATDialogCard -Dialog $dlg -Card $border
 
     $dlg.ShowDialog() | Out-Null
 }
@@ -14180,13 +14302,13 @@ $txt_CreateConfigMgrApplicationState = $Window.FindName('txt_CreateConfigMgrAppl
 $chk_CreateConfigMgrApplication.Add_Checked({
     Set-DATRegistryValue -Name 'CreateConfigMgrApplication' -Value 1 -Type DWord
     $txt_CreateConfigMgrApplicationState.Text = 'On'
-    $txt_CreateConfigMgrApplicationState.Foreground = $Window.FindResource('AccentColor')
+    $txt_CreateConfigMgrApplicationState.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'AccentColor')
     Write-DATActivityLog 'ConfigMgr Applications: enabled (toast notifications for ConfigMgr deployments)' -Level Info
 })
 $chk_CreateConfigMgrApplication.Add_Unchecked({
     Set-DATRegistryValue -Name 'CreateConfigMgrApplication' -Value 0 -Type DWord
     $txt_CreateConfigMgrApplicationState.Text = 'Off'
-    $txt_CreateConfigMgrApplicationState.Foreground = $Window.FindResource('InputPlaceholder')
+    $txt_CreateConfigMgrApplicationState.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'InputPlaceholder')
     Write-DATActivityLog 'ConfigMgr Applications: disabled' -Level Info
 })
 
@@ -14218,12 +14340,12 @@ $txt_ReminderInterval.Add_LostFocus({
 $chk_BinaryDiffReplication.Add_Checked({
     Set-DATRegistryValue -Name 'BinaryDiffReplication' -Value 1 -Type DWord
     $txt_BdrState.Text = 'On'
-    $txt_BdrState.Foreground = $Window.FindResource('AccentColor')
+    $txt_BdrState.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'AccentColor')
 })
 $chk_BinaryDiffReplication.Add_Unchecked({
     Set-DATRegistryValue -Name 'BinaryDiffReplication' -Value 0 -Type DWord
     $txt_BdrState.Text = 'Off'
-    $txt_BdrState.Foreground = $Window.FindResource('InputPlaceholder')
+    $txt_BdrState.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'InputPlaceholder')
 })
 $cmb_DistPriority.Add_SelectionChanged({
     if ($null -ne $cmb_DistPriority.SelectedItem) {
@@ -14332,14 +14454,14 @@ if ($null -ne $chk_XmlLogicCreatePackage) {
             $txt_XmlLogicCreatePackageState.Text = 'Create & distribute as package'
             # AccentTextColor is tuned for readable accent text on card backgrounds in both themes
             # (base AccentColor is too dim as text on the dark card surface).
-            $txt_XmlLogicCreatePackageState.Foreground = $Window.FindResource('AccentTextColor')
+            $txt_XmlLogicCreatePackageState.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'AccentTextColor')
         }
     })
     $chk_XmlLogicCreatePackage.Add_Unchecked({
         Set-DATRegistryValue -Name 'XmlLogicCreatePackage' -Value 0 -Type DWord
         if ($null -ne $txt_XmlLogicCreatePackageState) {
             $txt_XmlLogicCreatePackageState.Text = 'Write XML file only'
-            $txt_XmlLogicCreatePackageState.Foreground = $Window.FindResource('InputPlaceholder')
+            $txt_XmlLogicCreatePackageState.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'InputPlaceholder')
         }
     })
 
@@ -14352,7 +14474,7 @@ if ($null -ne $chk_XmlLogicCreatePackage) {
     elseif ($null -ne $txt_XmlLogicCreatePackageState) {
         # Value absent or 0 -- ensure the "off" label is shown.
         $txt_XmlLogicCreatePackageState.Text = 'Write XML file only'
-        $txt_XmlLogicCreatePackageState.Foreground = $Window.FindResource('InputPlaceholder')
+        $txt_XmlLogicCreatePackageState.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'InputPlaceholder')
     }
 }
 
@@ -14361,7 +14483,7 @@ if ($null -ne $btn_GenerateXmlLogicPackage) {
         # Validate ConfigMgr connection
         if ([string]::IsNullOrEmpty($global:SiteServer) -or [string]::IsNullOrEmpty($global:SiteCode)) {
             $txt_XmlLogicStatus.Text = 'Connect to a ConfigMgr site server first (ConfigMgr > Environment).'
-            $txt_XmlLogicStatus.Foreground = $Window.FindResource('StatusWarning')
+            $txt_XmlLogicStatus.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'StatusWarning')
             return
         }
 
@@ -14370,7 +14492,7 @@ if ($null -ne $btn_GenerateXmlLogicPackage) {
         $pkgStoragePath = if ($regConfig -and -not [string]::IsNullOrEmpty($regConfig.PackageStoragePath)) { $regConfig.PackageStoragePath } else { $null }
         if ([string]::IsNullOrEmpty($pkgStoragePath)) {
             $txt_XmlLogicStatus.Text = 'Set a package storage path in Common Settings first.'
-            $txt_XmlLogicStatus.Foreground = $Window.FindResource('StatusWarning')
+            $txt_XmlLogicStatus.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'StatusWarning')
             return
         }
 
@@ -14383,7 +14505,7 @@ if ($null -ne $btn_GenerateXmlLogicPackage) {
 
         $btn_GenerateXmlLogicPackage.IsEnabled = $false
         $txt_XmlLogicStatus.Text = 'Generating XML Logic Package (Drivers + BIOS)...'
-        $txt_XmlLogicStatus.Foreground = $Window.FindResource('InputPlaceholder')
+        $txt_XmlLogicStatus.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'InputPlaceholder')
 
         # Run generation in a background runspace to keep the UI responsive. State and timer
         # MUST be script-scoped: a DispatcherTimer Tick handler runs in its own scope and cannot
@@ -14446,11 +14568,11 @@ if ($null -ne $btn_GenerateXmlLogicPackage) {
                     switch ($r.Status) {
                         'NoPackages' {
                             $txt_XmlLogicStatus.Text = 'No matching driver or BIOS packages found in ConfigMgr.'
-                            $txt_XmlLogicStatus.Foreground = $Window.FindResource('StatusWarning')
+                            $txt_XmlLogicStatus.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'StatusWarning')
                         }
                         'Failed' {
                             $txt_XmlLogicStatus.Text = "Failed: $($r.Error)"
-                            $txt_XmlLogicStatus.Foreground = $Window.FindResource('StatusError')
+                            $txt_XmlLogicStatus.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'StatusError')
                         }
                         default {
                             $scopeLabel = switch ($r.PackageScope) {
@@ -14460,7 +14582,7 @@ if ($null -ne $btn_GenerateXmlLogicPackage) {
                             }
                             $pkgNote = if ($r.PackageID) { " | Package $($r.PackageID) ($($r.Status))" } else { '' }
                             $txt_XmlLogicStatus.Text = "Done. $($r.PackageCount) package(s) [$scopeLabel] written to DriverPackages.xml$pkgNote"
-                            $txt_XmlLogicStatus.Foreground = $Window.FindResource('StatusSuccess')
+                            $txt_XmlLogicStatus.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'StatusSuccess')
                             if ($r.PackageID) {
                                 if ($null -ne $txt_XmlLogicPackageName) { $txt_XmlLogicPackageName.Text = 'Driver Automation Tool XML Package' }
                                 if ($null -ne $txt_XmlLogicPackageId) { $txt_XmlLogicPackageId.Text = [string]$r.PackageID }
@@ -14472,7 +14594,7 @@ if ($null -ne $btn_GenerateXmlLogicPackage) {
                     }
                 } else {
                     $txt_XmlLogicStatus.Text = "Failed: $($script:XmlLogicState.Error)"
-                    $txt_XmlLogicStatus.Foreground = $Window.FindResource('StatusError')
+                    $txt_XmlLogicStatus.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'StatusError')
                 }
             }
         })
@@ -14490,13 +14612,13 @@ $panel_DeleteSourceWarning = $Window.FindName('panel_DeleteSourceWarning')
 $chk_DeleteSourceFolder.Add_Checked({
     Set-DATRegistryValue -Name 'DeleteSourceFolderOnRemoval' -Value 1 -Type DWord
     $txt_DeleteSourceFolderState.Text = 'On'
-    $txt_DeleteSourceFolderState.Foreground = $Window.FindResource('StatusWarning')
+    $txt_DeleteSourceFolderState.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'StatusWarning')
     $panel_DeleteSourceWarning.Visibility = 'Visible'
 })
 $chk_DeleteSourceFolder.Add_Unchecked({
     Set-DATRegistryValue -Name 'DeleteSourceFolderOnRemoval' -Value 0 -Type DWord
     $txt_DeleteSourceFolderState.Text = 'Off'
-    $txt_DeleteSourceFolderState.Foreground = $Window.FindResource('InputPlaceholder')
+    $txt_DeleteSourceFolderState.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'InputPlaceholder')
     $panel_DeleteSourceWarning.Visibility = 'Collapsed'
 })
 
@@ -15042,7 +15164,7 @@ function Show-DATConsoleFolderBrowseDialog {
         $iPanel.Children.Add($iBtnPanel) | Out-Null
 
         $iBorder.Child = $iPanel
-        $inputDlg.Content = $iBorder
+        Set-DATDialogCard -Dialog $inputDlg -Card $iBorder
 
         # Select all text on load
         $inputDlg.Add_ContentRendered({ $iTextBox.SelectAll(); $iTextBox.Focus() })
@@ -15110,7 +15232,7 @@ function Show-DATConsoleFolderBrowseDialog {
     }.GetNewClosure())
 
     $border.Child = $mainPanel
-    $dlg.Content = $border
+    Set-DATDialogCard -Dialog $dlg -Card $border
 
     # Select button click
     $btnSelect.Add_Click({
@@ -15291,7 +15413,7 @@ $grid_Packages.Add_PreviewKeyDown({
 
 function Invoke-DATPackageRefresh {
     if ([string]::IsNullOrEmpty($global:SiteCode) -or [string]::IsNullOrEmpty($global:SiteServer)) {
-        $txt_PkgStatus.Foreground = $Window.FindResource('StatusWarning')
+        $txt_PkgStatus.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'StatusWarning')
         $txt_PkgStatus.Text = "Not connected to ConfigMgr. Please connect first."
         $txt_PkgStatus.Visibility = 'Visible'
         Write-DATLogEntry -Value "[Warning] - Not connected to ConfigMgr. Cannot refresh packages." -Severity 2
@@ -15337,7 +15459,7 @@ function Invoke-DATPackageRefresh {
     }
     $displayLabel = if ($stateInfix) { "$pkgType ($deployState)" } else { $pkgType }
 
-    $txt_PkgStatus.Foreground = $Window.FindResource('StatusInfo')
+    $txt_PkgStatus.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'StatusInfo')
     $txt_PkgStatus.Text = "Querying $displayLabel packages..."
     $txt_PkgStatus.Visibility = 'Visible'
     $btn_RefreshPkgs.IsEnabled = $false
@@ -15430,7 +15552,7 @@ function Invoke-DATPackageRefresh {
                 # Check for error object
                 $errorResult = $results | Where-Object { $_ -is [PSCustomObject] -and $_._Error }
                 if ($errorResult) {
-                    $txt_PkgStatus.Foreground = $Window.FindResource('StatusError')
+                    $txt_PkgStatus.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'StatusError')
                     $txt_PkgStatus.Text = "Error: $($errorResult._Error)"
                     Write-DATLogEntry -Value "[Error] - Failed to query packages: $($errorResult._Error)" -Severity 3
                 } else {
@@ -15441,7 +15563,7 @@ function Invoke-DATPackageRefresh {
                     }
 
                     $label = $script:PkgRefreshDisplayLabel
-                    $txt_PkgStatus.Foreground = $Window.FindResource('StatusSuccess')
+                    $txt_PkgStatus.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'StatusSuccess')
                     $txt_PkgStatus.Text = "Loaded $($script:PackageData.Count) $label package$(if ($script:PackageData.Count -ne 1) { 's' })"
                     Write-DATLogEntry -Value "- Loaded $($script:PackageData.Count) packages matching '$label'" -Severity 1
 
@@ -15467,7 +15589,7 @@ function Invoke-DATPackageRefresh {
                     $cmb_CmPkgOS.SelectedItem = if ($restore) { $restore } else { $cmb_CmPkgOS.Items[0] }
                 }
             } catch {
-                $txt_PkgStatus.Foreground = $Window.FindResource('StatusError')
+                $txt_PkgStatus.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'StatusError')
                 $txt_PkgStatus.Text = "Error: $($_.Exception.Message)"
                 Write-DATLogEntry -Value "[Error] - Failed to query packages: $($_.Exception.Message)" -Severity 3
             } finally {
@@ -15589,7 +15711,7 @@ $grid_Packages.Add_CurrentCellChanged({
 $btn_CmDeleteSelected.Add_Click({
     $selectedPkgs = @($script:PackageData | Where-Object { $_.Selected -eq $true })
     if ($selectedPkgs.Count -eq 0) {
-        $txt_PkgStatus.Foreground = $Window.FindResource('StatusWarning')
+        $txt_PkgStatus.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'StatusWarning')
         $txt_PkgStatus.Text = "No packages selected."
         $txt_PkgStatus.Visibility = 'Visible'
         return
@@ -15744,7 +15866,7 @@ $btn_CmDeleteSelected.Add_Click({
     $panel.Children.Add($script:cmDeleteCancelBtn) | Out-Null
 
     $border.Child = $panel
-    $script:cmDeleteModal.Content = $border
+    Set-DATDialogCard -Dialog $script:cmDeleteModal -Card $border
 
     # Synchronized state for background runspace communication
     $script:cmDeleteState = [hashtable]::Synchronized(@{
@@ -16063,13 +16185,13 @@ $btn_CmReportIssue.Add_Click({
     if (Test-DATPackageReported -Make $make -Model $model -Version $ver) {
         Remove-DATReportedIssue -Make $make -Model $model -Version $ver
         Write-DATActivityLog "Cleared issue report: $make $model v$ver" -Level Info
-        $txt_PkgStatus.Foreground = $Window.FindResource('StatusInfo')
+        $txt_PkgStatus.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'StatusInfo')
         $txt_PkgStatus.Text = "Issue report cleared for: $($selected.Name)"
         $txt_PkgStatus.Visibility = 'Visible'
     } else {
         Add-DATReportedIssue -Make $make -Model $model -Version $ver
         Write-DATActivityLog "Reported issue: $make $model v$ver" -Level Warn
-        $txt_PkgStatus.Foreground = $Window.FindResource('StatusWarning')
+        $txt_PkgStatus.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'StatusWarning')
         $txt_PkgStatus.Text = "Issue reported for: $($selected.Name)"
         $txt_PkgStatus.Visibility = 'Visible'
     }
@@ -16134,7 +16256,7 @@ $btn_CmDeletePackage.Add_Click({
                 }
             }
 
-            $txt_PkgStatus.Foreground = $Window.FindResource('StatusSuccess')
+            $txt_PkgStatus.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'StatusSuccess')
             $txt_PkgStatus.Text = "Deleted: $($selected.Name)"
             $txt_PkgStatus.Visibility = 'Visible'
             $panel_PkgDetails.Visibility = 'Collapsed'
@@ -16148,7 +16270,7 @@ $btn_CmDeletePackage.Add_Click({
     } catch {
         Write-DATActivityLog "Failed to delete package: $($_.Exception.Message)" -Level Error
         Write-DATLogEntry -Value "[Error] - Failed to delete package $($selected.PackageID): $($_.Exception.Message)" -Severity 3
-        $txt_PkgStatus.Foreground = $Window.FindResource('StatusError')
+        $txt_PkgStatus.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'StatusError')
         $txt_PkgStatus.Text = "Failed to delete: $($_.Exception.Message)"
         $txt_PkgStatus.Visibility = 'Visible'
     }
@@ -16388,7 +16510,7 @@ function Show-DATChangeOSTargetDialog {
 
     $panel.Children.Add($btnGrid) | Out-Null
     $border.Child = $panel
-    $dlg.Content = $border
+    Set-DATDialogCard -Dialog $dlg -Card $border
 
     $dlg.ShowDialog() | Out-Null
     return $script:osTargetResult
@@ -16401,7 +16523,7 @@ $cmb_PkgAction.Add_SelectionChanged({
     # Get checked packages
     $selectedPkgs = @($script:PackageData | Where-Object { $_.Selected -eq $true })
     if ($selectedPkgs.Count -eq 0) {
-        $txt_PkgStatus.Foreground = $Window.FindResource('StatusWarning')
+        $txt_PkgStatus.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'StatusWarning')
         $txt_PkgStatus.Text = "No packages selected. Please check one or more packages first."
         $txt_PkgStatus.Visibility = 'Visible'
         $cmb_PkgAction.SelectedIndex = -1
@@ -16448,13 +16570,13 @@ $cmb_PkgAction.Add_SelectionChanged({
         }
 
         if ($failCount -eq 0 -and $successCount -gt 0) {
-            $txt_PkgStatus.Foreground = $Window.FindResource('StatusSuccess')
+            $txt_PkgStatus.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'StatusSuccess')
             $txt_PkgStatus.Text = "Renamed $successCount package$(if ($successCount -ne 1) { 's' }) to target $newOS"
         } elseif ($successCount -gt 0) {
-            $txt_PkgStatus.Foreground = $Window.FindResource('StatusWarning')
+            $txt_PkgStatus.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'StatusWarning')
             $txt_PkgStatus.Text = "Renamed $successCount package$(if ($successCount -ne 1) { 's' }), $failCount failed"
         } else {
-            $txt_PkgStatus.Foreground = $Window.FindResource('StatusError')
+            $txt_PkgStatus.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'StatusError')
             $txt_PkgStatus.Text = "No packages were renamed"
         }
     }
@@ -16509,13 +16631,13 @@ $cmb_PkgAction.Add_SelectionChanged({
         }
 
         if ($failCount -eq 0 -and $successCount -gt 0) {
-            $txt_PkgStatus.Foreground = $Window.FindResource('StatusSuccess')
+            $txt_PkgStatus.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'StatusSuccess')
             $txt_PkgStatus.Text = "Moved $successCount package$(if ($successCount -ne 1) { 's' }) to $targetState"
         } elseif ($successCount -gt 0) {
-            $txt_PkgStatus.Foreground = $Window.FindResource('StatusWarning')
+            $txt_PkgStatus.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'StatusWarning')
             $txt_PkgStatus.Text = "Moved $successCount package$(if ($successCount -ne 1) { 's' }) to $targetState, $failCount failed"
         } else {
-            $txt_PkgStatus.Foreground = $Window.FindResource('StatusError')
+            $txt_PkgStatus.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'StatusError')
             $txt_PkgStatus.Text = "No packages were moved"
         }
     }
@@ -16638,7 +16760,7 @@ $ctx_PkgAddCustomDrivers.Add_Click({
         Name      = $selectedPkg.Name
     }
     Write-DATActivityLog "Adding custom drivers from $driverPath to $($selectedPkg.Name) ($($selectedPkg.PackageID))" -Level Info
-    $txt_PkgStatus.Foreground = $Window.FindResource('InputPlaceholder')
+    $txt_PkgStatus.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'InputPlaceholder')
     $txt_PkgStatus.Text = "Adding custom drivers to $($selectedPkg.PackageID)..."
     $txt_PkgStatus.Visibility = 'Visible'
 
@@ -16661,7 +16783,7 @@ $ctx_PkgAddCustomDrivers.Add_Click({
         if ($null -ne $outcome -and $outcome.Ok) {
             $r = $outcome.Result
             $where = if ($r.Mode -eq 'Wim') { "DriverPackage.wim ($($r.TargetFolder))" } else { "the package source folder ($($r.TargetFolder))" }
-            $txt_PkgStatus.Foreground = $Window.FindResource('StatusSuccess')
+            $txt_PkgStatus.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'StatusSuccess')
             $txt_PkgStatus.Text = "Added $($r.InfCount) driver(s) to $($job.PackageID) and started redistribution"
             Write-DATActivityLog "Custom drivers added to $($job.Name) ($($job.PackageID)): $($r.InfCount) .inf file(s) in $where" -Level Info
             Show-DATInfoDialog -Title 'Custom Drivers Added' -Type Success `
@@ -16669,7 +16791,7 @@ $ctx_PkgAddCustomDrivers.Add_Click({
             Invoke-DATPackageRefresh
         } else {
             $err = if ($null -ne $outcome -and $outcome.Error) { $outcome.Error } else { 'The operation did not return a result. See the log for details.' }
-            $txt_PkgStatus.Foreground = $Window.FindResource('StatusError')
+            $txt_PkgStatus.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'StatusError')
             $txt_PkgStatus.Text = "Adding custom drivers to $($job.PackageID) failed"
             Write-DATActivityLog "Adding custom drivers to $($job.Name) ($($job.PackageID)) failed: $err" -Level Error
             Show-DATInfoDialog -Title 'Add Custom Drivers Failed' -Type Error -Message $err
@@ -16679,6 +16801,314 @@ $ctx_PkgAddCustomDrivers.Add_Click({
 })
 
 #endregion Package Management
+
+#region Section Rail
+
+# Settings pages with an inner section rail: Common Settings and the ConfigMgr and Intune Package
+# Options pages. Each page's cards carry a section key in Tag. The rail shows one section at a time;
+# typing in the search box instead shows every card whose text matches, across all sections, under
+# a label naming its section. A page's controls are named around its Id: txt_<Id>Search,
+# ico_<Id>Search, btn_<Id>SearchClear, pnl_<Id>Rail, txt_<Id>SectionTitle, txt_<Id>SectionDesc,
+# scr_<Id>, pnl_<Id>Cards, panel_<Id>NoResults and txt_<Id>NoResults.
+# Sections are in rail order, and a page's cards must be grouped in that order so each search label
+# sits above its own section's matches. Icon is a Segoe MDL2 Assets code point.
+$script:SettingsRailSections = [ordered]@{
+    CommonSettings = [ordered]@{
+        General       = @{ Label = 'General';           Icon = 0xE9E9; Title = 'General & Appearance';      Description = 'How the tool looks and scales on your display.' }
+        Storage       = @{ Label = 'Storage';           Icon = 0xED25; Title = 'Storage & Housekeeping';    Description = 'Where downloads, packages and backups are kept, and how superseded content is cleaned up.' }
+        Catalog       = @{ Label = 'Catalog & OEMs';    Icon = 0xE8FD; Title = 'Catalog & OEM Sources';     Description = 'Where the driver catalog comes from, and which manufacturers are offered.' }
+        Build         = @{ Label = 'Build & Packaging'; Icon = 0xE7B8; Title = 'Build & Packaging';         Description = 'How driver packages are built, downloaded and compressed, and the external tools used to do it.' }
+        Network       = @{ Label = 'Network';           Icon = 0xE774; Title = 'Network';                   Description = 'Proxy settings for catalog requests and downloads.' }
+        Notifications = @{ Label = 'Notifications';     Icon = 0xEA8F; Title = 'Notifications & Telemetry'; Description = 'Teams notifications and anonymous usage telemetry.' }
+        Logging       = @{ Label = 'Logging';           Icon = 0xE8A5; Title = 'Logging & Diagnostics';     Description = 'Log file size and how many log files are kept.' }
+    }
+    CMPackageOptions = [ordered]@{
+        Packages     = @{ Label = 'Packages';     Icon = 0xE8B7; Title = 'Packages & Source Content'; Description = 'Where new packages are placed in the console, and whether their source folders are deleted with them.' }
+        Applications = @{ Label = 'Applications'; Icon = 0xE8BD; Title = 'ConfigMgr Applications';    Description = 'Applications created alongside each package, for deployment through Software Center with user notifications.' }
+        Distribution = @{ Label = 'Distribution'; Icon = 0xE968; Title = 'Content Distribution';      Description = 'Replication settings, and the distribution point groups and distribution points new content is sent to.' }
+    }
+    IntunePackageOptions = [ordered]@{
+        App        = @{ Label = 'App Settings';    Icon = 0xE7B8; Title = 'App Settings';           Description = 'Whether packages are uploaded, and the icon and scope tags given to each Win32 app.' }
+        Deployment = @{ Label = 'Deployment';      Icon = 0xE724; Title = 'Deployment & Targeting'; Description = 'Automatic assignment, target groups, IME notifications and assignment filters.' }
+        Uploads    = @{ Label = 'Uploads';         Icon = 0xE898; Title = 'Uploads';                Description = 'How package content is uploaded to Intune: the AzCopy engine, chunk size and parallel uploads.' }
+        Signing    = @{ Label = 'Signing & Debug'; Icon = 0xEB95; Title = 'Signing & Debugging';    Description = 'Authenticode signing of the generated scripts, and debug output of the staged package content.' }
+    }
+    ToastNotifications = [ordered]@{
+        Appearance  = @{ Label = 'Appearance';   Icon = 0xE790; Title = 'Appearance & Text'; Description = 'What users see: the theme, the text and the branding of each notification. The preview updates as you change them.' }
+        Behaviour   = @{ Label = 'Behaviour';    Icon = 0xE9F5; Title = 'Toast Behaviour';   Description = 'What happens when a user ignores or defers the update prompt, install progress, and how BIOS restarts are handled.' }
+        TestPackage = @{ Label = 'Test Package'; Icon = 0xEBE8; Title = 'Test Package';      Description = 'Build a package that walks a device through the notification flow with these settings, without installing anything.' }
+    }
+}
+
+# Page state by Id, and the page Id behind each rail control's x:Name, so the shared event handlers
+# can resolve their page from $this.Name without capturing loop variables.
+$script:SettingsRails = @{}
+$script:SettingsRailByName = @{}
+
+# The searchable text of a card, lower case: every TextBlock and string label (check boxes, combo
+# box items, tooltips) in its logical tree. Collapsed panels are included, so a setting shown only
+# for one option (such as the CURL settings) can still be found. A TextBlock written as inline Runs
+# (as every card title is) reports an empty Text, so its Runs are read instead.
+function Get-DATSettingsCardText {
+    param([Parameter(Mandatory)]$Element)
+    $parts = New-Object System.Collections.Generic.List[string]
+    $stack = New-Object System.Collections.Stack
+    $stack.Push($Element)
+    while ($stack.Count -gt 0) {
+        $node = $stack.Pop()
+        if ($node -is [string]) { $parts.Add($node); continue }
+        if ($node -is [System.Windows.Documents.Run]) { $parts.Add($node.Text); continue }
+        if ($node -is [System.Windows.FrameworkElement] -and $node.ToolTip -is [string]) { $parts.Add($node.ToolTip) }
+        if ($node -is [System.Windows.Controls.TextBlock] -and -not [string]::IsNullOrEmpty($node.Text)) { $parts.Add($node.Text); continue }
+        if ($node -is [System.Windows.DependencyObject]) {
+            foreach ($child in [System.Windows.LogicalTreeHelper]::GetChildren($node)) { $stack.Push($child) }
+        }
+    }
+    return ($parts -join ' ').ToLowerInvariant()
+}
+
+# One rail item: icon, label, What's New dot and count badge. Colours are theme resource references
+# so they follow theme changes like the XAML-defined controls.
+function New-DATSettingsRailItem {
+    param(
+        [Parameter(Mandatory)][string]$Id,
+        [Parameter(Mandatory)][string]$Key,
+        [Parameter(Mandatory)]$Section
+    )
+    $button = New-Object System.Windows.Controls.RadioButton
+    $button.Name = "rail_${Id}_$Key"
+    $button.Tag = $Key
+    $button.GroupName = "rail_$Id"
+    $button.Style = $Window.FindResource('SettingsRailItem')
+    [System.Windows.Automation.AutomationProperties]::SetName($button, $Section.Label)
+
+    $grid = New-Object System.Windows.Controls.Grid
+    foreach ($width in @([System.Windows.GridLength]::Auto, (New-Object System.Windows.GridLength(1, [System.Windows.GridUnitType]::Star)),
+                         [System.Windows.GridLength]::Auto, [System.Windows.GridLength]::Auto)) {
+        $column = New-Object System.Windows.Controls.ColumnDefinition
+        $column.Width = $width
+        $grid.ColumnDefinitions.Add($column)
+    }
+
+    $icon = New-Object System.Windows.Controls.TextBlock
+    $icon.Text = [string][char]$Section.Icon
+    $icon.FontFamily = New-Object System.Windows.Media.FontFamily('Segoe MDL2 Assets')
+    $icon.FontSize = 14
+    $icon.VerticalAlignment = 'Center'
+    $icon.Margin = New-Object System.Windows.Thickness(0, 0, 10, 0)
+
+    $label = New-Object System.Windows.Controls.TextBlock
+    $label.Text = $Section.Label
+    $label.VerticalAlignment = 'Center'
+    $label.TextTrimming = 'CharacterEllipsis'
+    [System.Windows.Controls.Grid]::SetColumn($label, 1)
+
+    $dot = New-Object System.Windows.Shapes.Ellipse
+    $dot.Width = 7; $dot.Height = 7
+    $dot.SetResourceReference([System.Windows.Shapes.Shape]::FillProperty, 'AccentColor')
+    $dot.Margin = New-Object System.Windows.Thickness(0, 0, 8, 0)
+    $dot.VerticalAlignment = 'Center'
+    $dot.Visibility = 'Collapsed'
+    [System.Windows.Controls.Grid]::SetColumn($dot, 2)
+
+    $badge = New-Object System.Windows.Controls.Border
+    $badge.MinWidth = 20; $badge.Height = 18
+    $badge.Padding = New-Object System.Windows.Thickness(6, 0, 6, 0)
+    $badge.CornerRadius = New-Object System.Windows.CornerRadius(9)
+    $badge.BorderThickness = New-Object System.Windows.Thickness(1)
+    $badge.VerticalAlignment = 'Center'
+    $badge.SetResourceReference([System.Windows.Controls.Border]::BackgroundProperty, 'CardBackground')
+    $badge.SetResourceReference([System.Windows.Controls.Border]::BorderBrushProperty, 'CardBorder')
+    [System.Windows.Controls.Grid]::SetColumn($badge, 3)
+
+    $count = New-Object System.Windows.Controls.TextBlock
+    $count.FontSize = 11
+    $count.FontWeight = 'SemiBold'
+    $count.HorizontalAlignment = 'Center'
+    $count.VerticalAlignment = 'Center'
+    $count.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty, 'InputPlaceholder')
+    $badge.Child = $count
+
+    foreach ($part in @($icon, $label, $dot, $badge)) { $grid.Children.Add($part) | Out-Null }
+    $button.Content = $grid
+    return @{ Button = $button; Dot = $dot; Count = $count }
+}
+
+# Shows the page's selected section, or its search matches, and refreshes the rail and header.
+function Update-DATSettingsRail {
+    param([Parameter(Mandatory)][AllowEmptyString()][string]$Id)
+    $state = $script:SettingsRails[$Id]
+    if ($null -eq $state -or @($state.Cards).Count -eq 0) { return }
+
+    $query = ([string]$state.Search.Text).Trim()
+    $terms = @($query.ToLowerInvariant() -split '\s+' | Where-Object { $_ })
+    $searching = $terms.Count -gt 0
+
+    $counts = @{}
+    foreach ($key in $state.Sections.Keys) { $counts[$key] = 0 }
+    $matched = 0
+    foreach ($card in $state.Cards) {
+        if ($searching) {
+            if ($null -eq $card.Text) {
+                $section = $state.Sections[$card.Section]
+                $card.Text = ($section.Title + ' ' + $section.Label + ' ' + (Get-DATSettingsCardText -Element $card.Element)).ToLowerInvariant()
+            }
+            $show = $true
+            foreach ($term in $terms) { if (-not $card.Text.Contains($term)) { $show = $false; break } }
+            if ($show) { $counts[$card.Section]++; $matched++ }
+        } else {
+            $show = $card.Section -eq $state.Section
+            $counts[$card.Section]++
+        }
+        $card.Element.Visibility = if ($show) { 'Visible' } else { 'Collapsed' }
+    }
+
+    # Section labels group the matches while searching; the header above names the section otherwise.
+    foreach ($key in @($state.Headers.Keys)) {
+        $state.Headers[$key].Visibility = if ($searching -and $counts[$key] -gt 0) { 'Visible' } else { 'Collapsed' }
+    }
+
+    # While searching no section is selected, and sections without a match are dimmed.
+    $state.Busy = $true
+    try {
+        foreach ($key in $state.Sections.Keys) {
+            $item = $state.Items[$key]
+            if ($null -eq $item) { continue }
+            $item.Count.Text = [string]$counts[$key]
+            $item.Button.Opacity = if ($searching -and $counts[$key] -eq 0) { 0.45 } else { 1.0 }
+            $item.Button.IsChecked = (-not $searching) -and ($key -eq $state.Section)
+        }
+    } finally { $state.Busy = $false }
+
+    if ($searching) {
+        $state.TitleText.Text = 'Search results'
+        $state.DescText.Text = if ($matched -eq 1) { "1 setting matches '$query'." } else { "$matched settings match '$query'." }
+        if ($null -ne $state.NoResultsText) { $state.NoResultsText.Text = "No settings match '$query'." }
+    } else {
+        $state.TitleText.Text = $state.Sections[$state.Section].Title
+        $state.DescText.Text = $state.Sections[$state.Section].Description
+    }
+    if ($null -ne $state.NoResults) { $state.NoResults.Visibility = if ($searching -and $matched -eq 0) { 'Visible' } else { 'Collapsed' } }
+    if ($null -ne $state.SearchClear) { $state.SearchClear.Visibility = if ($searching) { 'Visible' } else { 'Collapsed' } }
+    if ($null -ne $state.SearchIcon) { $state.SearchIcon.Visibility = if ($searching) { 'Collapsed' } else { 'Visible' } }
+    if ($null -ne $state.Scroll) { $state.Scroll.ScrollToTop() }
+}
+
+# Lights a rail item's dot while one of its cards shows a What's New pill, so a new setting in a
+# section that isn't open is still discoverable. Called from Update-DATWhatsNewDots.
+function Update-DATSettingsRailDots {
+    $lit = @{}
+    foreach ($feat in @($script:WhatsNewFeatures)) {
+        $pill = $Window.FindName($feat.Pill)
+        if ($null -eq $pill -or $pill.Visibility -ne 'Visible') { continue }
+        # Walk up to the card: the element whose parent is a page's card panel.
+        $node = $pill
+        while ($null -ne $node) {
+            $parent = [System.Windows.LogicalTreeHelper]::GetParent($node)
+            if ($null -eq $parent) { break }
+            $owner = @($script:SettingsRails.Values | Where-Object { $_.Panel -eq $parent }) | Select-Object -First 1
+            if ($null -ne $owner) { $lit["$($owner.Id)|$($node.Tag)"] = $true; break }
+            $node = $parent
+        }
+    }
+    foreach ($state in @($script:SettingsRails.Values)) {
+        foreach ($key in @($state.Items.Keys)) {
+            $state.Items[$key].Dot.Visibility = if ($lit["$($state.Id)|$key"]) { 'Visible' } else { 'Collapsed' }
+        }
+    }
+}
+
+# Builds a page's rail and search labels from $script:SettingsRailSections and wires its events.
+function Initialize-DATSettingsRail {
+    param([Parameter(Mandatory)][AllowEmptyString()][string]$Id)
+    $sections = $script:SettingsRailSections[$Id]
+    $panel = $Window.FindName("pnl_${Id}Cards")
+    $railPanel = $Window.FindName("pnl_${Id}Rail")
+    $search = $Window.FindName("txt_${Id}Search")
+    if ($null -eq $sections -or $null -eq $panel -or $null -eq $railPanel -or $null -eq $search) { return }
+
+    $state = [hashtable]::Synchronized(@{
+        Id            = $Id
+        Sections      = $sections
+        Section       = @($sections.Keys)[0]
+        Cards         = @()
+        Headers       = @{}
+        Items         = @{}
+        Busy          = $false
+        Panel         = $panel
+        Search        = $search
+        SearchIcon    = $Window.FindName("ico_${Id}Search")
+        SearchClear   = $Window.FindName("btn_${Id}SearchClear")
+        TitleText     = $Window.FindName("txt_${Id}SectionTitle")
+        DescText      = $Window.FindName("txt_${Id}SectionDesc")
+        Scroll        = $Window.FindName("scr_$Id")
+        NoResults     = $Window.FindName("panel_${Id}NoResults")
+        NoResultsText = $Window.FindName("txt_${Id}NoResults")
+    })
+    $script:SettingsRails[$Id] = $state
+
+    # Index the cards, and put a section label (shown only while searching) above each section's first card.
+    $cards = New-Object System.Collections.Generic.List[object]
+    foreach ($child in @($panel.Children)) {
+        $key = [string]$child.Tag
+        if (-not $sections.Contains($key)) { continue }
+        if (-not $state.Headers.ContainsKey($key)) {
+            $header = New-Object System.Windows.Controls.TextBlock
+            $header.Text = $sections[$key].Title
+            $header.Tag = $key
+            $header.FontSize = 11
+            $header.FontWeight = 'SemiBold'
+            $header.Margin = New-Object System.Windows.Thickness(4, 2, 0, 8)
+            $header.Visibility = 'Collapsed'
+            $header.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty, 'InputPlaceholder')
+            $panel.Children.Insert($panel.Children.IndexOf($child), $header)
+            $state.Headers[$key] = $header
+        }
+        $cards.Add([pscustomobject]@{ Element = $child; Section = $key; Text = $null })
+    }
+    $state.Cards = $cards.ToArray()
+
+    # Picking a section while searching clears the search and opens that section.
+    $onRailChecked = {
+        $rail = $script:SettingsRails[[string]$script:SettingsRailByName[$this.Name]]
+        if ($null -eq $rail -or $rail.Busy) { return }
+        $rail.Section = [string]$this.Tag
+        if ($rail.Search.Text.Length -gt 0) { $rail.Search.Text = '' } else { Update-DATSettingsRail -Id $rail.Id }
+    }
+    foreach ($key in $sections.Keys) {
+        $item = New-DATSettingsRailItem -Id $Id -Key $key -Section $sections[$key]
+        $script:SettingsRailByName[$item.Button.Name] = $Id
+        $item.Button.Add_Checked($onRailChecked)
+        $railPanel.Children.Add($item.Button) | Out-Null
+        $state.Items[$key] = $item
+    }
+
+    $script:SettingsRailByName[$search.Name] = $Id
+    $search.Add_TextChanged({ Update-DATSettingsRail -Id ([string]$script:SettingsRailByName[$this.Name]) })
+    $search.Add_PreviewKeyDown({
+        if ($_.Key -eq [System.Windows.Input.Key]::Escape -and $this.Text.Length -gt 0) {
+            $this.Text = ''
+            $_.Handled = $true
+        }
+    })
+    if ($null -ne $state.SearchClear) {
+        $script:SettingsRailByName[$state.SearchClear.Name] = $Id
+        $state.SearchClear.Add_Click({
+            $rail = $script:SettingsRails[[string]$script:SettingsRailByName[$this.Name]]
+            if ($null -eq $rail) { return }
+            $rail.Search.Text = ''
+            $rail.Search.Focus() | Out-Null
+        })
+    }
+
+    Update-DATSettingsRail -Id $Id
+}
+
+foreach ($railId in @($script:SettingsRailSections.Keys)) {
+    try { Initialize-DATSettingsRail -Id $railId } catch { Write-DATActivityLog "Section rail '$railId' init failed: $($_.Exception.Message)" -Level Warn }
+}
+
+#endregion Section Rail
 
 #region Common Settings
 
@@ -16802,6 +17232,161 @@ $txt_TempStorage.Add_TextChanged({ Update-DATTempPathAdvisories -Path $txt_TempS
 $btn_EnableLongPaths = $Window.FindName('btn_EnableLongPaths')
 if ($null -ne $btn_EnableLongPaths) {
     $btn_EnableLongPaths.Add_Click({ Invoke-DATEnableLongPaths })
+}
+
+# --- Tool folder permissions (install-script templates) ---
+# Packaging refuses to build an install script from template folders that other accounts can
+# write to (Assert-DATTemplateSourceTrusted). Checking only there meant the refusal arrived after
+# the download, extraction and WIM capture had already run, so the same check runs at startup
+# (banner on the Make & Model view) and again in the build pre-flight.
+$banner_TemplatePermissions     = $Window.FindName('banner_TemplatePermissions')
+$txt_TemplatePermissionsTitle   = $Window.FindName('txt_TemplatePermissionsTitle')
+$txt_TemplatePermissionsWarning = $Window.FindName('txt_TemplatePermissionsWarning')
+$btn_FixTemplatePermissions     = $Window.FindName('btn_FixTemplatePermissions')
+
+# One line per account, so an account holding two entries (the folder's own and the inherit-only
+# one for its contents) reads once with both rights.
+function Format-DATTemplateExposureList {
+    param([object[]]$Exposure)
+    $lines = @()
+    foreach ($group in @($Exposure | Group-Object -Property Identity)) {
+        $rights = @($group.Group | ForEach-Object { $_.Rights } | Select-Object -Unique) -join '; '
+        $lines += "$($group.Name) ($rights)"
+    }
+    return $lines
+}
+
+# Refreshes the banner and returns the current exposure. A folder whose permissions cannot be
+# read is reported rather than hidden: the build would refuse it too.
+function Update-DATTemplatePermissionsBanner {
+    if ($null -eq $banner_TemplatePermissions) { return @() }
+
+    try {
+        $exposure = @(Get-DATTemplateSourceExposure)
+    } catch {
+        $txt_TemplatePermissionsTitle.Text = 'Tool folder permissions could not be checked'
+        $txt_TemplatePermissionsWarning.Text = "The permissions on the tool folder could not be read, so it cannot be confirmed that only administrators can change the install-script templates. Builds that generate install scripts will be refused.`n`n$($_.Exception.Message)"
+        $btn_FixTemplatePermissions.Visibility = 'Collapsed'
+        $banner_TemplatePermissions.Visibility = 'Visible'
+        return @([PSCustomObject]@{ Path = $AppRoot; Identity = 'Unknown'; Sid = $null; Rights = 'Unreadable' })
+    }
+
+    if ($exposure.Count -eq 0) {
+        $banner_TemplatePermissions.Visibility = 'Collapsed'
+        return @()
+    }
+
+    $who = (Format-DATTemplateExposureList -Exposure $exposure) -join ', '
+    $btn_FixTemplatePermissions.Visibility = 'Visible'
+    if (Test-DATUnprotectedTemplatesAllowed) {
+        $txt_TemplatePermissionsTitle.Text = 'Tool folder can be changed by other accounts (risk accepted)'
+        $txt_TemplatePermissionsWarning.Text = "These accounts can write to the install-script templates in '$AppRoot': $who. Builds continue because AllowUnprotectedTemplates is set, but any of them could change the install script that runs as SYSTEM on every targeted device. Fix Permissions removes their write access; they keep read access."
+    } else {
+        $txt_TemplatePermissionsTitle.Text = 'Tool folder can be changed by other accounts'
+        $txt_TemplatePermissionsWarning.Text = "These accounts can write to the install-script templates in '$AppRoot': $who. Intune packages and ConfigMgr applications will be refused until this is fixed, because their install scripts run as SYSTEM on every targeted device. Fix Permissions removes their write access (they keep read access), or move the tool under Program Files."
+    }
+    $banner_TemplatePermissions.Visibility = 'Visible'
+    return $exposure
+}
+
+# Removes write access for the reported accounts from the tool folder. Returns $true when the
+# folder passes the check afterwards (or already did). -FromPreflight skips the confirmation and
+# success dialogs: the build pre-flight has already asked, and the build starts straight after.
+function Invoke-DATFixTemplatePermissions {
+    param([switch]$FromPreflight)
+    try {
+        $exposure = @(Get-DATTemplateSourceExposure)
+    } catch {
+        Show-DATInfoDialog -Title 'Permissions Unreadable' -Type Warning `
+            -Message "The permissions on the tool folder could not be read:`n`n$($_.Exception.Message)"
+        return $false
+    }
+    if ($exposure.Count -eq 0) {
+        Update-DATTemplatePermissionsBanner | Out-Null
+        Show-DATInfoDialog -Title 'Permissions Already Correct' -Type Success `
+            -Message 'Only administrators and your account can change the tool folder. No changes are needed.'
+        return $true
+    }
+
+    if (-not $FromPreflight) {
+        $who = (Format-DATTemplateExposureList -Exposure $exposure | ForEach-Object { "  - $_" }) -join "`n"
+        $confirm = Show-DATConfirmDialog -Title 'Fix Tool Folder Permissions' -Type Warning `
+            -ConfirmLabel 'Fix Permissions' -CancelLabel 'Cancel' `
+            -Message ("This will change the permissions on:`n`n$AppRoot`n`n" +
+                      "The folder will stop inheriting permissions from its parent (the current entries are kept), and these accounts will lose write access but keep read access:`n`n$who`n`n" +
+                      "SYSTEM, Administrators and your account keep full control. Apply now?")
+        if (-not $confirm) { return $false }
+    }
+
+    $result = $null
+    try {
+        $result = Set-DATTemplateSourceProtection -Confirm:$false
+    } catch {
+        $result = [PSCustomObject]@{ Success = $false; Changes = @(); Remaining = $exposure; Errors = @($_.Exception.Message) }
+    }
+    foreach ($change in @($result.Changes)) { Write-DATActivityLog $change -Level Info }
+    Update-DATTemplatePermissionsBanner | Out-Null
+
+    if ($result.Success) {
+        Write-DATActivityLog "Tool folder permissions fixed -- only administrators and the current account can change the templates" -Level Success
+        if ($FromPreflight) { return $true }
+        Show-DATInfoDialog -Title 'Permissions Fixed' -Type Success `
+            -Message ("Other accounts can no longer change the tool folder.`n`n" + ((@($result.Changes) | ForEach-Object { "  - $_" }) -join "`n"))
+        return $true
+    }
+
+    $sids = @(@($result.Remaining) + $exposure | Where-Object { -not [string]::IsNullOrEmpty($_.Sid) } | ForEach-Object { $_.Sid } | Select-Object -Unique)
+    $manual = "icacls `"$AppRoot`" /inheritance:d"
+    foreach ($sid in $sids) {
+        $manual += "`nicacls `"$AppRoot`" /remove:g *$sid /T /C`nicacls `"$AppRoot`" /grant *${sid}:(OI)(CI)RX"
+    }
+    $problems = @(@($result.Errors) + @(Format-DATTemplateExposureList -Exposure @($result.Remaining) | ForEach-Object { "Still able to write: $_" }))
+    Write-DATActivityLog "Fix tool folder permissions did not complete: $($problems -join ' | ')" -Level Warn
+    Show-DATInfoDialog -Title 'Permissions Not Fully Fixed' -Type Warning `
+        -Message ("The tool folder permissions could not be fully corrected:`n`n" + (($problems | ForEach-Object { "  - $_" }) -join "`n") +
+                  "`n`nYou can correct them from an elevated command prompt:`n`n$manual`n`nor move the tool to a folder under Program Files.")
+    return $false
+}
+
+# Pre-flight for anything that generates an install script from the tool's templates (Intune
+# packages, ConfigMgr applications, toast test packages). Packaging refuses templates other
+# accounts can change, so offer the fix before the work starts rather than fail at the end.
+# Returns $true when the caller can go ahead.
+function Confirm-DATTemplatePermissionsPreflight {
+    param([Parameter(Mandatory)][AllowEmptyString()][string]$Activity)
+    if (Test-DATUnprotectedTemplatesAllowed) { return $true }
+    $exposure = @(Update-DATTemplatePermissionsBanner)
+    if ($exposure.Count -eq 0) { return $true }
+
+    $label = (Get-Culture).TextInfo.ToTitleCase($Activity)
+    $who = (Format-DATTemplateExposureList -Exposure $exposure | ForEach-Object { "  - $_" }) -join "`n"
+    $fix = Show-DATConfirmDialog -Title 'Tool Folder Permissions' -Type Warning `
+        -ConfirmLabel 'Fix Permissions' -CancelLabel "Cancel $label" `
+        -Message ("This $Activity would be refused at the packaging step: other accounts can change the install-script templates in the tool folder, and those scripts run as SYSTEM on every targeted device.`n`n$who`n`n" +
+                  "Fix Permissions stops the tool folder ('$AppRoot') inheriting permissions from its parent, removes their write access (they keep read access) and then starts the $Activity. SYSTEM, Administrators and your account keep full control. Alternatively, move the tool to a folder under Program Files.")
+    if (-not $fix) {
+        Write-DATActivityLog "$label cancelled -- tool folder is writable by other accounts and permissions were not fixed" -Level Warn
+        return $false
+    }
+    if (-not (Invoke-DATFixTemplatePermissions -FromPreflight)) {
+        Write-DATActivityLog "$label blocked -- tool folder permissions could not be fixed" -Level Warn
+        return $false
+    }
+    return $true
+}
+
+if ($null -ne $btn_FixTemplatePermissions) {
+    $btn_FixTemplatePermissions.Add_Click({ Invoke-DATFixTemplatePermissions | Out-Null })
+}
+
+# Startup check -- logged once so the CMTrace log explains a later refusal.
+try {
+    $startupTemplateExposure = @(Update-DATTemplatePermissionsBanner)
+    if ($startupTemplateExposure.Count -gt 0) {
+        Write-DATActivityLog "[Integrity] Tool folder '$AppRoot' can be changed by other accounts: $((Format-DATTemplateExposureList -Exposure $startupTemplateExposure) -join ', '). Builds that generate install scripts will be refused$(if (Test-DATUnprotectedTemplatesAllowed) { ' unless AllowUnprotectedTemplates is set (it is)' })." -Level Warn
+    }
+} catch {
+    Write-DATActivityLog "Tool folder permission check failed at startup: $($_.Exception.Message)" -Level Warn
 }
 
 $btn_BrowseTemp.Add_Click({
@@ -16994,7 +17579,7 @@ $chk_UseDATAPICatalog.Add_Unchecked({
     Set-DATRegistryValue -Name "UseDATAPICatalog" -Value 0 -Type DWord
     $panel_DATAPIStatus.Visibility = 'Visible'
     $txt_DATAPIStatusIcon.Text = [char]0xE946
-    $txt_DATAPIStatusIcon.Foreground = $Window.FindResource('InputPlaceholder')
+    $txt_DATAPIStatusIcon.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'InputPlaceholder')
     $txt_DATAPIStatus.Text = "OEM catalog sources enabled -- catalogs will be downloaded from each OEM directly"
     Write-DATLogEntry -Value "DAT API catalog mode disabled -- individual OEM catalog sources will be used" -Severity 1
 })
@@ -17172,7 +17757,7 @@ $btn_CopyTelemetryGuid.Add_Click({
 $btn_TestTelemetry = $Window.FindName('btn_TestTelemetry')
 $txt_TelemetryTestResult = $Window.FindName('txt_TelemetryTestResult')
 $btn_TestTelemetry.Add_Click({
-    $txt_TelemetryTestResult.Foreground = $Window.FindResource('InputPlaceholder')
+    $txt_TelemetryTestResult.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'InputPlaceholder')
     $txt_TelemetryTestResult.Text = "Testing..."
     $btn_TestTelemetry.IsEnabled = $false
 
@@ -17942,16 +18527,16 @@ if (-not [string]::IsNullOrEmpty($wimlibPath) -and (Test-Path $wimlibPath)) {
         $wimlibVersion = 'unknown'
     }
     $txt_WimlibStatusIcon.Text = [string][char]0xE930
-    $txt_WimlibStatusIcon.Foreground = $Window.FindResource('StatusSuccess')
+    $txt_WimlibStatusIcon.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'StatusSuccess')
     $txt_WimlibStatus.Text = "Found -- wimlib-imagex v$wimlibVersion"
-    $txt_WimlibStatus.Foreground = $Window.FindResource('StatusSuccess')
+    $txt_WimlibStatus.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'StatusSuccess')
     $cmbi_Wimlib.IsEnabled = $true
     Write-DATActivityLog "wimlib: v$wimlibVersion at $wimlibPath" -Level Info
 } else {
     $txt_WimlibStatusIcon.Text = [string][char]0xE946
-    $txt_WimlibStatusIcon.Foreground = $Window.FindResource('InputPlaceholder')
+    $txt_WimlibStatusIcon.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'InputPlaceholder')
     $txt_WimlibStatus.Text = "Not found -- place wimlib-imagex.exe in Tools\Wimlib\"
-    $txt_WimlibStatus.Foreground = $Window.FindResource('InputPlaceholder')
+    $txt_WimlibStatus.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'InputPlaceholder')
     # Disable the wimlib option if not available
     $cmbi_Wimlib.IsEnabled = $false
     # Force selection back to DISM if wimlib was previously selected but is now missing
@@ -17978,16 +18563,16 @@ if (-not [string]::IsNullOrEmpty($7zipPath)) {
         $7zipVersion = 'unknown'
     }
     $txt_7ZipStatusIcon.Text = [string][char]0xE930
-    $txt_7ZipStatusIcon.Foreground = $Window.FindResource('StatusSuccess')
+    $txt_7ZipStatusIcon.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'StatusSuccess')
     $txt_7ZipStatus.Text = "Found -- 7-Zip v$7zipVersion"
-    $txt_7ZipStatus.Foreground = $Window.FindResource('StatusSuccess')
+    $txt_7ZipStatus.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'StatusSuccess')
     $cmbi_7Zip.IsEnabled = $true
     Write-DATActivityLog "7-Zip: v$7zipVersion at $7zipPath" -Level Info
 } else {
     $txt_7ZipStatusIcon.Text = [string][char]0xE946
-    $txt_7ZipStatusIcon.Foreground = $Window.FindResource('InputPlaceholder')
+    $txt_7ZipStatusIcon.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'InputPlaceholder')
     $txt_7ZipStatus.Text = "Not found -- install from 7-zip.org"
-    $txt_7ZipStatus.Foreground = $Window.FindResource('InputPlaceholder')
+    $txt_7ZipStatus.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'InputPlaceholder')
     $cmbi_7Zip.IsEnabled = $false
     # Force selection back to DISM if 7-Zip was previously selected but is now missing
     $savedEngine = (Get-ItemProperty -Path $global:RegPath -Name 'WimEngine' -ErrorAction SilentlyContinue).WimEngine
@@ -18041,13 +18626,13 @@ $txt_DisableConfigMgrWimState = $Window.FindName('txt_DisableConfigMgrWimState')
 $chk_DisableConfigMgrWim.Add_Checked({
     Set-DATRegistryValue -Name 'DisableConfigMgrWim' -Value 1 -Type DWord
     $txt_DisableConfigMgrWimState.Text       = 'On'
-    $txt_DisableConfigMgrWimState.Foreground = $Window.FindResource('AccentColor')
+    $txt_DisableConfigMgrWimState.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'AccentColor')
     Write-DATActivityLog 'WIM Packaging: ConfigMgr WIM compression disabled (expanded driver content)' -Level Info
 })
 $chk_DisableConfigMgrWim.Add_Unchecked({
     Set-DATRegistryValue -Name 'DisableConfigMgrWim' -Value 0 -Type DWord
     $txt_DisableConfigMgrWimState.Text       = 'Off'
-    $txt_DisableConfigMgrWimState.Foreground = $Window.FindResource('InputPlaceholder')
+    $txt_DisableConfigMgrWimState.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'InputPlaceholder')
     Write-DATActivityLog 'WIM Packaging: ConfigMgr WIM compression enabled' -Level Info
 })
 
@@ -18094,15 +18679,15 @@ function Update-DATHpcmslStatus {
     if ($null -ne $hpcmslModule) {
         if ($hpcmsl.Shadowed) {
             $txt_HpcmslStatusIcon.Text = [string][char]0xE7BA
-            $txt_HpcmslStatusIcon.Foreground = $Window.FindResource('StatusWarning')
+            $txt_HpcmslStatusIcon.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'StatusWarning')
             $txt_HpcmslStatus.Text = "Installed -- Version $($hpcmslModule.Version) (v$($hpcmsl.ShadowedVersion) is also installed but does not load)"
-            $txt_HpcmslStatus.Foreground = $Window.FindResource('StatusWarning')
+            $txt_HpcmslStatus.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'StatusWarning')
             $txt_HpcmslStatus.ToolTip = "In use:    $($hpcmslModule.ModuleBase)`nShadowed:  $($hpcmsl.ShadowedModuleBase)`n`nPowerShell loads the first match on PSModulePath, so v$($hpcmslModule.Version) is the version builds use. Remove the older copy to pick up v$($hpcmsl.ShadowedVersion)."
         } else {
             $txt_HpcmslStatusIcon.Text = [string][char]0xE930
-            $txt_HpcmslStatusIcon.Foreground = $Window.FindResource('StatusSuccess')
+            $txt_HpcmslStatusIcon.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'StatusSuccess')
             $txt_HpcmslStatus.Text = "Installed -- Version $($hpcmslModule.Version)"
-            $txt_HpcmslStatus.Foreground = $Window.FindResource('StatusSuccess')
+            $txt_HpcmslStatus.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'StatusSuccess')
             $txt_HpcmslStatus.ToolTip = $hpcmslModule.ModuleBase
         }
         $btn_InstallHpcmsl.Visibility = 'Collapsed'
@@ -18117,9 +18702,9 @@ function Update-DATHpcmslStatus {
         }
     } else {
         $txt_HpcmslStatusIcon.Text = [string][char]0xE7BA
-        $txt_HpcmslStatusIcon.Foreground = $Window.FindResource('StatusWarning')
+        $txt_HpcmslStatusIcon.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'StatusWarning')
         $txt_HpcmslStatus.Text = "Not installed"
-        $txt_HpcmslStatus.Foreground = $Window.FindResource('StatusWarning')
+        $txt_HpcmslStatus.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'StatusWarning')
         $btn_InstallHpcmsl.Visibility = 'Visible'
     }
     Update-DATBuildTypeWarning
@@ -18132,8 +18717,8 @@ $btn_InstallHpcmsl.Add_Click({
     $btn_InstallHpcmsl.IsEnabled = $false
     $txt_HpcmslStatus.Text = "Installing HPCMSL module..."
     $txt_HpcmslStatusIcon.Text = [string][char]0xE946
-    $txt_HpcmslStatusIcon.Foreground = $Window.FindResource('InputPlaceholder')
-    $txt_HpcmslStatus.Foreground = $Window.FindResource('InputPlaceholder')
+    $txt_HpcmslStatusIcon.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'InputPlaceholder')
+    $txt_HpcmslStatus.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'InputPlaceholder')
     # Determine install scope -- always AllUsers for headless/scheduled task compatibility
     $installScope = 'AllUsers'
     $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
@@ -18174,7 +18759,10 @@ try {
         }
         Set-PSRepository -Name PSGallery -InstallationPolicy Trusted -ErrorAction SilentlyContinue
 
-        Install-Module -Name HPCMSL -Force -SkipPublisherCheck -AllowClobber -Scope AllUsers -ErrorAction Stop
+        # HPCMSL requires licence acceptance on PowerShellGet 2.x; 1.0.0.1 has no such parameter (#962).
+        `$licenseParam = @{}
+        if ((Get-Command -Name Install-Module).Parameters.ContainsKey('AcceptLicense')) { `$licenseParam.AcceptLicense = `$true }
+        Install-Module -Name HPCMSL -Force -SkipPublisherCheck -AllowClobber -Scope AllUsers -ErrorAction Stop @licenseParam
         `$hpCheck = Join-Path `$allUsersPath 'HPCMSL'
         if (Test-Path `$hpCheck) {
             `$installWorked = `$true
@@ -18344,9 +18932,9 @@ try {
                 Write-DATActivityLog "Failed to install HPCMSL: $errMsg" -Level Error
                 Write-DATLogEntry -Value "[HP CMSL] Failed to install HPCMSL: $errMsg" -Severity 3
                 $txt_HpcmslStatusIcon.Text = [string][char]0xEA39
-                $txt_HpcmslStatusIcon.Foreground = $Window.FindResource('StatusError')
+                $txt_HpcmslStatusIcon.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'StatusError')
                 $txt_HpcmslStatus.Text = "Installation failed -- $errMsg"
-                $txt_HpcmslStatus.Foreground = $Window.FindResource('StatusError')
+                $txt_HpcmslStatus.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'StatusError')
             } finally {
                 $script:hpcmslProcess = $null
                 $btn_InstallHpcmsl.IsEnabled = $true
@@ -18386,29 +18974,29 @@ if (-not [string]::IsNullOrEmpty($curlPath) -and (Test-Path -Path $curlPath)) {
     if ($isSigned) {
         $signerName = $curlSig.SignerCertificate.Subject -replace '^CN=|,.*$', ''
         $txt_CurlStatusIcon.Text = [string][char]0xE930
-        $txt_CurlStatusIcon.Foreground = $Window.FindResource('StatusSuccess')
+        $txt_CurlStatusIcon.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'StatusSuccess')
         $txt_CurlStatus.Text = "v$curlVersion -- Signed by $signerName"
-        $txt_CurlStatus.Foreground = $Window.FindResource('StatusSuccess')
+        $txt_CurlStatus.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'StatusSuccess')
         Write-DATActivityLog "CURL: v$curlVersion at $curlPath -- Signed ($signerName)" -Level Info
     } elseif ($isTampered) {
         $txt_CurlStatusIcon.Text = [string][char]0xE783
-        $txt_CurlStatusIcon.Foreground = $Window.FindResource('StatusError')
+        $txt_CurlStatusIcon.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'StatusError')
         $txt_CurlStatus.Text = "v$curlVersion -- BLOCKED: Signature hash mismatch (possibly tampered)"
-        $txt_CurlStatus.Foreground = $Window.FindResource('StatusError')
+        $txt_CurlStatus.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'StatusError')
         Write-DATActivityLog "CURL: v$curlVersion at $curlPath -- BLOCKED: HashMismatch" -Level Error
     } else {
         # Official curl.exe from curl.se is not Authenticode-signed; this is normal
         $txt_CurlStatusIcon.Text = [string][char]0xE930
-        $txt_CurlStatusIcon.Foreground = $Window.FindResource('StatusSuccess')
+        $txt_CurlStatusIcon.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'StatusSuccess')
         $txt_CurlStatus.Text = "v$curlVersion -- Installed (unsigned)"
-        $txt_CurlStatus.Foreground = $Window.FindResource('StatusSuccess')
+        $txt_CurlStatus.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'StatusSuccess')
         Write-DATActivityLog "CURL: v$curlVersion at $curlPath -- Unsigned (official curl.exe is not Authenticode-signed)" -Level Info
     }
 } else {
     $txt_CurlStatusIcon.Text = [string][char]0xE946
-    $txt_CurlStatusIcon.Foreground = $Window.FindResource('InputPlaceholder')
+    $txt_CurlStatusIcon.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'InputPlaceholder')
     $txt_CurlStatus.Text = "Not found -- using native .NET download methods"
-    $txt_CurlStatus.Foreground = $Window.FindResource('InputPlaceholder')
+    $txt_CurlStatus.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'InputPlaceholder')
 }
 
 # CURL running mode persistence
@@ -18530,7 +19118,8 @@ $btn_CustomBrowseFolder.Add_Click({
 })
 
 # Additional drivers (optional, either method): a second INF folder copied into the package next
-# to the captured / local-folder drivers. The last valid folder is remembered.
+# to the captured / local-folder drivers. It is a one-off input for the pack being built, so it is
+# never saved: the next session starts with it empty.
 $txt_CustomAdditionalDrivers = $Window.FindName('txt_CustomAdditionalDrivers')
 $txt_CustomAdditionalDriversStatus = $Window.FindName('txt_CustomAdditionalDriversStatus')
 $btn_CustomBrowseAdditional = $Window.FindName('btn_CustomBrowseAdditional')
@@ -18565,7 +19154,6 @@ $btn_CustomBrowseAdditional.Add_Click({
     }
     if ($dialog.ShowDialog() -eq 'OK') {
         if (Set-DATCustomAdditionalDriversState -Path $dialog.SelectedPath) {
-            Set-DATRegistryValue -Name 'CustomAdditionalDriversPath' -Value $dialog.SelectedPath -Type String
             Write-DATActivityLog "Custom Driver Pack: additional drivers folder set -- $($dialog.SelectedPath) ($($txt_CustomAdditionalDriversStatus.Text))" -Level Info
         } else {
             Write-DATActivityLog "Custom Driver Pack: additional drivers folder rejected -- $($dialog.SelectedPath) ($($txt_CustomAdditionalDriversStatus.Text))" -Level Warn
@@ -18575,15 +19163,12 @@ $btn_CustomBrowseAdditional.Add_Click({
 
 $btn_CustomClearAdditional.Add_Click({
     [void](Set-DATCustomAdditionalDriversState -Path '')
-    Set-DATRegistryValue -Name 'CustomAdditionalDriversPath' -Value '' -Type String
     Write-DATActivityLog "Custom Driver Pack: additional drivers cleared" -Level Info
 })
 
-# Restore the remembered folder (re-validated, as its content may have changed since)
-$savedAdditionalDrivers = (Get-ItemProperty -Path $global:RegPath -Name 'CustomAdditionalDriversPath' -ErrorAction SilentlyContinue).CustomAdditionalDriversPath
-if (-not [string]::IsNullOrWhiteSpace($savedAdditionalDrivers)) {
-    [void](Set-DATCustomAdditionalDriversState -Path $savedAdditionalDrivers)
-}
+# Start empty, and drop the folder earlier versions remembered so it is not carried into exports.
+[void](Set-DATCustomAdditionalDriversState -Path '')
+Remove-ItemProperty -Path $global:RegPath -Name 'CustomAdditionalDriversPath' -ErrorAction SilentlyContinue
 
 function Get-DATLocalDeviceInfo {
     try {
@@ -19738,7 +20323,7 @@ function Update-CodeSigningCertDetails {
                 [System.Windows.Media.ColorConverter]::ConvertFromString('#FCB827'))
         } else {
             $txt_CodeSigningCertStatus.Text = "Valid"
-            $txt_CodeSigningCertStatus.Foreground = $Window.FindResource('AccentColor')
+            $txt_CodeSigningCertStatus.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'AccentColor')
         }
         $panel_CodeSigningCertDetails.Visibility = 'Visible'
         $txt_CodeSigningCertInfo.Text = ""
@@ -19752,14 +20337,14 @@ function Update-CodeSigningCertDetails {
 $chk_CodeSigning.Add_Checked({
     Set-DATRegistryValue -Name "CodeSigningEnabled" -Value 1 -Type DWord
     $txt_CodeSigningState.Text = 'On'
-    $txt_CodeSigningState.Foreground = $Window.FindResource('AccentColor')
+    $txt_CodeSigningState.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'AccentColor')
     $panel_CodeSigningConfig.Visibility = 'Visible'
     Write-DATActivityLog "Code Signing: Enabled" -Level Info
 })
 $chk_CodeSigning.Add_Unchecked({
     Set-DATRegistryValue -Name "CodeSigningEnabled" -Value 0 -Type DWord
     $txt_CodeSigningState.Text = 'Off'
-    $txt_CodeSigningState.Foreground = $Window.FindResource('InputPlaceholder')
+    $txt_CodeSigningState.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'InputPlaceholder')
     $panel_CodeSigningConfig.Visibility = 'Collapsed'
     Write-DATActivityLog "Code Signing: Disabled" -Level Info
 })
@@ -19885,7 +20470,7 @@ $btn_BrowseCodeSigningCert.Add_Click({
     $panel.Children.Add($btnSelect) | Out-Null
 
     $border.Child = $panel
-    $dlg.Content = $border
+    Set-DATDialogCard -Dialog $dlg -Card $border
     $dlg.ShowDialog() | Out-Null
 })
 
@@ -19942,14 +20527,14 @@ $btn_BrowseDebugBuild  = $Window.FindName('btn_BrowseDebugBuild')
 $chk_DebugPackageBuild.Add_Checked({
     Set-DATRegistryValue -Name "DebugPackageBuild" -Value 1 -Type DWord
     $txt_DebugBuildState.Text = 'On'
-    $txt_DebugBuildState.Foreground = $Window.FindResource('AccentColor')
+    $txt_DebugBuildState.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'AccentColor')
     $panel_DebugBuildPath.Visibility = 'Visible'
     Write-DATActivityLog "Debug Package Build: Enabled" -Level Info
 })
 $chk_DebugPackageBuild.Add_Unchecked({
     Set-DATRegistryValue -Name "DebugPackageBuild" -Value 0 -Type DWord
     $txt_DebugBuildState.Text = 'Off'
-    $txt_DebugBuildState.Foreground = $Window.FindResource('InputPlaceholder')
+    $txt_DebugBuildState.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'InputPlaceholder')
     $panel_DebugBuildPath.Visibility = 'Collapsed'
     Write-DATActivityLog "Debug Package Build: Disabled" -Level Info
 })
@@ -20244,22 +20829,22 @@ function Update-DATDeployWarning {
     # Emphasise the filter-card requirement note (amber) when the filter is on but deployment is off
     if ($null -ne $txt_AutoFilterDeployHint) {
         $hintBrush = if ($filterOn -and -not $deployOn) { 'StatusWarning' } else { 'InputPlaceholder' }
-        $txt_AutoFilterDeployHint.Foreground = $Window.FindResource($hintBrush)
+        $txt_AutoFilterDeployHint.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,$hintBrush)
     }
     $targetName = (Get-ItemProperty -Path $global:RegPath -Name 'DeployTargetGroupName' -ErrorAction SilentlyContinue).DeployTargetGroupName
     if ([string]::IsNullOrWhiteSpace($targetName)) { $targetName = 'All Devices' }
 
     if ($deployOn -and $filterOn) {
-        $txt_DeployWarning.Foreground = $Window.FindResource('StatusWarning')
+        $txt_DeployWarning.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'StatusWarning')
         $txt_DeployWarning.Text = "Warning: Every driver and BIOS package built will be automatically deployed to matching devices via an assignment filter (target: '$targetName'). Devices install them automatically, and BIOS packages may trigger a restart -- with no further approval step."
     } elseif ($deployOn) {
-        $txt_DeployWarning.Foreground = $Window.FindResource('StatusWarning')
+        $txt_DeployWarning.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'StatusWarning')
         $txt_DeployWarning.Text = "Warning: Every driver and BIOS package built will be automatically assigned as Required to '$targetName'. Matching devices download and install them automatically, and BIOS packages may trigger a restart -- with no further approval step."
     } elseif ($filterOn) {
-        $txt_DeployWarning.Foreground = $Window.FindResource('InputPlaceholder')
+        $txt_DeployWarning.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'InputPlaceholder')
         $txt_DeployWarning.Text = "Packages will be created and uploaded to Intune but not assigned to any devices. The Automatic Assignment Filter below is inactive because 'Deploy to All Devices' is off -- turn deployment on to activate it."
     } else {
-        $txt_DeployWarning.Foreground = $Window.FindResource('InputPlaceholder')
+        $txt_DeployWarning.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'InputPlaceholder')
         $txt_DeployWarning.Text = "Packages will be created and uploaded to Intune but not assigned to any devices. You must assign them manually in the Intune portal."
     }
     $txt_DeployWarning.Visibility = 'Visible'
@@ -20268,14 +20853,14 @@ function Update-DATDeployWarning {
 $chk_DeployAllDevices.Add_Checked({
     Set-DATRegistryValue -Name "DeployAllDevices" -Value 1 -Type DWord
     $txt_DeployAllState.Text = 'On'
-    $txt_DeployAllState.Foreground = $Window.FindResource('AccentColor')
+    $txt_DeployAllState.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'AccentColor')
     Update-DATDeployWarning
     Write-DATActivityLog "Package Deployment: Deploy to All Devices enabled" -Level Info
 })
 $chk_DeployAllDevices.Add_Unchecked({
     Set-DATRegistryValue -Name "DeployAllDevices" -Value 0 -Type DWord
     $txt_DeployAllState.Text = 'Off'
-    $txt_DeployAllState.Foreground = $Window.FindResource('InputPlaceholder')
+    $txt_DeployAllState.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'InputPlaceholder')
     Update-DATDeployWarning
     Write-DATActivityLog "Package Deployment: Deploy to All Devices disabled" -Level Info
 })
@@ -20525,14 +21110,14 @@ function Update-DATCreateWinOnlyBanner {
 $chk_CreateIntuneWinOnly.Add_Checked({
     Set-DATRegistryValue -Name "IntuneCreateWinOnly" -Value 1 -Type DWord
     $txt_CreateIntuneWinOnlyState.Text = 'On'
-    $txt_CreateIntuneWinOnlyState.Foreground = $Window.FindResource('AccentColor')
+    $txt_CreateIntuneWinOnlyState.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'AccentColor')
     Write-DATActivityLog "Package Output: Create IntuneWin file only (skip upload) enabled" -Level Info
     Update-DATCreateWinOnlyBanner
 })
 $chk_CreateIntuneWinOnly.Add_Unchecked({
     Set-DATRegistryValue -Name "IntuneCreateWinOnly" -Value 0 -Type DWord
     $txt_CreateIntuneWinOnlyState.Text = 'Off'
-    $txt_CreateIntuneWinOnlyState.Foreground = $Window.FindResource('InputPlaceholder')
+    $txt_CreateIntuneWinOnlyState.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'InputPlaceholder')
     Write-DATActivityLog "Package Output: Create IntuneWin file only (skip upload) disabled" -Level Info
     Update-DATCreateWinOnlyBanner
 })
@@ -20598,14 +21183,14 @@ $chk_AutoAssignmentFilter.Add_Checked({
     }
     Set-DATRegistryValue -Name "AutoAssignmentFilter" -Value 1 -Type DWord
     $txt_AutoFilterState.Text = 'On'
-    $txt_AutoFilterState.Foreground = $Window.FindResource('AccentColor')
+    $txt_AutoFilterState.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'AccentColor')
     Update-DATDeployWarning
     Write-DATActivityLog "Assignment Filters: Auto-create enabled" -Level Info
 })
 $chk_AutoAssignmentFilter.Add_Unchecked({
     Set-DATRegistryValue -Name "AutoAssignmentFilter" -Value 0 -Type DWord
     $txt_AutoFilterState.Text = 'Off'
-    $txt_AutoFilterState.Foreground = $Window.FindResource('InputPlaceholder')
+    $txt_AutoFilterState.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'InputPlaceholder')
     Update-DATDeployWarning
     Write-DATActivityLog "Assignment Filters: Auto-create disabled" -Level Info
 })
@@ -20696,7 +21281,7 @@ $btn_RefreshFilterCount.Add_Click({
             $txt_FilterCount.Foreground = [System.Windows.Media.SolidColorBrush]::new(
                 [System.Windows.Media.ColorConverter]::ConvertFromString('#E8A035'))
         } else {
-            $txt_FilterCount.Foreground = $Window.FindResource('AccentColor')
+            $txt_FilterCount.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'AccentColor')
         }
         if ($counts.Remaining -le 0) {
             $txt_FilterWarning.Text = "Limit reached: 200/200 assignment filters in use. Cannot create new filters."
@@ -20866,7 +21451,7 @@ $btn_QueryFilters.Add_Click({
         $rootGrid.Children.Add($scrollViewer) | Out-Null
 
         $border.Child = $rootGrid
-        $dlg.Content  = $border
+        Set-DATDialogCard -Dialog $dlg -Card $border
 
         # Load filters after dialog renders
         $dlg.Add_ContentRendered({
@@ -21200,9 +21785,9 @@ function Update-AzCopyStatus {
 
     if ([string]::IsNullOrEmpty($azCopyPath) -or -not (Test-Path -LiteralPath $azCopyPath)) {
         $txt_AzCopyStatusIcon.Text = [string][char]0xE946
-        $txt_AzCopyStatusIcon.Foreground = $Window.FindResource('InputPlaceholder')
+        $txt_AzCopyStatusIcon.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'InputPlaceholder')
         $txt_AzCopyStatus.Text = "Not downloaded -- fetched automatically on first AzCopy upload"
-        $txt_AzCopyStatus.Foreground = $Window.FindResource('InputPlaceholder')
+        $txt_AzCopyStatus.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'InputPlaceholder')
         return
     }
 
@@ -21226,21 +21811,21 @@ function Update-AzCopyStatus {
     if ($isSigned) {
         $signerName = $azSig.SignerCertificate.Subject -replace '^CN=|,.*$', ''
         $txt_AzCopyStatusIcon.Text = [string][char]0xE930
-        $txt_AzCopyStatusIcon.Foreground = $Window.FindResource('StatusSuccess')
+        $txt_AzCopyStatusIcon.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'StatusSuccess')
         $txt_AzCopyStatus.Text = "v$azCopyVersion -- Signed by $signerName"
-        $txt_AzCopyStatus.Foreground = $Window.FindResource('StatusSuccess')
+        $txt_AzCopyStatus.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'StatusSuccess')
         Write-DATActivityLog "AzCopy: v$azCopyVersion at $azCopyPath -- Signed ($signerName)" -Level Info
     } elseif ($isTampered) {
         $txt_AzCopyStatusIcon.Text = [string][char]0xE783
-        $txt_AzCopyStatusIcon.Foreground = $Window.FindResource('StatusError')
+        $txt_AzCopyStatusIcon.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'StatusError')
         $txt_AzCopyStatus.Text = "v$azCopyVersion -- BLOCKED: Signature hash mismatch (possibly tampered)"
-        $txt_AzCopyStatus.Foreground = $Window.FindResource('StatusError')
+        $txt_AzCopyStatus.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'StatusError')
         Write-DATActivityLog "AzCopy: v$azCopyVersion at $azCopyPath -- BLOCKED: HashMismatch" -Level Error
     } else {
         $txt_AzCopyStatusIcon.Text = [string][char]0xE783
-        $txt_AzCopyStatusIcon.Foreground = $Window.FindResource('StatusError')
+        $txt_AzCopyStatusIcon.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'StatusError')
         $txt_AzCopyStatus.Text = "v$azCopyVersion -- Unsigned (expected Microsoft signature)"
-        $txt_AzCopyStatus.Foreground = $Window.FindResource('StatusError')
+        $txt_AzCopyStatus.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'StatusError')
         Write-DATActivityLog "AzCopy: v$azCopyVersion at $azCopyPath -- Unsigned (unexpected for a Microsoft binary)" -Level Warn
     }
 }
@@ -21250,7 +21835,7 @@ Update-AzCopyStatus
 $chk_IntuneUseAzCopy.Add_Checked({
     Set-DATRegistryValue -Name "IntuneUseAzCopy" -Value 1 -Type DWord
     $txt_IntuneUseAzCopyState.Text = 'On'
-    $txt_IntuneUseAzCopyState.Foreground = $Window.FindResource('AccentColor')
+    $txt_IntuneUseAzCopyState.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'AccentColor')
     $panel_AzCopyWindow.Visibility = 'Visible'
     Update-AzCopyStatus
     Write-DATActivityLog "Upload engine: AzCopy enabled" -Level Info
@@ -21258,20 +21843,20 @@ $chk_IntuneUseAzCopy.Add_Checked({
 $chk_IntuneUseAzCopy.Add_Unchecked({
     Set-DATRegistryValue -Name "IntuneUseAzCopy" -Value 0 -Type DWord
     $txt_IntuneUseAzCopyState.Text = 'Off'
-    $txt_IntuneUseAzCopyState.Foreground = $Window.FindResource('InputPlaceholder')
+    $txt_IntuneUseAzCopyState.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'InputPlaceholder')
     $panel_AzCopyWindow.Visibility = 'Collapsed'
     Write-DATActivityLog "Upload engine: built-in chunked uploader" -Level Info
 })
 $chk_IntuneAzCopyShowWindow.Add_Checked({
     Set-DATRegistryValue -Name "IntuneAzCopyShowWindow" -Value 1 -Type DWord
     $txt_IntuneAzCopyShowWindowState.Text = 'On'
-    $txt_IntuneAzCopyShowWindowState.Foreground = $Window.FindResource('AccentColor')
+    $txt_IntuneAzCopyShowWindowState.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'AccentColor')
     Write-DATActivityLog "AzCopy window: visible" -Level Info
 })
 $chk_IntuneAzCopyShowWindow.Add_Unchecked({
     Set-DATRegistryValue -Name "IntuneAzCopyShowWindow" -Value 0 -Type DWord
     $txt_IntuneAzCopyShowWindowState.Text = 'Off'
-    $txt_IntuneAzCopyShowWindowState.Foreground = $Window.FindResource('InputPlaceholder')
+    $txt_IntuneAzCopyShowWindowState.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'InputPlaceholder')
     Write-DATActivityLog "AzCopy window: hidden" -Level Info
 })
 
@@ -21287,14 +21872,14 @@ $cmb_RetentionCount          = $Window.FindName('cmb_RetentionCount')
 $chk_PackageRetentionEnabled.Add_Checked({
     Set-DATRegistryValue -Name 'PackageRetentionEnabled' -Value 1 -Type DWord
     $txt_PackageRetentionState.Text       = 'On'
-    $txt_PackageRetentionState.Foreground = $Window.FindResource('AccentColor')
+    $txt_PackageRetentionState.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'AccentColor')
     $panel_RetentionCount.Visibility      = 'Visible'
     Write-DATActivityLog 'Package Retention: Auto-cleanup enabled' -Level Info
 })
 $chk_PackageRetentionEnabled.Add_Unchecked({
     Set-DATRegistryValue -Name 'PackageRetentionEnabled' -Value 0 -Type DWord
     $txt_PackageRetentionState.Text       = 'Off'
-    $txt_PackageRetentionState.Foreground = $Window.FindResource('InputPlaceholder')
+    $txt_PackageRetentionState.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'InputPlaceholder')
     $panel_RetentionCount.Visibility      = 'Collapsed'
     Write-DATActivityLog 'Package Retention: Auto-cleanup disabled' -Level Info
 })
@@ -21804,7 +22389,7 @@ $btn_RefreshScopeTags.Add_Click({
 $chk_EnableScopeTags.Add_Checked({
     Set-DATRegistryValue -Name 'IntuneScopeTagsEnabled' -Value 1 -Type DWord
     $txt_ScopeTagFeatureState.Text = 'On'
-    $txt_ScopeTagFeatureState.Foreground = $Window.FindResource('AccentColor')
+    $txt_ScopeTagFeatureState.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'AccentColor')
     $btn_RefreshScopeTags.IsEnabled = $true
     # The tag list stays greyed until authenticated -- real data loads on connect.
     $isAuthed = Test-DATIntuneAuth
@@ -21825,7 +22410,7 @@ $chk_EnableScopeTags.Add_Checked({
 $chk_EnableScopeTags.Add_Unchecked({
     Set-DATRegistryValue -Name 'IntuneScopeTagsEnabled' -Value 0 -Type DWord
     $txt_ScopeTagFeatureState.Text = 'Off'
-    $txt_ScopeTagFeatureState.Foreground = $Window.FindResource('InputPlaceholder')
+    $txt_ScopeTagFeatureState.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'InputPlaceholder')
     if ($null -ne $border_ScopeTagList) { $border_ScopeTagList.IsEnabled = $false }
     $btn_RefreshScopeTags.IsEnabled = $false
     if ($null -ne $panel_ScopeTagStatus) { $panel_ScopeTagStatus.Visibility = 'Collapsed' }
@@ -22822,7 +23407,7 @@ $btn_ShowToastPreview.Add_Click({
         $outerBorder.Child = $mainGrid
     }
 
-    $previewWin.Content = $outerBorder
+    Set-DATDialogCard -Dialog $previewWin -Card $outerBorder
 
     # Position at bottom-right of working area
     $previewWin.Add_ContentRendered({
@@ -22922,6 +23507,9 @@ $btn_BuildToastTestPackage.Add_Click({
         return
     }
 
+    # Both platforms package an install script generated from the tool's templates (issue #965).
+    if (-not (Confirm-DATTemplatePermissionsPreflight -Activity 'test package')) { return }
+
     $maxDeferrals = if (($chk_EnableMaxDeferrals.IsChecked -eq $true) -and ($txt_MaxDeferrals.Text -match '^\d+$')) { [int]$txt_MaxDeferrals.Text } else { 0 }
     $restartDelayMinutes = if ($txt_BIOSRestartDelay.Text -match '^\d+$') { [int]$txt_BIOSRestartDelay.Text } else { 10 }
     $testParams = @{
@@ -22987,7 +23575,7 @@ $btn_BuildToastTestPackage.Add_Click({
     }
     $btn_BuildToastTestPackage.IsEnabled = $false
     Write-DATActivityLog "Building toast test package '$packageName' for $platformName" -Level Info
-    $txt_ToastTestStatus.Foreground = $Window.FindResource('InputPlaceholder')
+    $txt_ToastTestStatus.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'InputPlaceholder')
     $txt_ToastTestStatus.Text = "Building $packageName..."
     $txt_ToastTestStatus.Visibility = 'Visible'
 
@@ -23010,7 +23598,7 @@ $btn_BuildToastTestPackage.Add_Click({
 
         if ($null -ne $outcome -and $outcome.Ok) {
             $r = $outcome.Result
-            $txt_ToastTestStatus.Foreground = $Window.FindResource('StatusSuccess')
+            $txt_ToastTestStatus.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'StatusSuccess')
             if ($job.Platform -eq 'Intune') {
                 $txt_ToastTestStatus.Text = "Uploaded $($r.Name) (version $($r.Version))"
                 Write-DATActivityLog "Toast test package '$($r.Name)' version $($r.Version) uploaded to Intune (App ID: $($r.AppId))" -Level Success
@@ -23024,7 +23612,7 @@ $btn_BuildToastTestPackage.Add_Click({
             }
         } else {
             $err = if ($null -ne $outcome -and $outcome.Error) { $outcome.Error } else { 'The operation did not return a result. See the log for details.' }
-            $txt_ToastTestStatus.Foreground = $Window.FindResource('StatusError')
+            $txt_ToastTestStatus.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'StatusError')
             $txt_ToastTestStatus.Text = "Building the test package failed"
             Write-DATActivityLog "Building toast test package '$($job.Name)' failed: $err" -Level Error
             Show-DATInfoDialog -Title 'Test Package Failed' -Type Error -Message $err
@@ -23265,7 +23853,7 @@ function Invoke-DATIntuneAssignmentWithProgress {
     $asPanel.Children.Add($script:AssignDlgSummary) | Out-Null
 
     $asBorder.Child = $asPanel
-    $script:AssignDlg.Content = $asBorder
+    Set-DATDialogCard -Dialog $script:AssignDlg -Card $asBorder
 
     # Prepare data for the background runspace
     $appList = @($Apps | ForEach-Object { @{ AppId = $_.AppId; DisplayName = $_.DisplayName } })
@@ -23612,7 +24200,7 @@ function Show-DATScopeTagSelectionDialog {
     $panel.Children.Add($btnRow) | Out-Null
 
     $border.Child = $panel
-    $dlg.Content = $border
+    Set-DATDialogCard -Dialog $dlg -Card $border
     $dlg.ShowDialog() | Out-Null
     return $script:ScopeDlgResult
 }
@@ -23785,7 +24373,7 @@ function Invoke-DATIntuneBulkAppProgress {
     $bkPanel.Children.Add($script:BulkDlgSummary) | Out-Null
 
     $bkBorder.Child = $bkPanel
-    $script:BulkDlg.Content = $bkBorder
+    Set-DATDialogCard -Dialog $script:BulkDlg -Card $bkBorder
 
     # Prepare data for the background runspace
     $appList = @($Apps | ForEach-Object { @{ AppId = $_.AppId; DisplayName = $_.DisplayName } })
@@ -24259,7 +24847,7 @@ $ctx_UpdateRemoveFilter.Add_Click({
         if ($null -ne $resVal) { $fDlgResources[$resKey] = $resVal }
     }
     $filterDlg.Resources.MergedDictionaries.Add($fDlgResources)
-    $filterDlg.Content = $fBorder
+    Set-DATDialogCard -Dialog $filterDlg -Card $fBorder
 
     # Rebuilds the dropdown from the cached filter list, applying the current search text.
     $script:AssignFilterDlgFilters = @()
@@ -24685,7 +25273,7 @@ function Update-DATIntuneAuthUI {
                 $txt_FilterCount.Foreground = [System.Windows.Media.SolidColorBrush]::new(
                     [System.Windows.Media.ColorConverter]::ConvertFromString('#E8A035'))
             } else {
-                $txt_FilterCount.Foreground = $Window.FindResource('AccentColor')
+                $txt_FilterCount.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'AccentColor')
             }
             if ($counts.Remaining -le 0) {
                 $txt_FilterWarning.Text = "Limit reached: 200/200 assignment filters in use. Cannot create new filters."
@@ -25104,7 +25692,7 @@ $cmb_IntunePkgAction.Add_SelectionChanged({
 
     $checkedApps = @($script:IntuneAppsData | Where-Object { $_.Selected -eq $true })
     if ($checkedApps.Count -eq 0) {
-        $txt_IntunePkgStatus.Foreground = $Window.FindResource('StatusWarning')
+        $txt_IntunePkgStatus.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'StatusWarning')
         $txt_IntunePkgStatus.Text = "No packages selected. Please check one or more packages first."
         $txt_IntunePkgStatus.Visibility = 'Visible'
         $cmb_IntunePkgAction.SelectedIndex = -1
@@ -25706,7 +26294,7 @@ $btn_VerifyIntunePermissions.Add_Click({
     $permPanel.Children.Add($script:PermDlgSummary) | Out-Null
 
     $permBorder.Child = $permPanel
-    $script:PermDlg.Content = $permBorder
+    Set-DATDialogCard -Dialog $script:PermDlg -Card $permBorder
 
     # Start the permission check background runspace BEFORE showing the dialog
     $script:PermVerifyState = [hashtable]::Synchronized(@{
@@ -26298,7 +26886,7 @@ $btn_DeleteIntuneApp.Add_Click({
     $panel.Children.Add($script:deleteCancelBtn) | Out-Null
 
     $border.Child = $panel
-    $script:deleteModal.Content = $border
+    Set-DATDialogCard -Dialog $script:deleteModal -Card $border
 
     # Background deletion state
     $script:deleteState = [hashtable]::Synchronized(@{
@@ -27382,6 +27970,14 @@ $Window.FindName('btn_MDMGitHub').Add_Click({
 $Window.FindName('btn_MBMGitHub').Add_Click({
     Start-Process "https://github.com/MSEndpointMgr/ModernBIOSManagement"
 })
+$Window.FindName('btn_MDMOpenScriptsFolder').Add_Click({
+    $scriptsFolder = Join-Path $AppRoot 'Scripts'
+    if (Test-Path -LiteralPath $scriptsFolder) {
+        Start-Process explorer.exe -ArgumentList "`"$scriptsFolder`""
+    } else {
+        Show-DATInfoDialog -Title 'Scripts Folder Not Found' -Type Warning -Message "The Scripts folder was not found at:`n`n$scriptsFolder"
+    }
+})
 
 $btn_CheckUpdate.Add_Click({
     try {
@@ -27413,7 +28009,7 @@ $script:btn_ApplyUpdate.Add_Click({
     $btn_CheckUpdate.IsEnabled = $false
     $script:txt_UpdateProgress.Visibility = 'Visible'
     $script:txt_UpdateProgress.Text = "Preparing update..."
-    $script:txt_UpdateProgress.Foreground = $Window.FindResource('InputPlaceholder')
+    $script:txt_UpdateProgress.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'InputPlaceholder')
     Write-DATActivityLog "Starting self-update from GitHub..." -Level Info
 
     # Create a runspace that shares the LogQueue for real-time progress
@@ -27659,7 +28255,7 @@ $script:btn_ApplyUpdate.Add_Click({
                 if ($updateResult.Success) {
                     Write-DATActivityLog "Update applied successfully. Backup at: $($updateResult.BackupDir)" -Level Success
                     $script:txt_UpdateProgress.Text = "Update complete! Please restart to use the new version."
-                    $script:txt_UpdateProgress.Foreground = $Window.FindResource('StatusSuccess')
+                    $script:txt_UpdateProgress.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'StatusSuccess')
                     $txt_AboutVersion.Text = "Version $($global:ScriptRelease.ToString(3)) - Update installed. Restart required."
 
                     # Prompt the user to restart
@@ -27676,13 +28272,13 @@ $script:btn_ApplyUpdate.Add_Click({
                 } else {
                     Write-DATActivityLog "Update failed: $($updateResult.Error)" -Level Error
                     $script:txt_UpdateProgress.Text = "Update failed: $($updateResult.Error)"
-                    $script:txt_UpdateProgress.Foreground = $Window.FindResource('StatusError')
+                    $script:txt_UpdateProgress.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'StatusError')
                 }
             } catch {
                 $errMsg = $_.Exception.Message
                 Write-DATActivityLog "Update failed: $errMsg" -Level Error
                 $script:txt_UpdateProgress.Text = "Update failed: $errMsg"
-                $script:txt_UpdateProgress.Foreground = $Window.FindResource('StatusError')
+                $script:txt_UpdateProgress.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'StatusError')
             } finally {
                 $script:updateJob.Dispose()
                 $script:updateRunspace.Dispose()
@@ -27722,15 +28318,11 @@ function Show-DATTelemetryConsentModal {
     $dlg.Background         = [System.Windows.Media.Brushes]::Transparent
     $dlg.WindowStartupLocation = 'CenterOwner'
     $dlg.Owner              = $Window
-    $dlg.Width              = 520
+    $dlg.Width              = 488
     $dlg.SizeToContent      = 'Height'
     $dlg.Topmost            = $false
     $dlg.ResizeMode         = 'NoResize'
     $dlg.ShowInTaskbar      = $false
-
-    # Outer wrapper grid with margin so the drop shadow is not clipped
-    $wrapper = [System.Windows.Controls.Grid]::new()
-    $wrapper.Margin = [System.Windows.Thickness]::new(16)
 
     $border = [System.Windows.Controls.Border]::new()
     $border.Background = [System.Windows.Media.SolidColorBrush]::new(
@@ -28094,8 +28686,7 @@ function Show-DATTelemetryConsentModal {
 
     $panel.Children.Add($btnGrid) | Out-Null
     $border.Child  = $panel
-    $wrapper.Children.Add($border) | Out-Null
-    $dlg.Content   = $wrapper
+    Set-DATDialogCard -Dialog $dlg -Card $border
 
     $btnOptIn.Add_Click({
         # Persist the optional environment profile (harmless if left as defaults)
@@ -28340,7 +28931,7 @@ function Show-DATReleaseNotesDialog {
     $mainPanel.Children.Add($scrollViewer) | Out-Null
 
     $border.Child = $mainPanel
-    $dlg.Content = $border
+    Set-DATDialogCard -Dialog $dlg -Card $border
     $dlg.ShowDialog() | Out-Null
 }
 
@@ -28561,7 +29152,7 @@ try {
         if ($null -ne $savedConfig.DeployAllDevices -and $savedConfig.DeployAllDevices -eq 1) {
             $chk_DeployAllDevices.IsChecked = $true
             $txt_DeployAllState.Text = 'On'
-            $txt_DeployAllState.Foreground = $Window.FindResource('AccentColor')
+            $txt_DeployAllState.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'AccentColor')
             Write-Host "Enabled" -ForegroundColor Green
         } else {
             $txt_DeployAllState.Text = 'Off'
@@ -28589,7 +29180,7 @@ try {
         if ($null -ne $savedConfig.IntuneCreateWinOnly -and $savedConfig.IntuneCreateWinOnly -eq 1) {
             $chk_CreateIntuneWinOnly.IsChecked = $true
             $txt_CreateIntuneWinOnlyState.Text = 'On'
-            $txt_CreateIntuneWinOnlyState.Foreground = $Window.FindResource('AccentColor')
+            $txt_CreateIntuneWinOnlyState.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'AccentColor')
             Write-Host "Enabled" -ForegroundColor Green
         } else {
             $txt_CreateIntuneWinOnlyState.Text = 'Off'
@@ -28601,7 +29192,7 @@ try {
         if ($null -ne $savedConfig.AutoAssignmentFilter -and $savedConfig.AutoAssignmentFilter -eq 1) {
             $chk_AutoAssignmentFilter.IsChecked = $true
             $txt_AutoFilterState.Text = 'On'
-            $txt_AutoFilterState.Foreground = $Window.FindResource('AccentColor')
+            $txt_AutoFilterState.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'AccentColor')
             Write-Host "Enabled" -ForegroundColor Green
         } else {
             $txt_AutoFilterState.Text = 'Off'
@@ -28642,7 +29233,7 @@ try {
         if ($null -ne $savedConfig.PackageRetentionEnabled -and $savedConfig.PackageRetentionEnabled -eq 1) {
             $chk_PackageRetentionEnabled.IsChecked = $true
             $txt_PackageRetentionState.Text       = 'On'
-            $txt_PackageRetentionState.Foreground = $Window.FindResource('AccentColor')
+            $txt_PackageRetentionState.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'AccentColor')
             $panel_RetentionCount.Visibility      = 'Visible'
             $retainCount = 0
             if ($null -ne $savedConfig.PackageRetentionCount) {
@@ -28662,7 +29253,7 @@ try {
         if ($null -ne $savedConfig.DisableConfigMgrWim -and $savedConfig.DisableConfigMgrWim -eq 1) {
             $chk_DisableConfigMgrWim.IsChecked       = $true
             $txt_DisableConfigMgrWimState.Text       = 'On'
-            $txt_DisableConfigMgrWimState.Foreground = $Window.FindResource('AccentColor')
+            $txt_DisableConfigMgrWimState.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'AccentColor')
             Write-Host "Disabled (expanded driver content)" -ForegroundColor DarkYellow
         } else {
             $txt_DisableConfigMgrWimState.Text = 'Off'
@@ -28674,7 +29265,7 @@ try {
         if ($null -ne $savedConfig.CreateConfigMgrApplication -and $savedConfig.CreateConfigMgrApplication -eq 1) {
             $chk_CreateConfigMgrApplication.IsChecked       = $true
             $txt_CreateConfigMgrApplicationState.Text       = 'On'
-            $txt_CreateConfigMgrApplicationState.Foreground = $Window.FindResource('AccentColor')
+            $txt_CreateConfigMgrApplicationState.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'AccentColor')
             Write-Host "Enabled" -ForegroundColor Green
         } else {
             $txt_CreateConfigMgrApplicationState.Text = 'Off'
@@ -28691,7 +29282,7 @@ try {
             if (-not [string]::IsNullOrEmpty($savedConfig.CodeSigningCertThumbprint)) {
                 $chk_CodeSigning.IsChecked = $true
                 $txt_CodeSigningState.Text = 'On'
-                $txt_CodeSigningState.Foreground = $Window.FindResource('AccentColor')
+                $txt_CodeSigningState.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'AccentColor')
                 $panel_CodeSigningConfig.Visibility = 'Visible'
                 Write-Host "Enabled" -ForegroundColor Green
                 $txt_CodeSigningThumbprint.Text = $savedConfig.CodeSigningCertThumbprint
@@ -28712,7 +29303,7 @@ try {
         if ($null -ne $savedConfig.DebugPackageBuild -and $savedConfig.DebugPackageBuild -eq 1) {
             $chk_DebugPackageBuild.IsChecked = $true
             $txt_DebugBuildState.Text = 'On'
-            $txt_DebugBuildState.Foreground = $Window.FindResource('AccentColor')
+            $txt_DebugBuildState.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'AccentColor')
             $panel_DebugBuildPath.Visibility = 'Visible'
             Write-Host "Enabled" -ForegroundColor Green
             if (-not [string]::IsNullOrEmpty($savedConfig.DebugBuildPath)) {
@@ -28834,7 +29425,7 @@ try {
         if ($null -ne $savedConfig.IntuneUseAzCopy -and $savedConfig.IntuneUseAzCopy -eq 1) {
             $chk_IntuneUseAzCopy.IsChecked = $true
             $txt_IntuneUseAzCopyState.Text = 'On'
-            $txt_IntuneUseAzCopyState.Foreground = $Window.FindResource('AccentColor')
+            $txt_IntuneUseAzCopyState.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'AccentColor')
             $panel_AzCopyWindow.Visibility = 'Visible'
             Write-Host "AzCopy" -ForegroundColor White
         } else {
@@ -28843,7 +29434,7 @@ try {
         if ($null -ne $savedConfig.IntuneAzCopyShowWindow -and $savedConfig.IntuneAzCopyShowWindow -eq 1) {
             $chk_IntuneAzCopyShowWindow.IsChecked = $true
             $txt_IntuneAzCopyShowWindowState.Text = 'On'
-            $txt_IntuneAzCopyShowWindowState.Foreground = $Window.FindResource('AccentColor')
+            $txt_IntuneAzCopyShowWindowState.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'AccentColor')
         }
 
         # Restore Upload Chunk Size
@@ -29008,7 +29599,10 @@ try {
     `$gallery = Find-Module -Name HPCMSL -Repository PSGallery -ErrorAction Stop
     if (`$gallery.Version -gt [version]'$currentVer') {
         `$installWarnings = @()
-        Install-Module -Name HPCMSL -Force -AllowClobber -SkipPublisherCheck -Scope AllUsers -ErrorAction Stop -WarningVariable +installWarnings
+        # HPCMSL requires licence acceptance on PowerShellGet 2.x; 1.0.0.1 has no such parameter (#962).
+        `$licenseParam = @{}
+        if ((Get-Command -Name Install-Module).Parameters.ContainsKey('AcceptLicense')) { `$licenseParam.AcceptLicense = `$true }
+        Install-Module -Name HPCMSL -Force -AllowClobber -SkipPublisherCheck -Scope AllUsers -ErrorAction Stop -WarningVariable +installWarnings @licenseParam
         # Root order, not version order: Import-Module binds to the first PSModulePath match, so a
         # copy in an earlier root masks the one just installed (#958).
         `$avail = @(Get-Module -ListAvailable -Name HPCMSL -ErrorAction SilentlyContinue)
@@ -29163,7 +29757,7 @@ try {
         if ($null -ne $savedConfig.BinaryDiffReplication -and $savedConfig.BinaryDiffReplication -eq 1) {
             $chk_BinaryDiffReplication.IsChecked = $true
             $txt_BdrState.Text = 'On'
-            $txt_BdrState.Foreground = $Window.FindResource('AccentColor')
+            $txt_BdrState.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'AccentColor')
             Write-Host "Enabled" -ForegroundColor Green
         } else {
             $chk_BinaryDiffReplication.IsChecked = $false
@@ -29197,7 +29791,7 @@ try {
             if ($null -ne $chk_DeleteSourceFolder) { $chk_DeleteSourceFolder.IsChecked = $true }
             if ($null -ne $txt_DeleteSourceFolderState) {
                 $txt_DeleteSourceFolderState.Text = 'On'
-                $txt_DeleteSourceFolderState.Foreground = $Window.FindResource('StatusWarning')
+                $txt_DeleteSourceFolderState.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'StatusWarning')
             }
             if ($null -ne $panel_DeleteSourceWarning) { $panel_DeleteSourceWarning.Visibility = 'Visible' }
             Write-Host "Enabled" -ForegroundColor Yellow
@@ -29213,7 +29807,7 @@ try {
         if ($null -ne $savedConfig.KnownModelsOnly -and $savedConfig.KnownModelsOnly -eq 1) {
             $chk_KnownModels.IsChecked = $true
             $txt_KnownModelsState.Text = 'On'
-            $txt_KnownModelsState.Foreground = $Window.FindResource('AccentColor')
+            $txt_KnownModelsState.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'AccentColor')
             Write-Host "Enabled" -ForegroundColor Green
         } else {
             $chk_KnownModels.IsChecked = $false
@@ -29226,7 +29820,7 @@ try {
         if ($null -ne $savedConfig.IntuneKnownModelsOnly -and $savedConfig.IntuneKnownModelsOnly -eq 1) {
             $chk_IntuneKnownModels.IsChecked = $true
             $txt_IntuneKnownModelsState.Text = 'On'
-            $txt_IntuneKnownModelsState.Foreground = $Window.FindResource('AccentColor')
+            $txt_IntuneKnownModelsState.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'AccentColor')
             Write-Host "Enabled" -ForegroundColor Green
         } else {
             $chk_IntuneKnownModels.IsChecked = $false
@@ -29533,7 +30127,7 @@ if (Test-Path $logoPath) {
 
 # Read version from module manifest
 $manifestPath = Join-Path $AppRoot "Modules\DriverAutomationToolCore\DriverAutomationToolCore.psd1"
-$script:versionString = "v10.3.0"
+$script:versionString = "v10.3.1"
 if (Test-Path $manifestPath) {
     $manifestData = Import-PowerShellDataFile $manifestPath
     $ver = [version]$manifestData.ModuleVersion
@@ -29622,7 +30216,7 @@ $splashLoading.HorizontalAlignment = 'Center'
 $splashPanel.Children.Add($splashLoading) | Out-Null
 
 $splashBorder.Child = $splashPanel
-$script:splash.Content = $splashBorder
+Set-DATDialogCard -Dialog $script:splash -Card $splashBorder
 
 # Show splash with cycling state notices (1 second each), then close
 $script:splash.Add_Loaded({
@@ -30272,7 +30866,7 @@ $Window.Add_Closing({
 
             $nfPanel.Children.Add($nfBtnGrid) | Out-Null
             $nfBorder.Child = $nfPanel
-            $nfDlg.Content = $nfBorder
+            Set-DATDialogCard -Dialog $nfDlg -Card $nfBorder
             $nfDlg.ShowDialog() | Out-Null
         })
         $fbBtnPanel.Children.Add($fbBtnDown) | Out-Null
@@ -30307,7 +30901,7 @@ $Window.Add_Closing({
         $fbPanel.Children.Add($fbBtnClose) | Out-Null
 
         $fbBorder.Child = $fbPanel
-        $fbDlg.Content = $fbBorder
+        Set-DATDialogCard -Dialog $fbDlg -Card $fbBorder
         $fbDlg.ShowDialog() | Out-Null
     } catch {
         Write-DATLogEntry -Value "[Feedback] Exit feedback modal failed: $($_.Exception.Message)" -Severity 2
@@ -30402,7 +30996,7 @@ $Window.Add_Closing({
     $sdPanel.Children.Add($sdStatus) | Out-Null
 
     $sdBorder.Child = $sdPanel
-    $shutdownWin.Content = $sdBorder
+    Set-DATDialogCard -Dialog $shutdownWin -Card $sdBorder
 
     # Helper to update status and pump the dispatcher so the UI redraws
     $updateStatus = {
@@ -30653,7 +31247,7 @@ $Window.Add_ContentRendered({
         $connPanel.Children.Add($connCounter) | Out-Null
 
         $connBorder.Child = $connPanel
-        $connDlg.Content = $connBorder
+        Set-DATDialogCard -Dialog $connDlg -Card $connBorder
 
         # Show as non-modal so the message pump can keep the overlay/UI responsive
         $connDlg.Show()
@@ -30864,6 +31458,16 @@ $script:WhatsNewFeatures = @(
     [pscustomobject]@{ Id = 'interface-scale-10.2.5'; Dot = 'dot_CommonSettings';   Parent = '';                  Pill = 'pill_InterfaceScale'; Zone = 'zone_InterfaceScale'; Controls = @('chk_AutoFitScale', 'sld_InterfaceScale') }
     [pscustomobject]@{ Id = 'new-oems-10.2.5';       Dot = 'dot_ModelSelection';    Parent = '';                  Pill = 'pill_NewOEMs';       Zone = 'zone_NewOEMs';       Controls = @('btn_OEMToggle') }
     [pscustomobject]@{ Id = 'intune-pkgmgmt-10.2.5'; Dot = 'dot_IntunePackageMgmt'; Parent = 'dot_IntuneSettings'; Pill = 'pill_IntunePkgMgmt';  Zone = 'zone_IntunePkgMgmt';  Controls = @('nav_IntunePackageMgmt') }
+    # 10.3.1: section rails with search on four settings pages, Toast Behaviour as its own section,
+    # the test harness card and the collapsible menu. A pill inside a rail card also lights that
+    # section's rail dot (Update-DATSettingsRailDots).
+    [pscustomobject]@{ Id = 'settings-search-common-10.3.1';    Dot = 'dot_CommonSettings';     Parent = '';                   Pill = 'pill_CommonSettingsSearch';       Zone = 'zone_CommonSettingsSearch';       Controls = @('txt_CommonSettingsSearch') }
+    [pscustomobject]@{ Id = 'settings-search-cmpkg-10.3.1';     Dot = 'dot_Distribution';       Parent = 'dot_ConfigMgr';      Pill = 'pill_CMPackageOptionsSearch';     Zone = 'zone_CMPackageOptionsSearch';     Controls = @('txt_CMPackageOptionsSearch') }
+    [pscustomobject]@{ Id = 'settings-search-intunepkg-10.3.1'; Dot = 'dot_IntuneOptions';      Parent = 'dot_IntuneSettings'; Pill = 'pill_IntunePackageOptionsSearch'; Zone = 'zone_IntunePackageOptionsSearch'; Controls = @('txt_IntunePackageOptionsSearch') }
+    [pscustomobject]@{ Id = 'settings-search-toast-10.3.1';     Dot = 'dot_ToastNotifications'; Parent = '';                   Pill = 'pill_ToastNotificationsSearch';   Zone = 'zone_ToastNotificationsSearch';   Controls = @('txt_ToastNotificationsSearch') }
+    [pscustomobject]@{ Id = 'toast-behaviour-section-10.3.1';   Dot = 'dot_ToastNotifications'; Parent = '';                   Pill = 'pill_ToastBehaviour';             Zone = 'zone_ToastBehaviour';             Controls = @('chk_DisableToastPrompt', 'chk_ShowInstallProgress', 'chk_SilentDuringAutopilot', 'chk_CriticalNotification', 'chk_EnableMaxDeferrals', 'chk_DisableBIOSRestart') }
+    [pscustomobject]@{ Id = 'mdm-test-harness-10.3.1';          Dot = 'dot_ModernMgmt';         Parent = '';                   Pill = 'pill_MDMTestHarness';             Zone = 'zone_MDMTestHarness';             Controls = @('btn_MDMOpenScriptsFolder') }
+    [pscustomobject]@{ Id = 'sidebar-collapse-10.3.1';          Dot = '';                       Parent = '';                   Pill = 'pill_SidebarToggle';              Zone = 'zone_SidebarToggle';              Controls = @('btn_SidebarToggle') }
 )
 
 # Maps a wired element's x:Name to the feature id it clears, so plain (non-closure) handlers can
@@ -30897,6 +31501,7 @@ function Update-DATWhatsNewDots {
         $active = @($unseen | Where-Object { $_.Dot -eq $dotName -or $_.Parent -eq $dotName })
         $dot.Visibility = if ($active.Count -gt 0) { 'Visible' } else { 'Collapsed' }
     }
+    try { Update-DATSettingsRailDots } catch { }
 }
 
 # Marks a feature seen and hides its pill. Idempotent: a no-op once already cleared, so it is safe
@@ -30962,14 +31567,19 @@ try { Initialize-DATWhatsNew } catch { Write-DATActivityLog "What's New init fai
 # (the IncrementVersion skill covers it, and Tests\UIApplication.Tests.ps1 asserts it matches the
 # module manifest). The modal is suppressed when it does not match the running build, so a missed
 # changelog update shows nothing rather than the previous release's features.
-$script:WhatsNewReleaseVersion = '10.3.0.0'
+$script:WhatsNewReleaseVersion = '10.3.1.0'
 $script:WhatsNewReleaseItems = @(
-    [pscustomobject]@{ Category = 'Restart Notice Under Focus Assist'; Text = 'When critical notifications are switched on, a BIOS update restarts the device even when the user has Focus Assist or Do Not Disturb on. The notice that the device will restart in a few minutes was still being held back by Do Not Disturb, so the only warning was the Windows shutdown message. The notice now shows whenever the restart will go ahead.' }
-    [pscustomobject]@{ Category = 'Restart Decision Timing';           Text = 'The decision on whether to restart after a BIOS update now waits for the restart notice to report back, instead of pausing for a fixed five seconds. On a slower device the notice had often not started by then, so the decision could rely on the Focus Assist state recorded by the earlier update prompt, up to fifteen minutes old.' }
-    [pscustomobject]@{ Category = 'Driver Restart Notice';             Text = 'When a driver update needs a restart to finish, the user is now told so. Previously the success notice was shown, which says that no restart is required. Drivers never restart the device automatically, so that message could leave the old drivers running indefinitely.' }
-    [pscustomobject]@{ Category = 'Notification Tracking';             Text = 'Every update prompt and status notice now records whether it actually appeared on screen, was held back, or failed, and the install log reports it. A prompt held back by Focus Assist, Do Not Disturb or a full-screen app is now reported as such instead of as timed out, and a locked or unattended device is reported separately. Neither is ever treated as agreement to install.' }
-    [pscustomobject]@{ Category = 'Restart Logging';                   Text = 'Each BIOS restart outcome now states in the log, and in the registry for reporting, whether the user was shown the restart notice and, if not, why. The result of scheduling the restart is interpreted rather than just recorded, including when another restart was already pending or the restart could not be scheduled at all.' }
-    [pscustomobject]@{ Category = 'Restart Follow-up';                 Text = 'When a BIOS update is still pending on the next run, the log now says what happened to the restart it was waiting on: it never happened (for example because it was cancelled), the device restarted but the firmware did not apply, or the user has simply not restarted yet.' }
+    [pscustomobject]@{ Category = 'Settings Sections and Search';   Text = 'Common Settings, both Package Options pages and Toast Notifications now show their settings one section at a time, picked from a list beside them that counts the settings in each. The search box above the list finds any setting by its name or description across every section. A dot marks a section holding a new setting you have not looked at yet. Toast Behaviour now has its own section, apart from the notification appearance and preview.' }
+    [pscustomobject]@{ Category = 'Collapsible Menu';               Text = 'The menu on the left can be collapsed to its icons with the arrow button at its foot, leaving more room for the page. Hover over an icon to see what it opens. The menu stays the way you left it the next time the tool starts.' }
+    [pscustomobject]@{ Category = 'Light Mode Readability';         Text = 'Status messages such as Installed and Found, warning buttons such as Reset, and the green and amber notes on the Intune Environment page are now easy to read in light mode. Status messages also change colour with the theme, where before they kept the colours of the theme they were shown in.' }
+    [pscustomobject]@{ Category = 'Rounded Dialogs';                Text = 'Dialogs no longer show grey square corners around their rounded edges.' }
+    [pscustomobject]@{ Category = 'Tool Folder Permissions';        Text = 'When other accounts can change the install-script templates in the tool folder, packaging refuses to build, because those scripts run as SYSTEM on every device. The tool now checks this at startup and before Intune, ConfigMgr Application and toast test package builds, and offers to fix the folder permissions before any download starts, instead of failing at the packaging step.' }
+    [pscustomobject]@{ Category = 'BitLocker During BIOS Updates';  Text = 'BIOS updates now check BitLocker immediately before the firmware is flashed and again immediately before the restart, suspending it if it has been turned back on. If BitLocker cannot be confirmed as suspended, the firmware is not flashed, or the device is not restarted, rather than risking the recovery screen. A failure to read BitLocker is no longer mistaken for BitLocker being off.' }
+    [pscustomobject]@{ Category = 'HP CMSL Install and Update';     Text = 'Installing and updating the HP Client Management Script Library works again on devices with PowerShellGet 2.x, which requires its licence to be accepted.' }
+    [pscustomobject]@{ Category = 'Lenovo BIOS Detection';          Text = 'The running Lenovo System Firmware version is now read reliably on every Windows language, so an up-to-date BIOS is no longer offered again. When the Lenovo updater reports that an update is not required, the device is recorded as current instead of failing and retrying on every Intune cycle.' }
+    [pscustomobject]@{ Category = 'Virtual Machine Support';        Text = 'Invoke-CMApplyDriverPackage.ps1 has a new -AllowVirtualMachine switch. With it, a virtual machine is matched to a driver package by its hypervisor (Hyper-V, VMware, VirtualBox and others), never to the physical hardware it imitates. Without it, nothing changes.' }
+    [pscustomobject]@{ Category = 'Modern Driver Management Tests'; Text = 'Test-ModernDriverManagement.ps1 now ships in the Scripts folder beside the scripts it tests, and only ever tests the copies in its own folder, so a package of the three scripts tests what your task sequence runs. The Modern Driver Mgmt page explains how to package it and run it with the Task Sequence Debugger.' }
+    [pscustomobject]@{ Category = 'Additional Drivers Folder';      Text = 'The Additional Drivers folder on the Custom Driver Pack page is no longer remembered between sessions, as it belongs to the pack being built.' }
 )
 
 function Get-DATWhatsNewModalShownVersion {

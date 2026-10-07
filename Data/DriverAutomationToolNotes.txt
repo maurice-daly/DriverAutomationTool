@@ -3,6 +3,24 @@ Driver Automation Tool - Release Notes
 IMPORTANT
 ** DAT Downloads have been moved to GitHub - https://github.com/maurice-daly/DriverAutomationTool **
 
+Version 10.3.1
+What's New & Fixed
+
+- Settings pages — Common Settings, both Package Options pages and Toast Notifications now show one section at a time from a list beside the settings, with a count for each section and a search box that finds any setting by its name or description across all sections.
+- Toast Behaviour — now has its own section on the Toast Notifications page, separate from the notification appearance and preview.
+- Collapsible menu — the menu on the left collapses to its icons with the arrow button at its foot; hover over an icon to see what it opens, and the menu stays the way you left it the next time the tool starts.
+- What's New — new and changed features are marked with dots on the menu and on the settings sections until you have looked at them.
+- Light mode — status messages such as Installed and Found, warning buttons such as Reset, and the green and amber notes on the Intune Environment page are now readable in light mode, and status messages now change colour when you switch theme.
+- Dialogs — no longer show grey square corners around their rounded edges; the product name is no longer repeated under the menu logo.
+- BitLocker — BIOS updates now check BitLocker immediately before the firmware is flashed and again immediately before the restart, suspending it again if it has been turned back on; if it cannot be confirmed as suspended the firmware is not flashed, or the device is not restarted, and a failure to read BitLocker is no longer mistaken for BitLocker being off.
+- Tool folder permissions — the tool now checks at startup, and before Intune, ConfigMgr Application and toast test package builds, whether other accounts can change its install-script templates, and offers a one-click fix before any download starts instead of the build failing at the packaging step. (#965)
+- HP CMSL — installing and updating the HP Client Management Script Library works again on devices with PowerShellGet 2.x, which requires its licence to be accepted. (#962)
+- Lenovo BIOS — the running System Firmware version is now identified by its firmware type on every Windows language, and when the Lenovo updater reports that an update is not required the device is recorded as current instead of failing and retrying the flash on every Intune cycle. (#966)
+- Modern Driver Management — Invoke-CMApplyDriverPackage.ps1 has a new opt-in -AllowVirtualMachine switch that matches a virtual machine to a driver package by its hypervisor, never the physical hardware it imitates, and driver WIMs are now mounted read-only. (MSEndpointMgr/ModernDriverManagement#334, MSEndpointMgr/ModernDriverManagement#339)
+- Modern Driver Management tests — Test-ModernDriverManagement.ps1 now ships in the Scripts folder and only tests the scripts beside it, so a package of the three scripts tests what your task sequence runs; the Modern Driver Mgmt page explains how to package it and run it with the Task Sequence Debugger.
+- Custom Driver Pack — the Additional Drivers folder is no longer remembered between sessions, as it belongs to the pack being built.
+- Package Options — the ConfigMgr distribution point list is now titled Distribution Points.
+
 Version 10.3.0
 What's New & Fixed
 

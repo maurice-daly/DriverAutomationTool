@@ -407,7 +407,7 @@ try {
         } else {
             try {
                 $blv = Get-BitLockerVolume -MountPoint $env:SystemDrive -ErrorAction Stop
-                Write-CMTraceLog "[Simulated] BitLocker on $($env:SystemDrive): $($blv.ProtectionStatus). $(if ("$($blv.ProtectionStatus)" -eq 'On') { 'A real package would suspend it for one restart before flashing.' } else { 'Nothing to suspend.' })"
+                Write-CMTraceLog "[Simulated] BitLocker on $($env:SystemDrive): $($blv.ProtectionStatus). $(if ("$($blv.ProtectionStatus)" -eq 'On') { 'A real package would suspend it for one restart immediately before the flash tool runs, confirm it is off, and not flash if it could not be confirmed.' } else { 'Nothing to suspend.' })"
             } catch {
                 Write-CMTraceLog "[Simulated] BitLocker state not available ($($_.Exception.Message))"
             }
@@ -443,7 +443,7 @@ try {
                     } else {
                         $restartOutcome = "Restart in $RestartDelaySeconds seconds"
                         $restartMinutes = [math]::Round($RestartDelaySeconds / 60, 0)
-                        Write-CMTraceLog "[Simulated] A real package would re-check BitLocker and run: shutdown.exe /r /t $RestartDelaySeconds (restart in $restartMinutes minute(s)). This test does NOT restart the device."
+                        Write-CMTraceLog "[Simulated] A real package would confirm BitLocker is still suspended (re-suspending it if needed, and not restarting if that cannot be confirmed), then run: shutdown.exe /r /t $RestartDelaySeconds (restart in $restartMinutes minute(s)). This test does NOT restart the device."
                     }
                 }
             }

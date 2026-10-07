@@ -139,7 +139,7 @@
                 <Setter.Value>
                     <ControlTemplate TargetType="Button">
                         <Border x:Name="border"
-                                Background="{DynamicResource StatusWarning}"
+                                Background="{DynamicResource ButtonWarning}"
                                 CornerRadius="{StaticResource ButtonRadius}"
                                 Padding="16,8"
                                 BorderThickness="0"
@@ -157,7 +157,7 @@
                     </ControlTemplate>
                 </Setter.Value>
             </Setter>
-            <Setter Property="Foreground" Value="#1E293B"/>
+            <Setter Property="Foreground" Value="{DynamicResource ButtonWarningForeground}"/>
             <Setter Property="FontSize" Value="13"/>
             <Setter Property="FontWeight" Value="SemiBold"/>
             <Setter Property="FontFamily" Value="Segoe UI"/>
@@ -537,6 +537,26 @@
         </Style>
 
         <!-- Sidebar Navigation Button -->
+        <!-- Sidebar layout. Set-DATSidebarCollapsed swaps these for the icon-only rail; every nav item,
+             section header and the footer text reads them, so one change collapses the whole sidebar. -->
+        <Visibility x:Key="NavLabelVisibility">Visible</Visibility>
+        <Visibility x:Key="NavCollapsedVisibility">Collapsed</Visibility>
+        <HorizontalAlignment x:Key="NavContentAlignment">Left</HorizontalAlignment>
+        <Thickness x:Key="NavItemPadding">14,10</Thickness>
+        <Thickness x:Key="SubNavItemPadding">14,8</Thickness>
+        <Thickness x:Key="SubNavItemMargin">20,1,4,1</Thickness>
+
+        <!-- Nav item icon and label (the label hides when the sidebar is collapsed to icons) -->
+        <Style x:Key="NavIcon" TargetType="TextBlock">
+            <Setter Property="FontFamily" Value="Segoe MDL2 Assets"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
+        </Style>
+        <Style x:Key="NavLabel" TargetType="TextBlock">
+            <Setter Property="Margin" Value="10,0,0,0"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
+            <Setter Property="Visibility" Value="{DynamicResource NavLabelVisibility}"/>
+        </Style>
+
         <Style x:Key="NavButton" TargetType="Button">
             <Setter Property="Template">
                 <Setter.Value>
@@ -544,10 +564,10 @@
                         <Border x:Name="border"
                                 Background="Transparent"
                                 CornerRadius="{StaticResource ButtonRadius}"
-                                Padding="14,10"
+                                Padding="{DynamicResource NavItemPadding}"
                                 Margin="4,1"
                                 Cursor="Hand">
-                            <ContentPresenter HorizontalAlignment="Left" VerticalAlignment="Center"/>
+                            <ContentPresenter HorizontalAlignment="{DynamicResource NavContentAlignment}" VerticalAlignment="Center"/>
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
@@ -571,10 +591,10 @@
                         <Border x:Name="border"
                                 Background="{DynamicResource SidebarActive}"
                                 CornerRadius="{StaticResource ButtonRadius}"
-                                Padding="14,10"
+                                Padding="{DynamicResource NavItemPadding}"
                                 Margin="4,1"
                                 Cursor="Hand">
-                            <ContentPresenter HorizontalAlignment="Left" VerticalAlignment="Center"/>
+                            <ContentPresenter HorizontalAlignment="{DynamicResource NavContentAlignment}" VerticalAlignment="Center"/>
                         </Border>
                     </ControlTemplate>
                 </Setter.Value>
@@ -591,10 +611,10 @@
                         <Border x:Name="border"
                                 Background="Transparent"
                                 CornerRadius="{StaticResource ButtonRadius}"
-                                Padding="14,8"
-                                Margin="20,1,4,1"
+                                Padding="{DynamicResource SubNavItemPadding}"
+                                Margin="{DynamicResource SubNavItemMargin}"
                                 Cursor="Hand">
-                            <ContentPresenter HorizontalAlignment="Left" VerticalAlignment="Center"/>
+                            <ContentPresenter HorizontalAlignment="{DynamicResource NavContentAlignment}" VerticalAlignment="Center"/>
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
@@ -618,10 +638,10 @@
                         <Border x:Name="border"
                                 Background="{DynamicResource SidebarActive}"
                                 CornerRadius="{StaticResource ButtonRadius}"
-                                Padding="14,8"
-                                Margin="20,1,4,1"
+                                Padding="{DynamicResource SubNavItemPadding}"
+                                Margin="{DynamicResource SubNavItemMargin}"
                                 Cursor="Hand">
-                            <ContentPresenter HorizontalAlignment="Left" VerticalAlignment="Center"/>
+                            <ContentPresenter HorizontalAlignment="{DynamicResource NavContentAlignment}" VerticalAlignment="Center"/>
                         </Border>
                     </ControlTemplate>
                 </Setter.Value>
@@ -637,6 +657,44 @@
             <Setter Property="BorderThickness" Value="1"/>
             <Setter Property="CornerRadius" Value="{StaticResource CardRadius}"/>
             <Setter Property="Padding" Value="16"/>
+        </Style>
+
+        <!-- Section rail item (Common Settings): one checked item per rail, accent pill on the selected one -->
+        <Style x:Key="SettingsRailItem" TargetType="RadioButton">
+            <Setter Property="Foreground" Value="{DynamicResource TabForeground}"/>
+            <Setter Property="FontSize" Value="13"/>
+            <Setter Property="FontFamily" Value="Segoe UI"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+            <Setter Property="Margin" Value="0,0,0,2"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="RadioButton">
+                        <Border x:Name="border" Background="Transparent" CornerRadius="{StaticResource ButtonRadius}"
+                                Height="38" BorderThickness="1" BorderBrush="Transparent">
+                            <Grid>
+                                <Border x:Name="pill" Width="3" HorizontalAlignment="Left" Margin="0,10"
+                                        CornerRadius="2" Background="{DynamicResource AccentColor}" Visibility="Collapsed"/>
+                                <ContentPresenter Margin="14,0,10,0" VerticalAlignment="Center"/>
+                            </Grid>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="border" Property="Background" Value="{DynamicResource InputBackground}"/>
+                            </Trigger>
+                            <Trigger Property="IsKeyboardFocused" Value="True">
+                                <Setter TargetName="border" Property="BorderBrush" Value="{DynamicResource InputFocusBorder}"/>
+                            </Trigger>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter TargetName="border" Property="Background" Value="{DynamicResource TabActive}"/>
+                                <Setter TargetName="pill" Property="Visibility" Value="Visible"/>
+                                <Setter Property="Foreground" Value="{DynamicResource TabActiveForeground}"/>
+                                <Setter Property="FontWeight" Value="SemiBold"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
         </Style>
 
         <!-- Compact themed horizontal Slider (used by Interface Scale) -->
@@ -1006,7 +1064,7 @@
                                    Foreground="{DynamicResource AccentColor}" VerticalAlignment="Center" Margin="0,0,8,0"/>
                         <TextBlock Text="Driver Automation Tool" FontSize="13" FontWeight="SemiBold"
                                    Foreground="{DynamicResource WindowForeground}" VerticalAlignment="Center"/>
-                        <TextBlock x:Name="txt_Version" Text=" Version 10.3.0" FontSize="11"
+                        <TextBlock x:Name="txt_Version" Text=" Version 10.3.1" FontSize="11"
                                    Foreground="{DynamicResource InputPlaceholder}" VerticalAlignment="Center" Margin="4,0"/>
                     </StackPanel>
 
@@ -1038,30 +1096,38 @@
             <!-- Main Content -->
             <Grid Grid.Row="1">
                 <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="220"/>
+                    <ColumnDefinition Width="Auto"/>
                     <ColumnDefinition Width="*"/>
                 </Grid.ColumnDefinitions>
 
-                <!-- Sidebar -->
-                <Border Grid.Column="0" Background="{DynamicResource SidebarBackground}"
-                        CornerRadius="0,0,0,16">
+                <!-- Sidebar: 220 wide, or an icon-only rail when collapsed (Set-DATSidebarCollapsed) -->
+                <Border x:Name="bd_Sidebar" Grid.Column="0" Width="220" Background="{DynamicResource SidebarBackground}"
+                        CornerRadius="0,0,0,16" ClipToBounds="True">
                     <DockPanel>
                         <!-- Logo Area -->
-                        <Border DockPanel.Dock="Top" Padding="16,16,16,8">
+                        <Border x:Name="bd_SidebarLogo" DockPanel.Dock="Top" Padding="16,16,16,8">
                             <StackPanel>
                                 <Image x:Name="img_Logo" Height="120" HorizontalAlignment="Center" Margin="0,0,0,16" Stretch="Uniform"/>
-                                <TextBlock Text="Driver Automation Tool" FontSize="11" FontWeight="SemiBold"
-                                           Foreground="{DynamicResource WindowForeground}" HorizontalAlignment="Center" Margin="0,0,0,8"/>
                                 <Border Height="1" Background="{DynamicResource WindowBorder}" Margin="0,4"/>
                             </StackPanel>
                         </Border>
 
-                        <!-- Footer -->
-                        <Border DockPanel.Dock="Bottom" Padding="16,8,16,12">
+                        <!-- Footer: credit, and the collapse / expand toggle -->
+                        <Border x:Name="bd_SidebarFooter" DockPanel.Dock="Bottom" Padding="16,8,10,10">
                             <StackPanel>
-                                <Border Height="1" Background="{DynamicResource WindowBorder}" Margin="0,0,0,8"/>
-                                <TextBlock Text="Created by Maurice Daly" FontSize="10"
-                                           Foreground="{DynamicResource InputPlaceholder}"/>
+                                <Border Height="1" Background="{DynamicResource WindowBorder}" Margin="0,0,0,6"/>
+                                <Grid>
+                                    <TextBlock Text="Created by Maurice Daly" FontSize="10" VerticalAlignment="Center"
+                                               Foreground="{DynamicResource InputPlaceholder}" Visibility="{DynamicResource NavLabelVisibility}"/>
+                                    <Grid x:Name="zone_SidebarToggle" HorizontalAlignment="Right" Background="Transparent">
+                                        <Button x:Name="btn_SidebarToggle" Style="{StaticResource WindowControlButton}"
+                                                Content="&#xE76B;" FontSize="11" Width="28" Height="26"
+                                                ToolTip="Collapse the menu to icons" AutomationProperties.Name="Collapse the menu to icons"/>
+                                        <!-- What's New marker for the collapsible menu -->
+                                        <Ellipse x:Name="pill_SidebarToggle" Width="7" Height="7" Fill="{DynamicResource AccentColor}" IsHitTestVisible="False"
+                                                 HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,1,1,0" Visibility="Collapsed"/>
+                                    </Grid>
+                                </Grid>
                             </StackPanel>
                         </Border>
 
@@ -1071,104 +1137,154 @@
                                       Padding="0">
                         <StackPanel Margin="8,8,8,0">
                             <TextBlock Text="MAIN" FontSize="10" FontWeight="Bold" Margin="16,0,0,6"
-                                       Foreground="{DynamicResource InputPlaceholder}"/>
+                                       Foreground="{DynamicResource InputPlaceholder}" Visibility="{DynamicResource NavLabelVisibility}"/>
                             <Button x:Name="nav_ModelSelection"
                                     Style="{StaticResource NavButtonActive}">
                                 <StackPanel Orientation="Horizontal">
-                                    <TextBlock VerticalAlignment="Center"><Run Text="&#xE8B7;" FontFamily="Segoe MDL2 Assets"/><Run Text="  Model Selection"/></TextBlock>
+                                    <TextBlock Text="&#xE8B7;" Style="{StaticResource NavIcon}"/>
+                                    <TextBlock Text="Model Selection" Style="{StaticResource NavLabel}"/>
                                     <Ellipse x:Name="dot_ModelSelection" Width="7" Height="7" Fill="{DynamicResource AccentColor}" Margin="8,0,0,0" VerticalAlignment="Center" Visibility="Collapsed"/>
                                 </StackPanel>
                             </Button>
                             <Button x:Name="nav_CustomDriverPack"
                                     Style="{StaticResource NavButton}">
-                                <TextBlock><Run Text="&#xE90F;" FontFamily="Segoe MDL2 Assets"/><Run Text="  Custom Driver Pack"/></TextBlock>
+                                <StackPanel Orientation="Horizontal">
+                                    <TextBlock Text="&#xE90F;" Style="{StaticResource NavIcon}"/>
+                                    <TextBlock Text="Custom Driver Pack" Style="{StaticResource NavLabel}"/>
+                                </StackPanel>
                             </Button>
 
                             <TextBlock Text="CONFIGURATION" FontSize="10" FontWeight="Bold" Margin="16,16,0,6"
-                                       Foreground="{DynamicResource InputPlaceholder}"/>
+                                       Foreground="{DynamicResource InputPlaceholder}" Visibility="{DynamicResource NavLabelVisibility}"/>
+                            <Border Height="1" Background="{DynamicResource WindowBorder}" Margin="12,8,12,8" Visibility="{DynamicResource NavCollapsedVisibility}"/>
                             <Button x:Name="nav_ConfigMgr"
                                     Style="{StaticResource NavButton}">
-                                <TextBlock><Run Text="&#xE912;" FontFamily="Segoe MDL2 Assets"/><Run Text="  ConfigMgr Settings"/></TextBlock>
+                                <StackPanel Orientation="Horizontal">
+                                    <TextBlock Text="&#xE912;" Style="{StaticResource NavIcon}"/>
+                                    <TextBlock Text="ConfigMgr Settings" Style="{StaticResource NavLabel}"/>
+                                    <Ellipse x:Name="dot_ConfigMgr" Width="7" Height="7" Fill="{DynamicResource AccentColor}" Margin="8,0,0,0" VerticalAlignment="Center" Visibility="Collapsed"/>
+                                </StackPanel>
                             </Button>
                             <StackPanel x:Name="panel_ConfigMgrSub" Visibility="Collapsed">
                                 <Button x:Name="nav_ConfigMgrEnvironment"
                                         Style="{StaticResource SubNavButton}">
-                                    <TextBlock><Run Text="&#xE968;" FontFamily="Segoe MDL2 Assets"/><Run Text="  Environment"/></TextBlock>
+                                    <StackPanel Orientation="Horizontal">
+                                        <TextBlock Text="&#xE968;" Style="{StaticResource NavIcon}"/>
+                                        <TextBlock Text="Environment" Style="{StaticResource NavLabel}"/>
+                                    </StackPanel>
                                 </Button>
                                 <Button x:Name="nav_Packages"
                                         Style="{StaticResource SubNavButton}">
-                                    <TextBlock><Run Text="&#xE7B8;" FontFamily="Segoe MDL2 Assets"/><Run Text="  Package Management"/></TextBlock>
+                                    <StackPanel Orientation="Horizontal">
+                                        <TextBlock Text="&#xE7B8;" Style="{StaticResource NavIcon}"/>
+                                        <TextBlock Text="Package Management" Style="{StaticResource NavLabel}"/>
+                                    </StackPanel>
                                 </Button>
                                 <Button x:Name="nav_Distribution"
                                         Style="{StaticResource SubNavButton}">
-                                    <TextBlock><Run Text="&#xE7B8;" FontFamily="Segoe MDL2 Assets"/><Run Text="  Package Options"/></TextBlock>
+                                    <StackPanel Orientation="Horizontal">
+                                        <TextBlock Text="&#xE7B8;" Style="{StaticResource NavIcon}"/>
+                                        <TextBlock Text="Package Options" Style="{StaticResource NavLabel}"/>
+                                        <Ellipse x:Name="dot_Distribution" Width="7" Height="7" Fill="{DynamicResource AccentColor}" Margin="8,0,0,0" VerticalAlignment="Center" Visibility="Collapsed"/>
+                                    </StackPanel>
                                 </Button>
                                 <Button x:Name="nav_LogicPackage"
                                         Style="{StaticResource SubNavButton}">
-                                    <TextBlock><Run Text="&#xE8A5;" FontFamily="Segoe MDL2 Assets"/><Run Text="  Logic Package"/></TextBlock>
+                                    <StackPanel Orientation="Horizontal">
+                                        <TextBlock Text="&#xE8A5;" Style="{StaticResource NavIcon}"/>
+                                        <TextBlock Text="Logic Package" Style="{StaticResource NavLabel}"/>
+                                    </StackPanel>
                                 </Button>
                             </StackPanel>
                             <Button x:Name="nav_IntuneSettings"
                                     Style="{StaticResource NavButton}">
                                 <StackPanel Orientation="Horizontal">
-                                    <TextBlock VerticalAlignment="Center"><Run Text="&#xE774;" FontFamily="Segoe MDL2 Assets"/><Run Text="  Intune Settings"/></TextBlock>
+                                    <TextBlock Text="&#xE774;" Style="{StaticResource NavIcon}"/>
+                                    <TextBlock Text="Intune Settings" Style="{StaticResource NavLabel}"/>
                                     <Ellipse x:Name="dot_IntuneSettings" Width="7" Height="7" Fill="{DynamicResource AccentColor}" Margin="8,0,0,0" VerticalAlignment="Center" Visibility="Collapsed"/>
                                 </StackPanel>
                             </Button>
                             <StackPanel x:Name="panel_IntuneSub" Visibility="Collapsed">
                                 <Button x:Name="nav_IntuneAuth"
                                         Style="{StaticResource SubNavButton}">
-                                    <TextBlock><Run Text="&#xE72E;" FontFamily="Segoe MDL2 Assets"/><Run Text="  Environment"/></TextBlock>
+                                    <StackPanel Orientation="Horizontal">
+                                        <TextBlock Text="&#xE72E;" Style="{StaticResource NavIcon}"/>
+                                        <TextBlock Text="Environment" Style="{StaticResource NavLabel}"/>
+                                    </StackPanel>
                                 </Button>
                                 <Button x:Name="nav_IntuneOptions"
                                         Style="{StaticResource SubNavButton}">
                                     <StackPanel Orientation="Horizontal">
-                                        <TextBlock VerticalAlignment="Center"><Run Text="&#xE7B8;" FontFamily="Segoe MDL2 Assets"/><Run Text="  Package Options"/></TextBlock>
+                                        <TextBlock Text="&#xE7B8;" Style="{StaticResource NavIcon}"/>
+                                        <TextBlock Text="Package Options" Style="{StaticResource NavLabel}"/>
                                         <Ellipse x:Name="dot_IntuneOptions" Width="7" Height="7" Fill="{DynamicResource AccentColor}" Margin="8,0,0,0" VerticalAlignment="Center" Visibility="Collapsed"/>
                                     </StackPanel>
                                 </Button>
                                 <Button x:Name="nav_IntunePackageMgmt"
                                         Style="{StaticResource SubNavButton}">
                                     <StackPanel Orientation="Horizontal">
-                                        <TextBlock VerticalAlignment="Center"><Run Text="&#xE7B8;" FontFamily="Segoe MDL2 Assets"/><Run Text="  Package Management"/></TextBlock>
+                                        <TextBlock Text="&#xE7B8;" Style="{StaticResource NavIcon}"/>
+                                        <TextBlock Text="Package Management" Style="{StaticResource NavLabel}"/>
                                         <Ellipse x:Name="dot_IntunePackageMgmt" Width="7" Height="7" Fill="{DynamicResource AccentColor}" Margin="8,0,0,0" VerticalAlignment="Center" Visibility="Collapsed"/>
                                     </StackPanel>
                                 </Button>
                                 <Button x:Name="nav_BIOSSecurity"
                                         Style="{StaticResource SubNavButton}">
-                                    <TextBlock><Run Text="&#xE72E;" FontFamily="Segoe MDL2 Assets"/><Run Text="  BIOS Security"/></TextBlock>
+                                    <StackPanel Orientation="Horizontal">
+                                        <TextBlock Text="&#xE72E;" Style="{StaticResource NavIcon}"/>
+                                        <TextBlock Text="BIOS Security" Style="{StaticResource NavLabel}"/>
+                                    </StackPanel>
                                 </Button>
                                 <Button x:Name="nav_MaintenanceWindow"
                                         Style="{StaticResource SubNavButton}">
-                                    <TextBlock><Run Text="&#xE823;" FontFamily="Segoe MDL2 Assets"/><Run Text="  Maintenance Window"/></TextBlock>
+                                    <StackPanel Orientation="Horizontal">
+                                        <TextBlock Text="&#xE823;" Style="{StaticResource NavIcon}"/>
+                                        <TextBlock Text="Maintenance Window" Style="{StaticResource NavLabel}"/>
+                                    </StackPanel>
                                 </Button>
                             </StackPanel>
                             <!-- Top level: the toast settings apply to Intune packages and ConfigMgr Applications alike -->
                             <Button x:Name="nav_ToastNotifications"
                                     Style="{StaticResource NavButton}">
-                                <TextBlock><Run Text="&#xE8BD;" FontFamily="Segoe MDL2 Assets"/><Run Text="  Toast Notifications"/></TextBlock>
+                                <StackPanel Orientation="Horizontal">
+                                    <TextBlock Text="&#xE8BD;" Style="{StaticResource NavIcon}"/>
+                                    <TextBlock Text="Toast Notifications" Style="{StaticResource NavLabel}"/>
+                                    <Ellipse x:Name="dot_ToastNotifications" Width="7" Height="7" Fill="{DynamicResource AccentColor}" Margin="8,0,0,0" VerticalAlignment="Center" Visibility="Collapsed"/>
+                                </StackPanel>
                             </Button>
                             <Button x:Name="nav_CommonSettings"
                                     Style="{StaticResource NavButton}">
                                 <StackPanel Orientation="Horizontal">
-                                    <TextBlock VerticalAlignment="Center"><Run Text="&#xE713;" FontFamily="Segoe MDL2 Assets"/><Run Text="  Common Settings"/></TextBlock>
+                                    <TextBlock Text="&#xE713;" Style="{StaticResource NavIcon}"/>
+                                    <TextBlock Text="Common Settings" Style="{StaticResource NavLabel}"/>
                                     <Ellipse x:Name="dot_CommonSettings" Width="7" Height="7" Fill="{DynamicResource AccentColor}" Margin="8,0,0,0" VerticalAlignment="Center" Visibility="Collapsed"/>
                                 </StackPanel>
                             </Button>
 
                             <TextBlock Text="TOOLS" FontSize="10" FontWeight="Bold" Margin="16,16,0,6"
-                                       Foreground="{DynamicResource InputPlaceholder}"/>
+                                       Foreground="{DynamicResource InputPlaceholder}" Visibility="{DynamicResource NavLabelVisibility}"/>
+                            <Border Height="1" Background="{DynamicResource WindowBorder}" Margin="12,8,12,8" Visibility="{DynamicResource NavCollapsedVisibility}"/>
                             <Button x:Name="nav_Log"
                                     Style="{StaticResource NavButton}">
-                                <TextBlock><Run Text="&#xE8A5;" FontFamily="Segoe MDL2 Assets"/><Run Text="  Logs"/></TextBlock>
+                                <StackPanel Orientation="Horizontal">
+                                    <TextBlock Text="&#xE8A5;" Style="{StaticResource NavIcon}"/>
+                                    <TextBlock Text="Logs" Style="{StaticResource NavLabel}"/>
+                                </StackPanel>
                             </Button>
                             <Button x:Name="nav_ModernMgmt"
                                     Style="{StaticResource NavButton}">
-                                <TextBlock><Run Text="&#xECAD;" FontFamily="Segoe MDL2 Assets"/><Run Text="  Modern Driver Mgmt"/></TextBlock>
+                                <StackPanel Orientation="Horizontal">
+                                    <TextBlock Text="&#xECAD;" Style="{StaticResource NavIcon}"/>
+                                    <TextBlock Text="Modern Driver Mgmt" Style="{StaticResource NavLabel}"/>
+                                    <Ellipse x:Name="dot_ModernMgmt" Width="7" Height="7" Fill="{DynamicResource AccentColor}" Margin="8,0,0,0" VerticalAlignment="Center" Visibility="Collapsed"/>
+                                </StackPanel>
                             </Button>
                             <Button x:Name="nav_About"
                                     Style="{StaticResource NavButton}">
-                                <TextBlock><Run Text="&#xE946;" FontFamily="Segoe MDL2 Assets"/><Run Text="  About"/></TextBlock>
+                                <StackPanel Orientation="Horizontal">
+                                    <TextBlock Text="&#xE946;" Style="{StaticResource NavIcon}"/>
+                                    <TextBlock Text="About" Style="{StaticResource NavLabel}"/>
+                                </StackPanel>
                             </Button>
                         </StackPanel>
                         </ScrollViewer>
@@ -1591,8 +1707,39 @@
                                         <RowDefinition Height="*"/>
                                     </Grid.RowDefinitions>
 
+                                    <StackPanel Grid.Row="0">
+                                    <!-- Tool folder permissions banner (shown when other accounts can write to the install-script templates) -->
+                                    <Border x:Name="banner_TemplatePermissions" Visibility="Collapsed"
+                                            CornerRadius="8" Margin="0,0,0,8" Padding="14,12"
+                                            Background="{DynamicResource StatusWarningBackground}"
+                                            BorderBrush="{DynamicResource StatusWarning}" BorderThickness="1">
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="Auto"/>
+                                                <ColumnDefinition Width="*"/>
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Grid.Column="0" Text="&#xE72E;" FontFamily="Segoe MDL2 Assets" FontSize="18"
+                                                       Foreground="{DynamicResource StatusWarning}" VerticalAlignment="Top" Margin="0,1,12,0"/>
+                                            <StackPanel Grid.Column="1">
+                                                <TextBlock x:Name="txt_TemplatePermissionsTitle" Text="Tool folder can be changed by other accounts"
+                                                           FontSize="13" FontWeight="SemiBold"
+                                                           Foreground="{DynamicResource StatusWarning}" Margin="0,0,0,5"/>
+                                                <TextBlock x:Name="txt_TemplatePermissionsWarning" FontSize="12" TextWrapping="Wrap" LineHeight="18"
+                                                           Foreground="{DynamicResource WindowForeground}"/>
+                                                <Button x:Name="btn_FixTemplatePermissions" HorizontalAlignment="Left" Margin="0,12,0,0"
+                                                        Style="{StaticResource WarningButton}"
+                                                        ToolTip="Stops the tool folder inheriting permissions from its parent and removes write access for the accounts listed. SYSTEM, Administrators and your account keep full access; the listed accounts keep read access.">
+                                                    <StackPanel Orientation="Horizontal">
+                                                        <TextBlock Text="&#xE90F;" FontFamily="Segoe MDL2 Assets" FontSize="13" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                                                        <TextBlock Text="Fix Permissions" VerticalAlignment="Center"/>
+                                                    </StackPanel>
+                                                </Button>
+                                            </StackPanel>
+                                        </Grid>
+                                    </Border>
+
                                     <!-- Create .intunewin-only banner (shown when the upload-skip toggle is active) -->
-                                    <Border x:Name="banner_CreateWinOnly" Grid.Row="0" Visibility="Collapsed"
+                                    <Border x:Name="banner_CreateWinOnly" Visibility="Collapsed"
                                             CornerRadius="8" Margin="0,0,0,8" Padding="12,8"
                                             Background="{DynamicResource StatusWarningBackground}"
                                             BorderBrush="{DynamicResource StatusWarning}" BorderThickness="1">
@@ -1605,6 +1752,7 @@
                                                        Text="&quot;Create .intunewin file only&quot; is enabled -- packages will be built locally but NOT uploaded to Intune. Turn it off in Intune Settings &gt; Package Options to publish."/>
                                         </StackPanel>
                                     </Border>
+                                    </StackPanel>
 
                                     <!-- Search and Select Controls -->
                                     <Grid Grid.Row="1" Margin="0,0,0,8">
@@ -2879,11 +3027,53 @@
                                 <Run Text="&#xE7B8;" FontFamily="Segoe MDL2 Assets" FontSize="20"/><Run Text="  Package Options"/>
                             </TextBlock>
 
-                            <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
-                            <StackPanel>
+                            <Grid Grid.Row="1">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="212"/>
+                                    <ColumnDefinition Width="20"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+
+                                <!-- Section rail (built by Initialize-DATSettingsRail from $script:SettingsRailSections).
+                                     Each card below carries its section key in Tag. -->
+                                <StackPanel Grid.Column="0">
+                                    <Grid x:Name="zone_CMPackageOptionsSearch" Margin="0,0,0,10" Background="Transparent">
+                                        <TextBox x:Name="txt_CMPackageOptionsSearch" Style="{StaticResource RoundedTextBox}"
+                                                 Tag="Search package options" Height="36" AutomationProperties.Name="Search package options"/>
+                                        <Border x:Name="pill_CMPackageOptionsSearch" Visibility="Collapsed" IsHitTestVisible="False" Background="{DynamicResource AccentColor}"
+                                                CornerRadius="8" Padding="7,1,7,2" Margin="0,-8,-4,0" HorizontalAlignment="Right" VerticalAlignment="Top">
+                                            <TextBlock Text="New" FontSize="10" FontWeight="SemiBold" Foreground="White"/>
+                                        </Border>
+                                        <TextBlock x:Name="ico_CMPackageOptionsSearch" Text="&#xE721;" FontFamily="Segoe MDL2 Assets" FontSize="13"
+                                                   Foreground="{DynamicResource InputPlaceholder}" IsHitTestVisible="False"
+                                                   HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,12,0"/>
+                                        <Button x:Name="btn_CMPackageOptionsSearchClear" Style="{StaticResource ChevronToggleButton}"
+                                                Content="&#xE711;" Width="22" Height="22" Margin="0,0,7,0" Visibility="Collapsed"
+                                                HorizontalAlignment="Right" VerticalAlignment="Center"
+                                                ToolTip="Clear search" AutomationProperties.Name="Clear search"/>
+                                    </Grid>
+                                    <StackPanel x:Name="pnl_CMPackageOptionsRail" AutomationProperties.Name="Package Options sections"/>
+                                </StackPanel>
+
+                                <Grid Grid.Column="2">
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="*"/>
+                                    </Grid.RowDefinitions>
+
+                                    <!-- Section header: the selected section, or the search results summary -->
+                                    <StackPanel Grid.Row="0" Margin="2,0,0,12">
+                                        <TextBlock x:Name="txt_CMPackageOptionsSectionTitle" FontSize="16" FontWeight="SemiBold"
+                                                   Foreground="{DynamicResource WindowForeground}"/>
+                                        <TextBlock x:Name="txt_CMPackageOptionsSectionDesc" FontSize="12" TextWrapping="Wrap" Margin="0,3,0,0"
+                                                   Foreground="{DynamicResource InputPlaceholder}"/>
+                                    </StackPanel>
+
+                            <ScrollViewer x:Name="scr_CMPackageOptions" Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                            <StackPanel x:Name="pnl_CMPackageOptionsCards">
 
                             <!-- Package Console Folder -->
-                            <Border Style="{StaticResource CardPanel}" Margin="0,0,0,12">
+                            <Border Tag="Packages" Style="{StaticResource CardPanel}" Margin="0,0,0,12">
                                 <StackPanel>
                                     <TextBlock FontSize="13" FontWeight="SemiBold"
                                                Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,8">
@@ -2927,8 +3117,55 @@
                                 </StackPanel>
                             </Border>
 
+                            <!-- Source Folder Cleanup -->
+                            <Border Tag="Packages" Style="{StaticResource CardPanel}" Margin="0,0,0,12">
+                                <StackPanel>
+                                    <TextBlock FontSize="13" FontWeight="SemiBold"
+                                               Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,8">
+                                        <Run Text="&#xE74D;" FontFamily="Segoe MDL2 Assets" FontSize="13"/><Run Text="  Source Folder Cleanup"/>
+                                    </TextBlock>
+                                    <TextBlock TextWrapping="Wrap" FontSize="12"
+                                               Foreground="{DynamicResource InputPlaceholder}" Margin="0,0,0,16" LineHeight="20">
+                                        When enabled, deleting a package from ConfigMgr will also permanently remove the package source folder from disk. This applies to both individual and bulk package deletions.
+                                    </TextBlock>
+
+                                    <Grid Margin="0,0,0,0">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                            <ColumnDefinition Width="*"/>
+                                        </Grid.ColumnDefinitions>
+                                        <CheckBox x:Name="chk_DeleteSourceFolder"
+                                                  Style="{StaticResource ToggleSwitch}"
+                                                  VerticalAlignment="Center"
+                                                  Margin="0,0,12,0"/>
+                                        <TextBlock x:Name="txt_DeleteSourceFolderState" Grid.Column="1"
+                                                   Text="Off" FontSize="12" FontWeight="SemiBold"
+                                                   Foreground="{DynamicResource InputPlaceholder}"
+                                                   VerticalAlignment="Center" Margin="0,0,16,0"/>
+                                    </Grid>
+
+                                    <!-- Data removal warning (shown when toggle is on) -->
+                                    <Border x:Name="panel_DeleteSourceWarning" Visibility="Collapsed"
+                                            Background="{DynamicResource StatusWarningBackground}"
+                                            CornerRadius="6" Padding="12,10" Margin="0,12,0,0">
+                                        <DockPanel>
+                                            <TextBlock Text="&#xE7BA;" FontFamily="Segoe MDL2 Assets" FontSize="14"
+                                                       Foreground="{DynamicResource StatusWarning}"
+                                                       VerticalAlignment="Top" Margin="0,1,10,0"
+                                                       DockPanel.Dock="Left"/>
+                                            <TextBlock TextWrapping="Wrap" FontSize="12"
+                                                       Foreground="{DynamicResource WindowForeground}" LineHeight="20">
+                                                <Run FontWeight="SemiBold">Warning:</Run>
+                                                <Run>Source folder contents will be permanently deleted from disk when packages are removed. This cannot be undone. Ensure backups exist before enabling this option.</Run>
+                                            </TextBlock>
+                                        </DockPanel>
+                                    </Border>
+                                </StackPanel>
+                            </Border>
+
                             <!-- ConfigMgr Applications (user notifications) -->
-                            <Border Style="{StaticResource CardPanel}" Margin="0,0,0,12">
+                            <Border Tag="Applications" Style="{StaticResource CardPanel}" Margin="0,0,0,12">
                                 <StackPanel>
                                     <TextBlock FontSize="13" FontWeight="SemiBold"
                                                Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,8">
@@ -2988,7 +3225,8 @@
                                 </StackPanel>
                             </Border>
 
-                            <Border Style="{StaticResource CardPanel}" Margin="0,0,0,12">
+                            <!-- Replication Priority -->
+                            <Border Tag="Distribution" Style="{StaticResource CardPanel}" Margin="0,0,0,12">
                                 <StackPanel>
                                     <TextBlock FontSize="13" FontWeight="SemiBold"
                                                Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,8">
@@ -3059,7 +3297,8 @@
                                 </StackPanel>
                             </Border>
 
-                            <Border Style="{StaticResource CardPanel}" Margin="0,0,0,12">
+                            <!-- Distribution Point Groups -->
+                            <Border Tag="Distribution" Style="{StaticResource CardPanel}" Margin="0,0,0,12">
                                 <Grid>
                                     <Grid.RowDefinitions>
                                         <RowDefinition Height="Auto"/>
@@ -3085,7 +3324,8 @@
                                 </Grid>
                             </Border>
 
-                            <Border Style="{StaticResource CardPanel}" Margin="0,0,0,12">
+                            <!-- Distribution Points -->
+                            <Border Tag="Distribution" Style="{StaticResource CardPanel}" Margin="0,0,0,12">
                                 <Grid>
                                     <Grid.RowDefinitions>
                                         <RowDefinition Height="Auto"/>
@@ -3093,7 +3333,7 @@
                                     </Grid.RowDefinitions>
                                     <TextBlock FontSize="13" FontWeight="SemiBold"
                                                Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,8">
-                                        <Run Text="&#xE7B8;" FontFamily="Segoe MDL2 Assets" FontSize="13"/><Run Text="  Package Options"/>
+                                        <Run Text="&#xE968;" FontFamily="Segoe MDL2 Assets" FontSize="13"/><Run Text="  Distribution Points"/>
                                     </TextBlock>
                                     <DataGrid x:Name="grid_DPs" Grid.Row="1" Style="{StaticResource ModernDataGrid}" MaxHeight="200">
                                         <DataGrid.Columns>
@@ -3111,55 +3351,20 @@
                                 </Grid>
                             </Border>
 
-                            <!-- Source Folder Cleanup -->
-                            <Border Style="{StaticResource CardPanel}" Margin="0,0,0,12">
-                                <StackPanel>
-                                    <TextBlock FontSize="13" FontWeight="SemiBold"
-                                               Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,8">
-                                        <Run Text="&#xE74D;" FontFamily="Segoe MDL2 Assets" FontSize="13"/><Run Text="  Source Folder Cleanup"/>
-                                    </TextBlock>
-                                    <TextBlock TextWrapping="Wrap" FontSize="12"
-                                               Foreground="{DynamicResource InputPlaceholder}" Margin="0,0,0,16" LineHeight="20">
-                                        When enabled, deleting a package from ConfigMgr will also permanently remove the package source folder from disk. This applies to both individual and bulk package deletions.
-                                    </TextBlock>
-
-                                    <Grid Margin="0,0,0,0">
-                                        <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="Auto"/>
-                                            <ColumnDefinition Width="Auto"/>
-                                            <ColumnDefinition Width="*"/>
-                                        </Grid.ColumnDefinitions>
-                                        <CheckBox x:Name="chk_DeleteSourceFolder"
-                                                  Style="{StaticResource ToggleSwitch}"
-                                                  VerticalAlignment="Center"
-                                                  Margin="0,0,12,0"/>
-                                        <TextBlock x:Name="txt_DeleteSourceFolderState" Grid.Column="1"
-                                                   Text="Off" FontSize="12" FontWeight="SemiBold"
-                                                   Foreground="{DynamicResource InputPlaceholder}"
-                                                   VerticalAlignment="Center" Margin="0,0,16,0"/>
-                                    </Grid>
-
-                                    <!-- Data removal warning (shown when toggle is on) -->
-                                    <Border x:Name="panel_DeleteSourceWarning" Visibility="Collapsed"
-                                            Background="{DynamicResource StatusWarningBackground}"
-                                            CornerRadius="6" Padding="12,10" Margin="0,12,0,0">
-                                        <DockPanel>
-                                            <TextBlock Text="&#xE7BA;" FontFamily="Segoe MDL2 Assets" FontSize="14"
-                                                       Foreground="{DynamicResource StatusWarning}"
-                                                       VerticalAlignment="Top" Margin="0,1,10,0"
-                                                       DockPanel.Dock="Left"/>
-                                            <TextBlock TextWrapping="Wrap" FontSize="12"
-                                                       Foreground="{DynamicResource WindowForeground}" LineHeight="20">
-                                                <Run FontWeight="SemiBold">Warning:</Run>
-                                                <Run>Source folder contents will be permanently deleted from disk when packages are removed. This cannot be undone. Ensure backups exist before enabling this option.</Run>
-                                            </TextBlock>
-                                        </DockPanel>
-                                    </Border>
-                                </StackPanel>
-                            </Border>
+                            <!-- Search found nothing -->
+                            <StackPanel x:Name="panel_CMPackageOptionsNoResults" Margin="0,40,0,0" HorizontalAlignment="Center" Visibility="Collapsed">
+                                <TextBlock Text="&#xE721;" FontFamily="Segoe MDL2 Assets" FontSize="28" HorizontalAlignment="Center"
+                                           Foreground="{DynamicResource InputPlaceholder}" Margin="0,0,0,10"/>
+                                <TextBlock x:Name="txt_CMPackageOptionsNoResults" FontSize="13" HorizontalAlignment="Center" TextAlignment="Center" TextWrapping="Wrap"
+                                           Foreground="{DynamicResource WindowForeground}"/>
+                                <TextBlock Text="Try a different word, or clear the search to browse by section." FontSize="12" HorizontalAlignment="Center"
+                                           Foreground="{DynamicResource InputPlaceholder}" Margin="0,4,0,0"/>
+                            </StackPanel>
 
                             </StackPanel>
                             </ScrollViewer>
+                                </Grid>
+                            </Grid>
                         </Grid>
 
                         <!-- View: Logic Package -->
@@ -3961,11 +4166,53 @@
                                 <Run Text="&#xE7B8;" FontFamily="Segoe MDL2 Assets" FontSize="20"/><Run Text="  Package Options"/>
                             </TextBlock>
 
-                            <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
-                            <StackPanel>
+                            <Grid Grid.Row="1">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="212"/>
+                                    <ColumnDefinition Width="20"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+
+                                <!-- Section rail (built by Initialize-DATSettingsRail from $script:SettingsRailSections).
+                                     Each card below carries its section key in Tag. -->
+                                <StackPanel Grid.Column="0">
+                                    <Grid x:Name="zone_IntunePackageOptionsSearch" Margin="0,0,0,10" Background="Transparent">
+                                        <TextBox x:Name="txt_IntunePackageOptionsSearch" Style="{StaticResource RoundedTextBox}"
+                                                 Tag="Search package options" Height="36" AutomationProperties.Name="Search package options"/>
+                                        <Border x:Name="pill_IntunePackageOptionsSearch" Visibility="Collapsed" IsHitTestVisible="False" Background="{DynamicResource AccentColor}"
+                                                CornerRadius="8" Padding="7,1,7,2" Margin="0,-8,-4,0" HorizontalAlignment="Right" VerticalAlignment="Top">
+                                            <TextBlock Text="New" FontSize="10" FontWeight="SemiBold" Foreground="White"/>
+                                        </Border>
+                                        <TextBlock x:Name="ico_IntunePackageOptionsSearch" Text="&#xE721;" FontFamily="Segoe MDL2 Assets" FontSize="13"
+                                                   Foreground="{DynamicResource InputPlaceholder}" IsHitTestVisible="False"
+                                                   HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,12,0"/>
+                                        <Button x:Name="btn_IntunePackageOptionsSearchClear" Style="{StaticResource ChevronToggleButton}"
+                                                Content="&#xE711;" Width="22" Height="22" Margin="0,0,7,0" Visibility="Collapsed"
+                                                HorizontalAlignment="Right" VerticalAlignment="Center"
+                                                ToolTip="Clear search" AutomationProperties.Name="Clear search"/>
+                                    </Grid>
+                                    <StackPanel x:Name="pnl_IntunePackageOptionsRail" AutomationProperties.Name="Package Options sections"/>
+                                </StackPanel>
+
+                                <Grid Grid.Column="2">
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="*"/>
+                                    </Grid.RowDefinitions>
+
+                                    <!-- Section header: the selected section, or the search results summary -->
+                                    <StackPanel Grid.Row="0" Margin="2,0,0,12">
+                                        <TextBlock x:Name="txt_IntunePackageOptionsSectionTitle" FontSize="16" FontWeight="SemiBold"
+                                                   Foreground="{DynamicResource WindowForeground}"/>
+                                        <TextBlock x:Name="txt_IntunePackageOptionsSectionDesc" FontSize="12" TextWrapping="Wrap" Margin="0,3,0,0"
+                                                   Foreground="{DynamicResource InputPlaceholder}"/>
+                                    </StackPanel>
+
+                            <ScrollViewer x:Name="scr_IntunePackageOptions" Grid.Row="1" VerticalScrollBarVisibility="Auto">
+                            <StackPanel x:Name="pnl_IntunePackageOptionsCards">
 
                             <!-- Package Output -->
-                            <Border Style="{StaticResource CardPanel}" Margin="0,0,0,12">
+                            <Border Tag="App" Style="{StaticResource CardPanel}" Margin="0,0,0,12">
                                 <StackPanel>
                                     <TextBlock FontSize="14" FontWeight="SemiBold"
                                                Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,4">
@@ -4000,7 +4247,7 @@
                             </Border>
 
                             <!-- Package Icon -->
-                            <Border Style="{StaticResource CardPanel}" Margin="0,0,0,12">
+                            <Border Tag="App" Style="{StaticResource CardPanel}" Margin="0,0,0,12">
                                 <StackPanel>
                                     <TextBlock FontSize="14" FontWeight="SemiBold"
                                                Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,4">
@@ -4058,7 +4305,7 @@
                             </Border>
 
                             <!-- RBAC Scope Tags -->
-                            <Border Style="{StaticResource CardPanel}" Margin="0,0,0,12">
+                            <Border Tag="App" Style="{StaticResource CardPanel}" Margin="0,0,0,12">
                                 <StackPanel>
                                     <TextBlock FontSize="14" FontWeight="SemiBold"
                                                Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,4">
@@ -4114,7 +4361,7 @@
                             </Border>
 
                             <!-- Package Deployment -->
-                            <Border Style="{StaticResource CardPanel}" Margin="0,0,0,12">
+                            <Border Tag="Deployment" Style="{StaticResource CardPanel}" Margin="0,0,0,12">
                                 <StackPanel>
                                     <TextBlock FontSize="14" FontWeight="SemiBold"
                                                Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,4">
@@ -4210,7 +4457,7 @@
                             </Border>
 
                             <!-- End-user Notifications -->
-                            <Border Style="{StaticResource CardPanel}" Margin="0,0,0,12">
+                            <Border Tag="Deployment" Style="{StaticResource CardPanel}" Margin="0,0,0,12">
                                 <StackPanel>
                                     <TextBlock FontSize="14" FontWeight="SemiBold"
                                                Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,4">
@@ -4243,7 +4490,7 @@
                             </Border>
 
                             <!-- Assignment Filters -->
-                            <Border Style="{StaticResource CardPanel}" Margin="0,0,0,12">
+                            <Border Tag="Deployment" Style="{StaticResource CardPanel}" Margin="0,0,0,12">
                                 <StackPanel>
                                     <TextBlock FontSize="14" FontWeight="SemiBold"
                                                Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,4">
@@ -4374,7 +4621,7 @@
                             </Border>
 
                             <!-- Upload Engine (AzCopy) -->
-                            <Border Style="{StaticResource CardPanel}" Margin="0,0,0,12">
+                            <Border Tag="Uploads" Style="{StaticResource CardPanel}" Margin="0,0,0,12">
                                 <StackPanel>
                                     <TextBlock FontSize="14" FontWeight="SemiBold"
                                                Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,4">
@@ -4443,7 +4690,7 @@
                             </Border>
 
                             <!-- Package Uploads -->
-                            <Border Style="{StaticResource CardPanel}" Margin="0,0,0,12">
+                            <Border Tag="Uploads" Style="{StaticResource CardPanel}" Margin="0,0,0,12">
                                 <StackPanel>
                                     <TextBlock FontSize="14" FontWeight="SemiBold"
                                                Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,4">
@@ -4501,7 +4748,7 @@
                             </Border>
 
                             <!-- Code Signing -->
-                            <Border Style="{StaticResource CardPanel}" Margin="0,0,0,12">
+                            <Border Tag="Signing" Style="{StaticResource CardPanel}" Margin="0,0,0,12">
                                 <StackPanel>
                                     <TextBlock FontSize="14" FontWeight="SemiBold"
                                                Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,4">
@@ -4582,7 +4829,7 @@
                             </Border>
 
                             <!-- Debug Package Build -->
-                            <Border Style="{StaticResource CardPanel}" Margin="0,0,0,12">
+                            <Border Tag="Signing" Style="{StaticResource CardPanel}" Margin="0,0,0,12">
                                 <StackPanel>
                                     <TextBlock FontSize="14" FontWeight="SemiBold"
                                                Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,4">
@@ -4630,8 +4877,20 @@
                                 </StackPanel>
                             </Border>
 
+                            <!-- Search found nothing -->
+                            <StackPanel x:Name="panel_IntunePackageOptionsNoResults" Margin="0,40,0,0" HorizontalAlignment="Center" Visibility="Collapsed">
+                                <TextBlock Text="&#xE721;" FontFamily="Segoe MDL2 Assets" FontSize="28" HorizontalAlignment="Center"
+                                           Foreground="{DynamicResource InputPlaceholder}" Margin="0,0,0,10"/>
+                                <TextBlock x:Name="txt_IntunePackageOptionsNoResults" FontSize="13" HorizontalAlignment="Center" TextAlignment="Center" TextWrapping="Wrap"
+                                           Foreground="{DynamicResource WindowForeground}"/>
+                                <TextBlock Text="Try a different word, or clear the search to browse by section." FontSize="12" HorizontalAlignment="Center"
+                                           Foreground="{DynamicResource InputPlaceholder}" Margin="0,4,0,0"/>
+                            </StackPanel>
+
                             </StackPanel>
                             </ScrollViewer>
+                                </Grid>
+                            </Grid>
                         </Grid>
                         <!-- View: Toast Notifications -->
                         <Grid x:Name="view_ToastNotifications" Visibility="Collapsed">
@@ -4644,11 +4903,53 @@
                                 <Run Text="&#xE8BD;" FontFamily="Segoe MDL2 Assets" FontSize="20"/><Run Text="  Toast Notifications"/>
                             </TextBlock>
 
-                            <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
-                            <StackPanel>
+                            <Grid Grid.Row="1">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="212"/>
+                                    <ColumnDefinition Width="20"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+
+                                <!-- Section rail (built by Initialize-DATSettingsRail from $script:SettingsRailSections).
+                                     Each card below carries its section key in Tag. -->
+                                <StackPanel Grid.Column="0">
+                                    <Grid x:Name="zone_ToastNotificationsSearch" Margin="0,0,0,10" Background="Transparent">
+                                        <TextBox x:Name="txt_ToastNotificationsSearch" Style="{StaticResource RoundedTextBox}"
+                                                 Tag="Search toast settings" Height="36" AutomationProperties.Name="Search toast settings"/>
+                                        <Border x:Name="pill_ToastNotificationsSearch" Visibility="Collapsed" IsHitTestVisible="False" Background="{DynamicResource AccentColor}"
+                                                CornerRadius="8" Padding="7,1,7,2" Margin="0,-8,-4,0" HorizontalAlignment="Right" VerticalAlignment="Top">
+                                            <TextBlock Text="New" FontSize="10" FontWeight="SemiBold" Foreground="White"/>
+                                        </Border>
+                                        <TextBlock x:Name="ico_ToastNotificationsSearch" Text="&#xE721;" FontFamily="Segoe MDL2 Assets" FontSize="13"
+                                                   Foreground="{DynamicResource InputPlaceholder}" IsHitTestVisible="False"
+                                                   HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,12,0"/>
+                                        <Button x:Name="btn_ToastNotificationsSearchClear" Style="{StaticResource ChevronToggleButton}"
+                                                Content="&#xE711;" Width="22" Height="22" Margin="0,0,7,0" Visibility="Collapsed"
+                                                HorizontalAlignment="Right" VerticalAlignment="Center"
+                                                ToolTip="Clear search" AutomationProperties.Name="Clear search"/>
+                                    </Grid>
+                                    <StackPanel x:Name="pnl_ToastNotificationsRail" AutomationProperties.Name="Toast Notifications sections"/>
+                                </StackPanel>
+
+                                <Grid Grid.Column="2">
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="*"/>
+                                    </Grid.RowDefinitions>
+
+                                    <!-- Section header: the selected section, or the search results summary -->
+                                    <StackPanel Grid.Row="0" Margin="2,0,0,12">
+                                        <TextBlock x:Name="txt_ToastNotificationsSectionTitle" FontSize="16" FontWeight="SemiBold"
+                                                   Foreground="{DynamicResource WindowForeground}"/>
+                                        <TextBlock x:Name="txt_ToastNotificationsSectionDesc" FontSize="12" TextWrapping="Wrap" Margin="0,3,0,0"
+                                                   Foreground="{DynamicResource InputPlaceholder}"/>
+                                    </StackPanel>
+
+                            <ScrollViewer x:Name="scr_ToastNotifications" Grid.Row="1" VerticalScrollBarVisibility="Auto">
+                            <StackPanel x:Name="pnl_ToastNotificationsCards">
 
                             <!-- Toast Notification Preview -->
-                            <Border Style="{StaticResource CardPanel}" Margin="0,0,0,12">
+                            <Border Tag="Appearance" Style="{StaticResource CardPanel}" Margin="0,0,0,12">
                                 <StackPanel>
                                     <TextBlock FontSize="14" FontWeight="SemiBold"
                                                Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,4">
@@ -4881,15 +5182,11 @@
                                             </Grid>
                                         </Border>
                                     </Grid>
-
-                                    <!-- Notification Options -->
-                                    <TextBlock FontSize="14" FontWeight="SemiBold"
-                                               Foreground="{DynamicResource WindowForeground}" Margin="0,24,0,8">
-                                        <Run Text="&#xE7E7;" FontFamily="Segoe MDL2 Assets" FontSize="14"/><Run Text="  Notification Options"/>
-                                    </TextBlock>
+                                </StackPanel>
+                            </Border>
 
                                     <!-- Notification Theme -->
-                                    <Border Style="{StaticResource CardPanel}" Margin="0,0,0,12" Padding="16,12">
+                                    <Border Tag="Appearance" Style="{StaticResource CardPanel}" Margin="0,0,0,12" Padding="16,12">
                                         <StackPanel>
                                             <TextBlock FontSize="13" FontWeight="SemiBold"
                                                        Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,4">
@@ -4977,6 +5274,8 @@
                                         </StackPanel>
                                     </Border>
 
+                                    <!-- One rail card: the code swaps these two by preview type, the rail shows or hides the pair -->
+                                    <StackPanel Tag="Appearance">
                                     <!-- Shown instead of Custom Toast Text while an install progress preview is selected -->
                                     <Border x:Name="card_ToastProgressTextNote" Style="{StaticResource CardPanel}" Margin="0,0,0,12" Padding="16,12" Visibility="Collapsed">
                                         <StackPanel>
@@ -5062,9 +5361,10 @@
                                             </StackPanel>
                                         </StackPanel>
                                     </Border>
+                                    </StackPanel>
 
                                     <!-- Custom Branding -->
-                                    <Border Style="{StaticResource CardPanel}" Margin="0,0,0,12" Padding="16,12">
+                                    <Border Tag="Appearance" Style="{StaticResource CardPanel}" Margin="0,0,0,12" Padding="16,12">
                                         <StackPanel>
                                             <TextBlock FontSize="13" FontWeight="SemiBold"
                                                        Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,4">
@@ -5113,12 +5413,17 @@
                                     </Border>
 
                                     <!-- Toast Behaviour -->
-                                    <Border Style="{StaticResource CardPanel}" Margin="0,0,0,12" Padding="16,12">
+                                    <Border Tag="Behaviour" Style="{StaticResource CardPanel}" Margin="0,0,0,12" Padding="16,12">
                                         <StackPanel>
-                                            <TextBlock FontSize="13" FontWeight="SemiBold"
-                                                       Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,4">
-                                                <Run Text="&#xE9F5;" FontFamily="Segoe MDL2 Assets" FontSize="13"/><Run Text="  Toast Behaviour"/>
-                                            </TextBlock>
+                                            <StackPanel x:Name="zone_ToastBehaviour" Orientation="Horizontal" Background="Transparent" Margin="0,0,0,4">
+                                                <TextBlock FontSize="13" FontWeight="SemiBold" VerticalAlignment="Center"
+                                                           Foreground="{DynamicResource WindowForeground}">
+                                                    <Run Text="&#xE9F5;" FontFamily="Segoe MDL2 Assets" FontSize="13"/><Run Text="  Toast Behaviour"/>
+                                                </TextBlock>
+                                                <Border x:Name="pill_ToastBehaviour" Visibility="Collapsed" Background="{DynamicResource AccentColor}" CornerRadius="8" Padding="7,1,7,2" Margin="8,0,0,0" VerticalAlignment="Center">
+                                                    <TextBlock Text="New" FontSize="10" FontWeight="SemiBold" Foreground="White"/>
+                                                </Border>
+                                            </StackPanel>
                                             <TextBlock Text="Controls what happens when a user does not interact with the update toast within the 5-minute window."
                                                        FontSize="11" Foreground="{DynamicResource InputPlaceholder}" TextWrapping="Wrap" Margin="0,0,0,10" LineHeight="16"/>
 
@@ -5278,11 +5583,8 @@
                                         </StackPanel>
                                     </Border>
 
-                                </StackPanel>
-                            </Border>
-
                             <!-- Toast Test Package -->
-                            <Border Style="{StaticResource CardPanel}" Margin="0,0,0,12">
+                            <Border Tag="TestPackage" Style="{StaticResource CardPanel}" Margin="0,0,0,12">
                                 <StackPanel>
                                     <TextBlock FontSize="14" FontWeight="SemiBold"
                                                Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,4">
@@ -5330,8 +5632,20 @@
                                 </StackPanel>
                             </Border>
 
+                            <!-- Search found nothing -->
+                            <StackPanel x:Name="panel_ToastNotificationsNoResults" Margin="0,40,0,0" HorizontalAlignment="Center" Visibility="Collapsed">
+                                <TextBlock Text="&#xE721;" FontFamily="Segoe MDL2 Assets" FontSize="28" HorizontalAlignment="Center"
+                                           Foreground="{DynamicResource InputPlaceholder}" Margin="0,0,0,10"/>
+                                <TextBlock x:Name="txt_ToastNotificationsNoResults" FontSize="13" HorizontalAlignment="Center" TextAlignment="Center" TextWrapping="Wrap"
+                                           Foreground="{DynamicResource WindowForeground}"/>
+                                <TextBlock Text="Try a different word, or clear the search to browse by section." FontSize="12" HorizontalAlignment="Center"
+                                           Foreground="{DynamicResource InputPlaceholder}" Margin="0,4,0,0"/>
+                            </StackPanel>
+
                             </StackPanel>
                             </ScrollViewer>
+                                </Grid>
+                            </Grid>
                         </Grid>
                         <Grid x:Name="view_IntunePackageMgmt" Visibility="Collapsed">
                             <Grid.RowDefinitions>
@@ -6121,12 +6435,53 @@
                                 <Run Text="&#xE713;" FontFamily="Segoe MDL2 Assets" FontSize="20"/><Run Text="  Common Settings"/>
                             </TextBlock>
 
-                            <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
-                                <StackPanel>
-                                    <TextBlock Text="General &amp; Appearance" FontSize="11" FontWeight="SemiBold" Foreground="{DynamicResource InputPlaceholder}" Margin="4,2,0,8"/>
+                            <Grid Grid.Row="1">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="212"/>
+                                    <ColumnDefinition Width="20"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+
+                                <!-- Section rail (built by Initialize-DATSettingsRail from $script:SettingsRailSections).
+                                     Each card below carries its section key in Tag. -->
+                                <StackPanel Grid.Column="0">
+                                    <Grid x:Name="zone_CommonSettingsSearch" Margin="0,0,0,10" Background="Transparent">
+                                        <TextBox x:Name="txt_CommonSettingsSearch" Style="{StaticResource RoundedTextBox}"
+                                                 Tag="Search settings" Height="36" AutomationProperties.Name="Search settings"/>
+                                        <Border x:Name="pill_CommonSettingsSearch" Visibility="Collapsed" IsHitTestVisible="False" Background="{DynamicResource AccentColor}"
+                                                CornerRadius="8" Padding="7,1,7,2" Margin="0,-8,-4,0" HorizontalAlignment="Right" VerticalAlignment="Top">
+                                            <TextBlock Text="New" FontSize="10" FontWeight="SemiBold" Foreground="White"/>
+                                        </Border>
+                                        <TextBlock x:Name="ico_CommonSettingsSearch" Text="&#xE721;" FontFamily="Segoe MDL2 Assets" FontSize="13"
+                                                   Foreground="{DynamicResource InputPlaceholder}" IsHitTestVisible="False"
+                                                   HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,12,0"/>
+                                        <Button x:Name="btn_CommonSettingsSearchClear" Style="{StaticResource ChevronToggleButton}"
+                                                Content="&#xE711;" Width="22" Height="22" Margin="0,0,7,0" Visibility="Collapsed"
+                                                HorizontalAlignment="Right" VerticalAlignment="Center"
+                                                ToolTip="Clear search" AutomationProperties.Name="Clear search"/>
+                                    </Grid>
+                                    <StackPanel x:Name="pnl_CommonSettingsRail" AutomationProperties.Name="Common Settings sections"/>
+                                </StackPanel>
+
+                                <Grid Grid.Column="2">
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="*"/>
+                                    </Grid.RowDefinitions>
+
+                                    <!-- Section header: the selected section, or the search results summary -->
+                                    <StackPanel Grid.Row="0" Margin="2,0,0,12">
+                                        <TextBlock x:Name="txt_CommonSettingsSectionTitle" FontSize="16" FontWeight="SemiBold"
+                                                   Foreground="{DynamicResource WindowForeground}"/>
+                                        <TextBlock x:Name="txt_CommonSettingsSectionDesc" FontSize="12" TextWrapping="Wrap" Margin="0,3,0,0"
+                                                   Foreground="{DynamicResource InputPlaceholder}"/>
+                                    </StackPanel>
+
+                            <ScrollViewer x:Name="scr_CommonSettings" Grid.Row="1" VerticalScrollBarVisibility="Auto">
+                                <StackPanel x:Name="pnl_CommonSettingsCards">
 
                                     <!-- Interface Scale -->
-                                    <Border Style="{StaticResource CardPanel}" Margin="0,0,0,12">
+                                    <Border Tag="General" Style="{StaticResource CardPanel}" Margin="0,0,0,12">
                                         <StackPanel>
                                             <StackPanel x:Name="zone_InterfaceScale" Orientation="Horizontal" Background="Transparent" Margin="0,0,0,6">
                                                 <TextBlock FontSize="14" FontWeight="SemiBold" VerticalAlignment="Center"
@@ -6182,9 +6537,8 @@
                                         </StackPanel>
                                     </Border>
 
-                                    <TextBlock Text="Storage &amp; Housekeeping" FontSize="11" FontWeight="SemiBold" Foreground="{DynamicResource InputPlaceholder}" Margin="4,2,0,8"/>
-
-                                    <Border Style="{StaticResource CardPanel}" Margin="0,0,0,12">
+                                    <!-- Storage Paths -->
+                                    <Border Tag="Storage" Style="{StaticResource CardPanel}" Margin="0,0,0,12">
                                         <StackPanel>
                                             <TextBlock FontSize="14" FontWeight="SemiBold"
                                                        Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,12">
@@ -6283,7 +6637,7 @@
                                     </Border>
 
                                     <!-- Backup / Restore Options -->
-                                    <Border Style="{StaticResource CardPanel}" Margin="0,0,0,12">
+                                    <Border Tag="Storage" Style="{StaticResource CardPanel}" Margin="0,0,0,12">
                                         <StackPanel>
                                             <TextBlock FontSize="14" FontWeight="SemiBold"
                                                        Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,12">
@@ -6326,7 +6680,7 @@
                                     </Border>
 
                                     <!-- Package Retention -->
-                                    <Border Style="{StaticResource CardPanel}" Margin="0,0,0,12">
+                                    <Border Tag="Storage" Style="{StaticResource CardPanel}" Margin="0,0,0,12">
                                         <StackPanel>
                                             <TextBlock FontSize="14" FontWeight="SemiBold"
                                                        Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,4">
@@ -6393,7 +6747,7 @@
                                     </Border>
 
                                     <!-- Purge Downloads -->
-                                    <Border Style="{StaticResource CardPanel}" Margin="0,0,0,12">
+                                    <Border Tag="Storage" Style="{StaticResource CardPanel}" Margin="0,0,0,12">
                                         <StackPanel>
                                             <TextBlock FontSize="14" FontWeight="SemiBold"
                                                        Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,6">
@@ -6437,10 +6791,8 @@
                                         </StackPanel>
                                     </Border>
 
-                                    <TextBlock Text="Catalog &amp; OEM Sources" FontSize="11" FontWeight="SemiBold" Foreground="{DynamicResource InputPlaceholder}" Margin="4,2,0,8"/>
-
                                     <!-- DAT API Catalog Source -->
-                                    <Border Style="{StaticResource CardPanel}" Margin="0,0,0,12">
+                                    <Border Tag="Catalog" Style="{StaticResource CardPanel}" Margin="0,0,0,12">
                                         <StackPanel>
                                             <TextBlock FontSize="14" FontWeight="SemiBold"
                                                        Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,6">
@@ -6495,7 +6847,7 @@
                                     </Border>
 
                                     <!-- OEM Selections -->
-                                    <Border Style="{StaticResource CardPanel}" Margin="0,0,0,12">
+                                    <Border Tag="Catalog" Style="{StaticResource CardPanel}" Margin="0,0,0,12">
                                         <StackPanel>
                                             <StackPanel x:Name="zone_OEMSelections" Orientation="Horizontal" Background="Transparent" Margin="0,0,0,6">
                                                 <TextBlock FontSize="14" FontWeight="SemiBold" VerticalAlignment="Center"
@@ -6549,10 +6901,8 @@
                                         </StackPanel>
                                     </Border>
 
-                                    <TextBlock Text="Build &amp; Packaging" FontSize="11" FontWeight="SemiBold" Foreground="{DynamicResource InputPlaceholder}" Margin="4,2,0,8"/>
-
                                     <!-- Driver Package Build Type -->
-                                    <Border Style="{StaticResource CardPanel}" Margin="0,0,0,12">
+                                    <Border Tag="Build" Style="{StaticResource CardPanel}" Margin="0,0,0,12">
                                         <StackPanel>
                                             <StackPanel x:Name="zone_LenovoLatest" Orientation="Horizontal" Background="Transparent" Margin="0,0,0,6">
                                                 <TextBlock FontSize="14" FontWeight="SemiBold" VerticalAlignment="Center"
@@ -6690,7 +7040,7 @@
                                     </Border>
 
                                     <!-- Download Only Options -->
-                                    <Border Style="{StaticResource CardPanel}" Margin="0,0,0,12">
+                                    <Border Tag="Build" Style="{StaticResource CardPanel}" Margin="0,0,0,12">
                                         <StackPanel>
                                             <TextBlock FontSize="14" FontWeight="SemiBold"
                                                        Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,6">
@@ -6720,7 +7070,7 @@
                                     </Border>
 
                                     <!-- WIM Packaging Options -->
-                                    <Border Style="{StaticResource CardPanel}" Margin="0,0,0,12">
+                                    <Border Tag="Build" Style="{StaticResource CardPanel}" Margin="0,0,0,12">
                                         <StackPanel>
                                             <TextBlock FontSize="14" FontWeight="SemiBold"
                                                        Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,4">
@@ -6832,7 +7182,7 @@
                                     </Border>
 
                                     <!-- External Utilities & Modules -->
-                                    <Border Style="{StaticResource CardPanel}" Margin="0,0,0,12">
+                                    <Border Tag="Build" Style="{StaticResource CardPanel}" Margin="0,0,0,12">
                                         <StackPanel>
                                             <TextBlock FontSize="14" FontWeight="SemiBold"
                                                        Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,12">
@@ -6940,10 +7290,8 @@
                                         </StackPanel>
                                     </Border>
 
-                                    <TextBlock Text="Network" FontSize="11" FontWeight="SemiBold" Foreground="{DynamicResource InputPlaceholder}" Margin="4,2,0,8"/>
-
                                     <!-- Proxy Configuration -->
-                                    <Border Style="{StaticResource CardPanel}" Margin="0,0,0,12">
+                                    <Border Tag="Network" Style="{StaticResource CardPanel}" Margin="0,0,0,12">
                                         <StackPanel>
                                             <TextBlock FontSize="14" FontWeight="SemiBold"
                                                        Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,12">
@@ -7019,10 +7367,8 @@
                                         </StackPanel>
                                     </Border>
 
-                                    <TextBlock Text="Notifications &amp; Telemetry" FontSize="11" FontWeight="SemiBold" Foreground="{DynamicResource InputPlaceholder}" Margin="4,2,0,8"/>
-
                                     <!-- Teams Notifications -->
-                                    <Border Style="{StaticResource CardPanel}" Margin="0,0,0,12">
+                                    <Border Tag="Notifications" Style="{StaticResource CardPanel}" Margin="0,0,0,12">
                                         <StackPanel>
                                             <TextBlock FontSize="14" FontWeight="SemiBold"
                                                        Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,12">
@@ -7079,7 +7425,7 @@
                                     </Border>
 
                                     <!-- Telemetry Collection -->
-                                    <Border Style="{StaticResource CardPanel}" Margin="0,0,0,12">
+                                    <Border Tag="Notifications" Style="{StaticResource CardPanel}" Margin="0,0,0,12">
                                         <StackPanel>
                                             <TextBlock FontSize="14" FontWeight="SemiBold"
                                                        Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,12">
@@ -7196,10 +7542,8 @@
                                         </StackPanel>
                                     </Border>
 
-                                    <TextBlock Text="Logging &amp; Diagnostics" FontSize="11" FontWeight="SemiBold" Foreground="{DynamicResource InputPlaceholder}" Margin="4,2,0,8"/>
-
                                     <!-- Log File Configuration -->
-                                    <Border Style="{StaticResource CardPanel}" Margin="0,0,0,12">
+                                    <Border Tag="Logging" Style="{StaticResource CardPanel}" Margin="0,0,0,12">
                                         <StackPanel>
                                             <TextBlock FontSize="14" FontWeight="SemiBold"
                                                        Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,4">
@@ -7267,8 +7611,20 @@
                                             </StackPanel>
                                         </StackPanel>
                                     </Border>
+
+                                    <!-- Search found nothing -->
+                                    <StackPanel x:Name="panel_CommonSettingsNoResults" Margin="0,40,0,0" HorizontalAlignment="Center" Visibility="Collapsed">
+                                        <TextBlock Text="&#xE721;" FontFamily="Segoe MDL2 Assets" FontSize="28" HorizontalAlignment="Center"
+                                                   Foreground="{DynamicResource InputPlaceholder}" Margin="0,0,0,10"/>
+                                        <TextBlock x:Name="txt_CommonSettingsNoResults" FontSize="13" HorizontalAlignment="Center" TextAlignment="Center" TextWrapping="Wrap"
+                                                   Foreground="{DynamicResource WindowForeground}"/>
+                                        <TextBlock Text="Try a different word, or clear the search to browse by section." FontSize="12" HorizontalAlignment="Center"
+                                                   Foreground="{DynamicResource InputPlaceholder}" Margin="0,4,0,0"/>
+                                    </StackPanel>
                                 </StackPanel>
                             </ScrollViewer>
+                                </Grid>
+                            </Grid>
                         </Grid>
 
                         <!-- View: Log Viewer -->
@@ -7807,6 +8163,78 @@
                                         </StackPanel>
                                     </Border>
 
+                                    <!-- Test Harness -->
+                                    <Border Style="{StaticResource CardPanel}" Margin="0,0,0,12">
+                                        <StackPanel>
+                                            <StackPanel x:Name="zone_MDMTestHarness" Orientation="Horizontal" Background="Transparent" Margin="0,0,0,8">
+                                                <TextBlock Text="Testing with Test-ModernDriverManagement.ps1" FontSize="18" FontWeight="Bold"
+                                                           Foreground="{DynamicResource AccentColor}" VerticalAlignment="Center"/>
+                                                <Border x:Name="pill_MDMTestHarness" Visibility="Collapsed" Background="{DynamicResource AccentColor}" CornerRadius="8" Padding="7,1,7,2" Margin="10,0,0,0" VerticalAlignment="Center">
+                                                    <TextBlock Text="New" FontSize="10" FontWeight="SemiBold" Foreground="White"/>
+                                                </Border>
+                                            </StackPanel>
+                                            <TextBlock TextWrapping="Wrap" FontSize="13"
+                                                       Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,12">
+                                                Test-ModernDriverManagement.ps1 is a test harness for Invoke-CMApplyDriverPackage.ps1 and Invoke-CMDownloadBIOSPackage.ps1. It runs them against a make, model and baseboard (SystemSKU), using the AdminService, a DriverPackages.xml logic file or both, and shows which driver and BIOS packages would be selected and why. It runs in full Windows or WinPE. The scripts run in a separate PowerShell process with a simulated task sequence environment. The harness stops before content is downloaded, so it never applies drivers or flashes a BIOS, and is safe to run in the middle of a live task sequence.
+                                            </TextBlock>
+
+                                            <TextBlock Text="What It Reports" FontSize="14" FontWeight="SemiBold"
+                                                       Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,6"/>
+                                            <StackPanel Margin="8,0,0,12">
+                                                <TextBlock FontSize="12" Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,3" TextWrapping="Wrap" Text="&#x2022;  Prerequisites &#x2014; PowerShell version, WinPE, elevation, script syntax, TLS and AdminService reachability"/>
+                                                <TextBlock FontSize="12" Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,3" TextWrapping="Wrap" Text="&#x2022;  Task sequence variables &#x2014; every variable the scripts read or write, and whether it is set"/>
+                                                <TextBlock FontSize="12" Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,3" TextWrapping="Wrap" Text="&#x2022;  Detection &#x2014; the manufacturer, model and SystemSKU the scripts derive from the hardware"/>
+                                                <TextBlock FontSize="12" Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,3" TextWrapping="Wrap" Text="&#x2022;  Matching &#x2014; whether a driver / BIOS package matched the target OS, and which one was selected"/>
+                                                <TextBlock FontSize="12" Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,3" TextWrapping="Wrap" Text="&#x2022;  Errors &#x2014; every warning and error the scripts logged. Report.txt, Harness.log and each run's CMTrace log are kept in a run folder."/>
+                                            </StackPanel>
+
+                                            <TextBlock Text="Package It" FontSize="14" FontWeight="SemiBold"
+                                                       Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,6"/>
+                                            <StackPanel Margin="8,0,0,12">
+                                                <TextBlock TextWrapping="Wrap" FontSize="12" Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,4">
+                                                    <Run FontWeight="SemiBold" Text="1. Collect the scripts"/> &#x2014; Copy Test-ModernDriverManagement.ps1, Invoke-CMApplyDriverPackage.ps1 and Invoke-CMDownloadBIOSPackage.ps1 from the tool's Scripts folder into one source folder. The harness only uses the scripts in its own folder, so the package tests the same versions your task sequence runs.
+                                                </TextBlock>
+                                                <TextBlock TextWrapping="Wrap" FontSize="12" Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,4">
+                                                    <Run FontWeight="SemiBold" Text="2. Create the package"/> &#x2014; Create a ConfigMgr Standard Package from that folder with no program, and distribute it to the distribution points your boot image uses.
+                                                </TextBlock>
+                                                <TextBlock TextWrapping="Wrap" FontSize="12" Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,4">
+                                                    <Run FontWeight="SemiBold" Text="3. Add it to the task sequence"/> &#x2014; Before the driver and BIOS steps, add a Download Package Content step for the package, with &quot;Save path as a variable&quot; set to MDMTest. The content path is then in MDMTest01.
+                                                </TextBlock>
+                                            </StackPanel>
+
+                                            <TextBlock Text="Test With the Task Sequence Debugger" FontSize="14" FontWeight="SemiBold"
+                                                       Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,6"/>
+                                            <StackPanel Margin="8,0,0,8">
+                                                <TextBlock TextWrapping="Wrap" FontSize="12" Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,4">
+                                                    <Run FontWeight="SemiBold" Text="1. Deploy in debug mode"/> &#x2014; Turn on the Task Sequence Debugger optional feature (Administration &gt; Updates and Servicing &gt; Features). Select the task sequence and choose Debug on the ribbon, then deploy to a collection of 10 or fewer devices. Alternatively, set TSDebugMode to TRUE on the collection or computer.
+                                                </TextBlock>
+                                                <TextBlock TextWrapping="Wrap" FontSize="12" Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,4">
+                                                    <Run FontWeight="SemiBold" Text="2. Break before the driver step"/> &#x2014; When the debugger opens on the device, select the Apply Driver Package (or BIOS) step, choose Set Break, then Run. The task sequence stops there, after the test package and XML logic package have downloaded.
+                                                </TextBlock>
+                                                <TextBlock TextWrapping="Wrap" FontSize="12" Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,4">
+                                                    <Run FontWeight="SemiBold" Text="3. Run the harness"/> &#x2014; Note the MDMTest01, MDMXMLPackage01 and _SMSTSLogPath values in the debugger's Task Sequence Variables window, choose Cmd Prompt (WinPE only), and run the command below with those paths. It prompts for anything not given on the command line. Add -ShowFullLog -Verbose to follow the matching decision by decision.
+                                                </TextBlock>
+                                            </StackPanel>
+                                            <Border Background="{DynamicResource InputBackground}" CornerRadius="6" Padding="12,10" Margin="8,0,0,8">
+                                                <TextBlock FontSize="12" FontFamily="Cascadia Code,Consolas,monospace" TextWrapping="Wrap"
+                                                           Foreground="{DynamicResource AccentTextColor}"
+                                                           Text="powershell.exe -ExecutionPolicy Bypass -File &quot;&lt;MDMTest01&gt;\Test-ModernDriverManagement.ps1&quot; -UseLocalHardware -XMLPackagePath &quot;&lt;MDMXMLPackage01&gt;&quot; -OutputPath &quot;&lt;_SMSTSLogPath&gt;&quot;"/>
+                                            </Border>
+                                            <StackPanel Margin="8,0,0,12">
+                                                <TextBlock TextWrapping="Wrap" FontSize="12" Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,4">
+                                                    <Run FontWeight="SemiBold" Text="4. Review, then continue"/> &#x2014; -UseLocalHardware tests against the device's own hardware. With -OutputPath set to _SMSTSLogPath, the run folder is kept next to smsts.log and can be opened with the debugger's Log File button. Close the prompt and choose Step or Run: the harness doesn't change the task sequence, so the real steps then run normally.
+                                                </TextBlock>
+                                                <TextBlock TextWrapping="Wrap" FontSize="12" Foreground="{DynamicResource InputPlaceholder}" Margin="0,4,0,0">
+                                                    Tip: set TSDebugOnError to TRUE so the debugger opens only when a step fails. In debug mode a failed step doesn't end the task sequence, so you can run the harness, fix the package or variable, and retry the step.
+                                                </TextBlock>
+                                            </StackPanel>
+
+                                            <Button x:Name="btn_MDMOpenScriptsFolder" Style="{StaticResource RoundedButton}" HorizontalAlignment="Left" Height="34" Margin="0,0,0,0" Cursor="Hand">
+                                                <TextBlock><Run Text="&#xE838;" FontFamily="Segoe MDL2 Assets"/><Run Text="  Open Scripts Folder"/></TextBlock>
+                                            </Button>
+                                        </StackPanel>
+                                    </Border>
+
                                     <!-- GitHub Resources -->
                                     <Border Style="{StaticResource CardPanel}" Margin="0,0,0,12">
                                         <StackPanel>
@@ -7853,7 +8281,7 @@
                                     <StackPanel>
                                         <TextBlock Text="Driver Automation Tool" FontSize="22" FontWeight="Bold"
                                                    Foreground="{DynamicResource AccentColor}" Margin="0,0,0,4"/>
-                                        <TextBlock x:Name="txt_AboutVersion" Text="Version 10.3.0" FontSize="14"
+                                        <TextBlock x:Name="txt_AboutVersion" Text="Version 10.3.1" FontSize="14"
                                                    Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,16"/>
 
                                         <TextBlock TextWrapping="Wrap" FontSize="13"

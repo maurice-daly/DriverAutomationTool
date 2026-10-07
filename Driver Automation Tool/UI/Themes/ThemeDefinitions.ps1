@@ -33,6 +33,9 @@ $script:Themes = @{
         ButtonDangerHover      = "#F87171"
         ButtonSuccess          = "#107C10"
         ButtonSuccessHover     = "#16A34A"
+        ButtonWarning          = "#FFAA44"
+        ButtonWarningHover     = "#E69530"
+        ButtonWarningForeground = "#1E293B"
 
         # DataGrid
         GridBackground         = "#1A1A1A"
@@ -138,6 +141,9 @@ $script:Themes = @{
         ButtonDangerHover      = "#DC2626"
         ButtonSuccess          = "#107C10"
         ButtonSuccessHover     = "#16A34A"
+        ButtonWarning          = "#B45309"
+        ButtonWarningHover     = "#92400E"
+        ButtonWarningForeground = "#FFFFFF"
 
         # DataGrid
         GridBackground         = "#FFFFFF"
@@ -171,21 +177,23 @@ $script:Themes = @{
         ProgressBackground     = "#D5DBE4"
         ProgressForeground     = "#107C10"
 
-        # Status -- IntuneGuardian semantic colors
+        # Status -- IntuneGuardian semantic colors. These colour status text on white cards, so each
+        # keeps at least 4.5:1 contrast there (the dark theme's amber and red are too light for it).
         StatusInfo             = "#0078D4"
         StatusSuccess          = "#107C10"
-        StatusWarning          = "#FFAA44"
+        StatusWarning          = "#B45309"
         StatusWarningBackground = "#20FFAA44"
-        StatusError            = "#E74856"
+        StatusError            = "#C42B1C"
         StatusErrorText        = "#C0392B"
 
         # Known model row text -- green reads well on the light surface
         KnownModelForeground   = "#107C10"
 
         # Info box callouts (auth cards, notes)
-        InfoBoxGreen           = "#16A34A"
+        # Text is darker than its tint so it stays readable (4.5:1) on the light callout
+        InfoBoxGreen           = "#166534"
         InfoBoxGreenBg         = "#2016A34A"
-        InfoBoxAmber           = "#D97706"
+        InfoBoxAmber           = "#92400E"
         InfoBoxAmberBg         = "#20D97706"
 
         # Driver "N/A" indicator (when no driver package is available for a model)

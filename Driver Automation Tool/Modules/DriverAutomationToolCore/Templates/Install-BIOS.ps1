@@ -201,12 +201,20 @@ function Invoke-BIOSFlashUtility {
     <#
     .SYNOPSIS
         Executes a BIOS flash utility and captures output for logging.
+    .DESCRIPTION
+        Every manufacturer's flash runs through here, so BitLocker protection is confirmed off
+        immediately before the tool starts. If it cannot be, the flash is not attempted.
     #>
     param (
         [Parameter(Mandatory)][string]$FilePath,
         [string]$Arguments,
         [int]$TimeoutSeconds = 600
     )
+
+    if (-not (Confirm-DATBitLockerSuspended -Stage 'Flash')) {
+        $script:installPhase = 'BitLocker'
+        throw "BitLocker protection on $($env:SystemDrive) is on and could not be suspended, so the firmware was not flashed (flashing would trigger BitLocker recovery at the next restart). It will be retried on the next run."
+    }
 
     Write-CMTraceLog "Executing: $FilePath $Arguments"
 
@@ -251,47 +259,189 @@ function Invoke-BIOSFlashUtility {
     return $process.ExitCode
 }
 
-function Suspend-BitLockerForReboot {
+function Get-DATBitLockerProtection {
     <#
     .SYNOPSIS
-        Suspends BitLocker on the OS drive for one reboot cycle to allow BIOS flashing.
+        Reads BitLocker protection on the OS drive.
     .DESCRIPTION
-        Only acts when protection is currently On, so it is safe to call more than once:
-        it is invoked after extraction to suspend for the flash, and again immediately
-        before the restart to re-suspend if a user or external management/compliance script
-        re-enabled protection in the meantime.
+        Reads Win32_EncryptableVolume directly rather than through Get-BitLockerVolume, so a
+        missing BitLocker module or a failed query reports Unknown instead of looking like
+        "BitLocker is not enabled". State is one of:
+          On           -- protectors are active: a firmware change would trigger recovery
+          Off          -- not protecting (suspended, or the drive is not encrypted)
+          NotAvailable -- BitLocker is not part of this edition of Windows
+          Unknown      -- the state could not be read (Detail says why)
+        Volume is the WMI instance, for suspending when the state is On.
     #>
     try {
-        $blv = Get-BitLockerVolume -MountPoint $env:SystemDrive -ErrorAction SilentlyContinue
-        if ($blv -and $blv.ProtectionStatus -eq 'On') {
-            Write-CMTraceLog "BitLocker is enabled on $($env:SystemDrive) -- suspending for 1 reboot cycle"
-            Suspend-BitLocker -MountPoint $env:SystemDrive -RebootCount 1 -ErrorAction Stop
-            $script:BitLockerSuspended = $true
-            Write-CMTraceLog "BitLocker suspended successfully"
-        } else {
-            Write-CMTraceLog "BitLocker is not enabled on $($env:SystemDrive) -- no action needed"
+        $vol = Get-CimInstance -Namespace 'root\cimv2\Security\MicrosoftVolumeEncryption' -ClassName 'Win32_EncryptableVolume' `
+            -Filter "DriveLetter='$($env:SystemDrive)'" -ErrorAction Stop
+    } catch {
+        if ("$($_.Exception.NativeErrorCode)" -in @('InvalidNamespace', 'InvalidClass')) {
+            return [pscustomobject]@{ State = 'NotAvailable'; Volume = $null; Detail = 'BitLocker is not available on this edition of Windows' }
+        }
+        return [pscustomobject]@{ State = 'Unknown'; Volume = $null; Detail = "query failed: $($_.Exception.Message)" }
+    }
+    if ($null -eq $vol) {
+        return [pscustomobject]@{ State = 'Unknown'; Volume = $null; Detail = "$($env:SystemDrive) is not listed as an encryptable volume" }
+    }
+    try {
+        $status = Invoke-CimMethod -InputObject $vol -MethodName 'GetProtectionStatus' -ErrorAction Stop
+        if ($status.ReturnValue -ne 0) {
+            return [pscustomobject]@{ State = 'Unknown'; Volume = $vol; Detail = ('GetProtectionStatus returned 0x{0:X8}' -f [uint32]$status.ReturnValue) }
+        }
+        switch ([int]$status.ProtectionStatus) {
+            0       { return [pscustomobject]@{ State = 'Off'; Volume = $vol; Detail = '' } }
+            1       { return [pscustomobject]@{ State = 'On';  Volume = $vol; Detail = '' } }
+            default { return [pscustomobject]@{ State = 'Unknown'; Volume = $vol; Detail = "protection status $($status.ProtectionStatus) (volume locked?)" } }
         }
     } catch {
-        Write-CMTraceLog "WARNING: Failed to suspend BitLocker: $($_.Exception.Message)" -Severity 2
-        Write-CMTraceLog "BIOS update will proceed -- flash utility may handle BitLocker on its own" -Severity 2
+        return [pscustomobject]@{ State = 'Unknown'; Volume = $vol; Detail = "GetProtectionStatus failed: $($_.Exception.Message)" }
+    }
+}
+
+function Confirm-DATBitLockerSuspended {
+    <#
+    .SYNOPSIS
+        Makes sure BitLocker protection on the OS drive is off before a firmware change.
+    .DESCRIPTION
+        Firmware changes the TPM measurements, so if protection is on when new firmware runs, the
+        key is not released and the device boots to the BitLocker recovery screen. Called
+        immediately before the flash tool runs and immediately before the restart: anything
+        that runs in between (an Intune BitLocker policy, a compliance or remediation script, an
+        OEM agent, the user) can turn protection back on.
+
+        Reads the state, suspends for one restart when it is On, and reads it back. A state
+        that cannot be read is retried. Returns $true only when protection is confirmed off,
+        or BitLocker is not part of this edition of Windows; the caller must not flash or
+        restart otherwise.
+    #>
+    param(
+        [Parameter(Mandatory)][ValidateSet('Flash', 'Restart')][string]$Stage,
+        [int]$Attempts = 3
+    )
+    for ($attempt = 1; $attempt -le $Attempts; $attempt++) {
+        $state = Get-DATBitLockerProtection
+        $detail = if ($state.Detail) { " -- $($state.Detail)" } else { '' }
+        switch ($state.State) {
+            'NotAvailable' {
+                Write-CMTraceLog "[BitLocker] Before the $($Stage.ToLower()): BitLocker is not available on this edition of Windows -- nothing to suspend"
+                return $true
+            }
+            'Off' {
+                $how = if ($script:BitLockerSuspended) { 'suspended by this run' } else { 'already off (suspended, or the drive is not encrypted)' }
+                Write-CMTraceLog "[BitLocker] Before the $($Stage.ToLower()): protection on $($env:SystemDrive) is OFF -- $how"
+                return $true
+            }
+            'On' {
+                Write-CMTraceLog "[BitLocker] Before the $($Stage.ToLower()): protection on $($env:SystemDrive) is ON -- suspending for 1 restart (attempt $attempt of $Attempts)"
+                try {
+                    $suspend = Invoke-CimMethod -InputObject $state.Volume -MethodName 'DisableKeyProtectors' -Arguments @{ DisableCount = [uint32]1 } -ErrorAction Stop
+                    if ($suspend.ReturnValue -eq 0) {
+                        $script:BitLockerSuspended = $true
+                        Write-CMTraceLog "[BitLocker] Suspend accepted -- reading the state back to confirm"
+                    } else {
+                        Write-CMTraceLog ("[BitLocker] Suspend was refused: DisableKeyProtectors returned 0x{0:X8}" -f [uint32]$suspend.ReturnValue) -Severity 2
+                    }
+                } catch {
+                    Write-CMTraceLog "[BitLocker] Suspend failed: $($_.Exception.Message)" -Severity 2
+                }
+                # The next read (next attempt, or the final read below) confirms it took effect
+            }
+            default {
+                Write-CMTraceLog "[BitLocker] Before the $($Stage.ToLower()): protection state could not be read (attempt $attempt of $Attempts)$detail" -Severity 2
+                if ($attempt -lt $Attempts) { Start-Sleep -Seconds 3 }
+            }
+        }
+    }
+    # Final read: a suspend made on the last attempt is confirmed here
+    $final = Get-DATBitLockerProtection
+    if ($final.State -in @('Off', 'NotAvailable')) {
+        Write-CMTraceLog "[BitLocker] Before the $($Stage.ToLower()): protection on $($env:SystemDrive) is confirmed $($final.State.ToUpper())"
+        return $true
+    }
+    $finalDetail = if ($final.Detail) { " ($($final.Detail))" } else { '' }
+    Write-CMTraceLog "[BitLocker] Before the $($Stage.ToLower()): protection on $($env:SystemDrive) is $($final.State.ToUpper())$finalDetail and could not be confirmed as suspended" -Severity 3
+    return $false
+}
+
+function Test-DATEarlierFirmwareStaged {
+    <#
+    .SYNOPSIS
+        True when an earlier run staged firmware that is still waiting for a restart.
+    .DESCRIPTION
+        The marker records the boot the firmware was staged in; if the device has not restarted
+        since, that firmware applies at the next restart, so BitLocker must stay suspended for it
+        even if this run's own flash did not go ahead.
+    #>
+    try {
+        $marker = Get-ItemProperty -Path $VersionRegPath -ErrorAction Stop
+        if ($marker.PendingReboot -ne 1 -or -not $marker.PendingRebootBootTime) { return $false }
+        $stagedBoot  = [datetime]::Parse($marker.PendingRebootBootTime, [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::RoundtripKind)
+        $currentBoot = (Get-CimInstance -ClassName Win32_OperatingSystem -ErrorAction Stop).LastBootUpTime
+        return ([math]::Abs(($currentBoot - $stagedBoot).TotalMinutes) -le 1)
+    } catch {
+        return $false
     }
 }
 
 function Resume-BitLockerProtection {
     <#
     .SYNOPSIS
-        Re-enables BitLocker protection after a failed BIOS flash to avoid leaving the drive unprotected.
+        Turns BitLocker protection back on after this run suspended it but did not flash, so the
+        drive is not left unprotected. Not used while earlier staged firmware is still waiting
+        for a restart: resuming then would trigger recovery when that firmware applies.
     #>
+    if (Test-DATEarlierFirmwareStaged) {
+        Write-CMTraceLog "[BitLocker] Leaving protection suspended: firmware staged by an earlier run is still waiting for a restart, and resuming now would trigger recovery when it applies" -Severity 2
+        return
+    }
+    $state = Get-DATBitLockerProtection
+    if ($state.State -ne 'Off') { return }
     try {
-        $blv = Get-BitLockerVolume -MountPoint $env:SystemDrive -ErrorAction SilentlyContinue
-        if ($blv -and $blv.ProtectionStatus -eq 'Off') {
-            Write-CMTraceLog "Re-enabling BitLocker protection after failed BIOS flash"
-            Resume-BitLocker -MountPoint $env:SystemDrive -ErrorAction Stop
-            Write-CMTraceLog "BitLocker protection re-enabled successfully"
+        $resume = Invoke-CimMethod -InputObject $state.Volume -MethodName 'EnableKeyProtectors' -ErrorAction Stop
+        if ($resume.ReturnValue -eq 0) {
+            Write-CMTraceLog "[BitLocker] Protection re-enabled -- the firmware was not flashed"
+        } else {
+            Write-CMTraceLog ("[BitLocker] WARNING: re-enabling protection returned 0x{0:X8}" -f [uint32]$resume.ReturnValue) -Severity 2
         }
     } catch {
-        Write-CMTraceLog "WARNING: Failed to re-enable BitLocker: $($_.Exception.Message)" -Severity 2
+        Write-CMTraceLog "[BitLocker] WARNING: Failed to re-enable protection: $($_.Exception.Message)" -Severity 2
     }
+}
+
+function Test-LenovoFlashNotRequired {
+    <#
+    .SYNOPSIS
+        True when WinUPTP's own log says this run found the BIOS already installed.
+    .DESCRIPTION
+        WinUPTP exits -1 when it declines an update it considers unnecessary -- the same code it
+        uses for real failures -- but its log is explicit:
+          ThinkPad System Firmware update is not required, BIOS: N4MET30W -> N4MET30W, ...
+        Treating that as a failure looped forever (#966). Only a log written during this run
+        counts, and only when the BIOS it names is unchanged and is the BIOS the device is running,
+        so a genuine failure is never read as success.
+    #>
+    param (
+        [Parameter(Mandatory)][string]$LogDirectory,
+        [Parameter(Mandatory)][datetime]$Since,
+        [Parameter(Mandatory)][AllowEmptyString()][string]$CurrentBiosId
+    )
+
+    if ([string]::IsNullOrWhiteSpace($CurrentBiosId)) { return $false }
+    $logs = @(Get-ChildItem -Path $LogDirectory -Filter 'winuptp*.log' -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.LastWriteTime -ge $Since })
+    foreach ($log in $logs) {
+        foreach ($line in @(Get-Content -LiteralPath $log.FullName -ErrorAction SilentlyContinue)) {
+            if ($line -match 'update is not required.*?\bBIOS:\s*([A-Za-z0-9]+)\s*->\s*([A-Za-z0-9]+)') {
+                if ($Matches[1] -eq $Matches[2] -and $Matches[1] -eq $CurrentBiosId) {
+                    Write-CMTraceLog "WinUPTP log ($($log.Name)): $($line.Trim())"
+                    return $true
+                }
+            }
+        }
+    }
+    return $false
 }
 
 function Compare-BIOSVersion {
@@ -567,34 +717,80 @@ function Get-LenovoSystemFirmwareVersion {
 
         The high-word/low-word split is Lenovo's convention (other OEMs pack the same DWORD
         differently), so this is only ever called from the Lenovo comparison. Returns an empty
-        string when the system firmware resource cannot be identified -- a device with no ESRT, or
-        several firmware resources with nothing to distinguish them -- leaving the caller to fall
+        string when the system firmware resource cannot be identified, leaving the caller to fall
         back rather than compare against another component's firmware.
+
+        The resource is identified by its PnP compatible ID, never by position or display name
+        (#966). ESRT firmware type 1 (system firmware) surfaces as UEFI\CC_00010001; device
+        firmware -- TrackPoint, docks, retimers, NVMe -- as UEFI\CC_00010002. FirmwareResources
+        lists only the resources Windows has installed an update for, so a lone key there can be a
+        TrackPoint (a ThinkPad X1 2-in-1 Gen 10 read 0x0043D518 as "System Firmware 67.54552"), and
+        the display name is localised ("Systemfirmware" on German Windows).
+
+        The version comes from the device's hardware ID, UEFI\RES_{GUID}&REV_<hex>, which carries
+        the ESRT version even when FirmwareResources has no key for the system firmware at all.
     #>
 
     try {
-        $resourceRoot = 'HKLM:\SYSTEM\CurrentControlSet\Control\FirmwareResources'
-        if (-not (Test-Path $resourceRoot)) { return '' }
-        $resources = @(Get-ChildItem -Path $resourceRoot -ErrorAction Stop)
-        if ($resources.Count -eq 0) { return '' }
+        $systemFirmware = @(Get-CimInstance -ClassName Win32_PnPEntity -Filter "PNPClass='Firmware'" -ErrorAction Stop |
+            Where-Object { @($_.CompatibleID) -contains 'UEFI\CC_00010001' })
+        if ($systemFirmware.Count -ne 1) { return '' }
 
-        if ($resources.Count -gt 1) {
-            # Device firmware, retimers and NVMe firmware all appear alongside the system
-            # firmware, so identify the right GUID from its PnP entity before reading a version.
-            $systemFirmwareGuids = @(Get-CimInstance -ClassName Win32_PnPEntity -Filter "PNPClass='Firmware'" -ErrorAction Stop |
-                Where-Object { $_.Name -like 'System Firmware*' } |
-                ForEach-Object { if ($_.DeviceID -match '(\{[0-9A-Fa-f\-]{36}\})') { $Matches[1] } })
-            if ($systemFirmwareGuids.Count -eq 0) { return '' }
-            $resources = @($resources | Where-Object { $systemFirmwareGuids -contains $_.PSChildName })
-            if ($resources.Count -ne 1) { return '' }
+        $raw = $null
+        foreach ($hardwareId in @($systemFirmware[0].HardwareID)) {
+            if ($hardwareId -match '&REV_([0-9A-Fa-f]{1,8})$') {
+                $raw = [Convert]::ToUInt32($Matches[1], 16)
+                break
+            }
         }
-
-        $raw = (Get-ItemProperty -Path $resources[0].PSPath -Name 'Version' -ErrorAction SilentlyContinue).Version
+        if ($null -eq $raw -and $systemFirmware[0].DeviceID -match '(\{[0-9A-Fa-f\-]{36}\})') {
+            $resourceKey = Join-Path 'HKLM:\SYSTEM\CurrentControlSet\Control\FirmwareResources' $Matches[1]
+            $raw = (Get-ItemProperty -Path $resourceKey -Name 'Version' -ErrorAction SilentlyContinue).Version
+        }
         if ($null -eq $raw) { return '' }
+
         $value = [uint32]$raw
-        return "$([int]($value -shr 16)).$([int]($value -band 0xFFFF))"
+        $major = [int]($value -shr 16)
+        $minor = [int]($value -band 0xFFFF)
+        # Lenovo encodes System Firmware 1.18 as 0x00010012. A minor above 0xFF is not a Lenovo
+        # system firmware version, so refuse it rather than compare against it.
+        if ($major -lt 1 -or $minor -gt 0xFF) { return '' }
+        return "$major.$minor"
     } catch {
         return ''
+    }
+}
+
+function Test-DATBiosConfirmedCurrent {
+    <#
+    .SYNOPSIS
+        True when the OEM flash tool confirmed on an earlier run that this package's BIOS is
+        already installed, and the device still runs the exact BIOS it confirmed.
+    .DESCRIPTION
+        A safety net for when Compare-BIOSVersion misjudges a device: the installer then runs the
+        flash tool, the tool refuses because there is nothing to do, and without this the
+        requirement, install and detection steps keep agreeing that an update is needed -- an
+        endless Intune retry loop of toasts, BitLocker suspensions and failed flashes (#966).
+
+        Written only by the installer, and only from the flash tool's own explicit report. Tied to
+        both the package version and the full SMBIOS BIOS string, so it stops counting the moment
+        either changes: a later flash, a rollback or a new package all invalidate it. Unlike the
+        plain Version marker, it can therefore be trusted while the live BIOS is readable.
+    #>
+    param (
+        [Parameter(Mandatory)][string]$RegPath,
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Version
+    )
+
+    try {
+        $marker = Get-ItemProperty -Path $RegPath -ErrorAction SilentlyContinue
+        if ($null -eq $marker) { return $false }
+        $confirmedBios = [string]$marker.ConfirmedCurrentBiosId
+        if ([string]::IsNullOrWhiteSpace($confirmedBios) -or [string]$marker.ConfirmedCurrentVersion -ne $Version) { return $false }
+        $liveBios = ([string](Get-CimInstance -ClassName Win32_BIOS -ErrorAction Stop).SMBIOSBIOSVersion).Trim()
+        return ($liveBios -eq $confirmedBios)
+    } catch {
+        return $false
     }
 }
 {{TOAST_FUNCTIONS}}
@@ -680,6 +876,10 @@ try {
     Write-CMTraceLog "Performing BIOS version comparison..."
     $installPhase = 'VersionCheck'
     $updateNeeded = Compare-BIOSVersion -AvailableBIOSVersion '{{Version}}' -Manufacturer $Manufacturer -AvailableReleaseDate '{{ReleaseDate}}'
+    if ($updateNeeded -and (Test-DATBiosConfirmedCurrent -RegPath $VersionRegPath -Version '{{Version}}')) {
+        Write-CMTraceLog "The version comparison reports an update, but the flash tool confirmed on an earlier run that this package's BIOS is installed and the BIOS has not changed since -- treating as current" -Severity 2
+        $updateNeeded = $false
+    }
 
     if (-not $updateNeeded) {
         Write-CMTraceLog "BIOS is current -- no update will be applied"
@@ -798,16 +998,19 @@ try {
     $extractedFiles = (Get-ChildItem -Path $ExtractPath -Recurse -File -ErrorAction SilentlyContinue).Count
     Write-CMTraceLog "WIM extraction complete. Files extracted: $extractedFiles"
 
-    # -- Suspend BitLocker -------------------------------------------------------
+    # -- BitLocker ---------------------------------------------------------------
+    # Protection is confirmed off immediately before the flash tool starts (in
+    # Invoke-BIOSFlashUtility) and again immediately before the restart, rather than here: the
+    # AC power, password and HPCMSL steps in between can take minutes or exit early, and
+    # suspending here only to resume on those exits could turn protection back on while firmware
+    # from an earlier run is still waiting for a restart.
     Set-DATInstallProgress -Step 2
     $script:BitLockerSuspended = $false
     $script:FlashSucceeded = $false
     $flashExitCode = $null
 
     if ($WhatIf) {
-        Write-CMTraceLog "WHATIF: Would suspend BitLocker for 1 reboot cycle" -Severity 2
-    } else {
-        Suspend-BitLockerForReboot
+        Write-CMTraceLog "WHATIF: Would confirm BitLocker protection is suspended immediately before the flash and again before the restart" -Severity 2
     }
 
     # -- Retrieve BIOS Password (if configured) ---------------------------------
@@ -967,7 +1170,10 @@ try {
                     # Check for HP CMSL module availability
                     if (-not (Get-Command -Name 'Write-HPFirmwarePasswordFile' -ErrorAction SilentlyContinue)) {
                         Write-CMTraceLog "HP CMSL module not found -- attempting to install HPCMSL" -Severity 2
-                        Install-Module -Name 'HPCMSL' -Force -Scope AllUsers -ErrorAction Stop
+                        # HPCMSL requires licence acceptance on PowerShellGet 2.x; 1.0.0.1 has no such parameter (#962).
+                        $licenseParam = @{}
+                        if ((Get-Command -Name Install-Module).Parameters.ContainsKey('AcceptLicense')) { $licenseParam.AcceptLicense = $true }
+                        Install-Module -Name 'HPCMSL' -Force -Scope AllUsers -ErrorAction Stop @licenseParam
                         Import-Module -Name 'HPCMSL' -ErrorAction Stop
                         Write-CMTraceLog "HPCMSL module installed and imported successfully"
                     }
@@ -1106,6 +1312,7 @@ try {
                 Write-CMTraceLog "BIOS password will be applied to flash command"
             }
 
+            $flashStartTime = Get-Date
             if ($WhatIf) {
                 Write-CMTraceLog "WHATIF: Would execute Lenovo BIOS flash: $($flashUtil.FullName) $flashArgs" -Severity 2
                 $flashExitCode = 0
@@ -1117,6 +1324,31 @@ try {
             if ($flashExitCode -in @(0, 1)) {
                 Write-CMTraceLog "Lenovo BIOS flash completed successfully (exit code: $flashExitCode)"
             } else {
+                # WinUPTP also exits non-zero when it declines a BIOS that is already installed.
+                # Recording that as a failure made every Intune cycle retry the same flash (#966).
+                $liveBiosFull = ''
+                try { $liveBiosFull = ([string](Get-CimInstance -ClassName Win32_BIOS -ErrorAction Stop).SMBIOSBIOSVersion).Trim() } catch { }
+                $liveBiosId = ($liveBiosFull -split '\s+')[0]
+                if (Test-LenovoFlashNotRequired -LogDirectory $flashUtil.DirectoryName -Since $flashStartTime -CurrentBiosId $liveBiosId) {
+                    Write-CMTraceLog "Lenovo: WinUPTP reports BIOS $liveBiosId is already installed (exit code $flashExitCode) -- recording this package as current; nothing was flashed and no restart is needed" -Severity 2
+                    if (-not (Test-Path $VersionRegPath)) { New-Item -Path $VersionRegPath -Force | Out-Null }
+                    Set-ItemProperty -Path $VersionRegPath -Name 'Version' -Value '{{Version}}' -Force
+                    Set-ItemProperty -Path $VersionRegPath -Name 'InstalledDate' -Value (Get-Date -Format 'o') -Force
+                    Set-ItemProperty -Path $VersionRegPath -Name 'OS' -Value '{{OS}}' -Force
+                    # Read by Test-DATBiosConfirmedCurrent in the installer and the detection rule.
+                    # Both values must still match for it to count.
+                    Set-ItemProperty -Path $VersionRegPath -Name 'ConfirmedCurrentVersion' -Value '{{Version}}' -Force
+                    Set-ItemProperty -Path $VersionRegPath -Name 'ConfirmedCurrentBiosId' -Value $liveBiosFull -Force
+                    foreach ($pendingValue in @('PendingReboot', 'PendingRebootBootTime', 'RestartScheduledUtc', 'RestartDueUtc', 'RestartScheduleResult', 'RestartNotice')) {
+                        Remove-ItemProperty -Path $VersionRegPath -Name $pendingValue -ErrorAction SilentlyContinue
+                    }
+                    Set-DATInstallStatus -RegPath $VersionRegPath -Result 'AlreadyCurrent' -ToolExitCode $flashExitCode -ScriptExitCode 0 -Phase 'FlashToolConfirmedCurrent'
+                    # BitLocker is resumed by the finally block: FlashSucceeded is still false.
+                    Write-CMTraceLog "=========================================="
+                    Write-CMTraceLog "BIOS update skipped -- the flash tool confirmed the BIOS is already installed"
+                    Write-CMTraceLog "=========================================="
+                    exit 0
+                }
                 Write-CMTraceLog "ERROR: Lenovo BIOS flash failed with exit code: $flashExitCode" -Severity 3
                 throw "Lenovo BIOS flash failed with exit code: $flashExitCode"
             }
@@ -1367,15 +1599,21 @@ try {
 
             Write-CMTraceLog "Scheduling system restart in $RestartDelayMinutes minute(s) ($RestartDelaySeconds seconds) to apply BIOS update"
 
-            # -- Re-verify BitLocker suspension immediately before the restart --------------
+            # -- Re-evaluate BitLocker immediately before the restart command ---------------
             # Between the flash and this restart a user action or an external management /
             # compliance script may have re-enabled (resumed) BitLocker protection. If
             # protection is active when the firmware applies during the reboot, the changed
             # TPM PCR measurements prevent the key from being released and the device drops to
-            # the BitLocker recovery screen. Re-check the protector state now and re-suspend
-            # for this reboot cycle if it has been turned back on.
-            Write-CMTraceLog "Re-verifying BitLocker protector state before initiating restart..."
-            Suspend-BitLockerForReboot
+            # the BitLocker recovery screen. Confirm it is off now, re-suspending if needed; if
+            # that cannot be confirmed, do not restart -- the firmware stays staged and the next
+            # run suspends and restarts once protection can be managed.
+            if (-not (Confirm-DATBitLockerSuspended -Stage 'Restart')) {
+                Write-CMTraceLog "NOT restarting: BitLocker protection could not be confirmed as suspended, and restarting with protection on would trigger BitLocker recovery when the staged firmware applies. Suspend BitLocker on this device before it next restarts." -Severity 3
+                try { Set-ItemProperty -Path $VersionRegPath -Name 'RestartScheduleResult' -Value 'BlockedBitLocker' -Force -ErrorAction Stop } catch { }
+                Set-DATInstallStatus -RegPath $VersionRegPath -Result 'PendingReboot' -ToolExitCode $flashExitCode -ScriptExitCode 3010 -Phase 'RestartBlockedBitLocker' -ErrorMessage 'BitLocker protection could not be confirmed as suspended -- restart not scheduled'
+                Write-CMTraceLog "=========================================="
+                exit 3010
+            }
 
             if (-not $restartNoticeShown) {
                 Write-CMTraceLog "[RestartNotice] Restarting WITHOUT DAT's restart notice having been shown ($restartNotice) -- the only warning the user gets is the Windows shutdown message" -Severity 2
@@ -1445,7 +1683,8 @@ catch {
 finally {
     # Closes the progress notification on any exit path that did not report an outcome
     Stop-DATInstallProgress
-    # Re-enable BitLocker if it was suspended and the flash did not succeed
+    # Re-enable BitLocker if this run suspended it but did not flash (Resume-BitLockerProtection
+    # leaves it suspended while an earlier run's firmware is still waiting for a restart)
     if ($script:BitLockerSuspended -and -not $script:FlashSucceeded) {
         Resume-BitLockerProtection
     }

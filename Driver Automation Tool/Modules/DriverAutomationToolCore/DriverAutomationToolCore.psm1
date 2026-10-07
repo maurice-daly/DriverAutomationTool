@@ -4,7 +4,7 @@
      Organization:  MSEndpointMgr / Patch My PC
      Filename:      DriverAutomationToolCore.psm1
      Purpose:       Core functions for Driver Automation Tool v2.0
-     Version:       10.3.0.0
+     Version:       10.3.1.0
     ===========================================================================
 #>
 
@@ -37,8 +37,8 @@ if ($PSVersionTable.PSVersion.Major -le 5) {
 
 #region Variables
 
-[version]$global:ScriptRelease = "10.3.0.0"
-$global:ScriptBuildDate = "22-09-2026"
+[version]$global:ScriptRelease = "10.3.1.0"
+$global:ScriptBuildDate = "07-10-2026"
 $global:ReleaseNotesURL = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/DriverAutomationToolNotes.txt"
 $global:DATConfigUrl = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/refs/heads/master/Data/DATAPIConfig.json"
 $OEMLinksURL = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/OEMLinks.xml"
@@ -3916,6 +3916,73 @@ function Expand-DATArchiveSafely {
     }
 }
 
+function Get-DATEffectiveFileSystemRights {
+    <#
+    .SYNOPSIS
+        Maps the generic bits of an access mask to the file rights they grant.
+    .DESCRIPTION
+        An ACE can hold GENERIC_READ / WRITE / EXECUTE / ALL instead of specific file rights --
+        the inheritable entries on the root of C:\ do -- and those bits do not overlap the
+        FileSystemRights flags at all. Testing the raw mask against WriteData misses a
+        GENERIC_WRITE entry entirely, so callers test the mapped mask instead. The mapping is the
+        standard FILE_GENERIC_* one Windows applies when the entry is evaluated.
+    #>
+    [CmdletBinding()]
+    [OutputType([int])]
+    param (
+        [Parameter(Mandatory)][int]$Rights
+    )
+
+    $genericRead    = 0x80000000
+    $genericWrite   = 0x40000000
+    $genericExecute = 0x20000000
+    $genericAll     = 0x10000000
+
+    $effective = $Rights -band 0x0FFFFFFF
+    if (($Rights -band $genericAll) -ne 0)     { $effective = $effective -bor 0x001F01FF }   # FILE_ALL_ACCESS
+    if (($Rights -band $genericRead) -ne 0)    { $effective = $effective -bor 0x00120089 }   # FILE_GENERIC_READ
+    if (($Rights -band $genericWrite) -ne 0)   { $effective = $effective -bor 0x00120116 }   # FILE_GENERIC_WRITE
+    if (($Rights -band $genericExecute) -ne 0) { $effective = $effective -bor 0x001200A0 }   # FILE_GENERIC_EXECUTE
+
+    # Handle return value
+    return [int]$effective
+}
+
+function ConvertTo-DATFileSystemRightsText {
+    <#
+    .SYNOPSIS
+        Describes an access mask the way the Windows security dialog would.
+    .DESCRIPTION
+        The integrity refusals name the rights that make a directory unsafe, and the operator acts
+        on that text. A generic entry printed raw reads "-536805376"; mapped, it is "Modify".
+        An inherit-only entry is flagged as such, because icacls and Explorer show it on a
+        separate line from the folder's own entry and the operator needs to know which one to
+        remove.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param (
+        [Parameter(Mandatory)][int]$Rights,
+        [switch]$InheritOnly
+    )
+
+    $effective = Get-DATEffectiveFileSystemRights -Rights $Rights
+    $fullControl = 0x001F01FF
+    $modify      = 0x001301BF
+    $write       = 0x00000116
+
+    $text = if (($effective -band $fullControl) -eq $fullControl) { 'Full Control' }
+            elseif (($effective -band $modify) -eq $modify) { 'Modify' }
+            elseif (($effective -band $write) -eq $write) { 'Write' }
+            elseif (($effective -band $fullControl) -ne 0) { [string][System.Security.AccessControl.FileSystemRights]($effective -band $fullControl) }
+            else { '0x{0:X8}' -f $Rights }
+
+    if ($InheritOnly) { $text += ', applies to subfolders and files only' }
+
+    # Handle return value
+    return $text
+}
+
 function Get-DATNonAdminWriteAccess {
     <#
     .SYNOPSIS
@@ -3935,6 +4002,17 @@ function Get-DATNonAdminWriteAccess {
         CREATOR OWNER are expected on a correctly installed tree and are not reported; CREATOR
         OWNER only ever applies to items that principal creates, so it cannot be used to replace
         an existing file.
+
+        Generic rights are mapped to the file rights they stand for before testing. The entry a
+        folder created directly under C:\ inherits for Authenticated Users is stored as
+        GENERIC_READ | GENERIC_WRITE | GENERIC_EXECUTE | DELETE (0xE0010000), which is Modify on
+        everything below it -- and an entry carrying GENERIC_WRITE alone would otherwise not match
+        the write mask at all.
+
+        Each offender carries Rights as readable text ("Modify (inherited by subfolders and files
+        only)"), because the raw value of a generic entry prints as a negative number that tells
+        the operator nothing. InheritOnly marks an entry that applies to the contents of the folder
+        rather than the folder itself.
 
         Returns an empty array when the directory is safe. A directory whose ACL cannot be read is
         reported as unverifiable by throwing, because silence there would read as success.
@@ -3972,7 +4050,8 @@ function Get-DATNonAdminWriteAccess {
     $offenders = @()
     foreach ($ace in $acl.Access) {
         if ($ace.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow) { continue }
-        if (($ace.FileSystemRights -band $writeRights) -eq 0) { continue }
+        $effectiveRights = Get-DATEffectiveFileSystemRights -Rights ([int]$ace.FileSystemRights)
+        if (($effectiveRights -band [int]$writeRights) -eq 0) { continue }
 
         $sid = $null
         try {
@@ -3990,10 +4069,13 @@ function Get-DATNonAdminWriteAccess {
 
         if (($null -ne $sid) -and ($trustedSids -contains $sid)) { continue }
 
+        $inheritOnly = (($ace.PropagationFlags -band [System.Security.AccessControl.PropagationFlags]::InheritOnly) -ne 0)
         $offenders += [PSCustomObject]@{
-            Identity = [string]$ace.IdentityReference
-            Sid      = $sid
-            Rights   = [string]$ace.FileSystemRights
+            Identity    = [string]$ace.IdentityReference
+            Sid         = $sid
+            Rights      = ConvertTo-DATFileSystemRightsText -Rights ([int]$ace.FileSystemRights) -InheritOnly:$inheritOnly
+            InheritOnly = $inheritOnly
+            IsInherited = [bool]$ace.IsInherited
         }
     }
 
@@ -4108,39 +4190,17 @@ function Assert-DATTemplateSourceTrusted {
 
     if ($null -eq $script:DATTrustedTemplateSources) { $script:DATTrustedTemplateSources = @{} }
 
-    foreach ($guardedPath in @($PSScriptRoot, (Join-Path $PSScriptRoot 'Templates'))) {
+    foreach ($guardedPath in @(Get-DATTemplateSourcePaths)) {
         if (-not (Test-Path -LiteralPath $guardedPath)) { continue }
         if ($script:DATTrustedTemplateSources.ContainsKey($guardedPath)) { continue }
 
         # See Register-DATScheduledBuild: @() keeps a lone offending ACE countable on PS 5.1.
-        $writable = @(Get-DATNonAdminWriteAccess -Path $guardedPath)
-
-        # The identity running the build is not a threat to its own build. Whoever is driving the
-        # tool already decides what goes into the package -- they could edit the template directly
-        # and rebuild -- so their own ACE proves nothing. On a per-user install (a Desktop or
-        # profile folder, which is how the tool is most often unzipped) it is also the only ACE
-        # there is, and refusing on it blocked every package for no security gain.
-        #
-        # What matters is a DIFFERENT principal being able to write: Authenticated Users, Everyone,
-        # Users, or another account. Those can change what a SYSTEM-level fleet deployment does
-        # without the operator knowing. Under a scheduled build the caller is SYSTEM, which
-        # Get-DATNonAdminWriteAccess already counts as trusted, so a user-writable install still
-        # refuses there -- which is exactly the escalation S5 exists to stop.
-        $callerSid = $null
-        try { $callerSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value } catch { }
-        if (-not [string]::IsNullOrEmpty($callerSid)) {
-            $writable = @($writable | Where-Object { $_.Sid -ne $callerSid })
-        }
+        $writable = @(Get-DATTemplateSourceExposure -Path $guardedPath)
 
         if ($writable.Count -gt 0) {
             $who = ($writable | ForEach-Object { "$($_.Identity) ($($_.Rights))" }) -join '; '
 
-            $allowUnprotected = $false
-            try {
-                $allowUnprotected = [int]((Get-ItemProperty -Path $global:RegPath -Name 'AllowUnprotectedTemplates' -ErrorAction SilentlyContinue).AllowUnprotectedTemplates) -eq 1
-            } catch { }
-
-            if ($allowUnprotected) {
+            if (Test-DATUnprotectedTemplatesAllowed) {
                 # Logged every session, not once, and at the severity the risk warrants: the
                 # package being built right now can be chosen by anyone in the list.
                 Write-DATLogEntry -Value "[Integrity] [$Context] '$guardedPath' is writable by $who. Packaging continues because AllowUnprotectedTemplates is set -- the install script in this package runs as SYSTEM on every targeted device and could have been modified by any of those principals." -Severity 3
@@ -4149,12 +4209,280 @@ function Assert-DATTemplateSourceTrusted {
             }
 
             Write-DATLogEntry -Value "[Integrity] [$Context] Refusing to package: '$guardedPath' is writable by $who (other than the account running this build)" -Severity 3
-            throw ("Refusing to build an Intune package from templates in '$guardedPath', because accounts other than the one running this build can write there: $who. " +
+            # The remedy leads: the build failure dialog truncates long messages, and an operator
+            # who only sees the first two lines needs to see what to do, not just what is wrong.
+            throw ("Refusing to build the package: other accounts can change the install-script templates in '$guardedPath'. " +
+                   "To fix, use 'Fix Permissions' on the tool's folder-permissions warning, move the tool to a folder only administrators can write to (for example under Program Files), or remove the write access listed here, then build again. " +
+                   "Accounts that can write there: $who. " +
                    "The generated install script runs as SYSTEM on every targeted device, so anyone in that list could change what it does without this build knowing. " +
-                   "Move the tool to a location only administrators can write to (for example under Program Files), or remove the write permissions above, then build again. " +
                    "To accept this risk instead, set the DWORD 'AllowUnprotectedTemplates' to 1 under HKLM:\SOFTWARE\DriverAutomationTool.")
         }
         $script:DATTrustedTemplateSources[$guardedPath] = $true
+    }
+}
+
+function Get-DATTemplateSourcePaths {
+    <#
+    .SYNOPSIS
+        Returns the directories the install-script templates are read from.
+    .DESCRIPTION
+        Single definition shared by the packaging refusal, the startup / pre-flight check and the
+        permission repair, so the three can never disagree about which folders matter.
+    #>
+    [CmdletBinding()]
+    [OutputType([string[]])]
+    param ()
+
+    # Handle return value
+    return @($PSScriptRoot, (Join-Path $PSScriptRoot 'Templates'))
+}
+
+function Get-DATToolRootPath {
+    <#
+    .SYNOPSIS
+        Returns the folder the tool was installed to (the parent of Modules\).
+    .DESCRIPTION
+        The module lives at <root>\Modules\DriverAutomationToolCore. The permission repair works
+        on <root> so the entry scripts beside it are covered too -- they are what a scheduled
+        build runs as SYSTEM. A module loaded from anywhere else (a dev checkout, a test) gets its
+        own directory back, so the repair never reaches above the tool.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param ()
+
+    $modulesDir = Split-Path -Parent $PSScriptRoot
+    if ((Split-Path -Leaf $modulesDir) -eq 'Modules') {
+        return (Split-Path -Parent $modulesDir)
+    }
+
+    # Handle return value
+    return $PSScriptRoot
+}
+
+function Test-DATUnprotectedTemplatesAllowed {
+    <#
+    .SYNOPSIS
+        Returns $true when the HKLM AllowUnprotectedTemplates override is set to 1.
+    #>
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param ()
+
+    $allowed = $false
+    try {
+        $allowed = [int]((Get-ItemProperty -Path $global:RegPath -Name 'AllowUnprotectedTemplates' -ErrorAction SilentlyContinue).AllowUnprotectedTemplates) -eq 1
+    } catch { }
+
+    # Handle return value
+    return $allowed
+}
+
+function Get-DATTemplateSourceExposure {
+    <#
+    .SYNOPSIS
+        Lists the accounts, other than the one running the tool, that can write to the template
+        directories -- without throwing.
+    .DESCRIPTION
+        The non-throwing half of Assert-DATTemplateSourceTrusted. The UI calls it at startup and
+        again before a build, so a folder that will be refused is reported before twelve minutes
+        of download, extraction and WIM capture rather than after them. Assert-DATTemplateSourceTrusted
+        uses the same result, so the warning and the refusal cannot drift apart.
+
+        Each result carries the Path it was found on. A directory whose ACL cannot be read still
+        throws (from Get-DATNonAdminWriteAccess): unverifiable is not the same as safe.
+    #>
+    [CmdletBinding()]
+    [OutputType([object[]])]
+    param (
+        [string[]]$Path
+    )
+
+    if ($null -eq $Path -or $Path.Count -eq 0) { $Path = @(Get-DATTemplateSourcePaths) }
+
+    # The identity running the build is not a threat to its own build. Whoever is driving the
+    # tool already decides what goes into the package -- they could edit the template directly
+    # and rebuild -- so their own ACE proves nothing. On a per-user install (a Desktop or
+    # profile folder, which is how the tool is most often unzipped) it is also the only ACE
+    # there is, and refusing on it blocked every package for no security gain.
+    #
+    # What matters is a DIFFERENT principal being able to write: Authenticated Users, Everyone,
+    # Users, or another account. Those can change what a SYSTEM-level fleet deployment does
+    # without the operator knowing. Under a scheduled build the caller is SYSTEM, which
+    # Get-DATNonAdminWriteAccess already counts as trusted, so a user-writable install still
+    # refuses there -- which is exactly the escalation S5 exists to stop.
+    $callerSid = $null
+    try { $callerSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value } catch { }
+
+    $exposure = @()
+    foreach ($p in $Path) {
+        if (-not (Test-Path -LiteralPath $p)) { continue }
+        # @() keeps a lone offending ACE countable on PS 5.1.
+        $writable = @(Get-DATNonAdminWriteAccess -Path $p)
+        foreach ($entry in $writable) {
+            if (-not [string]::IsNullOrEmpty($callerSid) -and $entry.Sid -eq $callerSid) { continue }
+            $exposure += [PSCustomObject]@{
+                Path        = $p
+                Identity    = $entry.Identity
+                Sid         = $entry.Sid
+                Rights      = $entry.Rights
+                InheritOnly = [bool]$entry.InheritOnly
+                IsInherited = [bool]$entry.IsInherited
+            }
+        }
+    }
+
+    # Handle return value
+    return @($exposure)
+}
+
+function Get-DATDirectoryAccessControl {
+    # DACL-only read. Persisting an object read this way writes back only the DACL, so the repair
+    # never tries to rewrite the owner (which fails on a folder another account owns) or the SACL
+    # (which needs SeSecurityPrivilege an elevated admin does not hold by default).
+    param ([Parameter(Mandatory)][string]$Path)
+    return (New-Object System.Security.AccessControl.DirectorySecurity($Path, [System.Security.AccessControl.AccessControlSections]::Access))
+}
+
+function Set-DATDirectoryAccessControl {
+    # Set-Acl rewrites every section the object carries; the .NET persist below writes only the
+    # sections that changed. Windows propagates the result to child items itself.
+    param (
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][System.Security.AccessControl.DirectorySecurity]$Security
+    )
+    $dirInfo = New-Object System.IO.DirectoryInfo($Path)
+    if ($PSVersionTable.PSEdition -eq 'Core') {
+        [System.IO.FileSystemAclExtensions]::SetAccessControl($dirInfo, $Security)
+    } else {
+        $dirInfo.SetAccessControl($Security)
+    }
+}
+
+function Set-DATTemplateSourceProtection {
+    <#
+    .SYNOPSIS
+        Removes write access for other accounts from the tool's folder, so the template check
+        passes.
+    .DESCRIPTION
+        The "Fix Permissions" action behind the startup warning. For the tool's root folder and
+        then each template directory still reported by Get-DATTemplateSourceExposure:
+
+          1. If an offending entry is inherited (the usual case -- a folder made directly under
+             C:\ inherits Authenticated Users: Modify from the drive root), inheritance is switched
+             off with the inherited entries kept as explicit copies, so nothing else changes.
+          2. Each explicit Allow entry that grants write access to an offending account is
+             removed and replaced with Read & Execute for the same account, so that account can
+             still read the tool but not change it.
+
+        SYSTEM, Administrators, TrustedInstaller, CREATOR OWNER and the account running the tool
+        are never touched -- the same set the check trusts -- so an elevated operator keeps full
+        access. Windows propagates the root's new entries to everything beneath it.
+
+        Only the DACL is written. Returns an object with Success, the Changes made, and anything
+        still Remaining (an unresolvable SID, or an explicit entry deeper in the tree that the
+        check does not look at) so the caller can show the operator exactly what is left. A
+        failure to write an ACL is reported in Errors rather than thrown, because the caller is a
+        button handler that needs to show the manual fallback.
+    #>
+    [CmdletBinding(SupportsShouldProcess)]
+    [OutputType([pscustomobject])]
+    param ()
+
+    $root = Get-DATToolRootPath
+    $targets = @($root) + @(Get-DATTemplateSourcePaths | Where-Object { $_ -ne $root })
+
+    $writeMask = [int]([System.Security.AccessControl.FileSystemRights]::WriteData `
+        -bor [System.Security.AccessControl.FileSystemRights]::AppendData `
+        -bor [System.Security.AccessControl.FileSystemRights]::Delete `
+        -bor [System.Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles `
+        -bor [System.Security.AccessControl.FileSystemRights]::ChangePermissions `
+        -bor [System.Security.AccessControl.FileSystemRights]::TakeOwnership `
+        -bor [System.Security.AccessControl.FileSystemRights]::WriteAttributes `
+        -bor [System.Security.AccessControl.FileSystemRights]::WriteExtendedAttributes)
+
+    $changes = @()
+    $errors  = @()
+
+    foreach ($target in $targets) {
+        if (-not (Test-Path -LiteralPath $target)) { continue }
+
+        try {
+            $offenders = @(Get-DATTemplateSourceExposure -Path $target)
+        } catch {
+            $errors += "Could not read permissions on '$target': $($_.Exception.Message)"
+            continue
+        }
+        $sids = @($offenders | Where-Object { -not [string]::IsNullOrEmpty($_.Sid) } | ForEach-Object { $_.Sid } | Select-Object -Unique)
+        if ($sids.Count -eq 0) { continue }
+        if (-not $PSCmdlet.ShouldProcess($target, "Remove write access for $($sids -join ', ')")) { continue }
+
+        try {
+            $security = Get-DATDirectoryAccessControl -Path $target
+
+            if (@($offenders | Where-Object { $_.IsInherited }).Count -gt 0) {
+                # Keep the inherited entries as explicit copies, then re-read so the copies are
+                # what the removal below operates on.
+                $security.SetAccessRuleProtection($true, $true)
+                Set-DATDirectoryAccessControl -Path $target -Security $security
+                $changes += "Stopped '$target' inheriting permissions from its parent folder (existing entries kept)"
+                Write-DATLogEntry -Value "[Integrity] [Fix permissions] Disabled inheritance on '$target' (entries kept as explicit copies)" -Severity 1
+                $security = Get-DATDirectoryAccessControl -Path $target
+            }
+
+            $removedSids = @()
+            foreach ($rule in @($security.GetAccessRules($true, $false, [System.Security.Principal.SecurityIdentifier]))) {
+                if ($rule.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow) { continue }
+                $ruleSid = $rule.IdentityReference.Value
+                if ($sids -notcontains $ruleSid) { continue }
+                $effective = Get-DATEffectiveFileSystemRights -Rights ([int]$rule.FileSystemRights)
+                if (($effective -band $writeMask) -eq 0) { continue }
+                $security.RemoveAccessRuleSpecific($rule)
+                if ($removedSids -notcontains $ruleSid) { $removedSids += $ruleSid }
+            }
+
+            $readExecute = [System.Security.AccessControl.FileSystemRights]::ReadAndExecute
+            $inherit     = [System.Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit'
+            foreach ($sid in $removedSids) {
+                $identity = New-Object System.Security.Principal.SecurityIdentifier($sid)
+                $security.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule(
+                    $identity, $readExecute, $inherit, [System.Security.AccessControl.PropagationFlags]::None,
+                    [System.Security.AccessControl.AccessControlType]::Allow)))
+            }
+
+            if ($removedSids.Count -gt 0) {
+                Set-DATDirectoryAccessControl -Path $target -Security $security
+                foreach ($sid in $removedSids) {
+                    $name = ($offenders | Where-Object { $_.Sid -eq $sid } | Select-Object -First 1).Identity
+                    $changes += "Removed write access for $name on '$target' (Read & Execute kept)"
+                    Write-DATLogEntry -Value "[Integrity] [Fix permissions] Removed write access for $name ($sid) on '$target'; granted Read & Execute" -Severity 1
+                }
+            }
+        } catch {
+            $errors += "Could not change permissions on '${target}': $($_.Exception.Message)"
+            Write-DATLogEntry -Value "[Integrity] [Fix permissions] Could not change permissions on '$target': $($_.Exception.Message)" -Severity 3
+        }
+    }
+
+    # A verdict cached for these paths before this ran is stale now.
+    if ($null -ne $script:DATTrustedTemplateSources) {
+        foreach ($target in $targets) { $script:DATTrustedTemplateSources.Remove($target) }
+    }
+
+    $remaining = @()
+    try {
+        $remaining = @(Get-DATTemplateSourceExposure)
+    } catch {
+        $errors += "Could not re-check permissions: $($_.Exception.Message)"
+    }
+
+    # Handle return value
+    return [PSCustomObject]@{
+        Success   = ($remaining.Count -eq 0 -and $errors.Count -eq 0)
+        RootPath  = $root
+        Changes   = @($changes)
+        Remaining = @($remaining)
+        Errors    = @($errors)
     }
 }
 
@@ -9033,6 +9361,28 @@ function Get-DATModuleInstallScope {
     return 'CurrentUser'
 }
 
+function Get-DATInstallModuleLicenseParam {
+    <#
+    .SYNOPSIS
+        @{ AcceptLicense = $true } when the Install-Module that will run supports it, otherwise @{}.
+    .DESCRIPTION
+        HPCMSL and its HP.* dependencies set RequireLicenseAcceptance, and PowerShellGet 2.x
+        refuses to install them without -AcceptLicense -- -Force does not cover it, so every
+        install and update failed with "License Acceptance is required for module 'HP.Private'"
+        (#962). The inbox PowerShellGet 1.0.0.1 has no such parameter and fails to bind it, which
+        is why passing it unconditionally broke Windows PowerShell 5.1. Splat the result into
+        Install-Module.
+    #>
+    [CmdletBinding()]
+    [OutputType([hashtable])]
+    param ()
+    try {
+        $installModule = Get-Command -Name Install-Module -CommandType Function, Cmdlet -ErrorAction Stop
+        if ($installModule.Parameters.ContainsKey('AcceptLicense')) { return @{ AcceptLicense = $true } }
+    } catch { }
+    return @{}
+}
+
 function Get-DATHPCMSLModule {
     <#
     .SYNOPSIS
@@ -9110,7 +9460,8 @@ function Test-DATHPCMSLReady {
                 if ($installScope -ne 'AllUsers') {
                     Write-DATLogEntry -Value "[HP] Running without admin rights -- falling back to Scope CurrentUser" -Severity 2
                 }
-                Install-Module -Name HPCMSL -Force -Scope $installScope -ErrorAction Stop
+                $licenseParam = Get-DATInstallModuleLicenseParam
+                Install-Module -Name HPCMSL -Force -Scope $installScope -ErrorAction Stop @licenseParam
                 $hpcmsl = Get-DATHPCMSLModule
                 $hpModule = $hpcmsl.Module
                 if (-not $hpModule) {
@@ -9145,7 +9496,8 @@ function Test-DATHPCMSLReady {
                 # itself imports HPCMSL here and in a background job -- as warnings rather than
                 # terminating errors, so -ErrorAction Stop never sees them (#953).
                 $installWarnings = @()
-                Install-Module -Name HPCMSL -Force -AllowClobber -SkipPublisherCheck -Scope (Get-DATModuleInstallScope) -ErrorAction Stop -WarningVariable +installWarnings
+                $licenseParam = Get-DATInstallModuleLicenseParam
+                Install-Module -Name HPCMSL -Force -AllowClobber -SkipPublisherCheck -Scope (Get-DATModuleInstallScope) -ErrorAction Stop -WarningVariable +installWarnings @licenseParam
 
                 # Re-query by root order. Checking the highest installed version confirmed the
                 # install against a copy that never loads, so an update masked by an earlier
@@ -9194,7 +9546,8 @@ function Test-DATHPCMSLReady {
                     $repairScope = 'AllUsers'
                     $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
                     if (-not $isAdmin) { $repairScope = 'CurrentUser' }
-                    Install-Module -Name HPCMSL -Force -Scope $repairScope -AllowClobber -ErrorAction Stop
+                    $licenseParam = Get-DATInstallModuleLicenseParam
+                    Install-Module -Name HPCMSL -Force -Scope $repairScope -AllowClobber -ErrorAction Stop @licenseParam
                     Import-Module -Name HPCMSL -Force -ErrorAction Stop
                     $result.Ready = $true
                     $result.Version = (Get-Module HPCMSL).Version
@@ -18542,6 +18895,13 @@ function New-DATIntuneDetectionScript {
         `$biosUpdateNeeded = Compare-BIOSVersion -AvailableBIOSVersion "$Version" -Manufacturer "$OEM" -AvailableReleaseDate "$releaseDate8"
         if (-not `$biosUpdateNeeded) { `$detected = `$true }
     } catch { }
+
+    # The flash tool itself confirmed on an earlier run that this package's BIOS is installed, and
+    # the device still runs the exact BIOS it confirmed. Without this a comparison that misjudges
+    # the device keeps the app "not installed" and Intune retries the flash forever (#966).
+    if (-not `$detected -and (Test-DATBiosConfirmedCurrent -RegPath "HKLM:\SOFTWARE\DriverAutomationTool\$regSubKey\$OEM\$modelKey" -Version "$Version")) {
+        `$detected = `$true
+    }
 
     if (-not `$detected) {
         # Can the live BIOS version be read? If so, the comparison above is authoritative and a
