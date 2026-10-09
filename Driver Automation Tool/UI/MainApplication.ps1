@@ -444,6 +444,12 @@ $btn_TitleBarCoffee.Add_Click({
     Start-Process 'https://www.buymeacoffee.com/modaly'
 })
 
+# Testimonial button -- shown once the API config publishes the testimonial endpoint (see the
+# startup block at the end of this file)
+$btn_Testimonial.Add_Click({
+    try { Show-DATTestimonialModal } catch { Write-DATActivityLog "Testimonial dialog failed: $($_.Exception.Message)" -Level Warn }
+})
+
 # Feedback buttons -- thumbs up/down
 $btn_FeedbackUp.Add_Click({
     try {
@@ -4369,7 +4375,407 @@ function Show-DATTelemetryInviteIfDue {
         return
     }
     Write-DATLogEntry -Value "[Telemetry] Showing the periodic invitation -- $($state.Reason)" -Severity 1
+    # Lets the testimonial prompt stand aside rather than stacking a second modal on this launch
+    $script:TelemetryInviteShownThisSession = $true
     Show-DATTelemetryInviteModal
+}
+
+function Get-DATTestimonialPromptState {
+    <#
+    .SYNOPSIS
+        Decides whether the startup testimonial prompt is due, and why not when it is not.
+    .DESCRIPTION
+        The rules, in order:
+
+          - Testimonial already sent        -> never ask again.
+          - Said "Do not show again"        -> never ask again.
+          - Seen for the first time         -> record the date and say nothing. A testimonial is
+                                               only worth asking for once the tool has been used.
+          - Less than 7 days known          -> still settling in.
+          - "Remind me later" in the last 30 days (or the prompt was closed) -> not due yet.
+
+        Returns a hashtable with Due and Reason; Reason is logged so the behaviour can be
+        explained from a support log.
+    #>
+    [CmdletBinding()]
+    [OutputType([hashtable])]
+    param (
+        [int]$GraceDays = 7,
+        [datetime]$Now = (Get-Date)
+    )
+
+    $result = @{ Due = $false; Reason = '' }
+    $reg = Get-ItemProperty -Path $global:RegPath -ErrorAction SilentlyContinue
+
+    if ($reg.TestimonialSubmitted -eq 1) { $result.Reason = 'a testimonial has already been sent'; return $result }
+    if ($reg.TestimonialPromptSuppressed -eq 1) { $result.Reason = 'user asked not to be shown it again'; return $result }
+
+    $parseDate = {
+        param ($Value)
+        if ([string]::IsNullOrWhiteSpace("$Value")) { return $null }
+        try { return [datetime]::Parse("$Value", [System.Globalization.CultureInfo]::InvariantCulture) } catch { return $null }
+    }
+
+    $firstSeen = & $parseDate $reg.TestimonialPromptFirstSeen
+    if ($null -eq $firstSeen) {
+        try { Set-DATRegistryValue -Name 'TestimonialPromptFirstSeen' -Value ($Now.ToString('s', [System.Globalization.CultureInfo]::InvariantCulture)) -Type String } catch { }
+        $result.Reason = 'first seen now -- grace period started'
+        return $result
+    }
+    if (($Now - $firstSeen).TotalDays -lt $GraceDays) {
+        $result.Reason = "within the $GraceDays day grace period"
+        return $result
+    }
+
+    $remindAfter = & $parseDate $reg.TestimonialRemindAfter
+    if ($null -ne $remindAfter -and $Now -lt $remindAfter) {
+        $result.Reason = "reminder set for $($remindAfter.ToString('yyyy-MM-dd'))"
+        return $result
+    }
+
+    $result.Due = $true
+    $result.Reason = if ($null -eq $remindAfter) { 'never asked' } else { 'reminder date reached' }
+    return $result
+}
+
+function Set-DATTestimonialReminder {
+    # Pushes the startup prompt back by $Days ("Remind me later")
+    param ([int]$Days = 30, [datetime]$Now = (Get-Date))
+    try {
+        Set-DATRegistryValue -Name 'TestimonialRemindAfter' -Value ($Now.AddDays($Days).ToString('s', [System.Globalization.CultureInfo]::InvariantCulture)) -Type String
+    } catch { }
+}
+
+function Show-DATTestimonialModal {
+    <#
+    .SYNOPSIS
+        Collects a testimonial: name, company, up to 500 characters of text, an optional email
+        address for contact, and whether it may be published.
+    .PARAMETER Prompted
+        Shown by the startup prompt. Adds "Remind me later" (30 days) and "Do not show again". The
+        reminder is set before the dialog opens, so closing it any other way, or a crash, also
+        means "later" rather than a prompt on every launch.
+    #>
+    [CmdletBinding()]
+    param ([switch]$Prompted)
+
+    if ($Prompted) { Set-DATTestimonialReminder -Days 30 }
+
+    $theme = Get-DATTheme -ThemeName $script:CurrentTheme
+    $brush = { param ($Key) [System.Windows.Media.SolidColorBrush]::new([System.Windows.Media.ColorConverter]::ConvertFromString($theme[$Key])) }
+    $bgColor = [System.Windows.Media.ColorConverter]::ConvertFromString($theme['CardBackground'])
+
+    # Shared state for the event handlers (PS 5.1 closures cannot see this function's variables)
+    $state = [hashtable]::Synchronized(@{})
+
+    $dlg = [System.Windows.Window]::new()
+    $dlg.WindowStyle = 'None'
+    $dlg.AllowsTransparency = $true
+    $dlg.Background = [System.Windows.Media.Brushes]::Transparent
+    $dlg.Width = 560
+    $dlg.SizeToContent = 'Height'
+    $dlg.ResizeMode = 'NoResize'
+    $dlg.ShowInTaskbar = $false
+    try {
+        $dlg.Owner = $Window
+        $dlg.WindowStartupLocation = 'CenterOwner'
+    } catch {
+        $dlg.WindowStartupLocation = 'CenterScreen'
+    }
+    $state.Dialog = $dlg
+    $dlg.Tag = $state
+    $dlg.Add_KeyDown({
+        param ($s, $e)
+        if ($e.Key -eq 'Escape' -and -not $this.Tag.Sending) { $this.Close() }
+    })
+
+    $border = [System.Windows.Controls.Border]::new()
+    $border.Background = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.Color]::FromArgb(245, $bgColor.R, $bgColor.G, $bgColor.B))
+    $border.CornerRadius = [System.Windows.CornerRadius]::new(16)
+    $border.Padding = [System.Windows.Thickness]::new(28, 24, 28, 24)
+    $border.BorderBrush = & $brush 'CardBorder'
+    $border.BorderThickness = [System.Windows.Thickness]::new(1)
+    $shadow = [System.Windows.Media.Effects.DropShadowEffect]::new()
+    $shadow.BlurRadius = 30; $shadow.ShadowDepth = 0; $shadow.Opacity = 0.5
+    $shadow.Color = [System.Windows.Media.Colors]::Black
+    $border.Effect = $shadow
+
+    $panel = [System.Windows.Controls.StackPanel]::new()
+
+    $newText = {
+        param ($Text, [double]$Size, $ColorKey, [double]$Bottom, [switch]$Bold, [switch]$Center)
+        $tb = [System.Windows.Controls.TextBlock]::new()
+        $tb.Text = $Text
+        $tb.FontSize = $Size
+        $tb.TextWrapping = 'Wrap'
+        $tb.Foreground = & $brush $ColorKey
+        $tb.Margin = [System.Windows.Thickness]::new(0, 0, 0, $Bottom)
+        if ($Bold) { $tb.FontWeight = [System.Windows.FontWeights]::SemiBold }
+        if ($Center) { $tb.HorizontalAlignment = 'Center'; $tb.TextAlignment = 'Center' }
+        $tb
+    }
+
+    $icon = & $newText ([string][char]0xE90A) 30 'AccentColor' 12 -Center
+    $icon.FontFamily = [System.Windows.Media.FontFamily]::new('Segoe MDL2 Assets')
+    $panel.Children.Add($icon) | Out-Null
+    $title = & $newText 'Share your experience' 16 'WindowForeground' 10 -Bold -Center
+    $title.FontWeight = [System.Windows.FontWeights]::Bold
+    $panel.Children.Add($title) | Out-Null
+    $panel.Children.Add((& $newText 'If the Driver Automation Tool has helped you, a few words about it helps others decide whether it is right for them. You choose whether your testimonial may be published.' 12.5 'WindowForeground' 16)) | Out-Null
+
+    $textBoxTemplate = [System.Windows.Markup.XamlReader]::Parse(@"
+<ControlTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                 xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                 TargetType="TextBox">
+    <Border x:Name="bd" Background="{TemplateBinding Background}"
+            BorderBrush="{TemplateBinding BorderBrush}"
+            BorderThickness="{TemplateBinding BorderThickness}"
+            CornerRadius="8" SnapsToDevicePixels="True">
+        <ScrollViewer x:Name="PART_ContentHost"
+                      Margin="{TemplateBinding Padding}"
+                      VerticalAlignment="{TemplateBinding VerticalContentAlignment}"
+                      Background="Transparent" Focusable="False"/>
+    </Border>
+    <ControlTemplate.Triggers>
+        <Trigger Property="IsEnabled" Value="False">
+            <Setter TargetName="bd" Property="Opacity" Value="0.55"/>
+        </Trigger>
+    </ControlTemplate.Triggers>
+</ControlTemplate>
+"@)
+    $limits = @{ Name = 100; Company = 100; Testimonial = 500; Email = 254 }
+    $newInput = {
+        param ($Label, $MaxLength, [switch]$Multiline)
+        $panel.Children.Add((& $newText $Label 12 'WindowForeground' 4 -Bold)) | Out-Null
+        $tbx = [System.Windows.Controls.TextBox]::new()
+        $tbx.MaxLength = $MaxLength
+        $tbx.FontSize = 13
+        $tbx.Background = & $brush 'InputBackground'
+        $tbx.Foreground = & $brush 'WindowForeground'
+        $tbx.CaretBrush = & $brush 'WindowForeground'
+        $tbx.BorderBrush = & $brush 'InputBorder'
+        $tbx.BorderThickness = [System.Windows.Thickness]::new(1)
+        $tbx.Template = $textBoxTemplate
+        $tbx.Tag = $state
+        if ($Multiline) {
+            $tbx.Height = 110
+            $tbx.TextWrapping = 'Wrap'
+            $tbx.AcceptsReturn = $true
+            $tbx.VerticalScrollBarVisibility = 'Auto'
+            $tbx.Padding = [System.Windows.Thickness]::new(12, 10, 12, 10)
+            $tbx.Margin = [System.Windows.Thickness]::new(0, 0, 0, 2)
+        } else {
+            $tbx.MinHeight = 34
+            $tbx.VerticalContentAlignment = 'Center'
+            $tbx.Padding = [System.Windows.Thickness]::new(10, 4, 10, 4)
+            $tbx.Margin = [System.Windows.Thickness]::new(0, 0, 0, 12)
+        }
+        $tbx.Add_TextChanged({ & $this.Tag.Validate $this.Tag })
+        $panel.Children.Add($tbx) | Out-Null
+        $tbx
+    }
+
+    $state.NameBox = & $newInput 'Your name' $limits.Name
+    $state.CompanyBox = & $newInput 'Company' $limits.Company
+    $state.TextBox = & $newInput "Your testimonial (up to $($limits.Testimonial) characters)" $limits.Testimonial -Multiline
+    $state.Counter = & $newText "0 / $($limits.Testimonial)" 11 'InputPlaceholder' 12
+    $state.Counter.HorizontalAlignment = 'Right'
+    $panel.Children.Add($state.Counter) | Out-Null
+    $state.EmailBox = & $newInput 'Email address (optional)' $limits.Email
+    $state.EmailBox.Margin = [System.Windows.Thickness]::new(0, 0, 0, 4)
+    $panel.Children.Add((& $newText 'Used only to contact you about your testimonial. It is never published or shared.' 11 'InputPlaceholder' 14)) | Out-Null
+
+    # Publishing is opt-in: private is selected until the user chooses otherwise
+    $panel.Children.Add((& $newText 'How may this testimonial be used?' 12 'WindowForeground' 6 -Bold)) | Out-Null
+    $groupName = "TestimonialUse$([guid]::NewGuid().ToString('N'))"
+    $newChoice = {
+        param ($Text, [bool]$Checked)
+        $rb = [System.Windows.Controls.RadioButton]::new()
+        $rb.GroupName = $groupName
+        $rb.IsChecked = $Checked
+        $rb.Foreground = & $brush 'WindowForeground'
+        $rb.FontSize = 12.5
+        $rb.Margin = [System.Windows.Thickness]::new(0, 0, 0, 6)
+        $rb.Cursor = [System.Windows.Input.Cursors]::Hand
+        $rb.Content = $Text
+        $panel.Children.Add($rb) | Out-Null
+        $rb
+    }
+    $state.PrivateChoice = & $newChoice 'Private -- for the developer only' $true
+    $state.PublicChoice = & $newChoice 'Public -- it may be published with my name and company (never my email address)' $false
+
+    # Encryption notice
+    $notice = [System.Windows.Controls.Border]::new()
+    $notice.Background = & $brush 'InputBackground'
+    $notice.CornerRadius = [System.Windows.CornerRadius]::new(8)
+    $notice.Padding = [System.Windows.Thickness]::new(12, 8, 12, 8)
+    $notice.Margin = [System.Windows.Thickness]::new(0, 8, 0, 12)
+    $noticeText = [System.Windows.Controls.TextBlock]::new()
+    $noticeText.TextWrapping = 'Wrap'
+    $noticeText.FontSize = 11.5
+    $noticeText.Foreground = & $brush 'InputPlaceholder'
+    $lockRun = [System.Windows.Documents.Run]::new([string][char]0xE72E)
+    $lockRun.FontFamily = [System.Windows.Media.FontFamily]::new('Segoe MDL2 Assets')
+    $lockRun.Foreground = & $brush 'AccentColor'
+    $noticeText.Inlines.Add($lockRun) | Out-Null
+    $noticeText.Inlines.Add([System.Windows.Documents.Run]::new('  Your details are sent over an encrypted connection and stored encrypted. Only the developer of the Driver Automation Tool holds the key needed to read them.')) | Out-Null
+    $notice.Child = $noticeText
+    $panel.Children.Add($notice) | Out-Null
+
+    $state.Error = & $newText '' 12 'StatusError' 12
+    $state.Error.Visibility = 'Collapsed'
+    $panel.Children.Add($state.Error) | Out-Null
+
+    $primaryTemplate = [System.Windows.Markup.XamlReader]::Parse(@"
+<ControlTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" TargetType="Button">
+    <Border x:Name="bd" Background="$($theme['ButtonPrimary'])" CornerRadius="8" Padding="20,8">
+        <ContentPresenter x:Name="cp" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+    </Border>
+    <ControlTemplate.Triggers>
+        <Trigger Property="IsMouseOver" Value="True">
+            <Setter TargetName="bd" Property="Background" Value="$($theme['ButtonPrimaryHover'])"/>
+        </Trigger>
+        <Trigger Property="IsEnabled" Value="False">
+            <Setter TargetName="bd" Property="Opacity" Value="0.4"/>
+            <Setter TargetName="cp" Property="Opacity" Value="0.5"/>
+        </Trigger>
+    </ControlTemplate.Triggers>
+</ControlTemplate>
+"@)
+    $secondaryTemplate = [System.Windows.Markup.XamlReader]::Parse(@"
+<ControlTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" TargetType="Button">
+    <Border x:Name="bd" Background="Transparent" BorderBrush="$($theme['CardBorder'])" BorderThickness="1" CornerRadius="8" Padding="16,8">
+        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+    </Border>
+    <ControlTemplate.Triggers>
+        <Trigger Property="IsMouseOver" Value="True">
+            <Setter TargetName="bd" Property="Background" Value="$($theme['InputBackground'])"/>
+        </Trigger>
+    </ControlTemplate.Triggers>
+</ControlTemplate>
+"@)
+
+    $buttonRow = [System.Windows.Controls.StackPanel]::new()
+    $buttonRow.Orientation = 'Horizontal'
+    $buttonRow.HorizontalAlignment = 'Center'
+    $buttonRow.Margin = [System.Windows.Thickness]::new(0, 4, 0, 0)
+    $newButton = {
+        param ($Text, $Template, $ColorKey)
+        $b = [System.Windows.Controls.Button]::new()
+        $b.Template = $Template
+        $b.Content = $Text
+        $b.FontSize = 13
+        $b.Foreground = & $brush $ColorKey
+        $b.Cursor = [System.Windows.Input.Cursors]::Hand
+        $b.Margin = [System.Windows.Thickness]::new(0, 0, 10, 0)
+        $b.Tag = $state
+        $buttonRow.Children.Add($b) | Out-Null
+        $b
+    }
+
+    $state.SubmitButton = & $newButton 'Submit' $primaryTemplate 'ButtonPrimaryForeground'
+    $state.SubmitButton.FontWeight = [System.Windows.FontWeights]::SemiBold
+    $state.SubmitButton.IsEnabled = $false
+    $state.SubmitButton.Add_Click({
+        $st = $this.Tag
+        $publicUse = [bool]$st.PublicChoice.IsChecked
+        $check = Test-DATTestimonialInput -Name $st.NameBox.Text -Company $st.CompanyBox.Text -Testimonial $st.TextBox.Text -Email $st.EmailBox.Text
+        if (-not $check.IsValid) {
+            $st.Error.Text = @($check.Errors.Values) -join ' '
+            $st.Error.Visibility = 'Visible'
+            return
+        }
+        $st.Sending = $true
+        foreach ($b in $st.Buttons) { $b.IsEnabled = $false }
+        $st.Dialog.Cursor = [System.Windows.Input.Cursors]::Wait
+        try {
+            Send-DATTestimonial -Name $check.Values.Name -Company $check.Values.Company -Testimonial $check.Values.Testimonial `
+                -Email $check.Values.Email -PublicUse $publicUse
+            Set-DATRegistryValue -Name 'TestimonialSubmitted' -Value 1 -Type DWord
+            $st.Sent = $true
+            $st.Dialog.Close()
+        } catch {
+            # Keep the dialog open so nothing typed is lost
+            $st.Sending = $false
+            foreach ($b in $st.Buttons) { $b.IsEnabled = $true }
+            & $st.Validate $st
+            $st.Error.Text = "Your testimonial could not be sent: $($_.Exception.Message) Your text is still here, so you can try again."
+            $st.Error.Visibility = 'Visible'
+        } finally {
+            $st.Sending = $false
+            $st.Dialog.Cursor = $null
+        }
+    })
+
+    if ($Prompted) {
+        $later = & $newButton 'Remind me later' $secondaryTemplate 'WindowForeground'
+        # The 30-day reminder was set when the prompt opened
+        $later.Add_Click({ Write-DATLogEntry -Value '[Testimonial] Prompt deferred for 30 days' -Severity 1; $this.Tag.Dialog.Close() })
+        $never = & $newButton 'Do not show again' $secondaryTemplate 'InputPlaceholder'
+        $never.Add_Click({
+            try { Set-DATRegistryValue -Name 'TestimonialPromptSuppressed' -Value 1 -Type DWord } catch { }
+            Write-DATLogEntry -Value '[Testimonial] Prompt suppressed -- it will not be shown again' -Severity 1
+            $this.Tag.Dialog.Close()
+        })
+        $state.Buttons = @($state.SubmitButton, $later, $never)
+    } else {
+        $cancel = & $newButton 'Cancel' $secondaryTemplate 'WindowForeground'
+        $cancel.Add_Click({ $this.Tag.Dialog.Close() })
+        $state.Buttons = @($state.SubmitButton, $cancel)
+    }
+    $buttonRow.Children[$buttonRow.Children.Count - 1].Margin = [System.Windows.Thickness]::new(0)
+    $panel.Children.Add($buttonRow) | Out-Null
+
+    # Submit is enabled once the required fields have text; full validation runs on submit
+    $state.Limit = $limits.Testimonial
+    $state.Validate = {
+        param ($s)
+        $len = $s.TextBox.Text.Length
+        $s.Counter.Text = "$len / $($s.Limit)"
+        $s.SubmitButton.IsEnabled = -not $s.Sending -and
+            -not [string]::IsNullOrWhiteSpace($s.NameBox.Text) -and
+            -not [string]::IsNullOrWhiteSpace($s.CompanyBox.Text) -and
+            -not [string]::IsNullOrWhiteSpace($s.TextBox.Text)
+        if ($s.Error.Visibility -eq 'Visible' -and -not $s.Sending) { $s.Error.Visibility = 'Collapsed' }
+    }
+
+    $border.Child = $panel
+    Set-DATDialogCard -Dialog $dlg -Card $border
+    $dlg.Add_ContentRendered({ $this.Tag.NameBox.Focus() | Out-Null })
+    $dlg.ShowDialog() | Out-Null
+
+    if ($state.Sent) {
+        Write-DATActivityLog 'Testimonial sent -- thank you' -Level Success
+        Show-DATInfoDialog -Title 'Thank You!' -Message 'Thank you for sharing your experience with the Driver Automation Tool.' -Type Success -ButtonLabel 'OK'
+    }
+}
+
+function Test-DATTestimonialAvailable {
+    # True when the API config (as cached locally -- no network call) publishes the testimonial endpoint
+    try { return -not [string]::IsNullOrEmpty((Get-DATTestimonialEndpoint -Config (Get-DATTelemetryConfig -LocalOnly))) } catch { return $false }
+}
+
+function Show-DATTestimonialPromptIfDue {
+    <#
+    .SYNOPSIS
+        Shows the testimonial prompt at startup when it is due. UI only -- scheduled and headless
+        builds never reach this file.
+    #>
+    [CmdletBinding()]
+    param ()
+
+    if (-not (Test-DATTestimonialAvailable)) {
+        Write-DATLogEntry -Value '[Testimonial] Prompt not shown -- the testimonial endpoint is not published in the API config' -Severity 1
+        return
+    }
+    $state = Get-DATTestimonialPromptState
+    if (-not $state.Due) {
+        Write-DATLogEntry -Value "[Testimonial] Prompt not shown -- $($state.Reason)" -Severity 1
+        return
+    }
+    Write-DATLogEntry -Value "[Testimonial] Showing the startup prompt -- $($state.Reason)" -Severity 1
+    Show-DATTestimonialModal -Prompted
 }
 
 function Show-DATBiosNameRepairModal {
@@ -10580,6 +10986,132 @@ function Test-DATKnownDeviceMatch {
     return $false
 }
 
+function Format-DATKnownDeviceList {
+    # Builds the discovered model list, grouped by make, as one multi-line log entry. Writing a
+    # log line per model opened the log file thousands of times on the UI thread.
+    param ([object[]]$Devices, [string]$Title)
+    $lines = [System.Collections.Generic.List[string]]::new()
+    $lines.Add("${Title}:")
+    foreach ($makeGrp in ($Devices | Group-Object -Property Make | Sort-Object Name)) {
+        $lines.Add("  $($makeGrp.Name): $($makeGrp.Count) model(s)")
+        foreach ($dev in ($makeGrp.Group | Sort-Object Model)) {
+            $lines.Add("    - $($dev.Model)")
+        }
+    }
+    return ($lines -join "`r`n")
+}
+
+function Get-DATSpacePrefixes {
+    # Returns each leading part of $Text that is directly followed by a space, i.e. every P for
+    # which "$Text" -like "$P *" holds. Turns the HP and Surface prefix matches into lookups.
+    param ([string]$Text)
+    if ([string]::IsNullOrEmpty($Text)) { return }
+    $i = $Text.IndexOf(' ')
+    while ($i -ge 0) {
+        $Text.Substring(0, $i)
+        $i = $Text.IndexOf(' ', $i + 1)
+    }
+}
+
+function Add-DATKnownDeviceIndexEntry {
+    param ($Map, [string]$Key, $Device)
+    $list = $null
+    if (-not $Map.TryGetValue($Key, [ref]$list)) {
+        $list = [System.Collections.Generic.List[object]]::new()
+        $Map[$Key] = $list
+    }
+    $list.Add($Device)
+}
+
+function New-DATKnownDeviceIndex {
+    <#
+    .SYNOPSIS
+        Indexes known Intune/ConfigMgr devices so a catalog grid row can be matched with a few
+        dictionary lookups instead of a call to Test-DATKnownDeviceMatch per device.
+    .DESCRIPTION
+        Test-DATKnownDeviceMatch costs about 0.24 ms per grid row/device pair on PS 5.1, and the
+        selection runs on the UI thread. On a large tenant or site (1,500 catalog rows x 800
+        devices is 1.2 million pairs) the window froze for minutes and was reported as a crash.
+        The index holds the same four match routes, keyed so Find-DATKnownDeviceMatches returns
+        exactly the devices Test-DATKnownDeviceMatch would accept. A change to the matching rules
+        must be made in both places; the UIApplication tests compare the two.
+    #>
+    param ([object[]]$Devices)
+    $cmp = [System.StringComparer]::OrdinalIgnoreCase
+    $index = @{
+        Baseboard    = [System.Collections.Generic.Dictionary[string, System.Collections.Generic.List[object]]]::new($cmp)  # "<make>|<BOARD>"
+        Model        = [System.Collections.Generic.Dictionary[string, System.Collections.Generic.List[object]]]::new($cmp)  # normalized model
+        HPPrefix     = [System.Collections.Generic.Dictionary[string, System.Collections.Generic.List[object]]]::new($cmp)  # HP stripped model and its prefixes
+        SurfaceModel = [System.Collections.Generic.Dictionary[string, System.Collections.Generic.List[object]]]::new($cmp)  # Microsoft normalized model
+    }
+    foreach ($device in $Devices) {
+        if ($null -eq $device) { continue }
+        $deviceMake  = [string]$device.Make
+        $deviceModel = [string]$device.Model
+        $deviceBoard = [string]$device.Baseboard
+        $normMake  = [string](ConvertTo-DATNormalizedMake -Make $deviceMake)
+        $normModel = [string](ConvertTo-DATNormalizedModel -Make $deviceMake -Model $deviceModel)
+
+        if (-not [string]::IsNullOrWhiteSpace($deviceBoard)) {
+            Add-DATKnownDeviceIndexEntry -Map $index.Baseboard -Key "$normMake|$($deviceBoard.Trim().ToUpper())" -Device $device
+        }
+        Add-DATKnownDeviceIndexEntry -Map $index.Model -Key $normModel -Device $device
+        if ($normMake -eq 'HP') {
+            $hpStripped = ($deviceModel -replace '^(HP|Hewlett-Packard|COMPAQ|Compaq)\s+', '').Trim()
+            Add-DATKnownDeviceIndexEntry -Map $index.HPPrefix -Key $hpStripped -Device $device
+            foreach ($prefix in (Get-DATSpacePrefixes -Text $hpStripped)) {
+                Add-DATKnownDeviceIndexEntry -Map $index.HPPrefix -Key $prefix -Device $device
+            }
+        }
+        if ($normMake -eq 'Microsoft') {
+            Add-DATKnownDeviceIndexEntry -Map $index.SurfaceModel -Key $normModel -Device $device
+        }
+    }
+    return $index
+}
+
+function Find-DATKnownDeviceMatches {
+    <#
+    .SYNOPSIS
+        Returns every indexed device that matches a catalog grid row, each device once.
+        GridMake and GridModel must already be normalized, as for Test-DATKnownDeviceMatch.
+    #>
+    param (
+        [hashtable]$Index,
+        [string]$GridMake,
+        [string]$GridModel,
+        [string]$GridBaseboards
+    )
+    $candidates = [System.Collections.Generic.List[object]]::new()
+    $list = $null
+
+    # Baseboard-primary match
+    if (-not [string]::IsNullOrWhiteSpace($GridBaseboards)) {
+        foreach ($board in ($GridBaseboards -split '[,;\s]+')) {
+            $board = $board.Trim().ToUpper()
+            if ($board -and $Index.Baseboard.TryGetValue("$GridMake|$board", [ref]$list)) { $candidates.AddRange($list) }
+        }
+    }
+    # Name-based fallback
+    if ($Index.Model.TryGetValue($GridModel, [ref]$list)) { $candidates.AddRange($list) }
+    # HP: the catalog model is the device model, or a prefix of it ending at a space
+    if ($GridMake -eq 'HP' -and $Index.HPPrefix.TryGetValue($GridModel, [ref]$list)) { $candidates.AddRange($list) }
+    # Surface: the device model is a prefix of the catalog model ending at a space
+    if ($GridMake -eq 'Microsoft') {
+        foreach ($prefix in (Get-DATSpacePrefixes -Text $GridModel)) {
+            if ($Index.SurfaceModel.TryGetValue($prefix, [ref]$list)) { $candidates.AddRange($list) }
+        }
+    }
+
+    # A device can match by more than one route. Make|Model is unique per device in the lookup results.
+    $seen = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    $found = [System.Collections.Generic.List[object]]::new()
+    foreach ($device in $candidates) {
+        if ($seen.Add("$($device.Make)|$($device.Model)")) { $found.Add($device) }
+    }
+    return ,$found
+}
+
 # Deployed-version comparison state. Populated when connected to Intune/ConfigMgr so the grid
 # can flag models whose catalog driver/BIOS version is newer than what is already deployed.
 $script:DeployedVersionMap = $null        # hashtable: key -> List[string] of deployed versions
@@ -10642,47 +11174,115 @@ function Add-DATDeployedVersionEntry {
     }
 }
 
+$script:DeployedVersionScanPS = $null
+$script:DeployedVersionScanPending = $false
+
 function Invoke-DATDeployedVersionScan {
     <#
     .SYNOPSIS
         Fetches the versions of driver/BIOS packages already deployed to Intune and/or
         ConfigMgr, caches them, and re-annotates the model grid so newer catalog versions are
         flagged. Called whenever known-model data is (re)loaded. Non-fatal on any failure.
+    .DESCRIPTION
+        The fetch pages through every Win32 app in the tenant and queries the site's packages,
+        so it runs in a background runspace; on the UI thread a large tenant froze the window.
+        A scan requested while one is running is queued and runs once that one finishes, so
+        it sees whichever platform's lookup completed last.
     #>
+    if ($null -ne $script:DeployedVersionScanPS) {
+        $script:DeployedVersionScanPending = $true
+        return
+    }
+
+    $ps = $null
     try {
-        $map = @{}
-        $any = $false
+        $runIntune    = [bool](Test-DATIntuneAuth)
+        $siteServer   = $global:SiteServer
+        $siteCode     = $global:SiteCode
+        $runConfigMgr = -not [string]::IsNullOrEmpty($siteServer) -and -not [string]::IsNullOrEmpty($siteCode)
+        if (-not $runIntune -and -not $runConfigMgr) { return }
 
-        if (Test-DATIntuneAuth) {
-            try {
-                foreach ($v in @(Get-DATDeployedPackageVersions -Platform Intune)) {
-                    Add-DATDeployedVersionEntry -Map $map -Name $v.Name -Version $v.Version
-                }
-                $any = $true
-            } catch {
-                Write-DATActivityLog "Deployed-version scan (Intune) failed: $($_.Exception.Message)" -Level Warn
+        $script:DeployedVersionScanState = [hashtable]::Synchronized(@{
+            Status         = 'Running'
+            Intune         = $null
+            ConfigMgr      = $null
+            IntuneError    = $null
+            ConfigMgrError = $null
+        })
+
+        $ps = [powershell]::Create()
+        Add-DATCoreRunspaceBootstrap -PowerShell $ps -CaptureIntuneAuthContext:$runIntune -OptionalIntuneAuthContext
+        [void]$ps.AddScript({
+            param ($State, $RunIntune, $RunConfigMgr, $SiteServer, $SiteCode)
+            if ($RunIntune) {
+                try { $State.Intune = @(Get-DATDeployedPackageVersions -Platform Intune) }
+                catch { $State.IntuneError = $_.Exception.Message }
             }
-        }
-
-        if (-not [string]::IsNullOrEmpty($global:SiteServer) -and -not [string]::IsNullOrEmpty($global:SiteCode)) {
-            try {
-                foreach ($v in @(Get-DATDeployedPackageVersions -Platform ConfigMgr -SiteServer $global:SiteServer -SiteCode $global:SiteCode)) {
-                    Add-DATDeployedVersionEntry -Map $map -Name $v.Name -Version $v.Version
-                }
-                $any = $true
-            } catch {
-                Write-DATActivityLog "Deployed-version scan (ConfigMgr) failed: $($_.Exception.Message)" -Level Warn
+            if ($RunConfigMgr) {
+                try { $State.ConfigMgr = @(Get-DATDeployedPackageVersions -Platform ConfigMgr -SiteServer $SiteServer -SiteCode $SiteCode) }
+                catch { $State.ConfigMgrError = $_.Exception.Message }
             }
-        }
+            $State.Status = 'Complete'
+        })
+        [void]$ps.AddArgument($script:DeployedVersionScanState)
+        [void]$ps.AddArgument($runIntune)
+        [void]$ps.AddArgument($runConfigMgr)
+        [void]$ps.AddArgument($siteServer)
+        [void]$ps.AddArgument($siteCode)
 
-        if (-not $any) { return }
-
-        $script:DeployedVersionMap = $map
-        $script:DeployedVersionsFetched = $true
-        Update-DATModelUpdateStatus
+        $script:DeployedVersionScanAsync = $ps.BeginInvoke()
+        $script:DeployedVersionScanPS = $ps
     } catch {
         Write-DATActivityLog "Deployed-version scan error: $($_.Exception.Message)" -Level Warn
+        if ($ps) { $ps.Dispose() }
+        return
     }
+
+    $script:DeployedVersionScanTimer = New-Object System.Windows.Threading.DispatcherTimer
+    $script:DeployedVersionScanTimer.Interval = [TimeSpan]::FromMilliseconds(500)
+    $script:DeployedVersionScanTimer.Add_Tick({
+        $state = $script:DeployedVersionScanState
+        # IsCompleted also catches a runspace that died before it could report (e.g. module import failed)
+        if ($state.Status -ne 'Complete' -and -not $script:DeployedVersionScanAsync.IsCompleted) { return }
+        $script:DeployedVersionScanTimer.Stop()
+
+        try {
+            if ($state.IntuneError) {
+                Write-DATActivityLog "Deployed-version scan (Intune) failed: $($state.IntuneError)" -Level Warn
+            }
+            if ($state.ConfigMgrError) {
+                Write-DATActivityLog "Deployed-version scan (ConfigMgr) failed: $($state.ConfigMgrError)" -Level Warn
+            }
+
+            $map = @{}
+            $any = $false
+            foreach ($platformVersions in @($state.Intune, $state.ConfigMgr)) {
+                if ($null -eq $platformVersions) { continue }
+                foreach ($v in $platformVersions) {
+                    Add-DATDeployedVersionEntry -Map $map -Name $v.Name -Version $v.Version
+                }
+                $any = $true
+            }
+
+            if ($any) {
+                $script:DeployedVersionMap = $map
+                $script:DeployedVersionsFetched = $true
+                Update-DATModelUpdateStatus
+            } elseif ($state.Status -ne 'Complete') {
+                Write-DATActivityLog "Deployed-version scan stopped before returning results" -Level Warn
+            }
+        } catch {
+            Write-DATActivityLog "Deployed-version scan error: $($_.Exception.Message)" -Level Warn
+        } finally {
+            try { $script:DeployedVersionScanPS.Dispose() } catch { }
+            $script:DeployedVersionScanPS = $null
+            if ($script:DeployedVersionScanPending) {
+                $script:DeployedVersionScanPending = $false
+                Invoke-DATDeployedVersionScan
+            }
+        }
+    })
+    $script:DeployedVersionScanTimer.Start()
 }
 
 function Update-DATModelUpdateStatus {
@@ -10780,32 +11380,16 @@ $btn_SelectKnownModels.Add_Click({
     # Deselect all first so only known models end up selected
     foreach ($item in $script:ModelData) { $item.Selected = $false }
 
-    # Apply Intune known model selection
-    if ($script:IntuneKnownDevices -and @($script:IntuneKnownDevices).Count -gt 0) {
+    # Apply Intune, then ConfigMgr, known model selection
+    foreach ($knownDevices in @($script:IntuneKnownDevices, $script:ConfigMgrKnownDevices)) {
+        if (-not $knownDevices -or @($knownDevices).Count -eq 0) { continue }
+        $deviceIndex = New-DATKnownDeviceIndex -Devices $knownDevices
         foreach ($item in $script:ModelData) {
+            if ($item.Selected) { continue }
             $gridMake  = ConvertTo-DATNormalizedMake  -Make $item.OEM
             $gridModel = ConvertTo-DATNormalizedModel -Make $item.OEM -Model $item.Model
-            foreach ($device in $script:IntuneKnownDevices) {
-                if (Test-DATKnownDeviceMatch -GridMake $gridMake -GridModel $gridModel -GridBaseboards $item.Baseboards `
-                        -DeviceMake $device.Make -DeviceModel $device.Model -DeviceBaseboard $device.Baseboard) {
-                    $item.Selected = $true; break
-                }
-            }
-        }
-    }
-
-    # Apply ConfigMgr known model selection
-    if ($script:ConfigMgrKnownDevices -and @($script:ConfigMgrKnownDevices).Count -gt 0) {
-        foreach ($item in $script:ModelData) {
-            if (-not $item.Selected) {
-                $gridMake  = ConvertTo-DATNormalizedMake  -Make $item.OEM
-                $gridModel = ConvertTo-DATNormalizedModel -Make $item.OEM -Model $item.Model
-                foreach ($device in $script:ConfigMgrKnownDevices) {
-                    if (Test-DATKnownDeviceMatch -GridMake $gridMake -GridModel $gridModel -GridBaseboards $item.Baseboards `
-                            -DeviceMake $device.Make -DeviceModel $device.Model -DeviceBaseboard $device.Baseboard) {
-                        $item.Selected = $true; break
-                    }
-                }
+            if ((Find-DATKnownDeviceMatches -Index $deviceIndex -GridMake $gridMake -GridModel $gridModel -GridBaseboards $item.Baseboards).Count -gt 0) {
+                $item.Selected = $true
             }
         }
     }
@@ -13231,17 +13815,15 @@ function Update-DATConfigMgrKnownModelSelection {
     if (-not $script:ConfigMgrKnownDevices -or $script:ModelData.Count -eq 0) { return }
 
     $matchCount = 0
+    $deviceIndex = New-DATKnownDeviceIndex -Devices $script:ConfigMgrKnownDevices
     foreach ($item in $script:ModelData) {
         $gridMake  = ConvertTo-DATNormalizedMake  -Make $item.OEM
         $gridModel = ConvertTo-DATNormalizedModel -Make $item.OEM -Model $item.Model
-        foreach ($device in $script:ConfigMgrKnownDevices) {
-            if (Test-DATKnownDeviceMatch -GridMake $gridMake -GridModel $gridModel -GridBaseboards $item.Baseboards `
-                    -DeviceMake $device.Make -DeviceModel $device.Model -DeviceBaseboard $device.Baseboard) {
-                $item.Selected = $true
-                $item.IsKnownModel = $true
-                $matchCount++
-                break
-            }
+        $deviceMatches = Find-DATKnownDeviceMatches -Index $deviceIndex -GridMake $gridMake -GridModel $gridModel -GridBaseboards $item.Baseboards
+        if ($deviceMatches.Count -gt 0) {
+            $item.Selected = $true
+            $item.IsKnownModel = $true
+            $matchCount++
         }
     }
 
@@ -13346,14 +13928,7 @@ function Invoke-DATConfigMgrKnownModelLookup {
             $script:ConfigMgrKnownDevices = $result.Devices
 
             Write-DATActivityLog "ConfigMgr known model lookup complete: $makeCount makes, $modelCount models" -Level Success
-
-            $devicesByMake = $result.Devices | Group-Object -Property Make | Sort-Object Name
-            foreach ($makeGrp in $devicesByMake) {
-                Write-DATActivityLog "  $($makeGrp.Name): $($makeGrp.Count) model(s)" -Level Info
-                foreach ($dev in ($makeGrp.Group | Sort-Object Model)) {
-                    Write-DATActivityLog "    - $($dev.Model)" -Level Info
-                }
-            }
+            Write-DATActivityLog (Format-DATKnownDeviceList -Devices $result.Devices -Title 'ConfigMgr known models') -Level Info
 
             # Auto-select matching models only for explicit lookups. Automatic connect-time
             # lookups skip selection so they cannot overwrite the user's manual grid picks.
@@ -13784,7 +14359,7 @@ function Update-DATKnownModelSelection {
     <#
     .SYNOPSIS
         Checks models in grid_Models that match known Intune devices.
-        Uses Test-DATKnownDeviceMatch so matching is baseboard/SKU-primary
+        Uses the known-device index so matching is baseboard/SKU-primary
         (which uniquely distinguishes Pro vs non-Pro variants) with name-based
         matching as a fallback.
     #>
@@ -13794,21 +14369,18 @@ function Update-DATKnownModelSelection {
     # Track which known devices matched at least one catalog grid row so we can report
     # the queried-vs-selected gap (devices with no catalog model for the selected OS builds).
     $matchedDeviceKeys = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    $deviceIndex = New-DATKnownDeviceIndex -Devices $script:IntuneKnownDevices
     foreach ($item in $script:ModelData) {
         $gridMake  = ConvertTo-DATNormalizedMake  -Make $item.OEM
         $gridModel = ConvertTo-DATNormalizedModel -Make $item.OEM -Model $item.Model
-        $itemMatched = $false
-        foreach ($device in $script:IntuneKnownDevices) {
-            if (Test-DATKnownDeviceMatch -GridMake $gridMake -GridModel $gridModel -GridBaseboards $item.Baseboards `
-                    -DeviceMake $device.Make -DeviceModel $device.Model -DeviceBaseboard $device.Baseboard) {
+        $deviceMatches = Find-DATKnownDeviceMatches -Index $deviceIndex -GridMake $gridMake -GridModel $gridModel -GridBaseboards $item.Baseboards
+        if ($deviceMatches.Count -gt 0) {
+            foreach ($device in $deviceMatches) {
                 [void]$matchedDeviceKeys.Add("$($device.Make)|$($device.Model)")
-                $item.IsKnownModel = $true
-                if (-not $itemMatched) {
-                    $item.Selected = $true
-                    $matchCount++
-                    $itemMatched = $true
-                }
             }
+            $item.IsKnownModel = $true
+            $item.Selected = $true
+            $matchCount++
         }
     }
 
@@ -13844,14 +14416,17 @@ function Update-DATKnownModelSelection {
     $uniqueCount = @($uniqueDevices).Count
     $matchedUnique = $uniqueCount - $unmatchedDevices.Count
     if ($unmatchedDevices.Count -gt 0) {
-        Write-DATActivityLog "Known model match summary: $matchedUnique of $uniqueCount queried device models matched a catalog entry; $($unmatchedDevices.Count) unmatched (no driver package for the selected OS/architecture):" -Level Warn
+        # One log entry for the whole list -- a write per device took seconds on a large tenant
+        $lines = [System.Collections.Generic.List[string]]::new()
+        $lines.Add("Known model match summary: $matchedUnique of $uniqueCount queried device models matched a catalog entry; $($unmatchedDevices.Count) unmatched (no driver package for the selected OS/architecture):")
         foreach ($dev in ($unmatchedDevices | Sort-Object Make, Model)) {
             $bbInfo = if (-not [string]::IsNullOrWhiteSpace($dev.Baseboard)) { " (SKU: $($dev.Baseboard))" } else { '' }
             # Collapse a duplicated leading manufacturer token -- some inventory Model values
             # already include the Make, which otherwise renders as "HP HP EliteBook ...".
             $devLine = "$($dev.Make) $($dev.Model)".Trim() -replace '^(\S+)\s+\1\b', '$1'
-            Write-DATActivityLog "    - $devLine$bbInfo" -Level Info
+            $lines.Add("    - $devLine$bbInfo")
         }
+        Write-DATActivityLog ($lines -join "`r`n") -Level Warn
     } elseif ($uniqueCount -gt 0) {
         Write-DATActivityLog "Known model match summary: all $uniqueCount queried device models matched a catalog entry." -Level Success
     }
@@ -13944,15 +14519,7 @@ function Invoke-DATIntuneKnownModelLookup {
             $script:IntuneKnownDevices = $result.Devices
 
             Write-DATActivityLog "Intune known model lookup complete: $makeCount makes, $modelCount models" -Level Success
-
-            # Log the full discovered model list grouped by make
-            $devicesByMake = $result.Devices | Group-Object -Property Make | Sort-Object Name
-            foreach ($makeGrp in $devicesByMake) {
-                Write-DATActivityLog "  $($makeGrp.Name): $($makeGrp.Count) model(s)" -Level Info
-                foreach ($dev in ($makeGrp.Group | Sort-Object Model)) {
-                    Write-DATActivityLog "    - $($dev.Model)" -Level Info
-                }
-            }
+            Write-DATActivityLog (Format-DATKnownDeviceList -Devices $result.Devices -Title 'Intune known models') -Level Info
 
             # Auto-select matching models only for explicit lookups. Automatic connect-time
             # lookups skip selection so they cannot overwrite the user's manual grid picks.
@@ -18691,6 +19258,7 @@ function Update-DATHpcmslStatus {
             $txt_HpcmslStatus.ToolTip = $hpcmslModule.ModuleBase
         }
         $btn_InstallHpcmsl.Visibility = 'Collapsed'
+        $btn_CheckHpcmslUpdate.Visibility = 'Visible'
 
         # Re-enable HP in OEM selection
         $script:HPCMSLAvailable = $true
@@ -18706,11 +19274,275 @@ function Update-DATHpcmslStatus {
         $txt_HpcmslStatus.Text = "Not installed"
         $txt_HpcmslStatus.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'StatusWarning')
         $btn_InstallHpcmsl.Visibility = 'Visible'
+        $btn_CheckHpcmslUpdate.Visibility = 'Collapsed'
     }
     Update-DATBuildTypeWarning
 }
 
 Update-DATHpcmslStatus
+
+# Inserted into the HPCMSL update script. Installs HPCMSL and its dependencies by downloading each
+# .nupkg from PSGallery and extracting it into the AllUsers module path, without PowerShellGet -- the
+# same fallback the Install Module button uses. The updater turns to it when Install-Module fails,
+# as PowerShellGet 2.2.5 does on some hosts with "A parameter cannot be found that matches parameter
+# name 'AcceptLicense'" even with a matching PackageManagement loaded. Single-quoted so nothing in
+# it is expanded when it is inserted.
+$script:HPCMSLDirectInstallFunction = @'
+function Install-HPCMSLFromGallery {
+    $allUsersPath = Join-Path $env:ProgramFiles 'WindowsPowerShell\Modules'
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $queue = [System.Collections.Queue]::new()
+    $queue.Enqueue('HPCMSL')
+    $done = [ordered]@{}
+    while ($queue.Count -gt 0) {
+        $pkgName = $queue.Dequeue()
+        if ($done.Contains($pkgName)) { continue }
+        $nupkgPath = Join-Path $env:TEMP "DATHP_$pkgName.nupkg"
+        $extractDir = Join-Path $env:TEMP "DATHP_$pkgName"
+        Invoke-WebRequest -Uri "https://www.powershellgallery.com/api/v2/package/$pkgName" -OutFile $nupkgPath -UseBasicParsing -ErrorAction Stop
+        if (Test-Path $extractDir) { Remove-Item $extractDir -Recurse -Force }
+        [System.IO.Compression.ZipFile]::ExtractToDirectory($nupkgPath, $extractDir)
+        $nuspecFile = Get-ChildItem -Path $extractDir -Filter '*.nuspec' | Select-Object -First 1
+        if (-not $nuspecFile) { throw "The PSGallery package for $pkgName has no .nuspec" }
+        [xml]$nuspec = Get-Content $nuspecFile.FullName -Raw
+        $pkgVersion = [string]$nuspec.package.metadata.version
+        $deps = $nuspec.package.metadata.dependencies
+        if ($deps) {
+            foreach ($d in @($deps.dependency) + @($deps.group | ForEach-Object { $_.dependency })) {
+                if ($d -and $d.id -and -not $done.Contains($d.id)) { $queue.Enqueue($d.id) }
+            }
+        }
+        # A version already on disk may be loaded by the tool, so it is left alone rather than replaced
+        $modDest = Join-Path $allUsersPath "$pkgName\$pkgVersion"
+        if (-not (Test-Path (Join-Path $modDest "$pkgName.psd1"))) {
+            New-Item -Path $modDest -ItemType Directory -Force | Out-Null
+            Get-ChildItem -Path $extractDir | Where-Object {
+                $_.Name -ne '_rels' -and $_.Name -ne 'package' -and $_.Name -ne '[Content_Types].xml' -and $_.Extension -ne '.nuspec'
+            } | ForEach-Object { Copy-Item -Path $_.FullName -Destination $modDest -Recurse -Force }
+        }
+        Remove-Item $extractDir -Recurse -Force -ErrorAction SilentlyContinue
+        Remove-Item $nupkgPath -Force -ErrorAction SilentlyContinue
+        $done[$pkgName] = $pkgVersion
+    }
+    return (($done.Keys | ForEach-Object { "$_ $($done[$_])" }) -join ', ')
+}
+'@
+
+function Start-DATHpcmslUpdateCheck {
+    <#
+    .SYNOPSIS
+        Checks PSGallery for a newer HPCMSL and installs it, in a child process.
+    .DESCRIPTION
+        Runs at startup when HP is selected, and on demand from the Check for Update button.
+        A child process is used because bare runspaces break PackageManagement/PowerShellGet module
+        resolution. -Manual reports progress and the outcome on the HPCMSL card; the startup run
+        only logs.
+    #>
+    param ([switch]$Manual)
+
+    if ($null -ne $script:HPCMSLUpdateProcess -and -not $script:HPCMSLUpdateProcess.HasExited) {
+        if ($Manual) { $txt_HpcmslStatus.Text = 'An HPCMSL update check is already running...' }
+        return
+    }
+    $hpInstalled = (Get-DATHPCMSLModule).Module
+    if (-not $hpInstalled) {
+        if ($Manual) { Update-DATHpcmslStatus }
+        return
+    }
+
+    $script:HPCMSLUpdateManual = [bool]$Manual
+    if ($Manual) {
+        Write-DATLogEntry -Value "[HP] HPCMSL update check requested -- v$($hpInstalled.Version) installed" -Severity 1
+        $btn_CheckHpcmslUpdate.IsEnabled = $false
+        $txt_HpcmslStatusIcon.Text = [string][char]0xE946
+        $txt_HpcmslStatusIcon.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'InputPlaceholder')
+        $txt_HpcmslStatus.Text = 'Checking PSGallery for a newer HPCMSL...'
+        $txt_HpcmslStatus.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'InputPlaceholder')
+    }
+
+    $script:HPCMSLUpdateResultFile = Join-Path ([System.IO.Path]::GetTempPath()) "DATHPCMSLUpdate_$([guid]::NewGuid().ToString('N').Substring(0,8)).json"
+    $currentVer = $hpInstalled.Version.ToString()
+    # The background installer reports what it OBSERVES afterwards, not the version
+    # it set out to install. Reporting $gallery.Version as NewVersion claimed an
+    # upgrade that had not necessarily happened, and the next run found the same
+    # update waiting (#953).
+    $updateScript = @"
+`$ErrorActionPreference = 'Stop'
+# The loaded versions go into every result, so a failed update names the module stack it ran on
+function Get-PSGetStack {
+    ((Get-Module -Name PowerShellGet, PackageManagement | Sort-Object Name, Version | ForEach-Object { "`$(`$_.Name) v`$(`$_.Version)" }) -join ', ')
+}
+$($script:HPCMSLDirectInstallFunction)
+try {
+    [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+    # HPCMSL 1.9+ is published with PowerShellGetFormatVersion 2.0. The inbox PowerShellGet 1.0.0.1
+    # refuses every HP.* module with a warning, so the install "succeeds" and nothing changes. Load
+    # PowerShellGet 2.2.5 explicitly, with PackageManagement 1.4.4 first: PowerShellGet 2.x passes
+    # -AcceptLicense on to Install-Package, and an older PackageManagement fails the install with
+    # "A parameter cannot be found that matches parameter name 'AcceptLicense'". An upgrade loads
+    # the old PackageManagement, which then blocks the new one in this process, so after upgrading
+    # this script runs again in a fresh process (once).
+    `$required = [ordered]@{ PackageManagement = [version]'1.4.4'; PowerShellGet = [version]'2.2.5' }
+    `$outdated = @(foreach (`$name in `$required.Keys) {
+        `$found = Get-Module -ListAvailable -Name `$name | Sort-Object Version -Descending | Select-Object -First 1
+        if (-not `$found -or `$found.Version -lt `$required[`$name]) { "`$name v`$(`$found.Version)" }
+    })
+    if (`$outdated.Count -gt 0) {
+        if (`$env:DAT_HPCMSL_PSGET_UPGRADED -eq '1') { throw "PackageManagement 1.4.4 and PowerShellGet 2.2.5 or later are needed to install HPCMSL, and the upgrade did not take effect (found `$(`$outdated -join ', '))." }
+        Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force -Scope AllUsers | Out-Null
+        # PowerShellGet's gallery entry depends on PackageManagement, so this installs both
+        Install-Module -Name PowerShellGet -MinimumVersion '2.2.5' -Force -AllowClobber -Scope AllUsers -ErrorAction Stop
+        `$env:DAT_HPCMSL_PSGET_UPGRADED = '1'
+        `$rerun = Start-Process -FilePath (Get-Process -Id `$PID).Path -ArgumentList ([Environment]::GetCommandLineArgs() | Select-Object -Skip 1) -WindowStyle Hidden -Wait -PassThru
+        exit `$rerun.ExitCode
+    }
+    foreach (`$name in `$required.Keys) { Import-Module -Name `$name -MinimumVersion `$required[`$name] -Force -ErrorAction Stop }
+    Set-PSRepository -Name PSGallery -InstallationPolicy Trusted -ErrorAction SilentlyContinue
+    `$gallery = Find-Module -Name HPCMSL -Repository PSGallery -ErrorAction Stop
+    if (`$gallery.Version -gt [version]'$currentVer') {
+        `$installWarnings = @()
+        # HPCMSL requires licence acceptance on PowerShellGet 2.x; 1.0.0.1 has no such parameter (#962).
+        `$licenseParam = @{}
+        if ((Get-Command -Name Install-Module).Parameters.ContainsKey('AcceptLicense')) { `$licenseParam.AcceptLicense = `$true }
+        # Where Install-Module's error came from (inner command and call stack), so the log names the
+        # cause rather than only the message
+        `$installError = ''
+        try {
+            Install-Module -Name HPCMSL -Force -AllowClobber -SkipPublisherCheck -Scope AllUsers -ErrorAction Stop -WarningVariable +installWarnings @licenseParam
+        } catch {
+            `$stack = ((`$_.ScriptStackTrace -split "``r?``n") | Select-Object -First 4) -join ' <- '
+            `$installError = "`$(`$_.Exception.Message) [raised by `$(`$_.InvocationInfo.MyCommand); stack: `$stack]"
+        }
+        # Root order, not version order: Import-Module binds to the first PSModulePath match, so a
+        # copy in an earlier root masks the one just installed (#958).
+        `$avail = @(Get-Module -ListAvailable -Name HPCMSL -ErrorAction SilentlyContinue)
+        `$after = `$avail | Select-Object -First 1
+        `$method = 'Install-Module'
+        `$directResult = ''
+        if (-not (`$after -and `$after.Version -gt [version]'$currentVer')) {
+            # PowerShellGet installed nothing, or failed: fetch the packages from PSGallery directly
+            try {
+                `$directResult = Install-HPCMSLFromGallery
+                `$method = 'direct download from PSGallery'
+            } catch {
+                `$directResult = "direct download failed: `$(`$_.Exception.Message)"
+            }
+            `$avail = @(Get-Module -ListAvailable -Name HPCMSL -ErrorAction SilentlyContinue)
+            `$after = `$avail | Select-Object -First 1
+        }
+        `$highest = `$avail | Sort-Object Version -Descending | Select-Object -First 1
+        if (`$after -and `$after.Version -gt [version]'$currentVer') {
+            @{ Status = 'Updated'; OldVersion = '$currentVer'; NewVersion = `$after.Version.ToString(); ModuleBase = "`$(`$after.ModuleBase)"; Method = `$method; InstallError = `$installError; PowerShellGet = (Get-PSGetStack) } | ConvertTo-Json | Set-Content -Path '$($script:HPCMSLUpdateResultFile)' -Encoding UTF8
+        } else {
+            if (`$installError) { `$installWarnings += "Install-Module failed: `$installError" }
+            if (`$directResult) { `$installWarnings += "Fallback: `$directResult" }
+            `$installedVer = if (`$after) { `$after.Version.ToString() } else { 'not found' }
+            `$moduleBase = if (`$after) { "`$(`$after.ModuleBase)" } else { '' }
+            `$warnText = if (`$installWarnings.Count -gt 0) { (`$installWarnings | ForEach-Object { "`$_" }) -join ' | ' } else { 'Install-Module reported no error or warning.' }
+            `$shadowText = if (`$highest -and `$after -and `$highest.Version -gt `$after.Version) { "v`$(`$highest.Version) is installed at `$(`$highest.ModuleBase) but v`$(`$after.Version) at `$(`$after.ModuleBase) comes first on PSModulePath and is what loads -- remove the older copy so the update takes effect." } else { '' }
+            @{ Status = 'NoChange'; OldVersion = '$currentVer'; Expected = `$gallery.Version.ToString(); Installed = `$installedVer; ModuleBase = `$moduleBase; Warnings = `$warnText; Shadow = `$shadowText; PowerShellGet = (Get-PSGetStack) } | ConvertTo-Json | Set-Content -Path '$($script:HPCMSLUpdateResultFile)' -Encoding UTF8
+        }
+    } else {
+        @{ Status = 'Current'; Version = '$currentVer' } | ConvertTo-Json | Set-Content -Path '$($script:HPCMSLUpdateResultFile)' -Encoding UTF8
+    }
+} catch {
+    @{ Status = 'Failed'; Error = `$_.Exception.Message; PowerShellGet = (Get-PSGetStack) } | ConvertTo-Json | Set-Content -Path '$($script:HPCMSLUpdateResultFile)' -Encoding UTF8
+}
+"@
+    $encodedCmd = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($updateScript))
+    $psExe = if ($PSVersionTable.PSVersion.Major -ge 7) { 'pwsh.exe' } else { 'powershell.exe' }
+    $script:HPCMSLUpdateStarted = Get-Date
+    $script:HPCMSLUpdateProcess = Start-Process -FilePath $psExe `
+        -ArgumentList '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', $encodedCmd `
+        -WindowStyle Hidden -PassThru
+
+    # Poll for completion via a DispatcherTimer (non-blocking)
+    $script:HPCMSLUpdateTimer = New-Object System.Windows.Threading.DispatcherTimer
+    $script:HPCMSLUpdateTimer.Interval = [TimeSpan]::FromSeconds(1)
+    $script:HPCMSLUpdateTimer.Add_Tick({
+        if (-not $script:HPCMSLUpdateProcess.HasExited) {
+            if ($script:HPCMSLUpdateManual) {
+                $txt_HpcmslStatus.Text = "Checking PSGallery for a newer HPCMSL... ($([math]::Floor(((Get-Date) - $script:HPCMSLUpdateStarted).TotalSeconds))s)"
+            }
+            return
+        }
+        $script:HPCMSLUpdateTimer.Stop()
+        # Shown on the card after a manual check: Text, and the theme colour key for it
+        $cardText = $null
+        $cardColor = 'StatusSuccess'
+        try {
+            if (Test-Path $script:HPCMSLUpdateResultFile) {
+                $r = Get-Content -Path $script:HPCMSLUpdateResultFile -Raw -ErrorAction Stop | ConvertFrom-Json
+                Remove-Item -Path $script:HPCMSLUpdateResultFile -Force -ErrorAction SilentlyContinue
+                switch ($r.Status) {
+                    'Updated' {
+                        Remove-Module -Name HPCMSL -Force -ErrorAction SilentlyContinue
+                        Import-Module -Name HPCMSL -Force -ErrorAction SilentlyContinue
+                        Write-DATLogEntry -Value "[HP] HPCMSL upgraded in background: v$($r.OldVersion) -> v$($r.NewVersion) via $($r.Method) -- $($r.ModuleBase)" -Severity 1
+                        if ($r.InstallError) {
+                            # Installed by the fallback; keep PowerShellGet's failure in the log so its cause can be found
+                            Write-DATLogEntry -Value "[HP] Install-Module could not install HPCMSL (using $($r.PowerShellGet)): $($r.InstallError)" -Severity 2
+                        }
+                        Write-DATActivityLog "HP CMSL updated to v$($r.NewVersion)" -Level Info
+                        $cardText = "Updated to version $($r.NewVersion) (from $($r.OldVersion))"
+                    }
+                    'NoChange' {
+                        # Install-Module returned without error but the installed
+                        # version did not move. Say so rather than reporting the
+                        # version that was merely attempted (#953).
+                        if ($r.Shadow) {
+                            # Not a failed install -- the files landed, an older
+                            # copy in an earlier root just wins the import (#958).
+                            Write-DATLogEntry -Value "[HP] WARNING: HPCMSL update did not take effect -- $($r.Shadow)" -Severity 2
+                            Write-DATActivityLog "HP CMSL v$($r.Expected) installed but v$($r.Installed) still loads -- remove the older copy" -Level Warn
+                            $cardText = "Version $($r.Expected) was installed, but version $($r.Installed) still loads. Remove the older copy (see the log)."
+                        } else {
+                            Write-DATLogEntry -Value "[HP] WARNING: HPCMSL is still v$($r.Installed) after installing v$($r.Expected) (using $($r.PowerShellGet)) -- the background update did not take effect. Loaded from: $($r.ModuleBase). $($r.Warnings)" -Severity 2
+                            Write-DATActivityLog "HP CMSL update did not take effect -- still v$($r.Installed) (expected v$($r.Expected))" -Level Warn
+                            $cardText = "The update to version $($r.Expected) did not take effect -- still version $($r.Installed). See the log for details."
+                        }
+                        $cardColor = 'StatusWarning'
+                    }
+                    'Current' {
+                        Write-DATLogEntry -Value "[HP] HPCMSL v$($r.Version) is already the latest version" -Severity 1
+                        $cardText = "Installed -- Version $($r.Version), the latest on PSGallery"
+                    }
+                    'Failed' {
+                        Write-DATLogEntry -Value "[HP] HPCMSL background update check failed: $($r.Error) (using $(if ($r.PowerShellGet) { $r.PowerShellGet } else { 'no PowerShellGet loaded' }))" -Severity 2
+                        $cardText = "Update check failed -- $($r.Error)"
+                        $cardColor = 'StatusError'
+                    }
+                }
+            } else {
+                Write-DATLogEntry -Value "[HP] HPCMSL update check ended without a result (exit code $($script:HPCMSLUpdateProcess.ExitCode))" -Severity 2
+                $cardText = 'Update check ended without a result. See the log for details.'
+                $cardColor = 'StatusError'
+            }
+        } catch {
+            Write-DATLogEntry -Value "[HP] HPCMSL background update timer error: $($_.Exception.Message)" -Severity 2
+            $cardText = "Update check failed -- $($_.Exception.Message)"
+            $cardColor = 'StatusError'
+        } finally {
+            $script:HPCMSLUpdateProcess = $null
+            # Refresh the card to the version that now loads, then show the outcome of a manual check on it
+            Update-DATHpcmslStatus
+            if ($script:HPCMSLUpdateManual -and $cardText) {
+                $txt_HpcmslStatus.Text = $cardText
+                $txt_HpcmslStatus.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty, $cardColor)
+            }
+            $btn_CheckHpcmslUpdate.IsEnabled = $true
+            $script:HPCMSLUpdateManual = $false
+        }
+    })
+    $script:HPCMSLUpdateTimer.Start()
+}
+
+$btn_CheckHpcmslUpdate.Add_Click({
+    try { Start-DATHpcmslUpdateCheck -Manual } catch {
+        Write-DATLogEntry -Value "[HP] HPCMSL update check could not start: $($_.Exception.Message)" -Severity 2
+        $btn_CheckHpcmslUpdate.IsEnabled = $true
+    }
+})
 
 # Install HPCMSL button handler
 $btn_InstallHpcmsl.Add_Click({
@@ -29583,101 +30415,8 @@ try {
                         Write-DATLogEntry -Value "[HP] WARNING: HPCMSL v$($hpcmsl.ShadowedVersion) at $($hpcmsl.ShadowedModuleBase) is shadowed by v$($hpInstalled.Version) at $($hpInstalled.ModuleBase) -- builds use v$($hpInstalled.Version)." -Severity 2
                     }
 
-                    # Use a child process for the update check -- bare runspaces break
-                    # PackageManagement/PowerShellGet module resolution.
-                    $script:HPCMSLUpdateResultFile = Join-Path ([System.IO.Path]::GetTempPath()) "DATHPCMSLUpdate_$([guid]::NewGuid().ToString('N').Substring(0,8)).json"
-                    $currentVer = $hpInstalled.Version.ToString()
-                    # The background installer reports what it OBSERVES afterwards, not the version
-                    # it set out to install. Reporting $gallery.Version as NewVersion claimed an
-                    # upgrade that had not necessarily happened, and the next run found the same
-                    # update waiting (#953).
-                    $updateScript = @"
-`$ErrorActionPreference = 'Stop'
-try {
-    [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
-    Set-PSRepository -Name PSGallery -InstallationPolicy Trusted -ErrorAction SilentlyContinue
-    `$gallery = Find-Module -Name HPCMSL -Repository PSGallery -ErrorAction Stop
-    if (`$gallery.Version -gt [version]'$currentVer') {
-        `$installWarnings = @()
-        # HPCMSL requires licence acceptance on PowerShellGet 2.x; 1.0.0.1 has no such parameter (#962).
-        `$licenseParam = @{}
-        if ((Get-Command -Name Install-Module).Parameters.ContainsKey('AcceptLicense')) { `$licenseParam.AcceptLicense = `$true }
-        Install-Module -Name HPCMSL -Force -AllowClobber -SkipPublisherCheck -Scope AllUsers -ErrorAction Stop -WarningVariable +installWarnings @licenseParam
-        # Root order, not version order: Import-Module binds to the first PSModulePath match, so a
-        # copy in an earlier root masks the one just installed (#958).
-        `$avail = @(Get-Module -ListAvailable -Name HPCMSL -ErrorAction SilentlyContinue)
-        `$after = `$avail | Select-Object -First 1
-        `$highest = `$avail | Sort-Object Version -Descending | Select-Object -First 1
-        if (`$after -and `$after.Version -gt [version]'$currentVer') {
-            @{ Status = 'Updated'; OldVersion = '$currentVer'; NewVersion = `$after.Version.ToString(); ModuleBase = "`$(`$after.ModuleBase)" } | ConvertTo-Json | Set-Content -Path '$($script:HPCMSLUpdateResultFile)' -Encoding UTF8
-        } else {
-            `$installedVer = if (`$after) { `$after.Version.ToString() } else { 'not found' }
-            `$moduleBase = if (`$after) { "`$(`$after.ModuleBase)" } else { '' }
-            `$warnText = if (`$installWarnings.Count -gt 0) { (`$installWarnings | ForEach-Object { "`$_" }) -join ' | ' } else { 'Install-Module reported no error or warning.' }
-            `$shadowText = if (`$highest -and `$after -and `$highest.Version -gt `$after.Version) { "v`$(`$highest.Version) is installed at `$(`$highest.ModuleBase) but v`$(`$after.Version) at `$(`$after.ModuleBase) comes first on PSModulePath and is what loads -- remove the older copy so the update takes effect." } else { '' }
-            @{ Status = 'NoChange'; OldVersion = '$currentVer'; Expected = `$gallery.Version.ToString(); Installed = `$installedVer; ModuleBase = `$moduleBase; Warnings = `$warnText; Shadow = `$shadowText } | ConvertTo-Json | Set-Content -Path '$($script:HPCMSLUpdateResultFile)' -Encoding UTF8
-        }
-    } else {
-        @{ Status = 'Current'; Version = '$currentVer' } | ConvertTo-Json | Set-Content -Path '$($script:HPCMSLUpdateResultFile)' -Encoding UTF8
-    }
-} catch {
-    @{ Status = 'Failed'; Error = `$_.Exception.Message } | ConvertTo-Json | Set-Content -Path '$($script:HPCMSLUpdateResultFile)' -Encoding UTF8
-}
-"@
-                    $encodedCmd = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($updateScript))
-                    $psExe = if ($PSVersionTable.PSVersion.Major -ge 7) { 'pwsh.exe' } else { 'powershell.exe' }
-                    $script:HPCMSLUpdateProcess = Start-Process -FilePath $psExe `
-                        -ArgumentList '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', $encodedCmd `
-                        -WindowStyle Hidden -PassThru
-
-                    # Poll for completion via a DispatcherTimer (non-blocking)
-                    $script:HPCMSLUpdateTimer = New-Object System.Windows.Threading.DispatcherTimer
-                    $script:HPCMSLUpdateTimer.Interval = [TimeSpan]::FromSeconds(3)
-                    $script:HPCMSLUpdateTimer.Add_Tick({
-                        if ($script:HPCMSLUpdateProcess.HasExited) {
-                            $script:HPCMSLUpdateTimer.Stop()
-                            try {
-                                if (Test-Path $script:HPCMSLUpdateResultFile) {
-                                    $r = Get-Content -Path $script:HPCMSLUpdateResultFile -Raw -ErrorAction Stop | ConvertFrom-Json
-                                    Remove-Item -Path $script:HPCMSLUpdateResultFile -Force -ErrorAction SilentlyContinue
-                                    switch ($r.Status) {
-                                        'Updated' {
-                                            Remove-Module -Name HPCMSL -Force -ErrorAction SilentlyContinue
-                                            Import-Module -Name HPCMSL -Force -ErrorAction SilentlyContinue
-                                            Write-DATLogEntry -Value "[HP] HPCMSL upgraded in background: v$($r.OldVersion) -> v$($r.NewVersion) -- $($r.ModuleBase)" -Severity 1
-                                            Write-DATActivityLog "HP CMSL updated to v$($r.NewVersion)" -Level Info
-                                            Update-DATHpcmslStatus
-                                        }
-                                        'NoChange' {
-                                            # Install-Module returned without error but the installed
-                                            # version did not move. Say so rather than reporting the
-                                            # version that was merely attempted (#953).
-                                            if ($r.Shadow) {
-                                                # Not a failed install -- the files landed, an older
-                                                # copy in an earlier root just wins the import (#958).
-                                                Write-DATLogEntry -Value "[HP] WARNING: HPCMSL update did not take effect -- $($r.Shadow)" -Severity 2
-                                                Write-DATActivityLog "HP CMSL v$($r.Expected) installed but v$($r.Installed) still loads -- remove the older copy" -Level Warn
-                                            } else {
-                                                Write-DATLogEntry -Value "[HP] WARNING: HPCMSL is still v$($r.Installed) after installing v$($r.Expected) -- the background update did not take effect. Loaded from: $($r.ModuleBase). $($r.Warnings)" -Severity 2
-                                                Write-DATActivityLog "HP CMSL update did not take effect -- still v$($r.Installed) (expected v$($r.Expected))" -Level Warn
-                                            }
-                                        }
-                                        'Current' {
-                                            Write-DATLogEntry -Value "[HP] HPCMSL v$($r.Version) is already the latest version" -Severity 1
-                                        }
-                                        'Failed' {
-                                            Write-DATLogEntry -Value "[HP] HPCMSL background update check failed: $($r.Error)" -Severity 2
-                                        }
-                                    }
-                                }
-                            } catch {
-                                Write-DATLogEntry -Value "[HP] HPCMSL background update timer error: $($_.Exception.Message)" -Severity 2
-                            } finally {
-                                $script:HPCMSLUpdateProcess = $null
-                            }
-                        }
-                    })
-                    $script:HPCMSLUpdateTimer.Start()
+                    # Same check the Check for Update button runs (Start-DATHpcmslUpdateCheck)
+                    Start-DATHpcmslUpdateCheck
                     $script:HPCMSLUpdateChecked = $true
                 }
             }
@@ -30127,7 +30866,7 @@ if (Test-Path $logoPath) {
 
 # Read version from module manifest
 $manifestPath = Join-Path $AppRoot "Modules\DriverAutomationToolCore\DriverAutomationToolCore.psd1"
-$script:versionString = "v10.3.1"
+$script:versionString = "v10.3.2"
 if (Test-Path $manifestPath) {
     $manifestData = Import-PowerShellDataFile $manifestPath
     $ver = [version]$manifestData.ModuleVersion
@@ -31468,6 +32207,9 @@ $script:WhatsNewFeatures = @(
     [pscustomobject]@{ Id = 'toast-behaviour-section-10.3.1';   Dot = 'dot_ToastNotifications'; Parent = '';                   Pill = 'pill_ToastBehaviour';             Zone = 'zone_ToastBehaviour';             Controls = @('chk_DisableToastPrompt', 'chk_ShowInstallProgress', 'chk_SilentDuringAutopilot', 'chk_CriticalNotification', 'chk_EnableMaxDeferrals', 'chk_DisableBIOSRestart') }
     [pscustomobject]@{ Id = 'mdm-test-harness-10.3.1';          Dot = 'dot_ModernMgmt';         Parent = '';                   Pill = 'pill_MDMTestHarness';             Zone = 'zone_MDMTestHarness';             Controls = @('btn_MDMOpenScriptsFolder') }
     [pscustomobject]@{ Id = 'sidebar-collapse-10.3.1';          Dot = '';                       Parent = '';                   Pill = 'pill_SidebarToggle';              Zone = 'zone_SidebarToggle';              Controls = @('btn_SidebarToggle') }
+    # 10.3.2: the testimonial button in the title bar, and Check for Update on the HPCMSL card
+    [pscustomobject]@{ Id = 'testimonials-10.3.2';              Dot = '';                       Parent = '';                   Pill = 'pill_Testimonial';                Zone = 'zone_Testimonial';                Controls = @('btn_Testimonial') }
+    [pscustomobject]@{ Id = 'hpcmsl-update-check-10.3.2';       Dot = 'dot_CommonSettings';     Parent = '';                   Pill = 'pill_HpcmslUpdateCheck';          Zone = 'zone_HpcmslUpdateCheck';          Controls = @('btn_CheckHpcmslUpdate') }
 )
 
 # Maps a wired element's x:Name to the feature id it clears, so plain (non-closure) handlers can
@@ -31567,19 +32309,12 @@ try { Initialize-DATWhatsNew } catch { Write-DATActivityLog "What's New init fai
 # (the IncrementVersion skill covers it, and Tests\UIApplication.Tests.ps1 asserts it matches the
 # module manifest). The modal is suppressed when it does not match the running build, so a missed
 # changelog update shows nothing rather than the previous release's features.
-$script:WhatsNewReleaseVersion = '10.3.1.0'
+$script:WhatsNewReleaseVersion = '10.3.2.0'
 $script:WhatsNewReleaseItems = @(
-    [pscustomobject]@{ Category = 'Settings Sections and Search';   Text = 'Common Settings, both Package Options pages and Toast Notifications now show their settings one section at a time, picked from a list beside them that counts the settings in each. The search box above the list finds any setting by its name or description across every section. A dot marks a section holding a new setting you have not looked at yet. Toast Behaviour now has its own section, apart from the notification appearance and preview.' }
-    [pscustomobject]@{ Category = 'Collapsible Menu';               Text = 'The menu on the left can be collapsed to its icons with the arrow button at its foot, leaving more room for the page. Hover over an icon to see what it opens. The menu stays the way you left it the next time the tool starts.' }
-    [pscustomobject]@{ Category = 'Light Mode Readability';         Text = 'Status messages such as Installed and Found, warning buttons such as Reset, and the green and amber notes on the Intune Environment page are now easy to read in light mode. Status messages also change colour with the theme, where before they kept the colours of the theme they were shown in.' }
-    [pscustomobject]@{ Category = 'Rounded Dialogs';                Text = 'Dialogs no longer show grey square corners around their rounded edges.' }
-    [pscustomobject]@{ Category = 'Tool Folder Permissions';        Text = 'When other accounts can change the install-script templates in the tool folder, packaging refuses to build, because those scripts run as SYSTEM on every device. The tool now checks this at startup and before Intune, ConfigMgr Application and toast test package builds, and offers to fix the folder permissions before any download starts, instead of failing at the packaging step.' }
-    [pscustomobject]@{ Category = 'BitLocker During BIOS Updates';  Text = 'BIOS updates now check BitLocker immediately before the firmware is flashed and again immediately before the restart, suspending it if it has been turned back on. If BitLocker cannot be confirmed as suspended, the firmware is not flashed, or the device is not restarted, rather than risking the recovery screen. A failure to read BitLocker is no longer mistaken for BitLocker being off.' }
-    [pscustomobject]@{ Category = 'HP CMSL Install and Update';     Text = 'Installing and updating the HP Client Management Script Library works again on devices with PowerShellGet 2.x, which requires its licence to be accepted.' }
-    [pscustomobject]@{ Category = 'Lenovo BIOS Detection';          Text = 'The running Lenovo System Firmware version is now read reliably on every Windows language, so an up-to-date BIOS is no longer offered again. When the Lenovo updater reports that an update is not required, the device is recorded as current instead of failing and retrying on every Intune cycle.' }
-    [pscustomobject]@{ Category = 'Virtual Machine Support';        Text = 'Invoke-CMApplyDriverPackage.ps1 has a new -AllowVirtualMachine switch. With it, a virtual machine is matched to a driver package by its hypervisor (Hyper-V, VMware, VirtualBox and others), never to the physical hardware it imitates. Without it, nothing changes.' }
-    [pscustomobject]@{ Category = 'Modern Driver Management Tests'; Text = 'Test-ModernDriverManagement.ps1 now ships in the Scripts folder beside the scripts it tests, and only ever tests the copies in its own folder, so a package of the three scripts tests what your task sequence runs. The Modern Driver Mgmt page explains how to package it and run it with the Task Sequence Debugger.' }
-    [pscustomobject]@{ Category = 'Additional Drivers Folder';      Text = 'The Additional Drivers folder on the Custom Driver Pack page is no longer remembered between sessions, as it belongs to the pack being built.' }
+    [pscustomobject]@{ Category = 'Testimonials';                   Text = 'You can now share a testimonial from the speech-bubble button in the title bar: your name, company and up to 500 characters about the tool. You choose whether it may be published or is for the developer only. An email address is optional, used only to contact you about it, and never published. Everything is sent over an encrypted connection and stored encrypted. The tool also asks once at startup after its first week, with options to remind you in 30 days or not to ask again.' }
+    [pscustomobject]@{ Category = 'Known Models on Large Estates';  Text = 'Detecting known models no longer freezes the tool on large Intune tenants and ConfigMgr sites. Matching your devices to the catalog now takes well under a second where it could take several minutes, and the check of which driver and BIOS versions are already deployed runs in the background. A throttled Microsoft Graph request during the Intune lookup is retried instead of failing the lookup, and ConfigMgr hardware inventory queries are given longer to answer, so models are no longer missing on busy sites.' }
+    [pscustomobject]@{ Category = 'HP CMSL Updates';                Text = 'Updating to HP CMSL 1.9.0 or later no longer leaves the old version in place. The update now loads PowerShellGet 2.2.5 and PackageManagement 1.4.4 or later before installing, upgrading them first when needed, and if PowerShellGet still cannot install the new version it downloads the HP modules from the PowerShell Gallery directly, as Install Module already does. A new Check for Update button on the HPCMSL card in Common Settings checks for a newer version straight away and installs it, instead of waiting for the next start.' }
+    [pscustomobject]@{ Category = 'Site Code Scoping';              Text = 'Invoke-CMApplyDriverPackage.ps1 and Invoke-CMDownloadBIOSPackage.ps1 can now be limited to the packages of one site, for hierarchies with a central administration site and several primary sites. Pass -SiteCode, or set the MDMSiteCode task sequence variable. Without either, packages from every site are considered, as before.' }
 )
 
 function Get-DATWhatsNewModalShownVersion {
@@ -31661,6 +32396,19 @@ try {
         Show-DATTelemetryInviteIfDue
     }
 } catch { Write-DATActivityLog "Telemetry invitation failed: $($_.Exception.Message)" -Level Warn }
+
+# Testimonials: the title bar button, and the startup prompt (submit / remind in 30 days / do not
+# show again). Both stay hidden until the API config publishes the testimonial endpoint. The prompt
+# waits for a launch with no other modal, for the same reason the telemetry invitation does.
+try {
+    $testimonialAvailable = Test-DATTestimonialAvailable
+    $zone_Testimonial.Visibility = if ($testimonialAvailable) { 'Visible' } else { 'Collapsed' }
+    if ($script:WhatsNewModalShownThisSession -or $script:TelemetryInviteShownThisSession) {
+        Write-DATLogEntry -Value '[Testimonial] Prompt deferred -- another startup dialog was shown this session' -Severity 1
+    } else {
+        Show-DATTestimonialPromptIfDue
+    }
+} catch { Write-DATActivityLog "Testimonial prompt failed: $($_.Exception.Message)" -Level Warn }
 #endregion
 
 

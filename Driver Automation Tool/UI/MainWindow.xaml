@@ -1064,12 +1064,21 @@
                                    Foreground="{DynamicResource AccentColor}" VerticalAlignment="Center" Margin="0,0,8,0"/>
                         <TextBlock Text="Driver Automation Tool" FontSize="13" FontWeight="SemiBold"
                                    Foreground="{DynamicResource WindowForeground}" VerticalAlignment="Center"/>
-                        <TextBlock x:Name="txt_Version" Text=" Version 10.3.1" FontSize="11"
+                        <TextBlock x:Name="txt_Version" Text=" Version 10.3.2" FontSize="11"
                                    Foreground="{DynamicResource InputPlaceholder}" VerticalAlignment="Center" Margin="4,0"/>
                     </StackPanel>
 
                     <!-- Window Controls -->
                     <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,8,0">
+                        <!-- Shown once the API config publishes the testimonial endpoint -->
+                        <Grid x:Name="zone_Testimonial" Background="Transparent" Visibility="Collapsed">
+                            <Button x:Name="btn_Testimonial" Content="&#xE90A;"
+                                    Style="{StaticResource WindowControlButton}" Width="36" Height="28"
+                                    FontSize="12" ToolTip="Share a testimonial" AutomationProperties.Name="Share a testimonial"/>
+                            <!-- What's New marker for testimonials -->
+                            <Ellipse x:Name="pill_Testimonial" Width="7" Height="7" Fill="{DynamicResource AccentColor}" IsHitTestVisible="False"
+                                     HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,3,6,0" Visibility="Collapsed"/>
+                        </Grid>
                         <Button x:Name="btn_FeedbackUp" Content="&#xE8E1;"
                                 Style="{StaticResource WindowControlButton}" Width="36" Height="28"
                                 FontSize="12" ToolTip="Send Positive Feedback"/>
@@ -7004,8 +7013,13 @@
                                             <Border Height="1" Background="{DynamicResource SidebarActive}" Margin="0,0,0,14"/>
 
                                             <!-- HP CMSL Section (pre-req for HP Latest Drivers) -->
-                                            <TextBlock Text="HP Client Management Script Library (HPCMSL)" FontSize="13" FontWeight="SemiBold"
-                                                       Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,6"/>
+                                            <StackPanel x:Name="zone_HpcmslUpdateCheck" Orientation="Horizontal" Background="Transparent" Margin="0,0,0,6">
+                                                <TextBlock Text="HP Client Management Script Library (HPCMSL)" FontSize="13" FontWeight="SemiBold"
+                                                           Foreground="{DynamicResource WindowForeground}" VerticalAlignment="Center"/>
+                                                <Border x:Name="pill_HpcmslUpdateCheck" Visibility="Collapsed" Background="{DynamicResource AccentColor}" CornerRadius="8" Padding="7,1,7,2" Margin="8,0,0,0" VerticalAlignment="Center">
+                                                    <TextBlock Text="New" FontSize="10" FontWeight="SemiBold" Foreground="White"/>
+                                                </Border>
+                                            </StackPanel>
                                             <TextBlock TextWrapping="Wrap" FontSize="12" LineHeight="20"
                                                        Foreground="{DynamicResource InputPlaceholder}" Margin="0,0,0,10">
                                                 The Driver Automation Tool uses the HPCMSL PowerShell module to create driver and BIOS packages for HP devices, and it is required to build HP Latest Drivers packages. Without this module installed, HP will be unavailable as a manufacturer option.
@@ -7027,13 +7041,25 @@
                                                                TextWrapping="Wrap"
                                                                Foreground="{DynamicResource InputPlaceholder}"
                                                                Text="Checking HPCMSL status..."/>
-                                                    <Button x:Name="btn_InstallHpcmsl" Grid.Column="2"
-                                                            Style="{StaticResource SecondaryButton}" Height="30"
-                                                            Margin="10,0,0,0" Visibility="Collapsed">
-                                                        <TextBlock FontSize="12">
-                                                            <Run Text="&#xE896;" FontFamily="Segoe MDL2 Assets"/><Run Text="  Install Module"/>
-                                                        </TextBlock>
-                                                    </Button>
+                                                    <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
+                                                        <Button x:Name="btn_InstallHpcmsl"
+                                                                Style="{StaticResource SecondaryButton}" Height="30"
+                                                                Margin="10,0,0,0" Visibility="Collapsed">
+                                                            <TextBlock FontSize="12">
+                                                                <Run Text="&#xE896;" FontFamily="Segoe MDL2 Assets"/><Run Text="  Install Module"/>
+                                                            </TextBlock>
+                                                        </Button>
+                                                        <!-- Shown once HPCMSL is installed: checks PSGallery now and installs a newer version -->
+                                                        <Button x:Name="btn_CheckHpcmslUpdate"
+                                                                Style="{StaticResource SecondaryButton}" Height="30"
+                                                                Margin="10,0,0,0" Visibility="Collapsed"
+                                                                ToolTip="Check PSGallery for a newer HPCMSL now and install it"
+                                                                AutomationProperties.Name="Check for an HPCMSL update">
+                                                            <TextBlock FontSize="12">
+                                                                <Run Text="&#xE72C;" FontFamily="Segoe MDL2 Assets"/><Run Text="  Check for Update"/>
+                                                            </TextBlock>
+                                                        </Button>
+                                                    </StackPanel>
                                                 </Grid>
                                             </Border>
                                         </StackPanel>
@@ -8281,7 +8307,7 @@
                                     <StackPanel>
                                         <TextBlock Text="Driver Automation Tool" FontSize="22" FontWeight="Bold"
                                                    Foreground="{DynamicResource AccentColor}" Margin="0,0,0,4"/>
-                                        <TextBlock x:Name="txt_AboutVersion" Text="Version 10.3.1" FontSize="14"
+                                        <TextBlock x:Name="txt_AboutVersion" Text="Version 10.3.2" FontSize="14"
                                                    Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,16"/>
 
                                         <TextBlock TextWrapping="Wrap" FontSize="13"

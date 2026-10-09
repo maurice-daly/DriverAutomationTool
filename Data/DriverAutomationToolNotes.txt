@@ -3,6 +3,12 @@ Driver Automation Tool - Release Notes
 IMPORTANT
 ** DAT Downloads have been moved to GitHub - https://github.com/maurice-daly/DriverAutomationTool **
 
+Version 10.3.2
+What's New & Fixed
+
+- ConfigMgr hierarchy support — Invoke-CMApplyDriverPackage.ps1 and Invoke-CMDownloadBIOSPackage.ps1 gain a new -SiteCode parameter (or the 'MDMSiteCode' task sequence variable) so a hierarchy with a central administration site and multiple primary sites only considers driver and BIOS packages created at that site, instead of picking a package created at another site whose content may not be on reachable distribution points. (#967)
+- Testimonials — a new optional testimonial form (title bar button, and a one-time prompt after the first week of use) lets you share feedback about the tool; submissions are signed and encrypted at rest, and the install ID sent with them is never exposed outside the encrypted record.
+
 Version 10.3.1
 What's New & Fixed
 

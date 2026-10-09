@@ -4,7 +4,7 @@
      Organization:  MSEndpointMgr / Patch My PC
      Filename:      DriverAutomationToolCore.psm1
      Purpose:       Core functions for Driver Automation Tool v2.0
-     Version:       10.3.1.0
+     Version:       10.3.2.0
     ===========================================================================
 #>
 
@@ -37,8 +37,8 @@ if ($PSVersionTable.PSVersion.Major -le 5) {
 
 #region Variables
 
-[version]$global:ScriptRelease = "10.3.1.0"
-$global:ScriptBuildDate = "07-10-2026"
+[version]$global:ScriptRelease = "10.3.2.0"
+$global:ScriptBuildDate = "09-10-2026"
 $global:ReleaseNotesURL = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/DriverAutomationToolNotes.txt"
 $global:DATConfigUrl = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/refs/heads/master/Data/DATAPIConfig.json"
 $OEMLinksURL = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/OEMLinks.xml"
@@ -3092,6 +3092,10 @@ function Invoke-DATRemoteQuery {
         The WMI class name (used for non-query calls).
     .PARAMETER Query
         A WQL query string (used instead of ClassName when provided).
+    .PARAMETER OperationTimeoutSec
+        Overrides the session's operation timeout for this query. New-DATCimSession uses 15
+        seconds so connection failures surface quickly, which is too short for a hardware
+        inventory query on a large site. 0 (default) keeps the session's timeout.
     #>
     [CmdletBinding()]
     param (
@@ -3099,15 +3103,18 @@ function Invoke-DATRemoteQuery {
         [Parameter(Mandatory = $true)][string]$ComputerName,
         [Parameter(Mandatory = $true)][string]$Namespace,
         [Parameter()][string]$ClassName,
-        [Parameter()][string]$Query
+        [Parameter()][string]$Query,
+        [Parameter()][uint32]$OperationTimeoutSec = 0
     )
 
     # Prefer CIM session when available
     if ($null -ne $CimSession) {
+        $cimParams = @{ CimSession = $CimSession; Namespace = $Namespace; ErrorAction = 'Stop' }
+        if ($OperationTimeoutSec -gt 0) { $cimParams['OperationTimeoutSec'] = $OperationTimeoutSec }
         if ($Query) {
-            return (Get-CimInstance -CimSession $CimSession -Namespace $Namespace -Query $Query -ErrorAction Stop)
+            return (Get-CimInstance @cimParams -Query $Query)
         } else {
-            return (Get-CimInstance -CimSession $CimSession -Namespace $Namespace -ClassName $ClassName -ErrorAction Stop)
+            return (Get-CimInstance @cimParams -ClassName $ClassName)
         }
     }
 
@@ -3229,6 +3236,11 @@ function Get-DATConfigMgrKnownModels {
 
         $cimSession = New-DATCimSession -ComputerName $SiteServer
 
+        # The session's 15-second timeout is meant for failing fast on connection. Inventory
+        # queries on a large site can take longer than that before the first results come back,
+        # and a timed-out query silently drops that OEM from the results.
+        $inventoryTimeoutSec = 300
+
         # --- OEM query definitions ---
         # Each entry: OEM display name, WQL query, Make property, Model property
         # Queries include ResourceID to enable joining against the baseboard/SKU maps.
@@ -3303,7 +3315,7 @@ function Get-DATConfigMgrKnownModels {
         try {
             if ($OnProgress) { & $OnProgress "Querying baseboard inventory..." }
             $bbResults = @(Invoke-DATRemoteQuery -CimSession $cimSession -ComputerName $SiteServer -Namespace $namespace `
-                -Query "SELECT ResourceID, Product FROM SMS_G_System_BASEBOARD WHERE Product IS NOT NULL")
+                -Query "SELECT ResourceID, Product FROM SMS_G_System_BASEBOARD WHERE Product IS NOT NULL" -OperationTimeoutSec $inventoryTimeoutSec)
             foreach ($r in $bbResults) {
                 if (-not [string]::IsNullOrWhiteSpace($r.Product)) {
                     $baseboardMap[[string]$r.ResourceID] = $r.Product.Trim().ToUpper()
@@ -3327,7 +3339,7 @@ function Get-DATConfigMgrKnownModels {
                 # Note: no WQL DISTINCT -- the SMS provider rejects it over WS-Management
                 # (WBEM_E_FAILED / 0x80041001). De-duplication happens in the hashtable below.
                 $dellSkuResults = @(Invoke-DATRemoteQuery -CimSession $cimSession -ComputerName $SiteServer -Namespace $namespace `
-                    -Query "SELECT Model, SystemSKUNumber FROM SMS_G_System_COMPUTER_SYSTEM WHERE Manufacturer = 'Dell Inc.' AND SystemSKUNumber IS NOT NULL")
+                    -Query "SELECT Model, SystemSKUNumber FROM SMS_G_System_COMPUTER_SYSTEM WHERE Manufacturer = 'Dell Inc.' AND SystemSKUNumber IS NOT NULL" -OperationTimeoutSec $inventoryTimeoutSec)
                 foreach ($r in $dellSkuResults) {
                     $sku = [string]$r.SystemSKUNumber
                     if (-not [string]::IsNullOrWhiteSpace($sku) -and -not [string]::IsNullOrWhiteSpace($r.Model)) {
@@ -3346,7 +3358,7 @@ function Get-DATConfigMgrKnownModels {
         $surfaceSkuMap = @{}   # ResourceID -> SystemSKU
         try {
             $surfaceSkuResults = @(Invoke-DATRemoteQuery -CimSession $cimSession -ComputerName $SiteServer -Namespace $namespace `
-                -Query "SELECT ResourceID, SystemSKU FROM SMS_G_System_MS_SYSTEMINFORMATION WHERE SystemManufacturer LIKE 'Microsoft%' AND SystemSKU LIKE 'Surface%'")
+                -Query "SELECT ResourceID, SystemSKU FROM SMS_G_System_MS_SYSTEMINFORMATION WHERE SystemManufacturer LIKE 'Microsoft%' AND SystemSKU LIKE 'Surface%'" -OperationTimeoutSec $inventoryTimeoutSec)
             foreach ($r in $surfaceSkuResults) {
                 if (-not [string]::IsNullOrWhiteSpace($r.SystemSKU)) {
                     $surfaceSkuMap[[string]$r.ResourceID] = $r.SystemSKU.Trim()
@@ -3362,7 +3374,7 @@ function Get-DATConfigMgrKnownModels {
             Write-DATLogEntry -Value "[ConfigMgr Known Models] Querying $($oem.OEM): $($oem.Query)" -Severity 1
 
             try {
-                $results = @(Invoke-DATRemoteQuery -CimSession $cimSession -ComputerName $SiteServer -Namespace $namespace -Query $oem.Query)
+                $results = @(Invoke-DATRemoteQuery -CimSession $cimSession -ComputerName $SiteServer -Namespace $namespace -Query $oem.Query -OperationTimeoutSec $inventoryTimeoutSec)
                 Write-DATLogEntry -Value "[ConfigMgr Known Models] $($oem.OEM): $($results.Count) raw results" -Severity 1
 
                 foreach ($item in $results) {
@@ -9314,6 +9326,53 @@ function Confirm-DATPowerShellGetReady {
         Write-DATLogEntry -Value "$LogPrefix Could not enable TLS 1.2: $($_.Exception.Message)" -Severity 2
     }
 
+    # PowerShellGet 2.2.5 or later must be the one LOADED, not merely installed. The inbox 1.0.0.1
+    # cannot install modules published with PowerShellGetFormatVersion 2.0 -- HPCMSL 1.9.0 and every
+    # HP.* module it depends on are -- and refuses each one with a warning, so Install-Module
+    # returns without error and nothing changes. It also has no -AcceptLicense (#962). This runs
+    # before Get-PSRepository below, because any PowerShellGet command autoloads the module.
+    #
+    # PackageManagement must match. PowerShellGet 2.x passes -AcceptLicense on to Install-Package,
+    # and an older PackageManagement fails the install with "A parameter cannot be found that
+    # matches parameter name 'AcceptLicense'". Both are loaded explicitly, PackageManagement first.
+    $required = @(
+        @{ Name = 'PackageManagement'; Minimum = [version]'1.4.4' }
+        @{ Name = 'PowerShellGet';     Minimum = [version]'2.2.5' }
+    )
+    try {
+        $needsInstall = $false
+        foreach ($module in $required) {
+            $installedVer = (Get-Module -ListAvailable -Name $module.Name -ErrorAction SilentlyContinue |
+                Sort-Object Version -Descending | Select-Object -First 1).Version
+            if ($null -eq $installedVer -or $installedVer -lt $module.Minimum) {
+                $needsInstall = $true
+                Write-DATLogEntry -Value "$LogPrefix $($module.Name) v$installedVer is outdated -- upgrading to enable PSGallery installs..." -Severity 2
+            }
+        }
+        if ($needsInstall) {
+            # PowerShellGet 1.0.0.1 needs the NuGet provider before it can install anything from PSGallery
+            Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force -Scope (Get-DATModuleInstallScope) -ErrorAction SilentlyContinue | Out-Null
+            # PowerShellGet's gallery entry depends on PackageManagement, so this installs both
+            Install-Module -Name PowerShellGet -MinimumVersion '2.2.5' -Force -AllowClobber -Scope (Get-DATModuleInstallScope) -ErrorAction Stop
+            Write-DATLogEntry -Value "$LogPrefix PowerShellGet and PackageManagement installed" -Severity 1
+        }
+        $inUse = @()
+        foreach ($module in $required) {
+            $loaded = Get-Module -Name $module.Name | Sort-Object Version -Descending | Select-Object -First 1
+            if ($null -eq $loaded -or $loaded.Version -lt $module.Minimum) {
+                if ($loaded) { Remove-Module -Name $module.Name -Force -ErrorAction SilentlyContinue }
+                Import-Module -Name $module.Name -MinimumVersion $module.Minimum -Force -ErrorAction Stop
+                $loaded = Get-Module -Name $module.Name | Sort-Object Version -Descending | Select-Object -First 1
+            }
+            $inUse += "$($module.Name) v$($loaded.Version)"
+        }
+        Write-DATLogEntry -Value "$LogPrefix Using $($inUse -join ', ')" -Severity 1
+    } catch {
+        # Typically an older PackageManagement already loaded in this process, which a newer one cannot replace
+        $ready = $false
+        Write-DATLogEntry -Value "$LogPrefix PackageManagement 1.4.4 and PowerShellGet 2.2.5 or later could not be loaded in this process: $($_.Exception.Message) -- restart the tool so HPCMSL can be installed or updated" -Severity 2
+    }
+
     # An untrusted PSGallery prompts, and a prompt in a headless run hangs or aborts the install.
     try {
         $psGallery = Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue
@@ -9322,21 +9381,6 @@ function Confirm-DATPowerShellGetReady {
         }
     } catch {
         Write-DATLogEntry -Value "$LogPrefix Could not set PSGallery to trusted: $($_.Exception.Message)" -Severity 2
-    }
-
-    # PowerShellGet 1.0.0.1 (the inbox version) cannot install from PSGallery reliably.
-    try {
-        $psGetVer = (Get-Module -ListAvailable -Name PowerShellGet -ErrorAction SilentlyContinue |
-            Sort-Object Version -Descending | Select-Object -First 1).Version
-        if ($null -eq $psGetVer -or $psGetVer -lt [version]'2.2.5') {
-            Write-DATLogEntry -Value "$LogPrefix PowerShellGet v$psGetVer is outdated -- upgrading to enable PSGallery installs..." -Severity 2
-            Install-Module -Name PowerShellGet -Force -AllowClobber -Scope (Get-DATModuleInstallScope) -ErrorAction Stop
-            Import-Module -Name PowerShellGet -Force -ErrorAction SilentlyContinue
-            Write-DATLogEntry -Value "$LogPrefix PowerShellGet upgraded successfully" -Severity 1
-        }
-    } catch {
-        $ready = $false
-        Write-DATLogEntry -Value "$LogPrefix PowerShellGet upgrade failed: $($_.Exception.Message) -- the install below may not take effect" -Severity 2
     }
 
     return $ready
@@ -9485,9 +9529,13 @@ function Test-DATHPCMSLReady {
     # Check for newer version on PSGallery and auto-update if available (once per session)
     if ($AutoInstall -and -not $script:HPCMSLUpdateChecked) {
         try {
-            [void](Confirm-DATPowerShellGetReady)
-            $galleryModule = Find-Module -Name HPCMSL -Repository PSGallery -ErrorAction Stop
-            if ($galleryModule.Version -gt $hpModule.Version) {
+            # Without PowerShellGet 2.2.5 loaded, Install-Module refuses every HP.* module with a
+            # warning and changes nothing, so the update is skipped instead of attempted.
+            $psGetReady = Confirm-DATPowerShellGetReady
+            $galleryModule = if ($psGetReady) { Find-Module -Name HPCMSL -Repository PSGallery -ErrorAction Stop } else { $null }
+            if (-not $psGetReady) {
+                Write-DATLogEntry -Value "[HP] HPCMSL update check skipped -- PowerShellGet 2.2.5 and PackageManagement 1.4.4 or later are not loaded in this process. Continuing with v$($hpModule.Version); restart the tool to update." -Severity 2
+            } elseif ($galleryModule.Version -gt $hpModule.Version) {
                 $preUpdateVersion = $hpModule.Version
                 Write-DATLogEntry -Value "[HP] HPCMSL update available: v$preUpdateVersion -> v$($galleryModule.Version) -- updating..." -Severity 1
 
@@ -13652,6 +13700,64 @@ function Disconnect-DATIntuneGraph {
     Write-DATLogEntry -Value "[Intune Auth] Disconnected - token discarded" -Severity 1
 }
 
+function Invoke-DATGraphRestWithRetry {
+    <#
+    .SYNOPSIS
+        Sends one Graph request, retrying transient failures (HTTP 429/5xx and dropped
+        connections) with backoff. Non-transient errors and exhausted retries are rethrown
+        unchanged so callers keep their own 401 and error-body handling.
+    .PARAMETER Splat
+        Invoke-RestMethod parameters (Method, Uri, Headers, ErrorAction, TimeoutSec, proxy).
+    .PARAMETER LogLabel
+        Short request description for the retry log line (e.g. "GET /deviceManagement/...").
+    #>
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory)][hashtable]$Splat,
+        [string]$LogLabel = "$($Splat['Method']) $($Splat['Uri'])",
+        [int]$MaxRetries = 3,
+        [int]$RetryDelaySec = 5
+    )
+
+    for ($attempt = 1; $attempt -le ($MaxRetries + 1); $attempt++) {
+        try {
+            $response = Invoke-RestMethod @Splat
+            return $response
+        } catch {
+            $retryStatusCode = $null
+            if ($_.Exception.Response) {
+                $retryStatusCode = [int]$_.Exception.Response.StatusCode
+            }
+            # Connection-level failures surface as .NET exceptions with NO HTTP response
+            # (e.g. "Cannot access a disposed object. Object name: 'System.Net.Connection'"
+            # when a pooled keep-alive connection is reused after the background runspace
+            # that opened it was disposed, or connection resets/timeouts). These are
+            # transient -- a retry drops the bad connection and establishes a fresh one.
+            $connMsg = "$($_.Exception.Message) $(if ($_.Exception.InnerException) { $_.Exception.InnerException.Message })"
+            $isConnLevel = ($null -eq $_.Exception.Response) -and
+                           ($connMsg -match "disposed object|System\.Net\.Connection|underlying connection was closed|forcibly closed|connection was reset|operation has timed out|timed out|HttpClient\.Timeout|task was canceled|request was canceled|Unable to connect|request was aborted|actively refused|error occurred while sending the request|connection attempt failed")
+            $isTransient = ($retryStatusCode -in @(429, 500, 502, 503, 504)) -or $isConnLevel
+
+            if ($isTransient -and $attempt -le $MaxRetries) {
+                # Connection-level errors resolve on an immediate retry (fresh connection);
+                # HTTP 5xx/429 use exponential backoff. Honour Retry-After for 429.
+                $waitSec = if ($isConnLevel) { 1 } else { $RetryDelaySec * [math]::Pow(2, $attempt - 1) }
+                if ($retryStatusCode -eq 429 -and $_.Exception.Response.Headers) {
+                    try {
+                        $retryAfter = $_.Exception.Response.Headers | Where-Object { $_.Key -eq 'Retry-After' } | Select-Object -ExpandProperty Value -First 1
+                        if ($retryAfter) { $waitSec = [math]::Max([int]$retryAfter, 1) }
+                    } catch { }
+                }
+                $reason = if ($isConnLevel) { "connection error ($($_.Exception.Message))" } else { "HTTP $retryStatusCode" }
+                Write-DATLogEntry -Value "[Graph API] $reason on $LogLabel -- retry $attempt/$MaxRetries in ${waitSec}s..." -Severity 2
+                Start-Sleep -Seconds $waitSec
+                continue
+            }
+            throw
+        }
+    }
+}
+
 function Invoke-DATGraphRequest {
     <#
     .SYNOPSIS
@@ -13685,10 +13791,6 @@ function Invoke-DATGraphRequest {
 
     $allResults = [System.Collections.ArrayList]::new()
 
-    # Retry configuration for transient failures (5xx, 429)
-    $maxRetries = 3
-    $retryDelaySec = 5
-
     try {
         do {
             $splat = @{
@@ -13697,7 +13799,7 @@ function Invoke-DATGraphRequest {
                 Headers     = $headers
                 ErrorAction = 'Stop'
                 TimeoutSec  = 100   # Never block indefinitely on a stalled connection; a timeout
-                                    # is retried as a transient connection error (see catch below).
+                                    # is retried as a transient connection error.
             }
             if ($Body -and $Method -in @('POST', 'PATCH')) {
                 $splat['Body'] = if ($Body -is [string]) { $Body } else { $Body | ConvertTo-Json -Depth 20 -Compress }
@@ -13706,45 +13808,8 @@ function Invoke-DATGraphRequest {
             $proxyParams = Get-DATWebRequestProxy
             foreach ($key in $proxyParams.Keys) { $splat[$key] = $proxyParams[$key] }
 
-            $response = $null
-            for ($attempt = 1; $attempt -le ($maxRetries + 1); $attempt++) {
-                try {
-                    $response = Invoke-RestMethod @splat
-                    break
-                } catch {
-                    $retryStatusCode = $null
-                    if ($_.Exception.Response) {
-                        $retryStatusCode = [int]$_.Exception.Response.StatusCode
-                    }
-                    # Connection-level failures surface as .NET exceptions with NO HTTP response
-                    # (e.g. "Cannot access a disposed object. Object name: 'System.Net.Connection'"
-                    # when a pooled keep-alive connection is reused after the background runspace
-                    # that opened it was disposed, or connection resets/timeouts). These are
-                    # transient -- a retry drops the bad connection and establishes a fresh one.
-                    $connMsg = "$($_.Exception.Message) $(if ($_.Exception.InnerException) { $_.Exception.InnerException.Message })"
-                    $isConnLevel = ($null -eq $_.Exception.Response) -and
-                                   ($connMsg -match "disposed object|System\.Net\.Connection|underlying connection was closed|forcibly closed|connection was reset|operation has timed out|timed out|HttpClient\.Timeout|task was canceled|request was canceled|Unable to connect|request was aborted|actively refused|error occurred while sending the request|connection attempt failed")
-                    $isTransient = ($retryStatusCode -in @(429, 500, 502, 503, 504)) -or $isConnLevel
-
-                    if ($isTransient -and $attempt -le $maxRetries) {
-                        # Connection-level errors resolve on an immediate retry (fresh connection);
-                        # HTTP 5xx/429 use exponential backoff. Honour Retry-After for 429.
-                        $waitSec = if ($isConnLevel) { 1 } else { $retryDelaySec * [math]::Pow(2, $attempt - 1) }
-                        if ($retryStatusCode -eq 429 -and $_.Exception.Response.Headers) {
-                            try {
-                                $retryAfter = $_.Exception.Response.Headers | Where-Object { $_.Key -eq 'Retry-After' } | Select-Object -ExpandProperty Value -First 1
-                                if ($retryAfter) { $waitSec = [math]::Max([int]$retryAfter, 1) }
-                            } catch { }
-                        }
-                        $reason = if ($isConnLevel) { "connection error ($($_.Exception.Message))" } else { "HTTP $retryStatusCode" }
-                        Write-DATLogEntry -Value "[Graph API] $reason on $Method $Uri -- retry $attempt/$maxRetries in ${waitSec}s..." -Severity 2
-                        Start-Sleep -Seconds $waitSec
-                        continue
-                    }
-                    # Non-transient or retries exhausted -- rethrow for outer catch block
-                    throw
-                }
-            }
+            # Non-transient errors and exhausted retries are rethrown to the outer catch block
+            $response = Invoke-DATGraphRestWithRetry -Splat $splat -LogLabel "$Method $Uri"
 
             # Collect results
             if ($response.value) {
@@ -13935,8 +14000,18 @@ function Get-DATIntuneKnownModels {
             $pageNumber++
             if ($OnProgress) { & $OnProgress "Processing Page $pageNumber..." }
 
+            # Large tenants page through hundreds of requests, so a single throttled (429) or
+            # transient 5xx page must be retried rather than failing the whole lookup.
+            $splat = @{
+                Method      = 'GET'
+                Uri         = $uri
+                Headers     = $headers
+                ErrorAction = 'Stop'
+                TimeoutSec  = 100
+            }
             $proxyParams = Get-DATWebRequestProxy
-            $response = Invoke-RestMethod -Method GET -Uri $uri -Headers $headers -ErrorAction Stop @proxyParams
+            foreach ($key in $proxyParams.Keys) { $splat[$key] = $proxyParams[$key] }
+            $response = Invoke-DATGraphRestWithRetry -Splat $splat -LogLabel "GET managedDevices (page $pageNumber)"
 
             if ($response.value) {
                 foreach ($device in $response.value) {
@@ -14911,6 +14986,7 @@ function Get-DATDeployedPackageVersions {
             Write-DATLogEntry -Value "[DeployedVersions] ConfigMgr site not configured -- skipping deployed-version scan" -Severity 2
             return @()
         }
+        $cim = $null
         try {
             $ns = "root\SMS\Site_$SiteCode"
             $cim = New-DATCimSession -ComputerName $SiteServer
@@ -14925,6 +15001,9 @@ function Get-DATDeployedPackageVersions {
         } catch {
             Write-DATLogEntry -Value "[DeployedVersions] ConfigMgr query failed: $($_.Exception.Message)" -Severity 2
             return @()
+        } finally {
+            # Every known-model lookup triggers a scan, so a session left open here leaks one per lookup
+            if ($cim) { Remove-CimSession -CimSession $cim -ErrorAction SilentlyContinue }
         }
     }
 
@@ -22784,7 +22863,10 @@ function Get-DATTelemetryConfig {
     [CmdletBinding()]
     [OutputType([PSCustomObject])]
     param (
-        [switch]$Force
+        [switch]$Force,
+        # Skips the remote fetch and returns the session or locally cached copy. For decisions on the
+        # UI thread at startup (such as whether to show a prompt) that must not wait on the network.
+        [switch]$LocalOnly
     )
 
     if ($script:DATTelemetryConfig -and -not $Force) {
@@ -22793,6 +22875,11 @@ function Get-DATTelemetryConfig {
 
     $configUrl = $global:DATConfigUrl
     $localPath = Join-Path $global:ScriptDirectory 'Data\DATAPIConfig.json'
+
+    if ($LocalOnly) {
+        if (-not (Test-Path -LiteralPath $localPath)) { return $null }
+        try { return (Get-Content -LiteralPath $localPath -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop) } catch { return $null }
+    }
 
     # 1. Prefer the remote copy. On success, cache it locally as the last-known-good fallback.
     try {
@@ -23349,6 +23436,151 @@ function Send-DATFeedback {
         [void](Resolve-DATApiUpgradeRequired -ErrorRecord $_ -Source '[Feedback]')
         $authDetail = Resolve-DATApiAuthFailure -ErrorRecord $_
         Write-DATLogEntry -Value "[Feedback] Submit failed: $($_.Exception.Message)$authDetail" -Severity 2
+        throw
+    }
+}
+
+# Field limits for testimonials. The API applies the same limits (in UTF-16 code units, which is how
+# both .NET and JavaScript measure string length), so anything the form accepts is never rejected.
+$script:DATTestimonialLimits = @{ Name = 100; Company = 100; Testimonial = 500; Email = 254 }
+$script:DATTestimonialEmailPattern = '^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$'
+
+function Get-DATTestimonialEndpoint {
+    <#
+    .SYNOPSIS
+        Returns the full testimonial submission URL, or $null while the endpoint is not published.
+    .DESCRIPTION
+        The URL comes from endpoints.testimonial in DATAPIConfig.json. Until that key is published
+        the testimonial prompt stays hidden, so clients can ship before the API is deployed.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param (
+        $Config = (Get-DATTelemetryConfig)
+    )
+    if ($null -eq $Config -or [string]::IsNullOrEmpty($Config.apiBaseUrl)) { return $null }
+    if ($null -eq $Config.endpoints -or -not $Config.endpoints.PSObject.Properties['testimonial']) { return $null }
+    $path = [string]$Config.endpoints.testimonial
+    if ([string]::IsNullOrWhiteSpace($path)) { return $null }
+    return "$(([string]$Config.apiBaseUrl).TrimEnd('/'))/$($path.TrimStart('/'))"
+}
+
+function Test-DATTestimonialInput {
+    <#
+    .SYNOPSIS
+        Validates and normalises a testimonial before it is sent.
+    .DESCRIPTION
+        Name, company and testimonial are required; email is optional but must be a valid address
+        when given. Values are trimmed and control characters removed (line breaks are kept in the
+        testimonial). Returns IsValid, Errors (one message per failing field, keyed by field) and
+        the normalised Values to send.
+    #>
+    [CmdletBinding()]
+    [OutputType([hashtable])]
+    param (
+        [AllowEmptyString()][string]$Name = '',
+        [AllowEmptyString()][string]$Company = '',
+        [AllowEmptyString()][string]$Testimonial = '',
+        [AllowEmptyString()][string]$Email = ''
+    )
+
+    $limits = $script:DATTestimonialLimits
+    $values = [ordered]@{
+        Name        = ($Name -replace '[\p{Cc}]', ' ').Trim()
+        Company     = ($Company -replace '[\p{Cc}]', ' ').Trim()
+        Testimonial = ($Testimonial -replace '\r\n?', "`n" -replace '[^\P{Cc}\n\t]', '').Trim()
+        Email       = ($Email -replace '[\p{Cc}\s]', '')
+    }
+    $errors = [ordered]@{}
+
+    foreach ($field in 'Name', 'Company', 'Testimonial') {
+        $label = $field.ToLowerInvariant()
+        if ([string]::IsNullOrWhiteSpace($values[$field])) {
+            $errors[$field] = "Please enter your $label."
+        } elseif ($values[$field].Length -gt $limits[$field]) {
+            $errors[$field] = "The $label can be at most $($limits[$field]) characters ($($values[$field].Length) entered)."
+        }
+    }
+    if (-not [string]::IsNullOrEmpty($values.Email)) {
+        if ($values.Email.Length -gt $limits.Email -or $values.Email -notmatch $script:DATTestimonialEmailPattern) {
+            $errors['Email'] = 'Please enter a valid email address, or leave it empty.'
+        }
+    }
+
+    return @{ IsValid = ($errors.Count -eq 0); Errors = $errors; Values = $values }
+}
+
+function Send-DATTestimonial {
+    <#
+    .SYNOPSIS
+        Submits a user testimonial to the DAT API.
+    .DESCRIPTION
+        The body is signed with the HMAC secret from the API config (x-dat-signature), which the
+        testimonial endpoint requires. The install ID is sent as for feedback; the API stores it
+        inside the encrypted payload, so the link between a name and the install's telemetry ID
+        is only readable with the testimonial key. The submitted text is never written to the log.
+    .PARAMETER PublicUse
+        $true when the user allows the testimonial to be published, $false for private only.
+    #>
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Name,
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Company,
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Testimonial,
+        [AllowEmptyString()][string]$Email = '',
+        [bool]$PublicUse = $false
+    )
+
+    $check = Test-DATTestimonialInput -Name $Name -Company $Company -Testimonial $Testimonial -Email $Email
+    if (-not $check.IsValid) { throw (@($check.Errors.Values) -join ' ') }
+
+    $config = Get-DATTelemetryConfig
+    $url = Get-DATTestimonialEndpoint -Config $config
+    if ([string]::IsNullOrEmpty($url)) {
+        Write-DATLogEntry -Value "[Testimonial] Cannot submit -- the testimonial endpoint is not published in the API config" -Severity 2
+        throw 'Testimonials cannot be received at the moment. Please try again later.'
+    }
+
+    # Same install ID as feedback: the telemetry GUID, or a one-time GUID when telemetry is off
+    $installId = Get-DATTelemetryId
+    if ([string]::IsNullOrEmpty($installId)) { $installId = [guid]::NewGuid().ToString() }
+
+    $body = [ordered]@{
+        installId   = $installId
+        name        = $check.Values.Name
+        company     = $check.Values.Company
+        testimonial = $check.Values.Testimonial
+        email       = $check.Values.Email
+        publicUse   = [bool]$PublicUse
+        submittedAt = (Get-Date).ToUniversalTime().ToString('o')
+        appVersion  = [string]$global:ScriptRelease
+    }
+    $json = $body | ConvertTo-Json -Depth 3 -Compress
+    # Signed and sent as the same UTF-8 bytes (see Send-DATTelemetry)
+    $bodyBytes = [System.Text.Encoding]::UTF8.GetBytes($json)
+
+    $headers = @{ 'x-dat-version' = [string]$global:ScriptRelease }
+    $secret = if ($config.PSObject.Properties['hmacSecret']) { [string]$config.hmacSecret } else { '' }
+    if ([string]::IsNullOrEmpty($secret)) {
+        # The endpoint rejects unsigned submissions, so fail here with a clear message instead of a 401
+        Write-DATLogEntry -Value "[Testimonial] Cannot submit -- the API config has no signing secret" -Severity 2
+        throw 'Testimonials cannot be received at the moment. Please try again later.'
+    }
+    $hmac = [System.Security.Cryptography.HMACSHA256]::new([System.Text.Encoding]::UTF8.GetBytes($secret))
+    try { $sigBytes = $hmac.ComputeHash($bodyBytes) } finally { $hmac.Dispose() }
+    $headers['x-dat-signature'] = -join ($sigBytes | ForEach-Object { $_.ToString('x2') })
+    $headers['x-dat-timestamp'] = $body.submittedAt
+
+    try {
+        $proxyParams = Get-DATWebRequestProxy
+        if ($proxyParams -isnot [hashtable]) { $proxyParams = @{} }
+        $null = Invoke-RestMethod -Uri $url -Method POST -Body $bodyBytes -ContentType 'application/json; charset=utf-8' `
+            -Headers $headers -UseBasicParsing -TimeoutSec 30 -ErrorAction Stop @proxyParams
+        Write-DATLogEntry -Value "[Testimonial] Submitted ($(if ($PublicUse) { 'public use allowed' } else { 'private only' }), email $(if ($check.Values.Email) { 'provided' } else { 'not provided' }))" -Severity 1
+    } catch {
+        [void](Resolve-DATApiUpgradeRequired -ErrorRecord $_ -Source '[Testimonial]')
+        $authDetail = Resolve-DATApiAuthFailure -ErrorRecord $_
+        Write-DATLogEntry -Value "[Testimonial] Submit failed: $($_.Exception.Message)$authDetail" -Severity 2
         throw
     }
 }
