@@ -41,6 +41,11 @@
 .PARAMETER Filter
 	Define a filter used when calling ConfigMgr WebService to only return objects matching the filter.
 
+.PARAMETER SiteCode
+	Specify the site code of the site that created the driver packages, e.g. 'P01', for a hierarchy with a central administration site (CAS) and multiple primary sites.
+	Packages are global data, so the AdminService on any site returns the packages created at every site in the hierarchy. When a site code is set, only packages created at that site (their SourceSite, which is also the PackageID prefix) are considered, so a device cannot select a package created at another primary site whose content is not on its distribution points.
+	When the parameter is not passed, the value is read from the 'MDMSiteCode' task sequence variable. When neither is set, packages from every site are considered, as before.
+
 .PARAMETER TargetOSName
 	Define the value that will be used as the target operating system name e.g. 'Windows 10'.
 
@@ -113,6 +118,9 @@
 	# Detect, download and apply drivers during OS deployment on a virtual machine, using a package for its hypervisor or a generic virtual machine package:
 	.\Invoke-CMApplyDriverPackage.ps1 -BareMetal -Endpoint 'CM01.domain.com' -TargetOSName 'Windows 11' -TargetOSVersion '25H2' -AllowVirtualMachine
 
+	# Detect, download and apply drivers during OS deployment in a hierarchy (CAS and multiple primary sites), only considering driver packages created at primary site P01:
+	.\Invoke-CMApplyDriverPackage.ps1 -BareMetal -Endpoint 'CM01.domain.com' -TargetOSName 'Windows 11' -TargetOSVersion '25H2' -SiteCode 'P01'
+
 	# Detect, download and apply drivers during OS deployment with ConfigMgr and use an XML package as the source of driver package details instead of the AdminService:
 	.\Invoke-CMApplyDriverPackage.ps1 -XMLPackage -XMLDeploymentType BareMetal -TargetOSName 'Windows 10' -TargetOSVersion '1909' -TargetOSArchitecture 'x64'
 
@@ -121,8 +129,8 @@
 	Author:      Nickolaj Andersen / Maurice Daly
     Contact:     @NickolajA / @MoDaly_IT
     Created:     2017-03-27
-    Updated:     2026-09-03
-	
+    Updated:     2026-10-08
+
 	Contributors: @CodyMathis123, @JamesMcwatty @EdenNelson
     
     Version history:
@@ -266,6 +274,11 @@
 						 - Driver fallback packages are not used for virtual machines, and the selected package is checked against the virtual machine package manufacturers before download, so a run that finds no virtual machine package fails with guidance instead of installing something else.
 						 - In DebugMode, passing -Manufacturer, -ComputerModel or -SystemSKU simulates that physical device as before and virtual machine matching is not used.
 						 - Driver package WIM files are now mounted read-only (MSEndpointMgr/ModernDriverManagement PR #339, contributed by Nodiaque). A read-write mount fails on some devices with "You do not have permissions to mount and modify this image", and the content is only copied out, so nothing needs write access.
+	4.3.6 - (2026-10-08) - Added support for a hierarchy with a central administration site and multiple primary sites (issue #967):
+						 - New -SiteCode parameter, with the 'MDMSiteCode' task sequence variable used when the parameter is not passed. Packages are global data, so the AdminService on any site returns the packages created at every site, and when the same model has a package at more than one primary the newest one was selected, whichever site created it. Its content is often not on the distribution points the device can reach, so the download failed or crossed the WAN.
+						 - With a site code set, the AdminService driver package and driver fallback package queries also filter on SourceSite, and the XMLPackage logic file entries are filtered on the PackageID prefix, so only packages created at that site are considered.
+						 - The site code must be three letters or digits. An invalid value read from the task sequence variable stops the run with guidance rather than silently matching nothing.
+						 - Without a site code nothing changes: packages from every site are considered, as before.
 #>
 [CmdletBinding(SupportsShouldProcess = $true, DefaultParameterSetName = "BareMetal")]
 param(
@@ -320,6 +333,11 @@ param(
 	[parameter(Mandatory = $false, ParameterSetName = "XMLPackage")]
 	[ValidateNotNullOrEmpty()]
 	[string]$Filter = "Drivers",
+
+	[parameter(Mandatory = $false, HelpMessage = "Specify the site code of the site that created the driver packages, e.g. 'P01', to only consider packages created at that site in a hierarchy with a central administration site.")]
+	[AllowEmptyString()]
+	[ValidatePattern('^([A-Za-z0-9]{3})?$')]
+	[string]$SiteCode = "",
 
 	[parameter(Mandatory = $true, ParameterSetName = "BareMetal", HelpMessage = "Define the value that will be used as the target operating system name e.g. 'Windows 10'.")]
 	[parameter(Mandatory = $true, ParameterSetName = "DriverUpdate")]
@@ -708,7 +726,42 @@ Process {
 			}
 		}
 	}
-	
+
+	function Get-PackageSiteCode {
+		# Packages are global data in a hierarchy (CAS with multiple primary sites), so the AdminService on
+		# any site returns the packages created at every site. When a site code is set, only packages created
+		# at that site are considered, so a device cannot select a package from another primary site whose
+		# content is not on the distribution points it can reach.
+		$Script:PackageSiteCode = [string]::Empty
+		$Script:PackageSiteCodeFilter = [string]::Empty
+		$SiteCodeSource = "parameter input"
+		if (-not ([string]::IsNullOrWhiteSpace($SiteCode))) {
+			$Script:PackageSiteCode = $SiteCode
+		}
+		elseif ($Script:PSCmdLet.ParameterSetName -notlike "Debug") {
+			$Script:PackageSiteCode = $TSEnvironment.Value("MDMSiteCode")
+			$SiteCodeSource = "TS environment variable 'MDMSiteCode'"
+		}
+
+		if ([string]::IsNullOrWhiteSpace($Script:PackageSiteCode)) {
+			$Script:PackageSiteCode = [string]::Empty
+			Write-CMLogEntry -Value " - No site code specified, packages created at any site will be considered" -Severity 1
+		}
+		else {
+			$Script:PackageSiteCode = $Script:PackageSiteCode.Trim().ToUpper()
+			if ($Script:PackageSiteCode -notmatch '^[A-Z0-9]{3}$') {
+				Write-CMLogEntry -Value " - Site code '$($Script:PackageSiteCode)' from $($SiteCodeSource) is not valid. A ConfigMgr site code is three letters or digits, e.g. 'P01'" -Severity 3
+
+				# Throw terminating error
+				$PSCmdlet.ThrowTerminatingError((New-TerminatingErrorRecord))
+			}
+
+			# Appended to the AdminService OData filter; the value is validated above so it cannot alter the query
+			$Script:PackageSiteCodeFilter = " and SourceSite eq '$($Script:PackageSiteCode)'"
+			Write-CMLogEntry -Value " - Site code '$($Script:PackageSiteCode)' read from $($SiteCodeSource), only packages created at this site will be considered" -Severity 1
+		}
+	}
+
 	function ConvertTo-ObfuscatedUserName {
 		param(
 			[parameter(Mandatory = $true, HelpMessage = "Specify the user name string to be obfuscated for log output.")]
@@ -1658,13 +1711,14 @@ public class DATPinnedCertificateValidation
 				"Production" {
 					if ($Script:PSCmdlet.ParameterSetName -like "XMLPackage") {
 						Write-CMLogEntry -Value " - Reading XML content logic file driver package entries" -Severity 1
+						# The PackageID prefix is the site that created the package; with no site code '*' matches every package
 						$Packages = (([xml]$(Get-Content -Path $XMLPackageLogicFile -Raw)).ArrayOfCMPackage).CMPackage | Where-Object {
-							$_.Name -notmatch "Pilot" -and $_.Name -notmatch "Legacy" -and $_.Name -match $Filter
+							$_.Name -notmatch "Pilot" -and $_.Name -notmatch "Legacy" -and $_.Name -match $Filter -and $_.PackageID -like "$($Script:PackageSiteCode)*"
 						}
 					}
 					else {
 						Write-CMLogEntry -Value " - Querying AdminService for driver package instances" -Severity 1
-						$Packages = Get-AdminServiceItem -Resource "/SMS_Package?`$filter=contains(Name,'$($Filter)')" | Where-Object {
+						$Packages = Get-AdminServiceItem -Resource "/SMS_Package?`$filter=contains(Name,'$($Filter)')$($Script:PackageSiteCodeFilter)" | Where-Object {
 							$_.Name -notmatch "Pilot" -and $_.Name -notmatch "Retired"
 						}
 					}
@@ -1674,12 +1728,12 @@ public class DATPinnedCertificateValidation
 					if ($Script:PSCmdlet.ParameterSetName -like "XMLPackage") {
 						Write-CMLogEntry -Value " - Reading XML content logic file driver package entries" -Severity 1
 						$Packages = (([xml]$(Get-Content -Path $XMLPackageLogicFile -Raw)).ArrayOfCMPackage).CMPackage | Where-Object {
-							$_.Name -match "Pilot" -and $_.Name -match $Filter
+							$_.Name -match "Pilot" -and $_.Name -match $Filter -and $_.PackageID -like "$($Script:PackageSiteCode)*"
 						}
 					}
 					else {
 						Write-CMLogEntry -Value " - Querying AdminService for driver package instances" -Severity 1
-						$Packages = Get-AdminServiceItem -Resource "/SMS_Package?`$filter=contains(Name,'$($Filter)')" | Where-Object {
+						$Packages = Get-AdminServiceItem -Resource "/SMS_Package?`$filter=contains(Name,'$($Filter)')$($Script:PackageSiteCodeFilter)" | Where-Object {
 							$_.Name -match "Pilot"
 						}
 					}
@@ -1693,6 +1747,9 @@ public class DATPinnedCertificateValidation
 			}
 			else {
 				Write-CMLogEntry -Value " - Retrieved a total of '0' driver packages from $($Script:PackageSource) matching operational mode: $($OperationalMode)" -Severity 3
+				if (-not ([string]::IsNullOrEmpty($Script:PackageSiteCode))) {
+					Write-CMLogEntry -Value " - Only packages created at site '$($Script:PackageSiteCode)' were considered. Check that the site code is the site where the driver packages were created" -Severity 3
+				}
 				
 				# Throw terminating error				
 				$PSCmdlet.ThrowTerminatingError((New-TerminatingErrorRecord))
@@ -2263,7 +2320,7 @@ public class DATPinnedCertificateValidation
 			
 			try {
 				# Attempt to retrieve fallback driver packages from ConfigMgr WebService
-				$FallbackDriverPackages = Get-AdminServiceItem -Resource "/SMS_Package?`$filter=contains(Name,'Driver Fallback Package')" | Where-Object {
+				$FallbackDriverPackages = Get-AdminServiceItem -Resource "/SMS_Package?`$filter=contains(Name,'Driver Fallback Package')$($Script:PackageSiteCodeFilter)" | Where-Object {
 					$_.Name -notmatch "Pilot" -and $_.Name -notmatch "Retired"
 				}
 				
@@ -2977,7 +3034,7 @@ public class DATPinnedCertificateValidation
 	}
 	
 	Write-CMLogEntry -Value "[ApplyDriverPackage]: Apply Driver Package process initiated" -Severity 1
-	Write-CMLogEntry -Value " - Script version: 4.3.5" -Severity 1
+	Write-CMLogEntry -Value " - Script version: 4.3.6" -Severity 1
 	if ($PSCmdLet.ParameterSetName -like "Debug") {
 		Write-CMLogEntry -Value " - Apply driver package process initiated in debug mode" -Severity 1
 	}
@@ -3005,6 +3062,9 @@ public class DATPinnedCertificateValidation
 
 		# Determine the deployment type mode for driver package installation
 		Get-DeploymentType
+
+		# Determine the site code that driver packages must have been created at, if any
+		Get-PackageSiteCode
 
 		# Determine if running on supported computer system type
 		Get-ComputerSystemType

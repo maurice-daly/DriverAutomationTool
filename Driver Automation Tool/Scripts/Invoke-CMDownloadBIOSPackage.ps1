@@ -35,6 +35,11 @@
 .PARAMETER Filter
 	Define a filter used when calling ConfigMgr WebService to only return objects matching the filter.
 
+.PARAMETER SiteCode
+	Specify the site code of the site that created the BIOS packages, e.g. 'P01', for a hierarchy with a central administration site (CAS) and multiple primary sites.
+	Packages are global data, so the AdminService on any site returns the packages created at every site in the hierarchy. When a site code is set, only packages created at that site (their SourceSite, which is also the PackageID prefix) are considered, so a device cannot select a package created at another primary site whose content is not on its distribution points.
+	When the parameter is not passed, the value is read from the 'MDMSiteCode' task sequence variable. When neither is set, packages from every site are considered, as before.
+
 .PARAMETER OperationalMode
 	Define the operational mode, either Production or Pilot, for when calling ConfigMgr WebService to only return objects matching the selected operational mode.
 
@@ -60,6 +65,9 @@
 	# Detect and download latest available BIOS package with ConfigMgr through the admin service in a full OS deployment:
 	.\Invoke-CMDownloadBIOSPackage.ps1 -BIOSUpdate -Endpoint "CM01.domain.com"
 
+	# Detect and download latest available BIOS package in a hierarchy (CAS and multiple primary sites), only considering BIOS packages created at primary site P01:
+	.\Invoke-CMDownloadBIOSPackage.ps1 -BareMetal -Endpoint "CM01.domain.com" -SiteCode "P01"
+
 	# Detect and download latest available BIOS package using a pre-downloaded XML package logic file in a baremetal deployment:
 	.\Invoke-CMDownloadBIOSPackage.ps1 -XMLPackage -XMLDeploymentType "BareMetal"
 
@@ -77,7 +85,7 @@
 	Author:      Nickolaj Andersen / Maurice Daly
     Contact:     @NickolajA / @MoDaly_IT
     Created:     2020-10-30
-    Updated:     2026-09-03
+    Updated:     2026-10-08
 
     Version history:
     3.0.0 - (2020-10-30) - Script created
@@ -110,6 +118,11 @@
 					 - Set-CertificateValidationCallback installed a callback that returned true for every certificate presented by any host, for the remainder of the process, and the service account credential was then sent over that connection. Any machine able to answer for the endpoint address (DNS, DHCP or ARP spoofing on the deployment network) could therefore collect the AdminService service account password. That callback and its base64 encoded type definition have been removed.
 					 - Set-PinnedCertificateValidationCallback replaces it. A certificate that does not chain to a trusted root is now accepted only when its SHA1 thumbprint matches the value supplied through the 'MDMCertificateThumbprint' task sequence variable or the new CertificateThumbprint parameter. Every other validation failure remains a failure, and a certificate that already validates normally is unaffected.
 					 - When no thumbprint is configured the request is not retried and the credential is not sent. The log names both remedies: trust the issuing CA on the machine (import the root certificate into the boot image for WinPE), or configure the expected thumbprint. BREAKING: an environment that relied on the old bypass to reach a self-signed AdminService binding must do one of those two before this version will connect.
+	3.0.10 - (2026-10-08) - Added support for a hierarchy with a central administration site and multiple primary sites (DriverAutomationTool issue #967):
+					 - New -SiteCode parameter, with the 'MDMSiteCode' task sequence variable used when the parameter is not passed. Packages are global data, so the AdminService on any site returns the packages created at every site, and when the same model has a package at more than one primary the newest one was selected, whichever site created it. Its content is often not on the distribution points the device can reach, so the download failed or crossed the WAN.
+					 - With a site code set, the AdminService BIOS package query also filters on SourceSite, and the XMLPackage logic file entries are filtered on the PackageID prefix, so only packages created at that site are considered.
+					 - The site code must be three letters or digits. An invalid value read from the task sequence variable stops the run with guidance rather than silently matching nothing.
+					 - Without a site code nothing changes: packages from every site are considered, as before.
 
 #>
 [CmdletBinding(SupportsShouldProcess = $true, DefaultParameterSetName = "BareMetal")]
@@ -154,7 +167,12 @@ param (
 	[parameter(Mandatory = $false, ParameterSetName = "XMLPackage")]
 	[ValidateNotNullOrEmpty()]
 	[string]$Filter = "BIOS",
-	
+
+	[parameter(Mandatory = $false, HelpMessage = "Specify the site code of the site that created the BIOS packages, e.g. 'P01', to only consider packages created at that site in a hierarchy with a central administration site.")]
+	[AllowEmptyString()]
+	[ValidatePattern('^([A-Za-z0-9]{3})?$')]
+	[string]$SiteCode = "",
+
 	[parameter(Mandatory = $false, ParameterSetName = "BIOSUpdate", HelpMessage = "Define the operational mode, either Production or Pilot, for when calling ConfigMgr WebService to only return objects matching the selected operational mode.")]
 	[parameter(Mandatory = $false, ParameterSetName = "BareMetal")]
 	[parameter(Mandatory = $true, ParameterSetName = "Debug")]
@@ -481,7 +499,41 @@ Process {
 			}
 		}
 	}
-	
+
+	function Get-PackageSiteCode {
+		# Packages are global data in a hierarchy (CAS with multiple primary sites), so the AdminService on
+		# any site returns the packages created at every site. When a site code is set, only packages created
+		# at that site are considered, so a device cannot select a package from another primary site whose
+		# content is not on the distribution points it can reach.
+		$Script:PackageSiteCode = [string]::Empty
+		$Script:PackageSiteCodeFilter = [string]::Empty
+		$SiteCodeSource = "parameter input"
+		if (-not ([string]::IsNullOrWhiteSpace($SiteCode))) {
+			$Script:PackageSiteCode = $SiteCode
+		} elseif ($Script:PSCmdLet.ParameterSetName -notlike "Debug") {
+			$Script:PackageSiteCode = $TSEnvironment.Value("MDMSiteCode")
+			$SiteCodeSource = "TS environment variable 'MDMSiteCode'"
+		}
+
+		if ([string]::IsNullOrWhiteSpace($Script:PackageSiteCode)) {
+			$Script:PackageSiteCode = [string]::Empty
+			Write-CMLogEntry -Value " - No site code specified, packages created at any site will be considered" -Severity 1
+		} else {
+			$Script:PackageSiteCode = $Script:PackageSiteCode.Trim().ToUpper()
+			if ($Script:PackageSiteCode -notmatch '^[A-Z0-9]{3}$') {
+				Write-CMLogEntry -Value " - Site code '$($Script:PackageSiteCode)' from $($SiteCodeSource) is not valid. A ConfigMgr site code is three letters or digits, e.g. 'P01'" -Severity 3
+
+				# Throw terminating error
+				$ErrorRecord = New-TerminatingErrorRecord -Message ([string]::Empty)
+				$PSCmdlet.ThrowTerminatingError($ErrorRecord)
+			}
+
+			# Appended to the AdminService OData filter; the value is validated above so it cannot alter the query
+			$Script:PackageSiteCodeFilter = " and SourceSite eq '$($Script:PackageSiteCode)'"
+			Write-CMLogEntry -Value " - Site code '$($Script:PackageSiteCode)' read from $($SiteCodeSource), only packages created at this site will be considered" -Severity 1
+		}
+	}
+
 	function ConvertTo-ObfuscatedUserName {
 		param (
 			[parameter(Mandatory = $true, HelpMessage = "Specify the user name string to be obfuscated for log output.")]
@@ -1187,12 +1239,13 @@ public class DATPinnedCertificateValidation
 				"Production" {
 					if ($Script:PSCmdlet.ParameterSetName -like "XMLPackage") {
 						Write-CMLogEntry -Value " - Reading XML content logic file BIOS package entries" -Severity 1
+						# The PackageID prefix is the site that created the package; with no site code '*' matches every package
 						$Packages = (([xml]$(Get-Content -Path $XMLPackageLogicFile -Raw)).ArrayOfCMPackage).CMPackage | Where-Object {
-							$_.Name -notmatch "Pilot" -and $_.Name -notmatch "Legacy" -and $_.Name -match $Filter
+							$_.Name -notmatch "Pilot" -and $_.Name -notmatch "Legacy" -and $_.Name -match $Filter -and $_.PackageID -like "$($Script:PackageSiteCode)*"
 						}
 					} else {
 						Write-CMLogEntry -Value " - Querying AdminService for BIOS package instances" -Severity 1
-						$Packages = Get-AdminServiceItem -Resource "/SMS_Package?`$filter=contains(Name,'$($Filter)')" | Where-Object {
+						$Packages = Get-AdminServiceItem -Resource "/SMS_Package?`$filter=contains(Name,'$($Filter)')$($Script:PackageSiteCodeFilter)" | Where-Object {
 							$_.Name -notmatch "Pilot" -and $_.Name -notmatch "Retired"
 						}
 					}
@@ -1202,11 +1255,11 @@ public class DATPinnedCertificateValidation
 					if ($Script:PSCmdlet.ParameterSetName -like "XMLPackage") {
 						Write-CMLogEntry -Value " - Reading XML content logic file BIOS package entries" -Severity 1
 						$Packages = (([xml]$(Get-Content -Path $XMLPackageLogicFile -Raw)).ArrayOfCMPackage).CMPackage | Where-Object {
-							$_.Name -match "Pilot" -and $_.Name -match $Filter
+							$_.Name -match "Pilot" -and $_.Name -match $Filter -and $_.PackageID -like "$($Script:PackageSiteCode)*"
 						}
 					} else {
 						Write-CMLogEntry -Value " - Querying AdminService for BIOS package instances" -Severity 1
-						$Packages = Get-AdminServiceItem -Resource "/SMS_Package?`$filter=contains(Name,'$($Filter)')" | Where-Object {
+						$Packages = Get-AdminServiceItem -Resource "/SMS_Package?`$filter=contains(Name,'$($Filter)')$($Script:PackageSiteCodeFilter)" | Where-Object {
 							$_.Name -match "Pilot"
 						}
 					}
@@ -1219,6 +1272,9 @@ public class DATPinnedCertificateValidation
 				return $Packages
 			} else {
 				Write-CMLogEntry -Value " - Retrieved a total of '0' BIOS packages from $($Script:PackageSource) matching operational mode: $($OperationalMode)" -Severity 3
+				if (-not ([string]::IsNullOrEmpty($Script:PackageSiteCode))) {
+					Write-CMLogEntry -Value " - Only packages created at site '$($Script:PackageSiteCode)' were considered. Check that the site code is the site where the BIOS packages were created" -Severity 3
+				}
 				
 				# Throw terminating error
 				$ErrorRecord = New-TerminatingErrorRecord -Message ([string]::Empty)
@@ -1788,7 +1844,7 @@ public class DATPinnedCertificateValidation
 	}
 	
 	Write-CMLogEntry -Value "[ApplyBIOSPackage]: Apply BIOS Package process initiated" -Severity 1
-	Write-CMLogEntry -Value " - Script version: 3.0.9" -Severity 1
+	Write-CMLogEntry -Value " - Script version: 3.0.10" -Severity 1
 	if ($PSCmdLet.ParameterSetName -like "Debug") {
 		Write-CMLogEntry -Value " - Apply BIOS package process initiated in debug mode" -Severity 1
 	}
@@ -1823,7 +1879,10 @@ public class DATPinnedCertificateValidation
 		
 		# Determine the deployment type mode for driver package installation
 		Get-DeploymentType
-		
+
+		# Determine the site code that BIOS packages must have been created at, if any
+		Get-PackageSiteCode
+
 		# Determine if running on supported computer system type
 		Get-ComputerSystemType
 		
