@@ -6,7 +6,7 @@ Regenerate with the **update-file-hashes** skill whenever a core `.ps1`, `.psm1`
 | | |
 |---|---|
 | Version | `10.3.1.0` |
-| Generated (UTC) | 2026-10-07 17:24:06 |
+| Generated (UTC) | 2026-10-17 08:23:57 |
 | Files | 20 |
 | Algorithm | SHA256 |
 
@@ -15,7 +15,7 @@ Regenerate with the **update-file-hashes** skill whenever a core `.ps1`, `.psm1`
 | File | Path | Size (KB) | SHA256 |
 |------|------|-----------|--------|
 | Start-DriverAutomationTool.ps1 | `Start-DriverAutomationTool.ps1` | 8.9 | `3173A26B88DA68EC02E1E88C9D7322AA1C3CE1BC167548501E0DFA332A8CE5FE` |
-| Start-DATHeadlessBuild.ps1 | `Start-DATHeadlessBuild.ps1` | 46.1 | `9835CAE2163F7BC1F59858375ACC5F6A28099D909AC9E50BBAA5E15AE1EC23A6` |
+| Start-DATHeadlessBuild.ps1 | `Start-DATHeadlessBuild.ps1` | 47.8 | `5C9F8CDAF930A3CE89A99CDAE5AF740D432CBE8681B4836997D0A49C0578DA87` |
 
 ## Core Module
 
