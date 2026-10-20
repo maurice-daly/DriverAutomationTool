@@ -65,6 +65,19 @@ if (-not [Environment]::Is64BitProcess -and [Environment]::Is64BitOperatingSyste
     }
 }
 
+# --- WinPE Guard ---
+# This script flashes and then schedules its own restart (shutdown.exe), which makes sense on an
+# installed Windows OS only. WinPE sets the MiniNT key and an installed OS never does, so refuse
+# there before anything is logged, flashed or scheduled.
+function Test-DATWinPE {
+    param ([string]$KeyPath = 'HKLM:\SYSTEM\CurrentControlSet\Control\MiniNT')
+    Test-Path -LiteralPath $KeyPath
+}
+if (Test-DATWinPE) {
+    Write-Warning 'WinPE detected -- Install-BIOS.ps1 only runs on an installed Windows OS. Nothing was flashed and no restart was scheduled.'
+    exit 1
+}
+
 $LogFile = Join-Path $env:ProgramData "Microsoft\IntuneManagementExtension\Logs\DriverAutomationTool-BIOS.log"
 
 function Write-CMTraceLog {
@@ -208,6 +221,8 @@ function Invoke-BIOSFlashUtility {
     param (
         [Parameter(Mandatory)][string]$FilePath,
         [string]$Arguments,
+        # Not enforced: the flash tool is started with -Wait and has no time limit from this script.
+        # The deployment's maximum run time is the only limit.
         [int]$TimeoutSeconds = 600
     )
 
@@ -334,9 +349,13 @@ function Confirm-DATBitLockerSuspended {
                 return $true
             }
             'On' {
-                Write-CMTraceLog "[BitLocker] Before the $($Stage.ToLower()): protection on $($env:SystemDrive) is ON -- suspending for 1 restart (attempt $attempt of $Attempts)"
                 try {
-                    $suspend = Invoke-CimMethod -InputObject $state.Volume -MethodName 'DisableKeyProtectors' -Arguments @{ DisableCount = [uint32]1 } -ErrorAction Stop
+                    # One restart, or the count set for this firmware ($script:BitLockerSuspendCount, 2 for
+                    # Surface). Unset, 0 or negative falls back to 1, never 0 (indefinite); a value that is
+                    # not a number throws here, so nothing is suspended and the caller does not proceed.
+                    $suspendCount = $(if ($script:BitLockerSuspendCount -ge 1) { [uint32]$script:BitLockerSuspendCount } else { [uint32]1 })
+                    Write-CMTraceLog "[BitLocker] Before the $($Stage.ToLower()): protection on $($env:SystemDrive) is ON -- suspending for $suspendCount restart$(if ($suspendCount -ne 1) { 's' }) (attempt $attempt of $Attempts)"
+                    $suspend = Invoke-CimMethod -InputObject $state.Volume -MethodName 'DisableKeyProtectors' -Arguments @{ DisableCount = $suspendCount } -ErrorAction Stop
                     if ($suspend.ReturnValue -eq 0) {
                         $script:BitLockerSuspended = $true
                         Write-CMTraceLog "[BitLocker] Suspend accepted -- reading the state back to confirm"
@@ -855,7 +874,7 @@ try {
     # its source folder with the legacy BIOS package, which holds the payload as loose files
     # because the task sequence BIOS script reads them directly -- so loose files are accepted
     # when there is no WIM. The DAT scripts and the HP password file are never payload.
-    $datContentFiles = @('Install-BIOS.ps1', 'Show-ToastNotification.ps1', 'HPPasswordFile.bin')
+    $datContentFiles = @('Install-BIOS.ps1', 'Show-ToastNotification.ps1', 'Show-ProgressToast.ps1', 'HPPasswordFile.bin')
     $looseContent = @()
     if (Test-Path $WimFile) {
         $wimSize = [math]::Round((Get-Item $WimFile).Length / 1MB, 2)
@@ -1006,6 +1025,9 @@ try {
     # from an earlier run is still waiting for a restart.
     Set-DATInstallProgress -Step 2
     $script:BitLockerSuspended = $false
+    # Microsoft's BitLocker guidance for Surface UEFI / TPM firmware updates is a suspend count of
+    # 2 or more, as the update can take more than one restart; every other OEM stays at 1.
+    $script:BitLockerSuspendCount = if ($Manufacturer -like '*Microsoft*') { 2 } else { 1 }
     $script:FlashSucceeded = $false
     $flashExitCode = $null
 

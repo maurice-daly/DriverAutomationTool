@@ -1064,7 +1064,7 @@
                                    Foreground="{DynamicResource AccentColor}" VerticalAlignment="Center" Margin="0,0,8,0"/>
                         <TextBlock Text="Driver Automation Tool" FontSize="13" FontWeight="SemiBold"
                                    Foreground="{DynamicResource WindowForeground}" VerticalAlignment="Center"/>
-                        <TextBlock x:Name="txt_Version" Text=" Version 10.3.2" FontSize="11"
+                        <TextBlock x:Name="txt_Version" Text=" Version 10.3.3" FontSize="11"
                                    Foreground="{DynamicResource InputPlaceholder}" VerticalAlignment="Center" Margin="4,0"/>
                     </StackPanel>
 
@@ -7024,11 +7024,13 @@
                                                        Foreground="{DynamicResource InputPlaceholder}" Margin="0,0,0,10">
                                                 The Driver Automation Tool uses the HPCMSL PowerShell module to create driver and BIOS packages for HP devices, and it is required to build HP Latest Drivers packages. Without this module installed, HP will be unavailable as a manufacturer option.
                                             </TextBlock>
-                                            <Border Background="{DynamicResource InputBackground}" CornerRadius="6" Padding="12,10" Margin="0,0,0,0">
+                                            <!-- The status row is the hover zone for the 10.3.3 change: it now reports a copy the elevated tool will not load -->
+                                            <Border x:Name="zone_HpcmslTrust" Background="{DynamicResource InputBackground}" CornerRadius="6" Padding="12,10" Margin="0,0,0,0">
                                                 <Grid>
                                                     <Grid.ColumnDefinitions>
                                                         <ColumnDefinition Width="Auto"/>
                                                         <ColumnDefinition Width="*"/>
+                                                        <ColumnDefinition Width="Auto"/>
                                                         <ColumnDefinition Width="Auto"/>
                                                     </Grid.ColumnDefinitions>
                                                     <TextBlock x:Name="txt_HpcmslStatusIcon" Grid.Column="0"
@@ -7041,7 +7043,10 @@
                                                                TextWrapping="Wrap"
                                                                Foreground="{DynamicResource InputPlaceholder}"
                                                                Text="Checking HPCMSL status..."/>
-                                                    <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
+                                                    <Border x:Name="pill_HpcmslTrust" Grid.Column="2" Visibility="Collapsed" Background="{DynamicResource AccentColor}" CornerRadius="8" Padding="7,1,7,2" Margin="8,0,0,0" VerticalAlignment="Center">
+                                                        <TextBlock Text="New" FontSize="10" FontWeight="SemiBold" Foreground="White"/>
+                                                    </Border>
+                                                    <StackPanel Grid.Column="3" Orientation="Horizontal" VerticalAlignment="Center">
                                                         <Button x:Name="btn_InstallHpcmsl"
                                                                 Style="{StaticResource SecondaryButton}" Height="30"
                                                                 Margin="10,0,0,0" Visibility="Collapsed">
@@ -7853,8 +7858,8 @@
                                                 <TextBox x:Name="txt_CustomModel" Grid.Column="2" Grid.Row="1"
                                                          Style="{StaticResource RoundedTextBox}" Height="34"/>
 
-                                                <!-- BaseBoard Product -->
-                                                <TextBlock Grid.Column="4" Grid.Row="0" Text="BaseBoard Product" FontSize="12"
+                                                <!-- Baseboard / SKU (Dell and Surface: system SKU; others: baseboard product) -->
+                                                <TextBlock Grid.Column="4" Grid.Row="0" Text="Baseboard / SKU" FontSize="12"
                                                            Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,6"/>
                                                 <TextBox x:Name="txt_CustomBaseBoard" Grid.Column="4" Grid.Row="1"
                                                          Style="{StaticResource RoundedTextBox}" Height="34"/>
@@ -8307,7 +8312,7 @@
                                     <StackPanel>
                                         <TextBlock Text="Driver Automation Tool" FontSize="22" FontWeight="Bold"
                                                    Foreground="{DynamicResource AccentColor}" Margin="0,0,0,4"/>
-                                        <TextBlock x:Name="txt_AboutVersion" Text="Version 10.3.2" FontSize="14"
+                                        <TextBlock x:Name="txt_AboutVersion" Text="Version 10.3.3" FontSize="14"
                                                    Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,16"/>
 
                                         <TextBlock TextWrapping="Wrap" FontSize="13"

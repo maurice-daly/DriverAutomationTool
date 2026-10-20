@@ -3,6 +3,18 @@ Driver Automation Tool - Release Notes
 IMPORTANT
 ** DAT Downloads have been moved to GitHub - https://github.com/maurice-daly/DriverAutomationTool **
 
+Version 10.3.3
+What's New & Fixed
+
+- Driver package versions — when the driver catalog lists an older version than the package already in ConfigMgr or Intune (for example Dell A03 when A04 is packaged), the newer package is now kept and the model is skipped with a warning, instead of being rebuilt under the older version and the newer package being removed by package retention; Force Update still rebuilds on request.
+- HP CMSL — HPCMSL and its HP modules must now be signed by HP (their binaries by HP or Microsoft) before the tool loads them, and when the tool runs elevated it ignores any copy that standard users can change, so install HPCMSL for all users; installs and updates no longer skip the publisher check or mark the PowerShell Gallery as trusted for the whole machine.
+- HP SoftPaqs — every SoftPaq, freshly downloaded or cached, must carry a valid HP signature before any is extracted; an unsigned SoftPaq is deleted and the model fails instead of being packaged.
+- Models without baseboard IDs — models the catalog lists without baseboard or SKU IDs no longer fail packaging for ConfigMgr, ConfigMgr Applications, Intune or BIOS; Dell IDs are recovered from Dell's driver pack catalog where Dell publishes them, otherwise the package is matched on the exact computer model name and the BIOS package is skipped with a warning; Invoke-CMApplyDriverPackage.ps1 4.3.7 matches these packages by computer model. (#979)
+- Custom Driver Pack — on Dell and Surface devices the identifier is now filled from the system SKU that the catalogs and the task sequence match on, instead of the board part number, and the field is now labelled Baseboard / SKU. (#979)
+- WIM packaging on non-English Windows — the file ownership repair before WIM capture now answers takeown in the Windows display language, so it works on German, French and other non-English installations instead of silently doing nothing. (#975)
+- Toast notifications — Remind Me Later now honours a snooze that has not ended even when the device has reached its deferral limit, and the reminder no longer starts a ConfigMgr Application install while it is waiting for a maintenance window, already installing or waiting for a restart, or when no one is signed in.
+- BIOS updates — the BIOS install script refuses to run in WinPE, Surface firmware updates suspend BitLocker for two restarts as Microsoft recommends, and headless build configs without a restart delay now use 10 minutes instead of 3.
+
 Version 10.3.2
 What's New & Fixed
 

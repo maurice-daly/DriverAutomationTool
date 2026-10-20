@@ -9189,15 +9189,23 @@ $popup_OS.Add_Closed({
     }
 })
 
-# Check for HP CMSL module availability
-$script:HPCMSLAvailable = $null -ne (Get-Module -ListAvailable -Name HPCMSL -ErrorAction SilentlyContinue)
+# Check for HP CMSL module availability. Resolved the way builds load it, so a copy in the user's
+# profile -- which the elevated tool refuses to load (S32) -- does not count as installed.
+$startupHpcmsl = Get-DATHPCMSLModule
+$script:HPCMSLAvailable = $null -ne $startupHpcmsl.Module
 if (-not $script:HPCMSLAvailable) {
     $script:OEMCheckboxes['HP'].IsEnabled = $false
     $script:OEMCheckboxes['HP'].IsChecked = $false
     $script:OEMCheckboxes['HP'].Content = 'HP (CMSL not installed)'
-    $script:OEMCheckboxes['HP'].ToolTip = 'Install the HPCMSL module to enable HP support: Install-Module HPCMSL'
-    Write-DATActivityLog "HP CMSL module not found. HP device support is disabled. Install with: Install-Module HPCMSL" -Level Warn
-    Write-DATLogEntry -Value "[Warning] - HP CMSL module (HPCMSL) not found. HP OEM selection disabled. Install with: Install-Module HPCMSL" -Severity 2
+    if (@($startupHpcmsl.Excluded).Count -gt 0) {
+        $script:OEMCheckboxes['HP'].ToolTip = 'HPCMSL is installed only for your user account, which this elevated tool does not load. Install it for all users from the HP CMSL card in Common Settings.'
+        Write-DATActivityLog "HP CMSL is installed only in your user profile, which an elevated tool does not load. Install it for all users from the HP CMSL card in Common Settings." -Level Warn
+        Write-DATLogEntry -Value "[Warning] - HP CMSL found only at $(@($startupHpcmsl.Excluded)[0].ModuleBase), which standard users can change ($(@($startupHpcmsl.Excluded)[0].Exposure)). Not loaded while elevated; HP OEM selection disabled until it is installed for all users." -Severity 2
+    } else {
+        $script:OEMCheckboxes['HP'].ToolTip = 'Install the HPCMSL module to enable HP support: Install-Module HPCMSL'
+        Write-DATActivityLog "HP CMSL module not found. HP device support is disabled. Install with: Install-Module HPCMSL" -Level Warn
+        Write-DATLogEntry -Value "[Warning] - HP CMSL module (HPCMSL) not found. HP OEM selection disabled. Install with: Install-Module HPCMSL" -Severity 2
+    }
 }
 
 $script:ModelData = [System.Collections.ObjectModel.ObservableCollection[ModelItem]]::new()
@@ -19257,6 +19265,9 @@ function Update-DATHpcmslStatus {
             $txt_HpcmslStatus.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'StatusSuccess')
             $txt_HpcmslStatus.ToolTip = $hpcmslModule.ModuleBase
         }
+        if (@($hpcmsl.Excluded).Count -gt 0) {
+            $txt_HpcmslStatus.ToolTip = "$($txt_HpcmslStatus.ToolTip)`n`nNot loaded (standard users can change it):`n$((@($hpcmsl.Excluded) | ForEach-Object { "v$($_.Version)  $($_.ModuleBase)" }) -join "`n")"
+        }
         $btn_InstallHpcmsl.Visibility = 'Collapsed'
         $btn_CheckHpcmslUpdate.Visibility = 'Visible'
 
@@ -19271,7 +19282,15 @@ function Update-DATHpcmslStatus {
     } else {
         $txt_HpcmslStatusIcon.Text = [string][char]0xE7BA
         $txt_HpcmslStatusIcon.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'StatusWarning')
-        $txt_HpcmslStatus.Text = "Not installed"
+        if (@($hpcmsl.Excluded).Count -gt 0) {
+            # Present, but only where standard users can change it, so the elevated tool will not
+            # load it (S32). Install Module puts a copy in Program Files, which it will.
+            $txt_HpcmslStatus.Text = "Installed for your user account only -- not loaded while the tool runs elevated. Install it for all users."
+            $txt_HpcmslStatus.ToolTip = "Not loaded (standard users can change it):`n$((@($hpcmsl.Excluded) | ForEach-Object { "v$($_.Version)  $($_.ModuleBase)" }) -join "`n")`n`nLoading a module from a folder your unelevated sessions can write to would run whatever is put there as administrator."
+        } else {
+            $txt_HpcmslStatus.Text = "Not installed"
+            $txt_HpcmslStatus.ToolTip = $null
+        }
         $txt_HpcmslStatus.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'StatusWarning')
         $btn_InstallHpcmsl.Visibility = 'Visible'
         $btn_CheckHpcmslUpdate.Visibility = 'Collapsed'
@@ -19281,15 +19300,24 @@ function Update-DATHpcmslStatus {
 
 Update-DATHpcmslStatus
 
-# Inserted into the HPCMSL update script. Installs HPCMSL and its dependencies by downloading each
-# .nupkg from PSGallery and extracting it into the AllUsers module path, without PowerShellGet -- the
-# same fallback the Install Module button uses. The updater turns to it when Install-Module fails,
-# as PowerShellGet 2.2.5 does on some hosts with "A parameter cannot be found that matches parameter
-# name 'AcceptLicense'" even with a matching PackageManagement loaded. Single-quoted so nothing in
-# it is expanded when it is inserted.
+# Inserted into the HPCMSL install and update scripts. Installs HPCMSL and its dependencies by
+# downloading each .nupkg from PSGallery and extracting it into the AllUsers module path, without
+# PowerShellGet. Both turn to it when Install-Module fails, as PowerShellGet 2.2.5 does on some hosts
+# with "A parameter cannot be found that matches parameter name 'AcceptLicense'" even with a matching
+# PackageManagement loaded. Single-quoted so nothing in it is expanded when it is inserted.
+#
+# Nothing PowerShellGet would have checked is checked by a bare download, so this checks it (S22):
+# a dependency id or version from the .nuspec becomes a folder under Program Files, so only HP.*
+# names and plain version numbers are followed; every signable file must carry the signers
+# Import-DATHPCMSLModule accepts (the lists are repeated here because this runs in a separate
+# process, and a test keeps them in step); and nothing is copied until the package passes. Each
+# package is staged in a random folder, so nothing can be planted at a predictable temp path.
 $script:HPCMSLDirectInstallFunction = @'
 function Install-HPCMSLFromGallery {
     $allUsersPath = Join-Path $env:ProgramFiles 'WindowsPowerShell\Modules'
+    $scriptPublishers = @('HP Inc*')
+    $binaryPublishers = @('HP Inc*', 'Microsoft Corporation', 'Microsoft Windows', '.NET')
+    $signedExtensions = @('.psd1', '.psm1', '.ps1', '.ps1xml', '.cdxml', '.dll', '.exe')
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     $queue = [System.Collections.Queue]::new()
     $queue.Enqueue('HPCMSL')
@@ -19297,32 +19325,56 @@ function Install-HPCMSLFromGallery {
     while ($queue.Count -gt 0) {
         $pkgName = $queue.Dequeue()
         if ($done.Contains($pkgName)) { continue }
-        $nupkgPath = Join-Path $env:TEMP "DATHP_$pkgName.nupkg"
-        $extractDir = Join-Path $env:TEMP "DATHP_$pkgName"
-        Invoke-WebRequest -Uri "https://www.powershellgallery.com/api/v2/package/$pkgName" -OutFile $nupkgPath -UseBasicParsing -ErrorAction Stop
-        if (Test-Path $extractDir) { Remove-Item $extractDir -Recurse -Force }
-        [System.IO.Compression.ZipFile]::ExtractToDirectory($nupkgPath, $extractDir)
-        $nuspecFile = Get-ChildItem -Path $extractDir -Filter '*.nuspec' | Select-Object -First 1
-        if (-not $nuspecFile) { throw "The PSGallery package for $pkgName has no .nuspec" }
-        [xml]$nuspec = Get-Content $nuspecFile.FullName -Raw
-        $pkgVersion = [string]$nuspec.package.metadata.version
-        $deps = $nuspec.package.metadata.dependencies
-        if ($deps) {
-            foreach ($d in @($deps.dependency) + @($deps.group | ForEach-Object { $_.dependency })) {
-                if ($d -and $d.id -and -not $done.Contains($d.id)) { $queue.Enqueue($d.id) }
+        if ($pkgName -notmatch '^(HPCMSL|HP(\.[A-Za-z0-9]+)+)$') {
+            throw "Refusing to install '$pkgName' -- HPCMSL depends only on HP.* modules"
+        }
+        $extractDir = Join-Path ([System.IO.Path]::GetTempPath()) "DATHP_$([guid]::NewGuid().ToString('N'))"
+        $nupkgPath = "$extractDir.nupkg"
+        try {
+            Invoke-WebRequest -Uri "https://www.powershellgallery.com/api/v2/package/$pkgName" -OutFile $nupkgPath -UseBasicParsing -ErrorAction Stop
+            [System.IO.Compression.ZipFile]::ExtractToDirectory($nupkgPath, $extractDir)
+            $nuspecFile = Get-ChildItem -LiteralPath $extractDir -Filter '*.nuspec' | Select-Object -First 1
+            if (-not $nuspecFile) { throw "The PSGallery package for $pkgName has no .nuspec" }
+            [xml]$nuspec = Get-Content -LiteralPath $nuspecFile.FullName -Raw
+            $pkgVersion = [string]$nuspec.package.metadata.version
+            if ($pkgVersion -notmatch '^\d+(\.\d+){1,3}$') {
+                throw "Refusing to install $pkgName -- '$pkgVersion' is not a plain version number"
             }
+            # The manifest is always signable, so a package cannot pass the check below by having nothing to check
+            if (-not (Test-Path -LiteralPath (Join-Path $extractDir "$pkgName.psd1"))) {
+                throw "Refusing to install $pkgName -- the package has no $pkgName.psd1"
+            }
+            $unsigned = @(Get-ChildItem -LiteralPath $extractDir -Recurse -File |
+                Where-Object { $signedExtensions -contains $_.Extension.ToLowerInvariant() } |
+                ForEach-Object {
+                    $allowed = if ($_.Extension -in '.dll', '.exe') { $binaryPublishers } else { $scriptPublishers }
+                    $sig = Get-AuthenticodeSignature -LiteralPath $_.FullName
+                    $signer = if ($sig.SignerCertificate) { $sig.SignerCertificate.GetNameInfo([System.Security.Cryptography.X509Certificates.X509NameType]::SimpleName, $false) } else { '' }
+                    $trusted = @($allowed | Where-Object { $signer -like $_ }).Count -gt 0
+                    if ($sig.Status -ne 'Valid' -or -not $trusted) { "$($_.Name) ($($sig.Status)$(if ($signer) { ", $signer" }))" }
+                })
+            if ($unsigned.Count -gt 0) {
+                throw "Refusing to install $pkgName $pkgVersion -- not signed by HP: $(($unsigned | Select-Object -First 5) -join ', ')"
+            }
+            $deps = $nuspec.package.metadata.dependencies
+            if ($deps) {
+                foreach ($d in @($deps.dependency) + @($deps.group | ForEach-Object { $_.dependency })) {
+                    if ($d -and $d.id -and -not $done.Contains($d.id)) { $queue.Enqueue($d.id) }
+                }
+            }
+            # A version already on disk may be loaded by the tool, so it is left alone rather than replaced
+            $modDest = Join-Path $allUsersPath "$pkgName\$pkgVersion"
+            if (-not (Test-Path (Join-Path $modDest "$pkgName.psd1"))) {
+                New-Item -Path $modDest -ItemType Directory -Force | Out-Null
+                Get-ChildItem -LiteralPath $extractDir | Where-Object {
+                    $_.Name -ne '_rels' -and $_.Name -ne 'package' -and $_.Name -ne '[Content_Types].xml' -and $_.Extension -ne '.nuspec'
+                } | ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination $modDest -Recurse -Force }
+            }
+            $done[$pkgName] = $pkgVersion
+        } finally {
+            Remove-Item -LiteralPath $extractDir -Recurse -Force -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath $nupkgPath -Force -ErrorAction SilentlyContinue
         }
-        # A version already on disk may be loaded by the tool, so it is left alone rather than replaced
-        $modDest = Join-Path $allUsersPath "$pkgName\$pkgVersion"
-        if (-not (Test-Path (Join-Path $modDest "$pkgName.psd1"))) {
-            New-Item -Path $modDest -ItemType Directory -Force | Out-Null
-            Get-ChildItem -Path $extractDir | Where-Object {
-                $_.Name -ne '_rels' -and $_.Name -ne 'package' -and $_.Name -ne '[Content_Types].xml' -and $_.Extension -ne '.nuspec'
-            } | ForEach-Object { Copy-Item -Path $_.FullName -Destination $modDest -Recurse -Force }
-        }
-        Remove-Item $extractDir -Recurse -Force -ErrorAction SilentlyContinue
-        Remove-Item $nupkgPath -Force -ErrorAction SilentlyContinue
-        $done[$pkgName] = $pkgVersion
     }
     return (($done.Keys | ForEach-Object { "$_ $($done[$_])" }) -join ', ')
 }
@@ -19362,6 +19414,8 @@ function Start-DATHpcmslUpdateCheck {
 
     $script:HPCMSLUpdateResultFile = Join-Path ([System.IO.Path]::GetTempPath()) "DATHPCMSLUpdate_$([guid]::NewGuid().ToString('N').Substring(0,8)).json"
     $currentVer = $hpInstalled.Version.ToString()
+    # Copies the tool refuses to load (S32) are not what an update is measured against
+    $ignoredBases = (@((Get-DATHPCMSLModule).Excluded) | ForEach-Object { "'$(([string]$_.ModuleBase).Replace("'", "''"))'" }) -join ', '
     # The background installer reports what it OBSERVES afterwards, not the version
     # it set out to install. Reporting $gallery.Version as NewVersion claimed an
     # upgrade that had not necessarily happened, and the next run found the same
@@ -19397,7 +19451,9 @@ try {
         exit `$rerun.ExitCode
     }
     foreach (`$name in `$required.Keys) { Import-Module -Name `$name -MinimumVersion `$required[`$name] -Force -ErrorAction Stop }
-    Set-PSRepository -Name PSGallery -InstallationPolicy Trusted -ErrorAction SilentlyContinue
+    # PSGallery keeps its own installation policy: -Force below already answers the untrusted
+    # repository prompt, so marking the gallery Trusted for the whole machine is not needed (S22).
+    `$ignored = @($ignoredBases)
     `$gallery = Find-Module -Name HPCMSL -Repository PSGallery -ErrorAction Stop
     if (`$gallery.Version -gt [version]'$currentVer') {
         `$installWarnings = @()
@@ -19408,14 +19464,14 @@ try {
         # cause rather than only the message
         `$installError = ''
         try {
-            Install-Module -Name HPCMSL -Force -AllowClobber -SkipPublisherCheck -Scope AllUsers -ErrorAction Stop -WarningVariable +installWarnings @licenseParam
+            Install-Module -Name HPCMSL -Force -AllowClobber -Scope AllUsers -ErrorAction Stop -WarningVariable +installWarnings @licenseParam
         } catch {
             `$stack = ((`$_.ScriptStackTrace -split "``r?``n") | Select-Object -First 4) -join ' <- '
             `$installError = "`$(`$_.Exception.Message) [raised by `$(`$_.InvocationInfo.MyCommand); stack: `$stack]"
         }
         # Root order, not version order: Import-Module binds to the first PSModulePath match, so a
         # copy in an earlier root masks the one just installed (#958).
-        `$avail = @(Get-Module -ListAvailable -Name HPCMSL -ErrorAction SilentlyContinue)
+        `$avail = @(Get-Module -ListAvailable -Name HPCMSL -ErrorAction SilentlyContinue | Where-Object { `$ignored -notcontains `$_.ModuleBase })
         `$after = `$avail | Select-Object -First 1
         `$method = 'Install-Module'
         `$directResult = ''
@@ -19427,7 +19483,7 @@ try {
             } catch {
                 `$directResult = "direct download failed: `$(`$_.Exception.Message)"
             }
-            `$avail = @(Get-Module -ListAvailable -Name HPCMSL -ErrorAction SilentlyContinue)
+            `$avail = @(Get-Module -ListAvailable -Name HPCMSL -ErrorAction SilentlyContinue | Where-Object { `$ignored -notcontains `$_.ModuleBase })
             `$after = `$avail | Select-Object -First 1
         }
         `$highest = `$avail | Sort-Object Version -Descending | Select-Object -First 1
@@ -19476,8 +19532,10 @@ try {
                 Remove-Item -Path $script:HPCMSLUpdateResultFile -Force -ErrorAction SilentlyContinue
                 switch ($r.Status) {
                     'Updated' {
+                        # Unload the old version only. The UI itself calls no HPCMSL command, and a
+                        # build checks and loads its own copy (Import-DATHPCMSLModule); importing by
+                        # name here would bind to the first copy on PSModulePath, checked or not (S32).
                         Remove-Module -Name HPCMSL -Force -ErrorAction SilentlyContinue
-                        Import-Module -Name HPCMSL -Force -ErrorAction SilentlyContinue
                         Write-DATLogEntry -Value "[HP] HPCMSL upgraded in background: v$($r.OldVersion) -> v$($r.NewVersion) via $($r.Method) -- $($r.ModuleBase)" -Severity 1
                         if ($r.InstallError) {
                             # Installed by the fallback; keep PowerShellGet's failure in the log so its cause can be found
@@ -19569,6 +19627,7 @@ $btn_InstallHpcmsl.Add_Click({
 `$ProgressPreference = 'SilentlyContinue'
 `$warnings = [System.Collections.Generic.List[string]]::new()
 `$allUsersPath = Join-Path `$env:ProgramFiles 'WindowsPowerShell\Modules'
+$($script:HPCMSLDirectInstallFunction)
 try {
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
@@ -19589,12 +19648,13 @@ try {
             Register-PSRepository -Default -ErrorAction SilentlyContinue
             `$warnings.Add('PSGallery repository was re-registered')
         }
-        Set-PSRepository -Name PSGallery -InstallationPolicy Trusted -ErrorAction SilentlyContinue
+        # PSGallery keeps its own installation policy: -Force answers the untrusted repository
+        # prompt for this install only (S22).
 
         # HPCMSL requires licence acceptance on PowerShellGet 2.x; 1.0.0.1 has no such parameter (#962).
         `$licenseParam = @{}
         if ((Get-Command -Name Install-Module).Parameters.ContainsKey('AcceptLicense')) { `$licenseParam.AcceptLicense = `$true }
-        Install-Module -Name HPCMSL -Force -SkipPublisherCheck -AllowClobber -Scope AllUsers -ErrorAction Stop @licenseParam
+        Install-Module -Name HPCMSL -Force -AllowClobber -Scope AllUsers -ErrorAction Stop @licenseParam
         `$hpCheck = Join-Path `$allUsersPath 'HPCMSL'
         if (Test-Path `$hpCheck) {
             `$installWorked = `$true
@@ -19606,78 +19666,17 @@ try {
     }
 
     # --- Step 2: Fallback -- download .nupkg files directly from PSGallery ---
+    # Shared with the background updater; checks ids, versions and signatures before copying (S22).
     if (-not `$installWorked) {
         `$warnings.Add('Using direct download from PSGallery (bypassing PowerShellGet)')
-        Add-Type -AssemblyName System.IO.Compression.FileSystem
-
-        `$queue = [System.Collections.Queue]::new()
-        `$queue.Enqueue('HPCMSL')
-        `$done = @{}
-
-        while (`$queue.Count -gt 0) {
-            `$pkgName = `$queue.Dequeue()
-            if (`$done.ContainsKey(`$pkgName)) { continue }
-
-            # Download latest .nupkg from PSGallery
-            `$nupkgPath = Join-Path `$env:TEMP "`$pkgName.nupkg"
-            `$downloadUrl = "https://www.powershellgallery.com/api/v2/package/`$pkgName"
-            Invoke-WebRequest -Uri `$downloadUrl -OutFile `$nupkgPath -UseBasicParsing -ErrorAction Stop
-
-            # Extract to temp directory
-            `$extractDir = Join-Path `$env:TEMP "DATHP_`$pkgName"
-            if (Test-Path `$extractDir) { Remove-Item `$extractDir -Recurse -Force }
-            [System.IO.Compression.ZipFile]::ExtractToDirectory(`$nupkgPath, `$extractDir)
-
-            # Parse .nuspec for version and dependencies
-            `$nuspecFile = Get-ChildItem -Path `$extractDir -Filter '*.nuspec' -ErrorAction SilentlyContinue | Select-Object -First 1
-            `$pkgVersion = '0.0.0'
-            if (`$nuspecFile) {
-                [xml]`$nuspecXml = Get-Content `$nuspecFile.FullName -Raw
-                `$pkgVersion = `$nuspecXml.package.metadata.version
-                # Discover dependencies
-                `$depMeta = `$nuspecXml.package.metadata.dependencies
-                if (`$depMeta) {
-                    # Flat dependency list
-                    if (`$depMeta.dependency) {
-                        foreach (`$d in @(`$depMeta.dependency)) {
-                            if (`$d.id -and -not `$done.ContainsKey(`$d.id)) { `$queue.Enqueue(`$d.id) }
-                        }
-                    }
-                    # Grouped dependencies (by target framework)
-                    if (`$depMeta.group) {
-                        foreach (`$g in @(`$depMeta.group)) {
-                            if (`$g.dependency) {
-                                foreach (`$d in @(`$g.dependency)) {
-                                    if (`$d.id -and -not `$done.ContainsKey(`$d.id)) { `$queue.Enqueue(`$d.id) }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            # Copy module files to AllUsers path (skip NuGet packaging artifacts)
-            `$modDest = Join-Path `$allUsersPath "`$pkgName\`$pkgVersion"
-            if (Test-Path `$modDest) { Remove-Item `$modDest -Recurse -Force }
-            New-Item -Path `$modDest -ItemType Directory -Force | Out-Null
-            Get-ChildItem -Path `$extractDir | ForEach-Object {
-                `$skip = `$_.Name -eq '_rels' -or `$_.Name -eq 'package' -or `$_.Name -eq '[Content_Types].xml' -or `$_.Extension -eq '.nuspec'
-                if (-not `$skip) {
-                    Copy-Item -Path `$_.FullName -Destination `$modDest -Recurse -Force
-                }
-            }
-
-            # Cleanup temp files
-            Remove-Item `$extractDir -Recurse -Force -ErrorAction SilentlyContinue
-            Remove-Item `$nupkgPath -Force -ErrorAction SilentlyContinue
-            `$done[`$pkgName] = `$pkgVersion
-        }
-
-        `$warnings.Add("Direct download installed `$(`$done.Count) package(s): `$((`$done.Keys | Sort-Object) -join ', ')")
+        `$warnings.Add("Direct download installed: `$(Install-HPCMSLFromGallery)")
     }
 
     # --- Step 3: Final verification ---
+    # Only the AllUsers copy counts: a copy in the user's profile is not loaded while the tool runs
+    # elevated (S32), so finding one would report an install the tool will not use.
     `$mod = Get-Module -ListAvailable -Name HPCMSL -ErrorAction SilentlyContinue |
+        Where-Object { `$_.ModuleBase -like "`$allUsersPath\*" } |
         Sort-Object Version -Descending | Select-Object -First 1
     if (-not `$mod) {
         `$hpCheck = Join-Path `$allUsersPath 'HPCMSL'
@@ -19687,8 +19686,11 @@ try {
         throw "HPCMSL was not found after installation attempts"
     }
 
+    # Load test by path, with PSModulePath narrowed to Program Files, so neither HPCMSL nor its
+    # dependencies can resolve to a copy in the user's profile.
     try {
-        Import-Module -Name HPCMSL -Force -ErrorAction Stop
+        `$env:PSModulePath = "`$allUsersPath;`$PSHOME\Modules"
+        Import-Module -Name (Join-Path `$mod.ModuleBase 'HPCMSL.psd1') -Force -ErrorAction Stop
         Remove-Module -Name HPCMSL -Force -ErrorAction SilentlyContinue
     } catch {
         `$warnings.Add("Import test warning: `$(`$_.Exception.Message)")
@@ -20023,10 +20025,24 @@ function Get-DATLocalDeviceInfo {
             $txt_CustomBaseBoard.Text = $sku
             Write-DATActivityLog "Custom Driver Pack: WMI device info loaded -- Lenovo $model (SKU $sku)" -Level Info
         } else {
+            $model = ($cs.Model -replace '^\s+|\s+$','' -replace '\.$','')
+            # The identifier must be the one the deployment side matches this make on. Dell and
+            # Surface packages are matched on the SMBIOS system SKU -- MS_SystemInformation.SystemSku
+            # in the task sequence, Win32_ComputerSystem.SystemSKUNumber in the Intune rules -- which
+            # is the Dell SystemID (e.g. 0CC6) or Surface SKU their catalogs publish. On Dell,
+            # Win32_BaseBoard.Product is the board part number, which neither side ever matches (#979).
+            # Hyper-V VMs also report Microsoft, with a SystemSKUNumber of "None", so only Surface
+            # models take the SKU. Every other make is matched on the baseboard product.
+            $usesSystemSku = ($make -match 'Dell') -or ($make -match 'Microsoft' -and $model -like 'Surface*')
+            $identity = if ($usesSystemSku) { $cs.SystemSKUNumber } else { $bb.Product }
+            $identity = ("$identity" -replace '^\s+|\s+$','')
             $txt_CustomMake.Text = $make
-            $txt_CustomModel.Text = ($cs.Model -replace '^\s+|\s+$','' -replace '\.$','')
-            $txt_CustomBaseBoard.Text = ($bb.Product -replace '^\s+|\s+$','')
-            Write-DATActivityLog "Custom Driver Pack: WMI device info loaded -- $($cs.Manufacturer) $($cs.Model) ($($bb.Product))" -Level Info
+            $txt_CustomModel.Text = $model
+            $txt_CustomBaseBoard.Text = $identity
+            Write-DATActivityLog "Custom Driver Pack: WMI device info loaded -- $($cs.Manufacturer) $($cs.Model) ($identity)" -Level Info
+            if ([string]::IsNullOrEmpty($identity)) {
+                Write-DATActivityLog "Custom Driver Pack: this device reports no baseboard/SKU value -- the package will be matched on the model name" -Level Warn
+            }
         }
     } catch {
         Write-DATActivityLog "Custom Driver Pack: Failed to read WMI -- $($_.Exception.Message)" -Level Warn
@@ -20537,8 +20553,7 @@ $btn_CustomBuild.Add_Click({
             Write-DATLogEntry -Value "-- Resetting file permissions on driver folder..." -Severity 1
             try {
                 $currentUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
-                $takeownResult = Start-Process -FilePath "takeown.exe" -ArgumentList "/F `"$exportDir`" /R /D Y" `
-                    -NoNewWindow -Wait -PassThru -RedirectStandardOutput ([System.IO.Path]::GetTempFileName()) -ErrorAction SilentlyContinue
+                [void](Invoke-DATTakeOwnership -Path $exportDir -Context 'Custom Package')
                 $icaclsResult = Start-Process -FilePath "icacls.exe" -ArgumentList "`"$exportDir`" /grant `"${currentUser}:(OI)(CI)R`" /T /Q /C" `
                     -NoNewWindow -Wait -PassThru -ErrorAction SilentlyContinue
                 if ($icaclsResult -and $icaclsResult.ExitCode -ne 0) {
@@ -30866,7 +30881,7 @@ if (Test-Path $logoPath) {
 
 # Read version from module manifest
 $manifestPath = Join-Path $AppRoot "Modules\DriverAutomationToolCore\DriverAutomationToolCore.psd1"
-$script:versionString = "v10.3.2"
+$script:versionString = "v10.3.3"
 if (Test-Path $manifestPath) {
     $manifestData = Import-PowerShellDataFile $manifestPath
     $ver = [version]$manifestData.ModuleVersion
@@ -32210,6 +32225,9 @@ $script:WhatsNewFeatures = @(
     # 10.3.2: the testimonial button in the title bar, and Check for Update on the HPCMSL card
     [pscustomobject]@{ Id = 'testimonials-10.3.2';              Dot = '';                       Parent = '';                   Pill = 'pill_Testimonial';                Zone = 'zone_Testimonial';                Controls = @('btn_Testimonial') }
     [pscustomobject]@{ Id = 'hpcmsl-update-check-10.3.2';       Dot = 'dot_CommonSettings';     Parent = '';                   Pill = 'pill_HpcmslUpdateCheck';          Zone = 'zone_HpcmslUpdateCheck';          Controls = @('btn_CheckHpcmslUpdate') }
+    # 10.3.3: the HPCMSL card reports a copy the elevated tool will not load, and Install Module
+    # puts one where it will (S32)
+    [pscustomobject]@{ Id = 'hpcmsl-trust-10.3.3';              Dot = 'dot_CommonSettings';     Parent = '';                   Pill = 'pill_HpcmslTrust';                Zone = 'zone_HpcmslTrust';                Controls = @('btn_InstallHpcmsl') }
 )
 
 # Maps a wired element's x:Name to the feature id it clears, so plain (non-closure) handlers can
@@ -32309,12 +32327,11 @@ try { Initialize-DATWhatsNew } catch { Write-DATActivityLog "What's New init fai
 # (the IncrementVersion skill covers it, and Tests\UIApplication.Tests.ps1 asserts it matches the
 # module manifest). The modal is suppressed when it does not match the running build, so a missed
 # changelog update shows nothing rather than the previous release's features.
-$script:WhatsNewReleaseVersion = '10.3.2.0'
+$script:WhatsNewReleaseVersion = '10.3.3.0'
 $script:WhatsNewReleaseItems = @(
-    [pscustomobject]@{ Category = 'Testimonials';                   Text = 'You can now share a testimonial from the speech-bubble button in the title bar: your name, company and up to 500 characters about the tool. You choose whether it may be published or is for the developer only. An email address is optional, used only to contact you about it, and never published. Everything is sent over an encrypted connection and stored encrypted. The tool also asks once at startup after its first week, with options to remind you in 30 days or not to ask again.' }
-    [pscustomobject]@{ Category = 'Known Models on Large Estates';  Text = 'Detecting known models no longer freezes the tool on large Intune tenants and ConfigMgr sites. Matching your devices to the catalog now takes well under a second where it could take several minutes, and the check of which driver and BIOS versions are already deployed runs in the background. A throttled Microsoft Graph request during the Intune lookup is retried instead of failing the lookup, and ConfigMgr hardware inventory queries are given longer to answer, so models are no longer missing on busy sites.' }
-    [pscustomobject]@{ Category = 'HP CMSL Updates';                Text = 'Updating to HP CMSL 1.9.0 or later no longer leaves the old version in place. The update now loads PowerShellGet 2.2.5 and PackageManagement 1.4.4 or later before installing, upgrading them first when needed, and if PowerShellGet still cannot install the new version it downloads the HP modules from the PowerShell Gallery directly, as Install Module already does. A new Check for Update button on the HPCMSL card in Common Settings checks for a newer version straight away and installs it, instead of waiting for the next start.' }
-    [pscustomobject]@{ Category = 'Site Code Scoping';              Text = 'Invoke-CMApplyDriverPackage.ps1 and Invoke-CMDownloadBIOSPackage.ps1 can now be limited to the packages of one site, for hierarchies with a central administration site and several primary sites. Pass -SiteCode, or set the MDMSiteCode task sequence variable. Without either, packages from every site are considered, as before.' }
+    [pscustomobject]@{ Category = 'HP CMSL Signature Checks';  Text = 'Before every HP build, the tool now checks that HP CMSL and each HP module it loads are signed by HP, and refuses to load a copy that has been changed. Because the tool runs as administrator, it also no longer loads HP CMSL from a folder in your user profile, which programs running without administrator rights can change. If that is the only copy, the HPCMSL card in Common Settings says so, and Install Module installs it for all users.' }
+    [pscustomobject]@{ Category = 'HP SoftPaq Signatures';     Text = 'Every HP SoftPaq is checked for an HP signature before it is run to extract its drivers, including SoftPaqs downloaded by an earlier build. A SoftPaq that fails is deleted, and that model is not packaged, so no unverified driver goes into a package.' }
+    [pscustomobject]@{ Category = 'HP CMSL Installs';          Text = 'Installing or updating HP CMSL no longer marks the PowerShell Gallery as trusted for the whole machine, and keeps the PowerShell Gallery check that a new version comes from the same publisher. When the tool downloads the HP modules from the Gallery directly, it checks every file is signed by HP before copying anything into Program Files.' }
 )
 
 function Get-DATWhatsNewModalShownVersion {

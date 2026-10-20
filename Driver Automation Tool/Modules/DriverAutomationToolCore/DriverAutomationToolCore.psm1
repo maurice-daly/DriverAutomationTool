@@ -4,7 +4,7 @@
      Organization:  MSEndpointMgr / Patch My PC
      Filename:      DriverAutomationToolCore.psm1
      Purpose:       Core functions for Driver Automation Tool v2.0
-     Version:       10.3.2.0
+     Version:       10.3.3.0
     ===========================================================================
 #>
 
@@ -37,7 +37,7 @@ if ($PSVersionTable.PSVersion.Major -le 5) {
 
 #region Variables
 
-[version]$global:ScriptRelease = "10.3.2.0"
+[version]$global:ScriptRelease = "10.3.3.0"
 $global:ScriptBuildDate = "09-10-2026"
 $global:ReleaseNotesURL = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/DriverAutomationToolNotes.txt"
 $global:DATConfigUrl = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/refs/heads/master/Data/DATAPIConfig.json"
@@ -294,6 +294,10 @@ function Test-DATFileSignature {
         Optional short label included in log entries (e.g. 'Acer BIOS', 'Dell Driver Pack')
         to make audit trails easier to read.
 
+    .PARAMETER Quiet
+        Leaves out the per-file success line, for callers that check a whole folder and log one
+        summary instead. Failures are logged either way.
+
     .OUTPUTS
         [bool]
     #>
@@ -306,7 +310,9 @@ function Test-DATFileSignature {
 
         [string[]]$AllowedPublishers = $script:DATTrustedPublisherCNs,
 
-        [string]$Context = 'File'
+        [string]$Context = 'File',
+
+        [switch]$Quiet
     )
 
     if (-not (Test-Path -LiteralPath $FilePath -PathType Leaf)) {
@@ -383,7 +389,9 @@ function Test-DATFileSignature {
 
     foreach ($pattern in $AllowedPublishers) {
         if ($cn -like $pattern) {
-            Write-DATLogEntry -Value "[Integrity] [$Context] Authenticode OK -- signer '$cn' matched allow-list pattern '$pattern' -- file: $FilePath" -Severity 1
+            if (-not $Quiet) {
+                Write-DATLogEntry -Value "[Integrity] [$Context] Authenticode OK -- signer '$cn' matched allow-list pattern '$pattern' -- file: $FilePath" -Severity 1
+            }
             return $true
         }
     }
@@ -1961,6 +1969,168 @@ function New-DATDriverManifest {
     }
 }
 
+function Invoke-DATTakeownProcess {
+    <#
+    .SYNOPSIS
+        Runs takeown.exe from System32 hidden and returns its exit code and output.
+    .DESCRIPTION
+        Output is redirected to temp files that are read back and removed, because a recursive
+        run prints a line for every file in the tree. takeown writes in the console's OEM code
+        page, so the files are read back as OEM.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param (
+        [Parameter(Mandatory)][string]$Arguments
+    )
+
+    $takeownExe = Join-Path $env:SystemRoot 'System32\takeown.exe'
+    $token = [System.IO.Path]::GetRandomFileName()
+    $stdout = Join-Path ([System.IO.Path]::GetTempPath()) "DAT_takeown_$token.out"
+    $stderr = Join-Path ([System.IO.Path]::GetTempPath()) "DAT_takeown_$token.err"
+    try {
+        $proc = Start-Process -FilePath $takeownExe -ArgumentList $Arguments -WindowStyle Hidden -Wait -PassThru `
+            -RedirectStandardOutput $stdout -RedirectStandardError $stderr -ErrorAction Stop
+
+        # Handle return value
+        return [PSCustomObject]@{
+            ExitCode = [int]$proc.ExitCode
+            Output   = [string](Get-Content -LiteralPath $stdout -Raw -Encoding Oem -ErrorAction SilentlyContinue)
+            Error    = [string](Get-Content -LiteralPath $stderr -Raw -Encoding Oem -ErrorAction SilentlyContinue)
+        }
+    }
+    finally {
+        Remove-Item -LiteralPath $stdout, $stderr -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Get-DATTakeownYesAnswer {
+    <#
+    .SYNOPSIS
+        Returns the value takeown /D accepts for "yes" in this Windows display language.
+    .DESCRIPTION
+        takeown only accepts the display language's own answers for /D: Y in English, J in
+        German, and so on. Any other value is rejected as invalid syntax before a single file is
+        touched, so a hard-coded "/D Y" takes no ownership at all on a German installation and
+        the permission repair ahead of WIM capture silently does nothing (issue #975).
+
+        The candidates are the single letters takeown quotes in its own help for /D, then a
+        short list of common answers. Each is confirmed by running takeown against an
+        empty scratch folder, because the help wording and quotation marks vary by language. N
+        is never chosen: takeown accepts it, but it means skip the folders it cannot list. When
+        nothing is confirmed, Y is returned, which is what the tool always passed. The answer is
+        cached for the session.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param ()
+
+    if (-not [string]::IsNullOrEmpty($script:DATTakeownYesAnswer)) { return $script:DATTakeownYesAnswer }
+
+    $candidates = New-Object System.Collections.Generic.List[string]
+    try {
+        $help = Invoke-DATTakeownProcess -Arguments '/?'
+        $lines = @($help.Output -split "`r?`n")
+        for ($i = 0; $i -lt $lines.Count; $i++) {
+            if ($lines[$i] -notmatch '^\s*/D\s') { continue }
+            $section = $lines[$i]
+            for ($j = $i + 1; $j -lt $lines.Count; $j++) {
+                if ([string]::IsNullOrWhiteSpace($lines[$j]) -or $lines[$j] -match '^\s*/\S') { break }
+                $section += ' ' + $lines[$j].Trim()
+            }
+            # A single letter between quotation marks of any style: straight, guillemets, curly or
+            # low-high. Built from code points so this file stays ASCII; PowerShell 7 treats a
+            # literal curly quote in source as a string delimiter.
+            $quoteClass = '["''' + (-join [char[]](0xAB, 0xBB, 0x2018, 0x2019, 0x201A, 0x201B, 0x201C, 0x201D, 0x201E, 0x201F, 0x2039, 0x203A)) + ']'
+            # Every quoted letter is a candidate, in order (yes comes first), because an apostrophe
+            # in the description can produce a false match ahead of the real one.
+            foreach ($match in [regex]::Matches($section, "$quoteClass\s?(\p{L})\s?$quoteClass")) {
+                $letter = $match.Groups[1].Value.ToUpperInvariant()
+                if (-not $candidates.Contains($letter)) { $candidates.Add($letter) }
+            }
+            break
+        }
+    }
+    catch {
+        Write-DATLogEntry -Value "[Packaging] Could not read the takeown help text: $($_.Exception.Message)" -Severity 2
+    }
+    foreach ($fallback in @('Y', 'J', 'O', 'S')) {
+        if (-not $candidates.Contains($fallback)) { $candidates.Add($fallback) }
+    }
+
+    $probeDir = Join-Path ([System.IO.Path]::GetTempPath()) "DAT_takeown_probe_$([System.IO.Path]::GetRandomFileName())"
+    try {
+        New-Item -Path $probeDir -ItemType Directory -Force -ErrorAction Stop | Out-Null
+        foreach ($candidate in $candidates) {
+            if ($candidate -eq 'N') { continue }
+            $probe = Invoke-DATTakeownProcess -Arguments "/F `"$probeDir`" /R /D $candidate"
+            if ($probe.ExitCode -eq 0) {
+                $script:DATTakeownYesAnswer = $candidate
+                Write-DATLogEntry -Value "[Packaging] takeown /D answer for this Windows language: $candidate" -Severity 1
+                return $candidate
+            }
+        }
+        Write-DATLogEntry -Value "[Packaging] takeown accepted none of $($candidates -join ', ') for /D -- using Y" -Severity 2
+    }
+    catch {
+        Write-DATLogEntry -Value "[Packaging] Could not confirm the takeown /D answer: $($_.Exception.Message) -- using Y" -Severity 2
+    }
+    finally {
+        Remove-Item -LiteralPath $probeDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    # Handle return value
+    $script:DATTakeownYesAnswer = 'Y'
+    return 'Y'
+}
+
+function Invoke-DATTakeOwnership {
+    <#
+    .SYNOPSIS
+        Takes ownership of a folder tree with takeown.exe in any Windows display language.
+    .DESCRIPTION
+        Some OEM self-extractors (Dell in particular) leave files whose ACL denies
+        administrators the access DISM and wimlib need, and an icacls grant cannot be applied to
+        them until ownership changes. takeown runs recursively with /D so it never stops to ask
+        about a folder it cannot list, using the answer from Get-DATTakeownYesAnswer.
+
+        -Administrators gives ownership to the Administrators group (/A) instead of the calling
+        account. Returns takeown's exit code, or -1 when it could not be started. Failures are
+        logged rather than thrown, because every caller carries on to the capture.
+    #>
+    [CmdletBinding()]
+    [OutputType([int])]
+    param (
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Path,
+        [switch]$Administrators,
+        [string]$Context = 'Packaging'
+    )
+
+    $yes = Get-DATTakeownYesAnswer
+    $arguments = "/F `"$Path`" /R"
+    if ($Administrators) { $arguments += ' /A' }
+    $arguments += " /D $yes"
+
+    try {
+        $result = Invoke-DATTakeownProcess -Arguments $arguments
+    }
+    catch {
+        Write-DATLogEntry -Value "[$Context] takeown could not be started: $($_.Exception.Message) -- continuing anyway" -Severity 2
+        return -1
+    }
+
+    if ($result.ExitCode -ne 0) {
+        # takeown's first line names the problem ("ERROR: Invalid syntax..."); the rest repeats per file.
+        $detail = @($result.Error, $result.Output) -split "`r?`n" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -First 1
+        $message = "[$Context] takeown returned code $($result.ExitCode) -- continuing anyway"
+        if ($detail) { $message += ": $($detail.Trim())" }
+        Write-DATLogEntry -Value $message -Severity 2
+    }
+
+    # Handle return value
+    return $result.ExitCode
+}
+
 function Invoke-DATDriverFilePackaging {
     param (
         [string]$FilePath,
@@ -2482,12 +2652,7 @@ function Invoke-DATDriverFilePackaging {
         # Error 5 (Access Denied). Take ownership first, then grant Administrators full control.
         try {
             Write-DATLogEntry -Value "[$OEM] Taking ownership of extracted files for WIM capture..." -Severity 1
-            $takeownProc = Start-Process -FilePath "$env:SystemRoot\System32\takeown.exe" `
-                -ArgumentList "/F `"$DriverFolder`" /R /A /D Y" `
-                -WindowStyle Hidden -PassThru -Wait
-            if ($takeownProc.ExitCode -ne 0) {
-                Write-DATLogEntry -Value "[$OEM] takeown returned code $($takeownProc.ExitCode) -- continuing anyway" -Severity 2
-            }
+            [void](Invoke-DATTakeOwnership -Path $DriverFolder -Administrators -Context $OEM)
             # Grant Administrators full control using well-known SID (locale-independent)
             $icaclsProc = Start-Process -FilePath "$env:SystemRoot\System32\icacls.exe" `
                 -ArgumentList "`"$DriverFolder`" /grant *S-1-5-32-544:(OI)(CI)F /T /C /Q" `
@@ -2636,8 +2801,7 @@ function Invoke-DATDriverFilePackaging {
                 Write-DATLogEntry -Value "[$OEM] Resetting file permissions on driver folder..." -Severity 1
                 try {
                     $currentUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
-                    $takeownResult = Start-Process -FilePath "takeown.exe" -ArgumentList "/F `"$DriverFolder`" /R /D Y" `
-                        -NoNewWindow -Wait -PassThru -RedirectStandardOutput ([System.IO.Path]::GetTempFileName()) -ErrorAction SilentlyContinue
+                    [void](Invoke-DATTakeOwnership -Path $DriverFolder -Context $OEM)
                     $icaclsResult = Start-Process -FilePath "icacls.exe" -ArgumentList "`"$DriverFolder`" /grant `"${currentUser}:(OI)(CI)R`" /T /Q /C" `
                         -NoNewWindow -Wait -PassThru -ErrorAction SilentlyContinue
                     if ($icaclsResult -and $icaclsResult.ExitCode -ne 0) {
@@ -2674,8 +2838,7 @@ function Invoke-DATDriverFilePackaging {
                     if ($wimlibProcess.ExitCode -eq 47 -and $wimlibAttempt -lt $maxAttempts) {
                         Write-DATLogEntry -Value "[$OEM] wimlib access denied (exit 47) -- retaking ownership and retrying..." -Severity 2
                         try {
-                            Start-Process -FilePath "takeown.exe" -ArgumentList "/F `"$DriverFolder`" /R /A /D Y" `
-                                -NoNewWindow -Wait -RedirectStandardOutput ([System.IO.Path]::GetTempFileName()) -ErrorAction SilentlyContinue
+                            [void](Invoke-DATTakeOwnership -Path $DriverFolder -Administrators -Context $OEM)
                             Start-Process -FilePath "icacls.exe" -ArgumentList "`"$DriverFolder`" /grant *S-1-5-32-545:(OI)(CI)R /T /Q /C" `
                                 -NoNewWindow -Wait -ErrorAction SilentlyContinue
                         } catch {
@@ -3731,8 +3894,9 @@ function ConvertTo-DATSafeBaseboardList {
 
         A token outside the allow-list is dropped with a warning rather than failing the build,
         so one malformed catalog row costs one device rather than the whole package. A list with
-        no usable token left throws instead, because an empty expected-values array would
-        silently match no device at all.
+        no usable token left throws instead. The scripts wrap this value as @('...'), so an empty
+        one is emitted as @(''), and -match '' is true for every SKU, board and model name: the
+        rule would claim every device of the make, not none.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -3765,6 +3929,282 @@ function ConvertTo-DATSafeBaseboardList {
 
     # Handle return value
     return ($safe -join "','")
+}
+
+function Test-DATBaseboardsMissing {
+    <#
+    .SYNOPSIS
+        Returns $true when a baseboard/SKU list holds no value at all -- empty, white space or
+        separators only.
+    .DESCRIPTION
+        Some catalog rows carry no baseboard/SKU IDs for a model (issue #979). Every path that
+        needs the list asks this one question, so they all agree on what "no IDs" means.
+    #>
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param (
+        [string]$Baseboards
+    )
+
+    return [string]::IsNullOrWhiteSpace(($Baseboards -replace '[,;]', ''))
+}
+
+# Written into a package description in place of the baseboard list when the OEM published none
+# for the model (issue #979). It deliberately carries no ':' and no parentheses -- the task sequence
+# scripts split the description on ':', and the UI reads the list up to the first ')'. The comma
+# makes an Invoke-CMApplyDriverPackage.ps1 that predates this note compare its words as whole SKU
+# tokens, and none of them is a SKU or a placeholder a device reports in place of one ("None"), so
+# that script falls through to its computer model match.
+$script:DATNoBaseboardNote = 'no baseboard IDs published, matched on model name'
+
+function Format-DATBaseboardDescription {
+    <#
+    .SYNOPSIS
+        Returns the baseboard/SKU list for a package description, or a note saying there is none.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param (
+        [string]$Baseboards
+    )
+
+    if (Test-DATBaseboardsMissing -Baseboards $Baseboards) { return $script:DATNoBaseboardNote }
+    return $Baseboards
+}
+
+function Get-DATScriptHardwareMatch {
+    <#
+    .SYNOPSIS
+        Chooses the values a generated detection or requirement script matches a device on, and
+        the comparison it makes with them.
+    .DESCRIPTION
+        Baseboard/SKU IDs when the catalog published any, compared exactly as before: a substring
+        match against SystemSKUNumber, the baseboard product and the system model.
+
+        When the catalog published none for the model (issue #979) the script matches the model
+        name instead. An empty value would be emitted as @(''), which matches every device of the
+        make (see ConvertTo-DATSafeBaseboardList), and refusing to build left the model with no
+        package. The whole name must equal Win32_ComputerSystem.Model
+        or Win32_ComputerSystemProduct.Version (where Lenovo reports it), the comparison the task
+        sequence's computer model match makes, so a sibling whose name merely starts with this one
+        (a ruggedised variant, or a later generation whose number extends this one's) is never
+        claimed.
+
+        The model name passes through ConvertTo-DATSafeBaseboardList like any ID, so it meets the
+        same allow-list before it is written into a script that runs as SYSTEM. A list whose IDs
+        were all rejected by that allow-list still throws: that is a malformed or tampered catalog
+        row, not a missing value, and falling back to the name would hide it.
+
+        Returns Values (the body of the single-quoted array literal), MatchOnModelName, and
+        MatchBlock -- the comparison emitted inside the script's expected-values loop.
+    #>
+    [CmdletBinding()]
+    param (
+        [string]$Baseboards,
+        [Parameter(Mandatory)][string]$Model,
+        [AllowEmptyString()][string]$Context = ''
+    )
+
+    if (-not (Test-DATBaseboardsMissing -Baseboards $Baseboards)) {
+        return [PSCustomObject]@{
+            Values           = ConvertTo-DATSafeBaseboardList -Baseboards $Baseboards -Context $Context
+            MatchOnModelName = $false
+            MatchBlock       = @'
+        $escaped = [regex]::Escape($val)
+        if ($systemSKU -match $escaped -or $baseboardProduct -match $escaped -or $systemModel -match $escaped) {
+'@
+        }
+    }
+
+    # A comma or semicolon would split the name into separate, looser match values.
+    if ($Model -match '[,;]') {
+        throw "No baseboard/SKU IDs are available$($Context), and the model name '$Model' cannot stand in for them because it contains a list separator."
+    }
+    Write-DATLogEntry -Value "[Warning] - No baseboard/SKU IDs are available$($Context) -- the script matches devices whose model name is exactly '$Model' instead" -Severity 2
+    return [PSCustomObject]@{
+        Values           = ConvertTo-DATSafeBaseboardList -Baseboards $Model -Context "$Context (model name fallback)"
+        MatchOnModelName = $true
+        MatchBlock       = @'
+        # Model-name match: no baseboard/SKU IDs were published for this model, so the whole model
+        # name must equal the device's. Lenovo reports it in Win32_ComputerSystemProduct.Version.
+        $productName = (Get-CimInstance -ClassName Win32_ComputerSystemProduct -ErrorAction SilentlyContinue).Version
+        if ("$systemModel".Trim() -eq $val -or "$productName".Trim() -eq $val) {
+'@
+    }
+}
+
+# Parsed Dell driver pack catalogs, keyed by file path, so a build with several models lacking a
+# SystemID reads the catalog once.
+$script:DATDellSystemIDCatalogs = @{}
+
+function Find-DATDellSystemID {
+    <#
+    .SYNOPSIS
+        Looks up a Dell model's SystemID(s) in Dell's driver pack catalog, for a model whose
+        baseboard list arrived empty (issue #979).
+    .DESCRIPTION
+        The SystemID is the 4-hex system identifier Dell keys its catalogs on, and the value the
+        tool writes into package descriptions and Intune rules. A model can reach a build without
+        one -- the catalog row it was listed from (a DAT API catalog row, a saved build
+        configuration) lacked it -- while Dell's own driver pack catalog (the OEM links
+        XMLCabinetSource, DriverPackCatalog.cab, which model loading and the SCCM pack download
+        already use) still publishes it.
+
+        When the model carries the driver pack's download URL (DAT API catalog rows do), the pack
+        with that file name answers: it is the exact entry the build will download, so no name has
+        to be matched. Otherwise the model name is matched against the catalog's entries for the
+        build's OS and architecture.
+
+        Only a whole-name match counts (case, spacing and hyphens aside): a near-miss such as a
+        ruggedised variant has a SystemID of its own. Dell also reuses model names for systems
+        built years apart, so entries for other operating systems are not consulted, and a name
+        that leads to more than one system with no SystemID in common is reported and left
+        unresolved rather than guessed -- a wrong SystemID would target the wrong hardware. The
+        DAT BIOS catalog is not used as a further source for the same reason: for some reused
+        names its Dell row is the older system (docs/BaseboardSourcesFeasibility.md).
+
+        The catalog is downloaded at most once per temp directory and indexed once per session,
+        and the lookup only runs for a model that has no baseboard values. It never throws: a
+        catalog that cannot be read is logged and skipped. Returns a comma-separated list, or ''
+        when the catalog does not resolve the model.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param (
+        [Parameter(Mandatory)][string]$Model,
+        # The build's OS, e.g. "Windows 11" -- matched against the pack catalog's osCode
+        [Parameter(Mandatory)][string]$WindowsVersion,
+        [string]$Architecture = 'x64',
+        # The driver pack URL the model was listed with, when it has one
+        [string]$DownloadURL,
+        [string]$TempDirectory = $global:TempDirectory
+    )
+
+    function Get-DellCatalogIndex {
+        param ([string]$Url, [string]$CabName)
+        $xmlPath = Join-Path $TempDirectory ([IO.Path]::ChangeExtension($CabName, 'xml'))
+        if (-not (Test-Path -LiteralPath $xmlPath)) {
+            $cabPath = Join-Path $TempDirectory $CabName
+            if (-not (Test-Path -LiteralPath $cabPath)) {
+                Write-DATLogEntry -Value "[Dell] Downloading $CabName to look up a missing SystemID: $Url" -Severity 1
+                $proxyParams = Get-DATWebRequestProxy
+                Invoke-WebRequest -Uri $Url -OutFile $cabPath -UseBasicParsing -TimeoutSec 120 -ErrorAction Stop @proxyParams
+            }
+            & expand.exe "$cabPath" -F:* "$TempDirectory" -R 2>&1 | Out-Null
+            if (-not (Test-Path -LiteralPath $xmlPath)) { throw "$CabName did not expand to $xmlPath" }
+        }
+        $stamp = (Get-Item -LiteralPath $xmlPath).LastWriteTimeUtc.Ticks
+        $cached = $script:DATDellSystemIDCatalogs[$xmlPath]
+        if ($null -eq $cached -or $cached.Stamp -ne $stamp) {
+            [xml]$doc = Get-Content -LiteralPath $xmlPath -Raw
+            # "<osCode>|<osArch>|<model name>" -> the SystemID set of every pack listing that name
+            # for that OS, and "file|<pack file name>" -> that pack's SystemIDs, so later lookups
+            # in the same build are a hashtable read. Local names keep this independent of the
+            # catalog's default namespace.
+            $index = @{}
+            foreach ($package in $doc.SelectNodes('//*[local-name()="DriverPackage"]')) {
+                $byName = @{}
+                $packIds = New-Object System.Collections.Generic.List[string]
+                foreach ($m in $package.SelectNodes('*[local-name()="SupportedSystems"]/*[local-name()="Brand"]/*[local-name()="Model"]')) {
+                    $id = $m.GetAttribute('systemID').Trim().ToUpper()
+                    if ($id -match '^[0-9A-F]{4}$' -and -not $packIds.Contains($id)) { $packIds.Add($id) }
+                    foreach ($name in @((ConvertTo-DellNameKey -Text $m.GetAttribute('name')), (Get-DellNodeText -Node $m))) {
+                        if ([string]::IsNullOrEmpty($name)) { continue }
+                        $nameKey = $name.ToLowerInvariant()
+                        if (-not $byName.ContainsKey($nameKey)) { $byName[$nameKey] = New-Object System.Collections.Generic.List[string] }
+                        if ($id -match '^[0-9A-F]{4}$' -and -not $byName[$nameKey].Contains($id)) { $byName[$nameKey].Add($id) }
+                    }
+                }
+                foreach ($os in $package.SelectNodes('*[local-name()="SupportedOperatingSystems"]/*[local-name()="OperatingSystem"]')) {
+                    foreach ($nameKey in $byName.Keys) {
+                        $key = ('{0}|{1}|{2}' -f $os.GetAttribute('osCode'), $os.GetAttribute('osArch'), $nameKey).ToLowerInvariant()
+                        if (-not $index.ContainsKey($key)) { $index[$key] = New-Object System.Collections.Generic.List[object] }
+                        $index[$key].Add($byName[$nameKey].ToArray())
+                    }
+                }
+                $packFile = ([string]$package.GetAttribute('path') -split '/')[-1]
+                if (-not [string]::IsNullOrEmpty($packFile)) { $index["file|$($packFile.ToLowerInvariant())"] = $packIds.ToArray() }
+            }
+            $cached = @{ Stamp = $stamp; Index = $index }
+            $script:DATDellSystemIDCatalogs[$xmlPath] = $cached
+        }
+        return $cached.Index
+    }
+
+    # Names are compared with runs of spaces and hyphens folded to one space (and, by -contains,
+    # without regard to case), because Dell does not spell a model name the same way in every file.
+    function ConvertTo-DellNameKey {
+        param ([string]$Text)
+        return (($Text -replace '[\s-]+', ' ').Trim())
+    }
+
+    function Get-DellNodeText {
+        param ($Node)
+        if ($null -eq $Node) { return '' }
+        $display = $Node.SelectSingleNode('*[local-name()="Display"]')
+        if ($null -eq $display) { return '' }
+        return (ConvertTo-DellNameKey -Text $display.InnerText)
+    }
+
+    # Reduces the SystemID sets of every matching entry to one answer. Entries that share an ID
+    # describe the same system and are merged; entries with nothing in common are different
+    # systems sold under one name, and no single answer would be right.
+    function Merge-DellSystemIDGroups {
+        param ([object[]]$Groups, [string]$Label)
+        $Groups = @($Groups | Where-Object { @($_).Count -gt 0 })
+        if ($Groups.Count -eq 0) { return [PSCustomObject]@{ Status = 'None'; IDs = @() } }
+        $common = @($Groups[0])
+        foreach ($group in $Groups) { $common = @($common | Where-Object { @($group) -contains $_ }) }
+        if ($Groups.Count -gt 1 -and $common.Count -eq 0) {
+            $seen = ($Groups | ForEach-Object { @($_) -join ',' }) -join ' / '
+            Write-DATLogEntry -Value "[Warning] - [Dell] '$Model' names more than one system in the $Label ($seen) -- not choosing between them" -Severity 2
+            return [PSCustomObject]@{ Status = 'Ambiguous'; IDs = @() }
+        }
+        return [PSCustomObject]@{ Status = 'Found'; IDs = @($Groups | ForEach-Object { $_ } | Select-Object -Unique) }
+    }
+
+    $target = ConvertTo-DellNameKey -Text $Model
+    if ([string]::IsNullOrEmpty($target)) { return '' }
+    $osCode = $WindowsVersion -replace '\s', ''
+
+    $dellLinks = $null
+    if ($null -ne $global:OEMLinks) {
+        $dellLinks = ($global:OEMLinks.OEM.Manufacturer | Where-Object { $_.Name -match 'Dell' }).Link
+    }
+    $packCatalogUrl = $dellLinks | Where-Object { $_.Type -eq 'XMLCabinetSource' } | Select-Object -ExpandProperty URL -First 1
+    if ([string]::IsNullOrEmpty($packCatalogUrl)) { $packCatalogUrl = 'https://downloads.dell.com/catalog/DriverPackCatalog.cab' }
+    try {
+        if ($packCatalogUrl -notmatch '^https://') { throw "not an HTTPS URL: $packCatalogUrl" }
+        $index = Get-DellCatalogIndex -Url $packCatalogUrl -CabName ([string]($packCatalogUrl | Split-Path -Leaf))
+
+        # The pack the model was listed with, by its file name -- Dell's file names carry the
+        # release ID, so one names one pack
+        if (-not [string]::IsNullOrEmpty($DownloadURL)) {
+            $packFile = ((($DownloadURL -split '\?')[0]) -split '/')[-1]
+            $fileKey = "file|$($packFile.ToLowerInvariant())"
+            if ($index.ContainsKey($fileKey) -and @($index[$fileKey]).Count -gt 0) {
+                Write-DATLogEntry -Value "[Dell] SystemID for '$Model' found on its driver pack ($packFile) in the driver pack catalog: $(@($index[$fileKey]) -join ',')" -Severity 1
+                return (@($index[$fileKey]) -join ',')
+            }
+        }
+
+        $key = ('{0}|{1}|{2}' -f $osCode, $Architecture, $target).ToLowerInvariant()
+        # ToArray(): an @() of a generic List does not bind to an [object[]] parameter ("Argument
+        # types do not match"), and an if-expression would unroll a single group into its IDs.
+        $groups = @()
+        if ($index.ContainsKey($key)) { $groups = $index[$key].ToArray() }
+        $result = Merge-DellSystemIDGroups -Groups $groups -Label "driver pack catalog ($WindowsVersion $Architecture)"
+        if ($result.Status -eq 'Found') {
+            Write-DATLogEntry -Value "[Dell] SystemID for '$Model' found in the driver pack catalog: $($result.IDs -join ',')" -Severity 1
+            return ($result.IDs -join ',')
+        }
+        if ($result.Status -eq 'None') {
+            Write-DATLogEntry -Value "[Dell] The driver pack catalog has no SystemID for '$Model' ($WindowsVersion $Architecture)" -Severity 1
+        }
+    } catch {
+        Write-DATLogEntry -Value "[Warning] - [Dell] Could not read the driver pack catalog for the SystemID lookup: $($_.Exception.Message)" -Severity 2
+    }
+    return ''
 }
 
 function Test-DATSafeContentRoot {
@@ -4583,7 +5023,8 @@ function New-DATConfigMgrPkg {
         [Parameter(Mandatory)][string]$Model,
         [Parameter(Mandatory)][string]$OS,
         [Parameter(Mandatory)][string]$Architecture,
-        [Parameter(Mandatory)][string]$Baseboards,
+        # Empty when the catalog published no IDs -- the description then says so (#979)
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Baseboards,
         [Parameter(Mandatory)][string]$PackagePath,
         [Parameter(Mandatory)][string]$SiteServer,
         [Parameter(Mandatory)][string]$SiteCode,
@@ -4635,12 +5076,14 @@ function New-DATConfigMgrPkg {
         # Create CIM session with auth fallback for all WMI operations in this function
         $cimSess = New-DATCimSession -ComputerName $SiteServer
 
-        # Build description -- BIOS packages include the release date in YYYYMMDD format for matching
+        # Build description -- BIOS packages include the release date in YYYYMMDD format for matching.
+        # A model with no baseboard IDs says so here, and the task sequence matches it by model name.
+        $descriptionBoards = Format-DATBaseboardDescription -Baseboards $Baseboards
         $pkgDescription = if ($PackageType -eq 'BIOS' -and -not [string]::IsNullOrEmpty($ReleaseDate)) {
             $releaseDateFormatted = try { ([datetime]$ReleaseDate).ToString('yyyyMMdd') } catch { $ReleaseDate }
-            "(Models included:$Baseboards) (Release Date:$releaseDateFormatted)"
+            "(Models included:$descriptionBoards) (Release Date:$releaseDateFormatted)"
         } else {
-            "Models included: $Baseboards"
+            "Models included: $descriptionBoards"
         }
 
         # --- Stage 1: Check existing package via WMI before copying files ---
@@ -5011,15 +5454,18 @@ function Get-DATConfigMgrDeploymentTypeSettings {
         mean the same thing: 0 success, 1 failure, 1618 deferral (Fast Retry), 3010 restart
         pending. All four are in ConfigMgr's default table for script deployment types.
 
-        Drivers use "Determine behavior based on return codes": DAT never restarts for drivers,
-        so ConfigMgr's restart notification is how a 3010 gets its restart.
+        Drivers use "Determine behavior based on return codes", but the driver install itself
+        exits 0, not 3010, even when PNPUtil needed a restart: DAT never restarts for drivers, the
+        PendingReboot marker keeps detection false until the device has restarted, and ConfigMgr
+        sends no restart prompt for the install. Only -Uninstall (a rollback) exits 3010, and that
+        starting ConfigMgr's restart countdown is unverified on a real client.
 
         BIOS uses "The software install program might force a device restart": the install
         script runs its own restart countdown (or deliberately none, when automatic restart is
         disabled), so ConfigMgr must not add a second prompt. The script still exits 3010, so
-        ConfigMgr waits for the restart before running detection -- detection only trusts the
-        version marker once the device has restarted, and a 0 would be reported as
-        "not detected after installation".
+        ConfigMgr is expected to wait for the restart before running detection (unverified on a
+        real client) -- detection only trusts the version marker once the device has restarted,
+        and a 0 would be reported as "not detected after installation".
     #>
     [CmdletBinding()]
     param (
@@ -5113,7 +5559,8 @@ function New-DATConfigMgrApplication {
         [Parameter(Mandatory)][string]$SourcePath,
         [Parameter(Mandatory)][string]$OEM,
         [Parameter(Mandatory)][string]$Model,
-        [Parameter(Mandatory)][string]$Baseboards,
+        # Empty when the catalog published no IDs -- the rules then match the model name (#979)
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Baseboards,
         [Parameter(Mandatory)][string]$OS,
         [Parameter(Mandatory)][string]$Architecture,
         [Parameter(Mandatory)][string]$Version,
@@ -5157,7 +5604,7 @@ function New-DATConfigMgrApplication {
     $requirementText = Get-Content -Path $requirementPath -Raw
 
     $releaseDateStamp = ConvertTo-DATReleaseDateStamp -ReleaseDate $ReleaseDate
-    $description = "$PackageType package for $OEM $Model. Baseboards/SKU: $Baseboards. Version: $Version"
+    $description = "$PackageType package for $OEM $Model. Baseboards/SKU: $(Format-DATBaseboardDescription -Baseboards $Baseboards). Version: $Version"
     if (-not [string]::IsNullOrEmpty($releaseDateStamp)) { $description += ". Release Date: $releaseDateStamp" }
     $description += ". Created by Driver Automation Tool"
     $cmPriority = if ($Priority -eq 'Normal') { 'Medium' } else { $Priority }
@@ -5286,7 +5733,8 @@ function Invoke-DATConfigMgrApplicationPipeline {
         [Parameter(Mandatory)][string]$PackageID,
         [Parameter(Mandatory)][string]$OEM,
         [Parameter(Mandatory)][string]$Model,
-        [Parameter(Mandatory)][string]$Baseboards,
+        # Empty when the catalog published no IDs (#979) -- see New-DATConfigMgrApplication
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Baseboards,
         [Parameter(Mandatory)][string]$OS,
         [Parameter(Mandatory)][string]$Architecture,
         [Parameter(Mandatory)][string]$Version,
@@ -6057,10 +6505,11 @@ function Export-DATConfigMgrOfflinePackage {
     if ($PackageType -eq 'BIOS' -and -not [string]::IsNullOrEmpty($ReleaseDate)) {
         $releaseDateFormatted = try { ([datetime]$ReleaseDate).ToString('yyyyMMdd') } catch { $ReleaseDate }
     }
+    $descriptionBoards = Format-DATBaseboardDescription -Baseboards $Baseboards
     $pkgDescription = if ($PackageType -eq 'BIOS' -and -not [string]::IsNullOrEmpty($releaseDateFormatted)) {
-        "(Models included:$Baseboards) (Release Date:$releaseDateFormatted)"
+        "(Models included:$descriptionBoards) (Release Date:$releaseDateFormatted)"
     } else {
-        "Models included: $Baseboards"
+        "Models included: $descriptionBoards"
     }
     $mifVersion = if ($PackageType -eq 'BIOS') { '' } else { "$OS $Architecture" }
 
@@ -6470,6 +6919,9 @@ function Start-DATModelProcessing {
 
     # Pre-build ConfigMgr package version cache (Name → Version hashtable) for O(1) lookups
     $cmPkgVersionCache = @{}
+    # Every version held under each package name. Retention can keep earlier versions next to
+    # the current one, and the cache above holds only one of them.
+    $cmPkgVersionsByName = @{}
     $cmPkgIdSet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
     if ($RunningMode -eq 'Configuration Manager' -and -not [string]::IsNullOrEmpty($SiteServer) -and -not [string]::IsNullOrEmpty($SiteCode)) {
         try {
@@ -6480,6 +6932,10 @@ function Start-DATModelProcessing {
             foreach ($p in $cmPkgs) {
                 if (-not [string]::IsNullOrEmpty($p.Name) -and -not [string]::IsNullOrEmpty($p.Version)) {
                     $cmPkgVersionCache[$p.Name] = $p.Version
+                    if (-not $cmPkgVersionsByName.ContainsKey($p.Name)) {
+                        $cmPkgVersionsByName[$p.Name] = [System.Collections.Generic.List[string]]::new()
+                    }
+                    $cmPkgVersionsByName[$p.Name].Add([string]$p.Version)
                 }
                 if (-not [string]::IsNullOrEmpty($p.PackageID)) {
                     [void]$cmPkgIdSet.Add($p.PackageID)
@@ -6601,6 +7057,24 @@ function Start-DATModelProcessing {
         # Dell does not use Windows build-specific driver packages -- omit build from package name
         $osPkgLabel = if ($oem -eq 'Dell') { $windowsVersion } else { "$windowsVersion $windowsBuild" }
 
+        # A model can arrive with no baseboard/SKU values at all, because the catalog row it was
+        # listed from carried none (issue #979). The ConfigMgr, Intune and BIOS paths all used to
+        # fail on the empty value. Dell's driver pack catalog can still carry the SystemID, so look
+        # there first; otherwise build anyway -- descriptions say no IDs were published, generated
+        # rules match the model name, and BIOS, which can only be matched by ID, is skipped with
+        # its own warning.
+        if (Test-DATBaseboardsMissing -Baseboards $baseboards) {
+            $baseboards = ''
+            if ($oem -eq 'Dell') {
+                $baseboards = Find-DATDellSystemID -Model $modelName -WindowsVersion $windowsVersion -Architecture $arch -DownloadURL $modelDownloadURL
+            }
+            if (-not [string]::IsNullOrEmpty($baseboards)) {
+                Write-DATLogEntry -Value "[$currentIndex/$totalModels] $oem $modelName was listed without baseboard values -- using SystemID $baseboards from Dell's driver pack catalog" -Severity 1
+            } else {
+                Write-DATLogEntry -Value "[Warning] [$currentIndex/$totalModels] No baseboard/SKU values are available for $oem $modelName -- continuing without them: package descriptions will say so, Intune and ConfigMgr Application rules will match the exact model name '$modelName', and BIOS cannot be matched" -Severity 2
+            }
+        }
+
         try {
             # ── Driver processing (when PackageType is 'Drivers' or 'All') ──────────
             if ($modelPackageType -in @('Drivers', 'All')) {
@@ -6668,7 +7142,25 @@ function Start-DATModelProcessing {
                         } elseif ($modelForceUpdate) {
                             Write-DATLogEntry -Value "[$currentIndex/$totalModels] FORCE UPDATE -- bypassing version match (existing v$existingCMVersion, catalog v${catalogDriverVersion}): $cmDriverPkgName" -Severity 1
                         } else {
-                            Write-DATLogEntry -Value "[$currentIndex/$totalModels] UPDATE needed -- existing v$existingCMVersion, catalog v${catalogDriverVersion}: $cmDriverPkgName" -Severity 1
+                            # A catalog listing an older release than one already packaged is not an
+                            # update: rebuilding would name a package after the older version, and
+                            # retention would then remove the newer one.
+                            $newerCMVersion = @($cmPkgVersionsByName[$cmDriverPkgName]) |
+                                Where-Object { Test-DATCatalogVersionOlder -CatalogVersion $catalogDriverVersion -ExistingVersion $_ } |
+                                Select-Object -First 1
+                            if ($newerCMVersion) {
+                                Write-DATLogEntry -Value "[$currentIndex/$totalModels] SKIPPED -- the catalog lists v${catalogDriverVersion}, older than the existing v${newerCMVersion}: $cmDriverPkgName. The newer package is kept; use Force Update to rebuild it at v${catalogDriverVersion}." -Severity 2
+                                Set-DATRegistryValue -Name "RunningMessage" -Value "Skipped (newer v$newerCMVersion kept): $oem $modelName" -Type String
+                                $skipDriverDownload = $true
+                                $script:driverPipelineSuccess = $true
+                                $driverPackageSuccessCount++
+                                $modelDriverVersion = $newerCMVersion
+                                $buildSkipped.Add([pscustomobject]@{ OEM = $oem; Model = $modelName; PackageType = 'Drivers'; OS = "$os"; Reason = "Newer v$newerCMVersion kept (catalog v$catalogDriverVersion)" })
+                                Set-DATRegistryValue -Name "BuildSkippedCurrent" -Value ($buildSkipped | ConvertTo-Json -Compress -Depth 3) -Type String
+                                Set-DATRegistryValue -Name "SkippedPackages" -Value "$($buildSkipped.Count)" -Type String
+                            } else {
+                                Write-DATLogEntry -Value "[$currentIndex/$totalModels] UPDATE needed -- existing v$existingCMVersion, catalog v${catalogDriverVersion}: $cmDriverPkgName" -Severity 1
+                            }
                         }
                     }
                 } elseif ($RunningMode -eq 'Intune') {
@@ -6708,7 +7200,23 @@ function Start-DATModelProcessing {
                         } elseif ($modelForceUpdate) {
                             Write-DATLogEntry -Value "[$currentIndex/$totalModels] FORCE UPDATE -- bypassing version match (Intune v$($existingIntuneApp.displayVersion), catalog v${catalogDriverVersion}): $expectedDisplayName" -Severity 1
                         } else {
-                            Write-DATLogEntry -Value "[$currentIndex/$totalModels] UPDATE needed -- Intune v$($existingIntuneApp.displayVersion), catalog v${catalogDriverVersion}: $expectedDisplayName" -Severity 1
+                            # Same guard as ConfigMgr: never replace a newer app with an older catalog version
+                            $newerIntuneApp = @($cachedIntuneApps | Where-Object { $_.displayName -eq $expectedDisplayName }) |
+                                Where-Object { Test-DATCatalogVersionOlder -CatalogVersion $catalogDriverVersion -ExistingVersion $_.displayVersion } |
+                                Select-Object -First 1
+                            if ($newerIntuneApp) {
+                                Write-DATLogEntry -Value "[$currentIndex/$totalModels] SKIPPED -- the catalog lists v${catalogDriverVersion}, older than the existing Intune v$($newerIntuneApp.displayVersion): $expectedDisplayName (ID: $($newerIntuneApp.id)). The newer app is kept; use Force Update to rebuild it at v${catalogDriverVersion}." -Severity 2
+                                Set-DATRegistryValue -Name "RunningMessage" -Value "Skipped (newer v$($newerIntuneApp.displayVersion) kept): $oem $modelName" -Type String
+                                $skipDriverDownload = $true
+                                $script:driverPipelineSuccess = $true
+                                $driverPackageSuccessCount++
+                                $modelDriverVersion = $newerIntuneApp.displayVersion
+                                $buildSkipped.Add([pscustomobject]@{ OEM = $oem; Model = $modelName; PackageType = 'Drivers'; OS = "$os"; Reason = "Newer v$($newerIntuneApp.displayVersion) kept (catalog v$catalogDriverVersion)" })
+                                Set-DATRegistryValue -Name "BuildSkippedCurrent" -Value ($buildSkipped | ConvertTo-Json -Compress -Depth 3) -Type String
+                                Set-DATRegistryValue -Name "SkippedPackages" -Value "$($buildSkipped.Count)" -Type String
+                            } else {
+                                Write-DATLogEntry -Value "[$currentIndex/$totalModels] UPDATE needed -- Intune v$($existingIntuneApp.displayVersion), catalog v${catalogDriverVersion}: $expectedDisplayName" -Severity 1
+                            }
                         }
                     }
                 } else {
@@ -8542,7 +9050,7 @@ function Export-DATBuildConfig {
         [bool]$DisableRestart = $false,
         [string]$ToastTimeoutAction = 'RemindMeLater',
         [int]$MaxDeferrals = 0,
-        [int]$BIOSRestartDelayMinutes = 3,
+        [int]$BIOSRestartDelayMinutes = 10,
         [string]$TeamsWebhookUrl,
         [bool]$TeamsNotificationsEnabled = $false,
         [AllowEmptyString()]
@@ -8696,7 +9204,8 @@ function Import-DATBuildConfig {
         DisableToast              = [bool]$config.DisableToast
         ToastTimeoutAction        = if ($config.ToastTimeoutAction) { $config.ToastTimeoutAction } else { 'RemindMeLater' }
         MaxDeferrals              = if ($config.MaxDeferrals) { [int]$config.MaxDeferrals } else { 0 }
-        BIOSRestartDelayMinutes   = if ($config.BIOSRestartDelayMinutes) { [int]$config.BIOSRestartDelayMinutes } else { 3 }
+        # A missing or 0 value falls back to 10, the same countdown the module and the UI default to
+        BIOSRestartDelayMinutes   = if ($config.BIOSRestartDelayMinutes) { [int]$config.BIOSRestartDelayMinutes } else { 10 }
         CreateIntuneWinOnly       = [bool]$config.CreateIntuneWinOnly
         ShowBrandingBannerAllToasts = [bool]$config.ShowBrandingBannerAllToasts
         CreateConfigMgrApplication = [bool]$config.CreateConfigMgrApplication
@@ -9294,12 +9803,18 @@ function Update-DATApplication {
 function Confirm-DATPowerShellGetReady {
     <#
     .SYNOPSIS
-        Prepares the client side of a PSGallery install: TLS 1.2, a trusted PSGallery, and a
-        PowerShellGet new enough to install from it. Returns $true when the preparation held.
+        Prepares the client side of a PSGallery install: TLS 1.2 and a PowerShellGet new enough
+        to install from it. Returns $true when the preparation held.
     .DESCRIPTION
         The first-install path carried this preparation and the update path did not, so a host
         whose HPCMSL predates DAT only ever went through the unprepared path -- the one case the
         guard exists for (#953). Shared here so both paths get the same footing.
+
+        PSGallery's installation policy is left as it is. This used to mark it Trusted for the
+        whole machine so a headless install would not stop at the untrusted-repository prompt,
+        but every Install-Module here passes -Force, and PowerShellGet 1.0.0.1 and 2.x both
+        treat -Force as consent for that prompt. The machine-wide change bought nothing and
+        removed the prompt from every later install on the host (S22).
 
         Never throws: a preparation step that cannot run is logged and the caller still attempts
         the install, which is no worse off than before.
@@ -9373,16 +9888,6 @@ function Confirm-DATPowerShellGetReady {
         Write-DATLogEntry -Value "$LogPrefix PackageManagement 1.4.4 and PowerShellGet 2.2.5 or later could not be loaded in this process: $($_.Exception.Message) -- restart the tool so HPCMSL can be installed or updated" -Severity 2
     }
 
-    # An untrusted PSGallery prompts, and a prompt in a headless run hangs or aborts the install.
-    try {
-        $psGallery = Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue
-        if ($psGallery -and $psGallery.InstallationPolicy -ne 'Trusted') {
-            Set-PSRepository -Name PSGallery -InstallationPolicy Trusted -ErrorAction SilentlyContinue
-        }
-    } catch {
-        Write-DATLogEntry -Value "$LogPrefix Could not set PSGallery to trusted: $($_.Exception.Message)" -Severity 2
-    }
-
     return $ready
 }
 
@@ -9398,11 +9903,23 @@ function Get-DATModuleInstallScope {
     [CmdletBinding()]
     [OutputType([string])]
     param ()
-    try {
-        $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-        if ($isAdmin) { return 'AllUsers' }
-    } catch { }
+    if (Test-DATProcessElevated) { return 'AllUsers' }
     return 'CurrentUser'
+}
+
+function Test-DATProcessElevated {
+    <#
+    .SYNOPSIS
+        $true when this process holds an administrator token: an elevated session, or SYSTEM.
+    #>
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param ()
+    try {
+        return ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    } catch {
+        return $false
+    }
 }
 
 function Get-DATInstallModuleLicenseParam {
@@ -9427,10 +9944,75 @@ function Get-DATInstallModuleLicenseParam {
     return @{}
 }
 
+# Signers accepted on the files of HPCMSL and the HP.* modules it loads (S32). HP signs every
+# manifest, script module and its own assemblies. The binary list adds the Microsoft and .NET
+# runtime assemblies HP ships beside them (MSAL, the WinRT projections, ProtectedData). Several
+# assemblies carry HP's embedded signature but also match a Windows catalog, and then
+# Get-AuthenticodeSignature reports 'Microsoft Windows' instead -- so that signer is listed too.
+# The UI's direct PSGallery installer runs in a separate process and repeats these lists; a test
+# keeps the two in step.
+$script:DATHPCMSLScriptPublishers = @('HP Inc*')
+$script:DATHPCMSLBinaryPublishers = @('HP Inc*', 'Microsoft Corporation', 'Microsoft Windows', '.NET')
+# Files that can carry an Authenticode signature and that PowerShell or HPCMSL load. HP.Softpaq
+# also ships an unsignable InstallAllApps.cmd, which nothing in this tool runs.
+$script:DATHPCMSLSignedExtensions = @('.psd1', '.psm1', '.ps1', '.ps1xml', '.cdxml', '.dll', '.exe')
+# SoftPaqs are HP executables. Older ones carry the pre-2015 Hewlett-Packard signer.
+$script:DATHPSoftPaqPublishers = @('HP Inc*', 'Hewlett-Packard*', 'Hewlett Packard*')
+# Module folders whose signatures have been checked this session, so a multi-model run checks
+# each once. A new HPCMSL version installs to a new folder and is checked on first use.
+$script:DATHPCMSLVerifiedFolders = @{}
+
+function Get-DATModuleWriteExposure {
+    <#
+    .SYNOPSIS
+        Who besides SYSTEM and administrators can change a module copy, one readable line per
+        access rule. Empty when only administrators can.
+    .DESCRIPTION
+        An elevated process that imports a module from a folder its own user can write to hands
+        administrator rights to anything running unelevated as that user (S32). The profile's
+        Documents\...\Modules is the common case -- and with OneDrive folder backup, anything
+        that syncs down into it. Replacing the version folder needs write access to the module
+        folder above it, and replacing that needs the PSModulePath root, so all three are checked.
+
+        The calling account is not excused the way the template check excuses it (S30): an
+        elevated operator's own access rule is exactly what an unelevated process running as them
+        would use. A folder whose permissions cannot be read is reported, since it cannot be
+        cleared.
+    #>
+    [CmdletBinding()]
+    [OutputType([string[]])]
+    param (
+        [Parameter(Mandatory)][string]$ModuleBase
+    )
+
+    $folders = @($ModuleBase)
+    $moduleFolder = Split-Path -Path $ModuleBase -Parent
+    if ($moduleFolder) {
+        $folders += $moduleFolder
+        $version = $null
+        if ([version]::TryParse((Split-Path -Path $ModuleBase -Leaf), [ref]$version)) {
+            $root = Split-Path -Path $moduleFolder -Parent
+            if ($root) { $folders += $root }
+        }
+    }
+
+    $exposure = @()
+    foreach ($folder in $folders) {
+        try {
+            foreach ($rule in @(Get-DATNonAdminWriteAccess -Path $folder)) {
+                $exposure += "$($rule.Identity) ($($rule.Rights)) on $folder"
+            }
+        } catch {
+            $exposure += "the permissions on $folder could not be read"
+        }
+    }
+    return $exposure
+}
+
 function Get-DATHPCMSLModule {
     <#
     .SYNOPSIS
-        The HPCMSL that Import-Module will actually load, plus any newer copy it shadows.
+        The HPCMSL this tool will load, plus any newer copy it shadows and any it refuses.
     .DESCRIPTION
         Get-Module -ListAvailable walks PSModulePath root by root and orders versions descending
         only WITHIN each root, and Import-Module resolves by that same precedence. A CurrentUser
@@ -9438,8 +10020,14 @@ function Get-DATHPCMSLModule {
         module that never loads: the settings panel and the startup banner disagreed (#958), and
         the update check confirmed itself against a version the build would not use (#953).
 
+        An elevated process passes over any copy that standard users can change (S32), because
+        loading it would run their code as administrator. The tool always runs elevated, so a
+        copy installed for the current user only is listed under Excluded and not loaded; an
+        AllUsers copy behind it, if there is one, is used instead.
+
         Returns a hashtable: Module, Version and ModuleBase describe what loads; when Shadowed is
         true, ShadowedVersion and ShadowedModuleBase describe the higher copy being masked.
+        Excluded lists the refused copies (Version, ModuleBase, Exposure).
     #>
     [CmdletBinding()]
     [OutputType([hashtable])]
@@ -9452,10 +10040,25 @@ function Get-DATHPCMSLModule {
         Shadowed           = $false
         ShadowedVersion    = $null
         ShadowedModuleBase = $null
+        Excluded           = @()
     }
 
     $available = @(Get-Module -ListAvailable -Name HPCMSL -ErrorAction SilentlyContinue)
     if ($available.Count -eq 0) { return $result }
+
+    if (Test-DATProcessElevated) {
+        $usable = @()
+        foreach ($copy in $available) {
+            $exposure = @(Get-DATModuleWriteExposure -ModuleBase $copy.ModuleBase)
+            if ($exposure.Count -gt 0) {
+                $result.Excluded += [PSCustomObject]@{ Version = $copy.Version; ModuleBase = $copy.ModuleBase; Exposure = ($exposure -join '; ') }
+            } else {
+                $usable += $copy
+            }
+        }
+        $available = $usable
+        if ($available.Count -eq 0) { return $result }
+    }
 
     # First in enumeration order is the one Import-Module binds to.
     $effective = $available[0]
@@ -9473,30 +10076,248 @@ function Get-DATHPCMSLModule {
     return $result
 }
 
+function Assert-DATHPCMSLFolderSignature {
+    <#
+    .SYNOPSIS
+        Throws unless every signable file in an HP module folder carries a valid signature from
+        the HPCMSL allow-lists: HP for scripts and manifests, HP or Microsoft/.NET for binaries.
+        Returns the number of files checked (0 when the folder was already checked this session).
+    #>
+    [CmdletBinding()]
+    [OutputType([int])]
+    param (
+        [Parameter(Mandatory)][string]$ModuleBase
+    )
+
+    if ($script:DATHPCMSLVerifiedFolders.ContainsKey($ModuleBase)) { return 0 }
+
+    $files = @(Get-ChildItem -LiteralPath $ModuleBase -Recurse -File -ErrorAction Stop |
+        Where-Object { $script:DATHPCMSLSignedExtensions -contains $_.Extension.ToLowerInvariant() })
+    $failed = @()
+    foreach ($file in $files) {
+        $publishers = if ($file.Extension -in '.dll', '.exe') { $script:DATHPCMSLBinaryPublishers } else { $script:DATHPCMSLScriptPublishers }
+        # Test-DATFileSignature logs each failure with its full path; the summary names the files
+        if (-not (Test-DATFileSignature -FilePath $file.FullName -AllowedPublishers $publishers -Context 'HPCMSL' -Quiet)) {
+            $failed += $file.Name
+        }
+    }
+    if ($failed.Count -gt 0) {
+        $named = ($failed | Select-Object -First 5) -join ', '
+        $more = if ($failed.Count -gt 5) { " and $($failed.Count - 5) more" } else { '' }
+        throw "HPCMSL failed signature validation -- $($failed.Count) file(s) in $ModuleBase are not signed by HP: $named$more"
+    }
+
+    $script:DATHPCMSLVerifiedFolders[$ModuleBase] = $files.Count
+    return $files.Count
+}
+
+function Resolve-DATHPCMSLModuleTree {
+    <#
+    .SYNOPSIS
+        Checks a module folder, then each module its manifest requires (depth first), and
+        appends each to $State.Order once its own requirements are in -- the order to import in.
+        Used by Import-DATHPCMSLModule.
+    #>
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory)][string]$Name,
+        [Parameter(Mandatory)][string]$ModuleBase,
+        [Parameter(Mandatory)][hashtable]$State
+    )
+
+    if ($State.Seen.ContainsKey($Name)) { return }
+    $State.Seen[$Name] = $true
+
+    if ($State.Elevated) {
+        $exposure = @(Get-DATModuleWriteExposure -ModuleBase $ModuleBase)
+        if ($exposure.Count -gt 0) {
+            throw "Refusing to load $Name from $ModuleBase -- this tool runs elevated and standard users can change that folder: $($exposure -join '; ')"
+        }
+    }
+
+    $manifest = Join-Path $ModuleBase "$Name.psd1"
+    if (-not (Test-Path -LiteralPath $manifest -PathType Leaf)) {
+        throw "HPCMSL cannot load -- required module '$Name' has no manifest at $manifest"
+    }
+
+    # The manifest is checked before it is read
+    $State.FilesChecked += Assert-DATHPCMSLFolderSignature -ModuleBase $ModuleBase
+    $data = Import-PowerShellDataFile -LiteralPath $manifest -ErrorAction Stop
+
+    foreach ($requirement in @($data.RequiredModules)) {
+        if ($null -eq $requirement) { continue }
+        $spec = if ($requirement -is [hashtable]) { $requirement } else { @{ ModuleName = [string]$requirement } }
+        $requiredName = [string]$spec.ModuleName
+        if ($requiredName -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]*$') {
+            throw "HPCMSL cannot load -- $Name requires a module with an invalid name: '$requiredName'"
+        }
+        if ($State.Seen.ContainsKey($requiredName)) { continue }
+
+        $maximum = if ($spec.MaximumVersion -and "$($spec.MaximumVersion)" -notmatch '\*') { [version]$spec.MaximumVersion } else { $null }
+        $candidates = @(Get-Module -ListAvailable -Name $requiredName -ErrorAction SilentlyContinue | Where-Object {
+            ($null -eq $spec.RequiredVersion -or $_.Version -eq [version]$spec.RequiredVersion) -and
+            ($null -eq $spec.ModuleVersion -or $_.Version -ge [version]$spec.ModuleVersion) -and
+            ($null -eq $maximum -or $_.Version -le $maximum) -and
+            ($null -eq $spec.GUID -or "$($_.Guid)" -eq "$($spec.GUID)")
+        })
+        if ($State.Elevated) {
+            $candidates = @($candidates | Where-Object { @(Get-DATModuleWriteExposure -ModuleBase $_.ModuleBase).Count -eq 0 })
+        }
+        if ($candidates.Count -eq 0) {
+            $wanted = if ($spec.RequiredVersion) { " v$($spec.RequiredVersion)" } elseif ($spec.ModuleVersion) { " v$($spec.ModuleVersion) or later" } else { '' }
+            $where = if ($State.Elevated) { ' in a folder only administrators can change' } else { '' }
+            throw "HPCMSL cannot load -- required module '$requiredName'$wanted was not found$where"
+        }
+        Resolve-DATHPCMSLModuleTree -Name $requiredName -ModuleBase $candidates[0].ModuleBase -State $State
+    }
+
+    $State.Order.Add([PSCustomObject]@{ Name = $Name; ModuleBase = $ModuleBase; Manifest = $manifest })
+}
+
+function Import-DATHPCMSLModule {
+    <#
+    .SYNOPSIS
+        Checks the signature of every file in HPCMSL and the HP.* modules it requires, then
+        imports each of them from that exact folder.
+    .DESCRIPTION
+        Importing HPCMSL by name loads whichever copy comes first on PSModulePath and checks
+        nothing, and the build's child processes run with -ExecutionPolicy Bypass, so even an
+        AllSigned policy would not catch a replaced copy (S32). This resolves HPCMSL and each
+        RequiredModules entry, recursively, to a folder; requires every script and manifest
+        there to carry a valid HP signature and every binary a valid HP, Microsoft or .NET one;
+        and only then imports them, dependencies first, each by full path. When the process is
+        elevated, a folder standard users can change is refused outright, since loading it would
+        run their code as administrator.
+
+        While the imports run, PSModulePath is narrowed to the roots that were checked, so a
+        RequiredModules lookup by name cannot reach a copy that was not. A copy of any of these
+        modules already loaded from another folder is unloaded first.
+
+        Throws when anything fails. A missing dependency throws "required module '<name>' ...",
+        which Test-DATHPCMSLReady recognises and repairs by reinstalling.
+
+        Returns a hashtable: ManifestPath (the HPCMSL.psd1 that was imported), ModulePath (the
+        narrowed PSModulePath, for child processes; see Get-DATHPCMSLChildImport) and Modules
+        (the folders that were checked).
+    #>
+    [CmdletBinding()]
+    [OutputType([hashtable])]
+    param (
+        # The HPCMSL copy to load, as Get-DATHPCMSLModule returns it. Resolved when omitted.
+        [object]$Module
+    )
+
+    if ($null -eq $Module) {
+        $Module = (Get-DATHPCMSLModule).Module
+        if ($null -eq $Module) {
+            throw 'HPCMSL is not installed anywhere this tool will load it from'
+        }
+    }
+
+    $state = @{
+        Seen         = @{}
+        Order        = [System.Collections.Generic.List[object]]::new()
+        Elevated     = [bool](Test-DATProcessElevated)
+        FilesChecked = 0
+    }
+    Resolve-DATHPCMSLModuleTree -Name 'HPCMSL' -ModuleBase $Module.ModuleBase -State $state
+
+    if ($state.FilesChecked -gt 0) {
+        Write-DATLogEntry -Value "[HP] HPCMSL signature check passed: $($state.FilesChecked) files across $($state.Order.Count) modules, from $($Module.ModuleBase)" -Severity 1
+    }
+
+    # The PSModulePath root above each checked folder ('<root>\<name>\<version>' or '<root>\<name>'),
+    # plus the engine's own modules so commands HPCMSL calls can still autoload.
+    $roots = [System.Collections.Generic.List[string]]::new()
+    $seenRoot = @{}
+    $candidateRoots = foreach ($entry in $state.Order) {
+        $parent = Split-Path -Path $entry.ModuleBase -Parent
+        $version = $null
+        if ([version]::TryParse((Split-Path -Path $entry.ModuleBase -Leaf), [ref]$version)) { Split-Path -Path $parent -Parent } else { $parent }
+    }
+    foreach ($root in @($candidateRoots) + @((Join-Path $PSHOME 'Modules'), (Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\Modules'))) {
+        if ($root -and -not $seenRoot.ContainsKey($root)) {
+            $seenRoot[$root] = $true
+            $roots.Add($root)
+        }
+    }
+    $modulePath = $roots -join [System.IO.Path]::PathSeparator
+
+    $savedModulePath = $env:PSModulePath
+    try {
+        $env:PSModulePath = $modulePath
+        foreach ($entry in $state.Order) {
+            $loaded = @(Get-Module -All -Name $entry.Name -ErrorAction SilentlyContinue)
+            $elsewhere = @($loaded | Where-Object { $_.ModuleBase -ne $entry.ModuleBase })
+            if ($elsewhere.Count -gt 0) {
+                $elsewhere | Remove-Module -Force -ErrorAction SilentlyContinue
+            }
+            # Dependencies already loaded from the checked folder stay; HPCMSL itself is reloaded
+            if ($entry.Name -ne 'HPCMSL' -and ($loaded.Count - $elsewhere.Count) -gt 0) { continue }
+            Import-Module -Name $entry.Manifest -Force -ErrorAction Stop
+        }
+    } finally {
+        $env:PSModulePath = $savedModulePath
+    }
+
+    return @{
+        ManifestPath = $state.Order[$state.Order.Count - 1].Manifest
+        ModulePath   = $modulePath
+        Modules      = @($state.Order | ForEach-Object { $_.ModuleBase })
+    }
+}
+
+function Get-DATHPCMSLChildImport {
+    <#
+    .SYNOPSIS
+        Script lines that make a child PowerShell process load the HPCMSL copy
+        Import-DATHPCMSLModule checked.
+    .DESCRIPTION
+        SoftPaq discovery and download run HPCMSL in separate processes. Importing it by name
+        there would bind to whatever comes first on that process's PSModulePath -- the copy an
+        elevated build refuses (S32). The child gets the same narrowed PSModulePath and
+        imports the checked manifest by path.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param (
+        [Parameter(Mandatory)][string]$ManifestPath,
+        [Parameter(Mandatory)][string]$ModulePath
+    )
+    $manifest = $ManifestPath.Replace("'", "''")
+    $path = $ModulePath.Replace("'", "''")
+    return "`$env:PSModulePath = '$path'`r`nImport-Module -Name '$manifest' -Force -ErrorAction Stop"
+}
+
 function Test-DATHPCMSLReady {
     <#
     .SYNOPSIS
-        Validates that the HPCMSL module and all its dependencies are installed and loadable.
-        Returns a hashtable with Installed, Version, Ready, and Error properties.
+        Validates that the HPCMSL module and all its dependencies are installed, signed by HP
+        and loadable, and loads them. Returns a hashtable with Installed, Version, Ready and
+        Error, plus ManifestPath and ModulePath for child processes (see
+        Get-DATHPCMSLChildImport).
     #>
     [CmdletBinding()]
     param (
         [switch]$AutoInstall
     )
 
-    $result = @{ Installed = $false; Version = $null; Ready = $false; Error = $null }
+    $result = @{ Installed = $false; Version = $null; Ready = $false; Error = $null; ManifestPath = $null; ModulePath = $null }
 
     # Check if HPCMSL is available. Root order, not version order -- this must be the copy that
-    # Import-Module below will actually bind to (#958).
+    # is imported below (#958). An elevated run passes over copies standard users can change (S32).
     $hpcmsl = Get-DATHPCMSLModule
+    foreach ($refused in @($hpcmsl.Excluded)) {
+        Write-DATLogEntry -Value "[HP] Ignoring HPCMSL v$($refused.Version) at $($refused.ModuleBase) -- this tool runs elevated and standard users can change that folder ($($refused.Exposure)). Install HPCMSL for all users so it sits where only administrators can write." -Severity 2
+    }
     $hpModule = $hpcmsl.Module
     if (-not $hpModule) {
         if ($AutoInstall) {
             try {
                 Write-DATLogEntry -Value "[HP] HPCMSL not found -- installing from PSGallery..." -Severity 1
 
-                # TLS, a trusted PSGallery and a current PowerShellGet. Shared with the update
-                # path below, which previously did none of it (#953).
+                # TLS and a current PowerShellGet. Shared with the update path below, which
+                # previously did none of it (#953).
                 [void](Confirm-DATPowerShellGetReady)
 
                 # AllUsers keeps the module reachable from scheduled/headless runs (SYSTEM context).
@@ -9517,6 +10338,9 @@ function Test-DATHPCMSLReady {
                 $result.Error = "Failed to install HPCMSL: $($_.Exception.Message)"
                 return $result
             }
+        } elseif (@($hpcmsl.Excluded).Count -gt 0) {
+            $result.Error = "HPCMSL is installed only at $(@($hpcmsl.Excluded)[0].ModuleBase), which standard users can change, so this elevated tool will not load it. Install it for all users with: Install-Module -Name HPCMSL -Scope AllUsers -Force"
+            return $result
         } else {
             $result.Error = "HPCMSL module is not installed. Install it with: Install-Module -Name HPCMSL -Force"
             return $result
@@ -9542,10 +10366,12 @@ function Test-DATHPCMSLReady {
                 # Capture what Install-Module says without throwing. PowerShellGet reports some
                 # failures -- a module file held open by another process is the common one, and DAT
                 # itself imports HPCMSL here and in a background job -- as warnings rather than
-                # terminating errors, so -ErrorAction Stop never sees them (#953).
+                # terminating errors, so -ErrorAction Stop never sees them (#953). No
+                # -SkipPublisherCheck: PowerShellGet's check that the new version is signed by the
+                # same publisher as the installed one is what catches a hijacked gallery account (S22).
                 $installWarnings = @()
                 $licenseParam = Get-DATInstallModuleLicenseParam
-                Install-Module -Name HPCMSL -Force -AllowClobber -SkipPublisherCheck -Scope (Get-DATModuleInstallScope) -ErrorAction Stop -WarningVariable +installWarnings @licenseParam
+                Install-Module -Name HPCMSL -Force -AllowClobber -Scope (Get-DATModuleInstallScope) -ErrorAction Stop -WarningVariable +installWarnings @licenseParam
 
                 # Re-query by root order. Checking the highest installed version confirmed the
                 # install against a copy that never loads, so an update masked by an earlier
@@ -9574,10 +10400,14 @@ function Test-DATHPCMSLReady {
         $script:HPCMSLUpdateChecked = $true
     }
 
-    # Try to actually import it -- this validates all RequiredModules (HP.Utility, HP.Private, etc.)
+    # Check every file's signature and import by path -- this also validates all RequiredModules
+    # (HP.Utility, HP.Private, etc.). A signature failure is not repaired by reinstalling: a
+    # replaced module is something for the operator to look at, not to paper over (S32).
     try {
-        Import-Module -Name HPCMSL -Force -ErrorAction Stop
+        $import = Import-DATHPCMSLModule -Module $hpModule
         $result.Ready = $true
+        $result.ManifestPath = $import.ManifestPath
+        $result.ModulePath = $import.ModulePath
         Write-DATLogEntry -Value "[HP] HPCMSL v$($hpModule.Version) validated successfully" -Severity 1
         if ($hpcmsl.Shadowed) {
             Write-DATLogEntry -Value "[HP] WARNING: HPCMSL v$($hpcmsl.ShadowedVersion) is also installed at $($hpcmsl.ShadowedModuleBase), but v$($hpModule.Version) at $($hpModule.ModuleBase) comes first on PSModulePath and is the version in use." -Severity 2
@@ -9591,14 +10421,14 @@ function Test-DATHPCMSLReady {
                 try {
                     Write-DATLogEntry -Value "[HP] Required module '$missingModule' missing -- reinstalling HPCMSL..." -Severity 2
                     # Force reinstall to pull all dependencies -- use AllUsers when possible for headless/scheduled task support
-                    $repairScope = 'AllUsers'
-                    $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-                    if (-not $isAdmin) { $repairScope = 'CurrentUser' }
                     $licenseParam = Get-DATInstallModuleLicenseParam
-                    Install-Module -Name HPCMSL -Force -Scope $repairScope -AllowClobber -ErrorAction Stop @licenseParam
-                    Import-Module -Name HPCMSL -Force -ErrorAction Stop
+                    Install-Module -Name HPCMSL -Force -Scope (Get-DATModuleInstallScope) -AllowClobber -ErrorAction Stop @licenseParam
+                    $repaired = (Get-DATHPCMSLModule).Module
+                    $import = Import-DATHPCMSLModule -Module $repaired
                     $result.Ready = $true
-                    $result.Version = (Get-Module HPCMSL).Version
+                    $result.Version = $repaired.Version
+                    $result.ManifestPath = $import.ManifestPath
+                    $result.ModulePath = $import.ModulePath
                     Write-DATLogEntry -Value "[HP] HPCMSL reinstalled and loaded successfully (v$($result.Version))" -Severity 1
                 } catch {
                     $result.Error = "Failed to repair HPCMSL: $($_.Exception.Message)"
@@ -11390,6 +12220,8 @@ function Invoke-DATOEMDownloadModule {
             if (-not $hpCheck.Ready) {
                 throw "HPCMSL prerequisite check failed: $($hpCheck.Error)"
             }
+            # Discovery and downloads run in child processes, which load the copy just checked (S32)
+            $hpChildImport = Get-DATHPCMSLChildImport -ManifestPath $hpCheck.ManifestPath -ModulePath $hpCheck.ModulePath
             Write-DATLogEntry -Value "[HP] Starting driver package build for $Model (SKU: $SystemSKU)" -Severity 1 -UpdateUI
             Write-DATLogEntry -Value "[HP] Parameters: SKU=$SystemSKU, Build=$WindowsBuild, Version=$WindowsVersion" -Severity 1
             Write-DATLogEntry -Value "[HP] Download Destination: $DownloadDestination" -Severity 1
@@ -11488,7 +12320,7 @@ function Invoke-DATOEMDownloadModule {
                     $discoveryScript = Join-Path ([System.IO.Path]::GetTempPath()) "DAT_HPDiscovery_${PlatformID}_$([System.IO.Path]::GetRandomFileName()).ps1"
                     $discoveryScriptContent = @"
 `$ErrorActionPreference = 'Stop'
-Import-Module HPCMSL -Force
+$hpChildImport
 New-HPDriverPack -Platform "$PlatformID" -Os "$HPOS" -OSVer "$WindowsBuild" -Format wim -Path "$DownloadDestination" -TempDownloadPath "$HPTempDirectory" -WhatIf *>&1
 "@
                     Set-Content -Path $discoveryScript -Value $discoveryScriptContent -Encoding UTF8
@@ -11723,7 +12555,7 @@ New-HPDriverPack -Platform "$PlatformID" -Os "$HPOS" -OSVer "$WindowsBuild" -For
                         $savePath = Join-Path $HPTempDirectory "SP$spId.exe"
                         $tmpScript = Join-Path ([System.IO.Path]::GetTempPath()) "DAT_SP_${spId}_$([System.IO.Path]::GetRandomFileName()).ps1"
                         $safeQuotedPath = $savePath -replace "'", "''"
-                        Set-Content -Path $tmpScript -Value "Import-Module HPCMSL -Force`nGet-Softpaq -Number $spId -SaveAs '$safeQuotedPath' -MaxRetries 3 -Quiet" -Encoding UTF8
+                        Set-Content -Path $tmpScript -Value "$hpChildImport`nGet-Softpaq -Number $spId -SaveAs '$safeQuotedPath' -MaxRetries 3 -Quiet" -Encoding UTF8
                         $proc = Start-Process -FilePath $pwshExe -ArgumentList "-NoProfile", "-NoLogo", "-ExecutionPolicy", "Bypass", "-File", $tmpScript `
                             -WindowStyle Hidden -PassThru
                         $activeProcs[$spId] = $proc
@@ -11839,6 +12671,27 @@ New-HPDriverPack -Platform "$PlatformID" -Os "$HPOS" -OSVer "$WindowsBuild" -For
             $successfulIDs = @($SoftPaqIDs | Where-Object { $_ -notin $failedDownloads })
             if ($successfulIDs.Count -eq 0) {
                 throw "All $totalSoftPaqs SoftPaq downloads failed for $Model"
+            }
+
+            # -- Step 2b: Confirm every SoftPaq is HP's before any of them runs --
+            # Each SoftPaq is run, elevated, to extract itself. HPCMSL's download check accepts a
+            # valid signature from any publisher and never compares the CVA hash, and a SoftPaq
+            # cached by an earlier run is neither downloaded nor checked again (S33). All of them
+            # are checked before the first is run. A refusal fails the model rather than leaving
+            # the driver out: the SoftPaq manifest records the full list once the package is built,
+            # so a driver skipped here would read as unchanged next run and never be retried.
+            $unsignedSoftPaqs = @()
+            foreach ($spId in $successfulIDs) {
+                $spFile = Join-Path $HPTempDirectory "SP$spId.exe"
+                if (-not (Test-Path -LiteralPath $spFile)) { continue }
+                if (-not (Test-DATFileSignature -FilePath $spFile -AllowedPublishers $script:DATHPSoftPaqPublishers -Context "HP SoftPaq SP$spId")) {
+                    Remove-Item -LiteralPath $spFile -Force -ErrorAction SilentlyContinue
+                    $unsignedSoftPaqs += "SP$spId"
+                }
+            }
+            if ($unsignedSoftPaqs.Count -gt 0) {
+                Write-DATLogEntry -Value "[HP] Refusing to run $($unsignedSoftPaqs.Count) SoftPaq(s) not signed by HP: $($unsignedSoftPaqs -join ', '). They were deleted without being run; the next build downloads them again." -Severity 3
+                throw "HP SoftPaq signature check failed for $Model -- $($unsignedSoftPaqs -join ', ') not signed by HP"
             }
 
             # ── Step 3: Extract and copy INF-targeted drivers ─────────────────────
@@ -14155,6 +15008,7 @@ function Get-DATIntuneAppScriptMetadata {
         Version                = ''
         UpdateType             = 'Drivers'
         Baseboards             = ''
+        MatchOnModelName       = $false
         ReleaseDate            = ''
         MaintenanceWindowsJson = ''
     }
@@ -14173,6 +15027,13 @@ function Get-DATIntuneAppScriptMetadata {
     if ($headerSource -match "\`$expectedValues\s*=\s*@\(([^)]*)\)") {
         $vals = [regex]::Matches($Matches[1], "'([^']*)'") | ForEach-Object { $_.Groups[1].Value }
         $meta.Baseboards = ($vals -join ',')
+    }
+    # A script built for a model with no baseboard IDs carries the model name in $expectedValues
+    # (issue #979). Report no baseboards, so a regenerated script keeps the exact model-name match
+    # instead of treating the name as an ID.
+    if ($headerSource -match '# Model-name match: no baseboard/SKU IDs were published') {
+        $meta.Baseboards = ''
+        $meta.MatchOnModelName = $true
     }
 
     # BIOS release date stamp. Older scripts embed it as `$packageReleaseDate = "20260501"`;
@@ -14231,7 +15092,8 @@ function Update-DATIntuneAppRuleScript {
     $reqText = if ($reqRule -and $reqRule.scriptContent) { [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($reqRule.scriptContent)) } else { '' }
 
     $meta = Get-DATIntuneAppScriptMetadata -DetectionScript $detText -RequirementScript $reqText
-    if ([string]::IsNullOrWhiteSpace($meta.OEM) -or [string]::IsNullOrWhiteSpace($meta.Model) -or [string]::IsNullOrWhiteSpace($meta.Baseboards)) {
+    if ([string]::IsNullOrWhiteSpace($meta.OEM) -or [string]::IsNullOrWhiteSpace($meta.Model) -or
+        ([string]::IsNullOrWhiteSpace($meta.Baseboards) -and -not $meta.MatchOnModelName)) {
         throw "Could not read the package metadata (OEM / Model / Baseboards) from the existing script -- this may not be a Driver Automation Tool package."
     }
 
@@ -14338,11 +15200,12 @@ function Get-DATIntunePackageDescription {
     $releaseDateLine = if (-not [string]::IsNullOrEmpty($releaseDateStamp)) {
         "`nRelease Date: {0}-{1}-{2}" -f $releaseDateStamp.Substring(0, 4), $releaseDateStamp.Substring(4, 2), $releaseDateStamp.Substring(6, 2)
     } else { '' }
+    $descriptionBoards = Format-DATBaseboardDescription -Baseboards $Baseboards
 
     if ($UpdateType -eq 'BIOS') {
-        "$UpdateType package for $OEM $Model`nArchitecture: $Architecture`nBaseboards/SKU: $Baseboards`nVersion: $Version$releaseDateLine`nCreated by Driver Automation Tool"
+        "$UpdateType package for $OEM $Model`nArchitecture: $Architecture`nBaseboards/SKU: $descriptionBoards`nVersion: $Version$releaseDateLine`nCreated by Driver Automation Tool"
     } else {
-        "$UpdateType package for $OEM $Model`nOS: $OS`nArchitecture: $Architecture`nBaseboards/SKU: $Baseboards`nVersion: $Version$releaseDateLine`nCreated by Driver Automation Tool"
+        "$UpdateType package for $OEM $Model`nOS: $OS`nArchitecture: $Architecture`nBaseboards/SKU: $descriptionBoards`nVersion: $Version$releaseDateLine`nCreated by Driver Automation Tool"
     }
 }
 
@@ -14484,7 +15347,8 @@ function Set-DATIntuneAppOSTarget {
     $reqText = if ($reqRule -and $reqRule.scriptContent) { [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($reqRule.scriptContent)) } else { '' }
 
     $meta = Get-DATIntuneAppScriptMetadata -DetectionScript $detText -RequirementScript $reqText
-    if ([string]::IsNullOrWhiteSpace($meta.OEM) -or [string]::IsNullOrWhiteSpace($meta.Model) -or [string]::IsNullOrWhiteSpace($meta.Baseboards)) {
+    if ([string]::IsNullOrWhiteSpace($meta.OEM) -or [string]::IsNullOrWhiteSpace($meta.Model) -or
+        ([string]::IsNullOrWhiteSpace($meta.Baseboards) -and -not $meta.MatchOnModelName)) {
         throw "Could not read the package metadata (OEM / Model / Baseboards) from the existing scripts -- this may not be a Driver Automation Tool package."
     }
 
@@ -14715,6 +15579,75 @@ function Get-DATVersionSortKey {
         return (($v -split '\.') | ForEach-Object { '{0:D6}' -f [int]$_ }) -join '.'
     }
     return $v.ToLowerInvariant()
+}
+
+function Test-DATCatalogVersionOlder {
+    <#
+    .SYNOPSIS
+        Returns $true when a catalog driver version is older than a version already packaged,
+        and $false when it is not older or the two cannot be compared.
+    .DESCRIPTION
+        The skip-if-current check compares versions for equality only, so any catalog version
+        that differs from the existing package counts as an update -- an older one included.
+        A catalog that listed the previous release (Dell A03 while A04 was already packaged)
+        rebuilt the package under the older version, and retention, which keeps the newest
+        packages by creation date, then removed the real A04.
+
+        Versions are compared only when both use the same recognised scheme:
+          Dell        A03, A112                by number
+          HP          4.00 A 1                 pack version, then letter, then revision
+          Dotted      26.091.15004.0, V1.00    by numeric segment (a leading v is ignored)
+          Date        2026-10-20               Lenovo, Acer and Panasonic catalog dates
+          Date stamp  20102026 (ddMMyyyy)      DAT's own date-stamped builds
+        A catalog date and a DAT date stamp are different schemes: one dates the OEM's pack,
+        the other the day DAT built a package. Anything unrecognised, or two different schemes,
+        is not comparable and returns $false, so the caller keeps its existing behaviour.
+    #>
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param (
+        [AllowEmptyString()][string]$CatalogVersion,
+        [AllowEmptyString()][string]$ExistingVersion
+    )
+
+    # Reduce a version to its scheme and an ordered list of numbers.
+    $parse = {
+        param ([string]$Value)
+        $v = "$Value".Trim()
+        $inv = [System.Globalization.CultureInfo]::InvariantCulture
+        $date = [datetime]::MinValue
+        if ($v -match '^A(\d{1,4})$') {
+            return @{ Scheme = 'Dell'; Key = @([long]$Matches[1]) }
+        }
+        if ($v -match '^(\d+(?:\.\d+)+)\s+([A-Za-z])\s+(\d+)$') {
+            $segments = @($Matches[1] -split '\.' | ForEach-Object { [long]$_ })
+            return @{ Scheme = 'HP'; Key = @($segments + @([long][char]$Matches[2].ToUpperInvariant(), [long]$Matches[3])) }
+        }
+        if ($v -match '^[vV]?(\d+(?:\.\d+)+)$') {
+            return @{ Scheme = 'Dotted'; Key = @($Matches[1] -split '\.' | ForEach-Object { [long]$_ }) }
+        }
+        if ($v -match '^\d{4}-\d{2}-\d{2}$' -and [datetime]::TryParseExact($v, 'yyyy-MM-dd', $inv, [System.Globalization.DateTimeStyles]::None, [ref]$date)) {
+            return @{ Scheme = 'Date'; Key = @($date.Ticks) }
+        }
+        if ($v -match '^\d{8}$' -and [datetime]::TryParseExact($v, 'ddMMyyyy', $inv, [System.Globalization.DateTimeStyles]::None, [ref]$date)) {
+            return @{ Scheme = 'Stamp'; Key = @($date.Ticks) }
+        }
+        return $null
+    }
+
+    $catalog = & $parse $CatalogVersion
+    $existing = & $parse $ExistingVersion
+    if ($null -eq $catalog -or $null -eq $existing -or $catalog.Scheme -ne $existing.Scheme) { return $false }
+
+    # Compare segment by segment; a missing segment counts as 0 (4.0 equals 4.00.0)
+    $length = [Math]::Max($catalog.Key.Count, $existing.Key.Count)
+    for ($i = 0; $i -lt $length; $i++) {
+        $c = if ($i -lt $catalog.Key.Count) { $catalog.Key[$i] } else { 0 }
+        $e = if ($i -lt $existing.Key.Count) { $existing.Key[$i] } else { 0 }
+        if ($c -lt $e) { return $true }
+        if ($c -gt $e) { return $false }
+    }
+    return $false
 }
 
 function Invoke-DATPackageRetention {
@@ -17630,6 +18563,13 @@ try {
         Invoke-EvaluationCycle
     } elseif ($app.InstallState -eq 'Installed') {
         Write-ReminderLog "'$appName' is already installed -- nothing to do"
+    } elseif ($app.EvaluationState -in 8,9,10,12,13,14) {
+        # Waiting for a maintenance window, a pending restart or serialized enforcement; already
+        # enforcing; or a restart is pending. ConfigMgr owns the next attempt, so do not force one.
+        Write-ReminderLog "'$appName' is in evaluation state $($app.EvaluationState) (waiting for a maintenance window, a pending restart or serialized enforcement, already enforcing, or a restart is pending) -- not requesting an install now; ConfigMgr will run it"
+    } elseif (-not (Get-Process -Name explorer -ErrorAction SilentlyContinue)) {
+        # Nobody to ask: an install started now would find no signed-in user and carry on silently.
+        Write-ReminderLog "No signed-in user (no explorer process) -- not requesting an install for '$appName' now; ConfigMgr will run it"
     } else {
         $result = Invoke-CimMethod -Namespace 'root\ccm\ClientSDK' -ClassName 'CCM_Application' -MethodName 'Install' -Arguments @{
             Id = [string]$app.Id; Revision = [string]$app.Revision; IsMachineTarget = [bool]$app.IsMachineTarget
@@ -17806,6 +18746,39 @@ function New-DATIntuneInstallScript {
         Remove-ItemProperty -Path $snoozeRegPath -Name 'DeferralVersion' -Force -ErrorAction SilentlyContinue
     }
 
+    # An active snooze is honoured before the maximum-deferral check, so a device whose count is at
+    # the limit still waits out the reminder interval it was given instead of being forced the moment
+    # the next trigger arrives. An expired or invalid snooze is cleared and falls through to the check.
+    $snoozeUntil = (Get-ItemProperty -Path $snoozeRegPath -Name 'SnoozeUntil' -ErrorAction SilentlyContinue).SnoozeUntil
+    if ($snoozeUntil) {
+        try {
+            $snoozeTime = [datetime]::Parse($snoozeUntil)
+            if ($snoozeTime -gt (Get-Date).AddHours({{SNOOZE_HOURS}} + 1)) {
+                # Further ahead than a deferral can set it: the clock moved back since (a
+                # BIOS flash can reset it, or the time was wrong before it synchronised).
+                # Honouring it would hold the update back silently until that date.
+                Write-CMTraceLog "Snooze until $snoozeUntil is further ahead than the {{SNOOZE_HOURS}} hour reminder interval allows (the clock has changed since it was set) -- clearing it and continuing" -Severity 2
+                Remove-ItemProperty -Path $snoozeRegPath -Name 'SnoozeUntil' -Force -ErrorAction SilentlyContinue
+            } elseif ((Get-Date) -lt $snoozeTime) {
+                Write-CMTraceLog "Snooze active until $snoozeUntil -- exiting with 1618 (another installation is pending)"
+{{REMINDER_ON_SNOOZED}}
+                # Record the deferral reason so custom reporting can see WHY the device is
+                # still pending. Cleared automatically on the next successful/current run.
+                Set-DATInstallStatus -RegPath $VersionRegPath -Result 'RetryScheduled' -Phase 'UserDeferral' -ScriptExitCode 1618 -ErrorMessage "User deferred BIOS update -- snoozed until $snoozeUntil"
+                # 1618 = ERROR_INSTALL_ALREADY_RUNNING -- a built-in Intune Win32 return
+                # code mapped to 'retry', so the deferred install is re-attempted later
+                # instead of being recorded as a successful (completed) install.
+                exit 1618
+            } else {
+                Write-CMTraceLog "Snooze expired ($snoozeUntil) -- continuing with installation"
+                Remove-ItemProperty -Path $snoozeRegPath -Name 'SnoozeUntil' -Force -ErrorAction SilentlyContinue
+            }
+        } catch {
+            Write-CMTraceLog "Invalid snooze timestamp -- clearing and continuing" -Severity 2
+            Remove-ItemProperty -Path $snoozeRegPath -Name 'SnoozeUntil' -Force -ErrorAction SilentlyContinue
+        }
+    }
+
     # Check whether the maximum deferral limit has been reached (when tracking is enabled)
     if ($maxDeferrals -gt 0) {
         $rawDeferralCount = (Get-ItemProperty -Path $snoozeRegPath -Name 'DeferralCount' -ErrorAction SilentlyContinue).DeferralCount
@@ -17838,36 +18811,6 @@ function New-DATIntuneInstallScript {
             Write-CMTraceLog "[ToastGate] Failed to display final deferral notice: $($_.Exception.Message) -- proceeding" -Severity 2
         }
     } else {
-        $snoozeUntil = (Get-ItemProperty -Path $snoozeRegPath -Name 'SnoozeUntil' -ErrorAction SilentlyContinue).SnoozeUntil
-        if ($snoozeUntil) {
-            try {
-                $snoozeTime = [datetime]::Parse($snoozeUntil)
-                if ($snoozeTime -gt (Get-Date).AddHours({{SNOOZE_HOURS}} + 1)) {
-                    # Further ahead than a deferral can set it: the clock moved back since (a
-                    # BIOS flash can reset it, or the time was wrong before it synchronised).
-                    # Honouring it would hold the update back silently until that date.
-                    Write-CMTraceLog "Snooze until $snoozeUntil is further ahead than the {{SNOOZE_HOURS}} hour reminder interval allows (the clock has changed since it was set) -- clearing it and continuing" -Severity 2
-                    Remove-ItemProperty -Path $snoozeRegPath -Name 'SnoozeUntil' -Force -ErrorAction SilentlyContinue
-                } elseif ((Get-Date) -lt $snoozeTime) {
-                    Write-CMTraceLog "Snooze active until $snoozeUntil -- exiting with 1618 (another installation is pending)"
-{{REMINDER_ON_SNOOZED}}
-                    # Record the deferral reason so custom reporting can see WHY the device is
-                    # still pending. Cleared automatically on the next successful/current run.
-                    Set-DATInstallStatus -RegPath $VersionRegPath -Result 'RetryScheduled' -Phase 'UserDeferral' -ScriptExitCode 1618 -ErrorMessage "User deferred BIOS update -- snoozed until $snoozeUntil"
-                    # 1618 = ERROR_INSTALL_ALREADY_RUNNING -- a built-in Intune Win32 return
-                    # code mapped to 'retry', so the deferred install is re-attempted later
-                    # instead of being recorded as a successful (completed) install.
-                    exit 1618
-                } else {
-                    Write-CMTraceLog "Snooze expired ($snoozeUntil) -- continuing with installation"
-                    Remove-ItemProperty -Path $snoozeRegPath -Name 'SnoozeUntil' -Force -ErrorAction SilentlyContinue
-                }
-            } catch {
-                Write-CMTraceLog "Invalid snooze timestamp -- clearing and continuing" -Severity 2
-                Remove-ItemProperty -Path $snoozeRegPath -Name 'SnoozeUntil' -Force -ErrorAction SilentlyContinue
-            }
-        }
-
         # Detect if an interactive user is signed in
         $explorerProc = Get-Process -Name explorer -ErrorAction SilentlyContinue | Select-Object -First 1
         if ($explorerProc) {
@@ -18192,7 +19135,7 @@ function New-DATIntuneInstallScript {
         $reminderOnDefer = ''; $reminderOnSnoozed = ''; $reminderOnProceed = ''
         if ($reminderEnabled) {
             $reminderOnDefer   = '                        Register-DATInstallReminder -At ([datetime]::Parse($snoozeExpiry))'
-            $reminderOnSnoozed = '                    Register-DATInstallReminder -At $snoozeTime'
+            $reminderOnSnoozed = '                Register-DATInstallReminder -At $snoozeTime'
             $reminderOnProceed = '    Unregister-DATInstallReminder'
         }
         $toastBlock = $toastBlock.Replace('{{REMINDER_ON_DEFER}}', $reminderOnDefer)
@@ -18545,7 +19488,8 @@ function New-DATIntuneRequirementScript {
         [Parameter(Mandatory)][string]$OutputPath,
         [Parameter(Mandatory)][string]$OEM,
         [Parameter(Mandatory)][string]$Model,
-        [Parameter(Mandatory)][string]$Baseboards,
+        # Empty when the catalog published no IDs -- the script then matches the model name (#979)
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Baseboards,
         [Parameter(Mandatory)][string]$OS,
         [Parameter(Mandatory)][string]$Version,
         [string]$ReleaseDate,
@@ -18568,8 +19512,10 @@ function New-DATIntuneRequirementScript {
     $emitFeatureUpdateCheck = ($UpdateType -ne 'BIOS') -and ($OEM -notmatch 'Dell') -and (-not [string]::IsNullOrWhiteSpace($featureUpdate))
 
     # Build the baseboard values array. Validated and quote-escaped before it is emitted, because
-    # this lands inside a single-quoted literal in a script Intune runs as SYSTEM.
-    $bbValues = ConvertTo-DATSafeBaseboardList -Baseboards $Baseboards -Context " for $OEM $Model requirement script"
+    # this lands inside a single-quoted literal in a script Intune runs as SYSTEM. With no IDs
+    # published, the model name stands in for them (see Get-DATScriptHardwareMatch).
+    $hardwareMatch = Get-DATScriptHardwareMatch -Baseboards $Baseboards -Model $Model -Context " for $OEM $Model requirement script"
+    $bbValues = $hardwareMatch.Values
 
     # Determine registry sub-key and whether to include OS check
     $regSubKey = if ($UpdateType -eq 'BIOS') { 'BIOS' } else { 'Drivers' }
@@ -18807,8 +19753,7 @@ try {{
 
     $skuMatch = $false
     foreach ($val in $expectedValues) {{
-        $escaped = [regex]::Escape($val)
-        if ($systemSKU -match $escaped -or $baseboardProduct -match $escaped -or $systemModel -match $escaped) {{
+%%HARDWARE_MATCH%%
             $skuMatch = $true
             break
         }}
@@ -18849,6 +19794,7 @@ if ($RequirementMet) {{
     $scriptContent = $scriptContent.Replace('%%BIOS_COMPARE_FUNCS%%', $biosCompareFuncs)
     $scriptContent = $scriptContent.Replace('%%BIOS_RECENCY%%', $biosRecencyBlock)
     $scriptContent = $scriptContent.Replace('%%APPLICABILITY_FUNC%%', $applicabilityFunc)
+    $scriptContent = $scriptContent.Replace('%%HARDWARE_MATCH%%', $hardwareMatch.MatchBlock)
 
     # UTF-8 WITHOUT BOM -- Intune requirement rule scripts must not carry a BOM, otherwise
     # the portal/IME treats it as literal content (surfaces as mojibake at the top of the script).
@@ -18872,7 +19818,8 @@ function New-DATIntuneDetectionScript {
         [Parameter(Mandatory)][string]$OutputPath,
         [Parameter(Mandatory)][string]$OEM,
         [Parameter(Mandatory)][string]$Model,
-        [Parameter(Mandatory)][string]$Baseboards,
+        # Empty when the catalog published no IDs -- the script then matches the model name (#979)
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Baseboards,
         [Parameter(Mandatory)][string]$OS,
         [Parameter(Mandatory)][string]$Version,
         [string]$ReleaseDate,
@@ -18883,8 +19830,10 @@ function New-DATIntuneDetectionScript {
     # Feature-update token (e.g. 24H2). Dell packs are major-OS only; other OEMs gate on the build.
     $featureUpdate = if ($OS -match '\d{2}H\d') { $Matches[0] } else { '' }
     $emitFeatureUpdateCheck = ($UpdateType -ne 'BIOS') -and ($OEM -notmatch 'Dell') -and (-not [string]::IsNullOrWhiteSpace($featureUpdate))
-    # Validated and quote-escaped before emission -- see ConvertTo-DATSafeBaseboardList.
-    $bbValues = ConvertTo-DATSafeBaseboardList -Baseboards $Baseboards -Context " for $OEM $Model detection script"
+    # Validated and quote-escaped before emission -- see ConvertTo-DATSafeBaseboardList. With no
+    # IDs published, the model name stands in for them (see Get-DATScriptHardwareMatch).
+    $hardwareMatch = Get-DATScriptHardwareMatch -Baseboards $Baseboards -Model $Model -Context " for $OEM $Model detection script"
+    $bbValues = $hardwareMatch.Values
 
     # Determine registry sub-key and whether to include OS check
     $regSubKey = if ($UpdateType -eq 'BIOS') { 'BIOS' } else { 'Drivers' }
@@ -19077,8 +20026,7 @@ try {{
 
     $skuMatch = $false
     foreach ($val in $expectedValues) {{
-        $escaped = [regex]::Escape($val)
-        if ($systemSKU -match $escaped -or $baseboardProduct -match $escaped -or $systemModel -match $escaped) {{
+%%HARDWARE_MATCH%%
             $skuMatch = $true
             break
         }}
@@ -19100,6 +20048,7 @@ catch {{
 
     $scriptContent = $scriptContent.Replace('%%BIOS_COMPARE_FUNCS%%', $biosCompareFuncs)
     $scriptContent = $scriptContent.Replace('%%DETECTION_CHECK%%', $detectionCheckBlock)
+    $scriptContent = $scriptContent.Replace('%%HARDWARE_MATCH%%', $hardwareMatch.MatchBlock)
 
     # UTF-8 WITHOUT BOM -- Intune detection rule scripts must not carry a BOM, otherwise
     # the portal/IME treats it as literal content (surfaces as mojibake at the top of the script).
@@ -21134,7 +22083,8 @@ function Invoke-DATIntunePackageCreation {
     param (
         [Parameter(Mandatory)][string]$OEM,
         [Parameter(Mandatory)][string]$Model,
-        [Parameter(Mandatory)][string]$Baseboards,
+        # Empty when the catalog published no IDs -- the rules then match the model name (#979)
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Baseboards,
         [Parameter(Mandatory)][string]$OS,
         [Parameter(Mandatory)][string]$Architecture,
         [Parameter(Mandatory)][string]$WimFilePath,
@@ -21217,10 +22167,11 @@ function Invoke-DATIntunePackageCreation {
     $releaseDateLine = if (-not [string]::IsNullOrEmpty($releaseDateStamp)) {
         "`nRelease Date: {0}-{1}-{2}" -f $releaseDateStamp.Substring(0, 4), $releaseDateStamp.Substring(4, 2), $releaseDateStamp.Substring(6, 2)
     } else { '' }
+    $descriptionBoards = Format-DATBaseboardDescription -Baseboards $Baseboards
     $description = if ($UpdateType -eq 'BIOS') {
-        "$UpdateType package for $OEM $Model`nArchitecture: $Architecture`nBaseboards/SKU: $Baseboards`nVersion: $version$releaseDateLine`nCreated by Driver Automation Tool"
+        "$UpdateType package for $OEM $Model`nArchitecture: $Architecture`nBaseboards/SKU: $descriptionBoards`nVersion: $version$releaseDateLine`nCreated by Driver Automation Tool"
     } else {
-        "$UpdateType package for $OEM $Model`nOS: $OS`nArchitecture: $Architecture`nBaseboards/SKU: $Baseboards`nVersion: $version$releaseDateLine`nCreated by Driver Automation Tool"
+        "$UpdateType package for $OEM $Model`nOS: $OS`nArchitecture: $Architecture`nBaseboards/SKU: $descriptionBoards`nVersion: $version$releaseDateLine`nCreated by Driver Automation Tool"
     }
 
     Write-DATLogEntry -Value "[Intune Pipeline] Starting Intune package creation for $OEM $Model" -Severity 1
@@ -21952,7 +22903,8 @@ function Find-DATBiosPackage {
     [CmdletBinding()]
     param (
         [Parameter(Mandatory)][string]$OEM,
-        [Parameter(Mandatory)][string]$Baseboards,
+        # Empty when the catalog published no IDs (#979): nothing can be matched, so $null is returned
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Baseboards,
         [array]$Catalog
     )
 
