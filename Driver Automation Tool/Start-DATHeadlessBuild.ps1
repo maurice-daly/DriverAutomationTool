@@ -147,9 +147,33 @@ if ($config.Platform -in @('Configuration Manager', 'Intune') -and @($headlessMo
                 $groupOEMs = @($osGroup.Group | ForEach-Object { $_.OEM } | Sort-Object -Unique)
                 Write-Host "[Headless] Resolving driver catalog versions for '$osValue' ($($groupOEMs -join ', '))..."
                 $catalogModels = @(Get-DATOEMModelInfo -RequiredOEMs $groupOEMs -OS $osValue -Architecture $config.Architecture)
+                $catalogModelsByOEM = @{}
+                $catalogModelsByOEMAndModel = @{}
+                foreach ($catalogModel in $catalogModels) {
+                    $catalogOEM = [string]$catalogModel.OEM
+                    if (-not $catalogModelsByOEM.ContainsKey($catalogOEM)) {
+                        $catalogModelsByOEM[$catalogOEM] = New-Object 'System.Collections.Generic.List[object]'
+                        $catalogModelsByOEMAndModel[$catalogOEM] = @{}
+                    }
+
+                    $catalogModelsByOEM[$catalogOEM].Add([PSCustomObject]@{
+                        Model = $catalogModel
+                        Baseboards = @("$($catalogModel.Baseboards)" -split '[,;\s]+' | ForEach-Object { $_.Trim().ToUpper() } | Where-Object { $_ })
+                    })
+
+                    $catalogModelName = [string]$catalogModel.Model
+                    if (-not $catalogModelsByOEMAndModel[$catalogOEM].ContainsKey($catalogModelName)) {
+                        $catalogModelsByOEMAndModel[$catalogOEM][$catalogModelName] = $catalogModel
+                    }
+                }
                 foreach ($m in $osGroup.Group) {
                     # Exact model-name match first.
-                    $match = $catalogModels | Where-Object { $_.OEM -eq $m.OEM -and $_.Model -eq $m.Model } | Select-Object -First 1
+                    $match = $null
+                    $modelOEM = [string]$m.OEM
+                    if ($catalogModelsByOEMAndModel.ContainsKey($modelOEM) -and
+                        $catalogModelsByOEMAndModel[$modelOEM].ContainsKey([string]$m.Model)) {
+                        $match = $catalogModelsByOEMAndModel[$modelOEM][[string]$m.Model]
+                    }
                     # Fallback: match on overlapping baseboard/SystemSKU values. The BuildConfig
                     # model name (the UI display name) frequently differs from the OEM catalog
                     # SystemName (e.g. HP "Elite x360 1040 14 inch G11 2-in-1" vs catalog
@@ -158,10 +182,19 @@ if ($config.Platform -in @('Configuration Manager', 'Intune') -and @($headlessMo
                     if (-not $match -and -not [string]::IsNullOrEmpty($m.Baseboards)) {
                         $modelBoards = @("$($m.Baseboards)" -split '[,;\s]+' | ForEach-Object { $_.Trim().ToUpper() } | Where-Object { $_ })
                         if ($modelBoards.Count -gt 0) {
-                            $match = $catalogModels | Where-Object {
-                                $_.OEM -eq $m.OEM -and -not [string]::IsNullOrEmpty($_.Baseboards) -and
-                                @("$($_.Baseboards)" -split '[,;\s]+' | ForEach-Object { $_.Trim().ToUpper() } | Where-Object { $_ -in $modelBoards }).Count -gt 0
-                            } | Select-Object -First 1
+                            $modelBoardLookup = @{}
+                            foreach ($board in $modelBoards) { $modelBoardLookup[$board] = $true }
+                            if ($catalogModelsByOEM.ContainsKey($modelOEM)) {
+                                foreach ($catalogEntry in $catalogModelsByOEM[$modelOEM]) {
+                                    foreach ($board in $catalogEntry.Baseboards) {
+                                        if ($modelBoardLookup.ContainsKey($board)) {
+                                            $match = $catalogEntry.Model
+                                            break
+                                        }
+                                    }
+                                    if ($match) { break }
+                                }
+                            }
                             if ($match) {
                                 Write-Host "[Headless] Matched '$($m.Model)' to catalog model '$($match.Model)' via baseboard ($($m.Baseboards))"
                             }
