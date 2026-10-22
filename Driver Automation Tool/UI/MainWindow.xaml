@@ -1064,7 +1064,7 @@
                                    Foreground="{DynamicResource AccentColor}" VerticalAlignment="Center" Margin="0,0,8,0"/>
                         <TextBlock Text="Driver Automation Tool" FontSize="13" FontWeight="SemiBold"
                                    Foreground="{DynamicResource WindowForeground}" VerticalAlignment="Center"/>
-                        <TextBlock x:Name="txt_Version" Text=" Version 10.3.3" FontSize="11"
+                        <TextBlock x:Name="txt_Version" Text=" Version 10.3.4" FontSize="11"
                                    Foreground="{DynamicResource InputPlaceholder}" VerticalAlignment="Center" Margin="4,0"/>
                     </StackPanel>
 
@@ -1160,6 +1160,7 @@
                                 <StackPanel Orientation="Horizontal">
                                     <TextBlock Text="&#xE90F;" Style="{StaticResource NavIcon}"/>
                                     <TextBlock Text="Custom Driver Pack" Style="{StaticResource NavLabel}"/>
+                                    <Ellipse x:Name="dot_CustomDriverPack" Width="7" Height="7" Fill="{DynamicResource AccentColor}" Margin="8,0,0,0" VerticalAlignment="Center" Visibility="Collapsed"/>
                                 </StackPanel>
                             </Button>
 
@@ -4756,89 +4757,8 @@
                                 </StackPanel>
                             </Border>
 
-                            <!-- Code Signing -->
-                            <Border Tag="Signing" Style="{StaticResource CardPanel}" Margin="0,0,0,12">
-                                <StackPanel>
-                                    <TextBlock FontSize="14" FontWeight="SemiBold"
-                                               Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,4">
-                                        <Run Text="&#xEB95;" FontFamily="Segoe MDL2 Assets" FontSize="14"/><Run Text="  Code Signing"/>
-                                    </TextBlock>
-                                    <TextBlock Text="Digitally sign all PowerShell scripts generated during Intune package creation (install, detection, requirement, and toast scripts) using an Authenticode certificate."
-                                               FontSize="12" Foreground="{DynamicResource InputPlaceholder}" Margin="0,0,0,12" TextWrapping="Wrap" LineHeight="18"/>
-
-                                    <!-- Toggle row -->
-                                    <Grid Margin="0,0,0,12">
-                                        <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="Auto"/>
-                                            <ColumnDefinition Width="Auto"/>
-                                        </Grid.ColumnDefinitions>
-                                        <CheckBox x:Name="chk_CodeSigning"
-                                                  Style="{StaticResource ToggleSwitch}"
-                                                  VerticalAlignment="Center"
-                                                  Margin="0,0,12,0"/>
-                                        <TextBlock x:Name="txt_CodeSigningState" Grid.Column="1"
-                                                   Text="Off" FontSize="12" FontWeight="SemiBold"
-                                                   Foreground="{DynamicResource InputPlaceholder}"
-                                                   VerticalAlignment="Center"/>
-                                    </Grid>
-
-                                    <!-- Certificate config -->
-                                    <StackPanel x:Name="panel_CodeSigningConfig" Visibility="Collapsed" Margin="0,4,0,0">
-                                        <TextBlock Text="Certificate Thumbprint" FontSize="11" FontWeight="SemiBold"
-                                                   Foreground="{DynamicResource InputPlaceholder}" Margin="0,0,0,6"/>
-                                        <Grid>
-                                            <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="*"/>
-                                                <ColumnDefinition Width="Auto"/>
-                                            </Grid.ColumnDefinitions>
-                                            <TextBox x:Name="txt_CodeSigningThumbprint" Style="{StaticResource RoundedTextBox}" Height="34"
-                                                     Tag="Enter certificate thumbprint or click Browse" VerticalContentAlignment="Center"
-                                                     CharacterCasing="Upper"/>
-                                            <Button x:Name="btn_BrowseCodeSigningCert" Grid.Column="1"
-                                                    Style="{StaticResource SecondaryButton}"
-                                                    Height="34" Margin="8,0,0,0">
-                                                <TextBlock><Run Text="&#xED25;" FontFamily="Segoe MDL2 Assets"/><Run Text="  Browse"/></TextBlock>
-                                            </Button>
-                                        </Grid>
-                                        <!-- Certificate details panel -->
-                                        <Border x:Name="panel_CodeSigningCertDetails" Visibility="Collapsed"
-                                                Background="{DynamicResource InputBackground}" CornerRadius="8"
-                                                BorderBrush="{DynamicResource InputBorder}" BorderThickness="1"
-                                                Padding="12,10" Margin="0,10,0,0">
-                                            <Grid>
-                                                <Grid.ColumnDefinitions>
-                                                    <ColumnDefinition Width="*"/>
-                                                    <ColumnDefinition Width="Auto"/>
-                                                </Grid.ColumnDefinitions>
-                                                <StackPanel Grid.Column="0">
-                                                    <TextBlock x:Name="txt_CodeSigningCertSubject" Text="" FontSize="12" FontWeight="SemiBold"
-                                                               Foreground="{DynamicResource WindowForeground}" TextTrimming="CharacterEllipsis"/>
-                                                    <TextBlock x:Name="txt_CodeSigningCertIssuer" Text="" FontSize="11"
-                                                               Foreground="{DynamicResource InputPlaceholder}" Margin="0,3,0,0" TextTrimming="CharacterEllipsis"/>
-                                                    <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
-                                                        <TextBlock x:Name="txt_CodeSigningCertExpiry" Text="" FontSize="11"
-                                                                   Foreground="{DynamicResource InputPlaceholder}"/>
-                                                        <TextBlock x:Name="txt_CodeSigningCertStatus" Text="" FontSize="11" FontWeight="SemiBold"
-                                                                   Margin="10,0,0,0"/>
-                                                    </StackPanel>
-                                                </StackPanel>
-                                                <Button x:Name="btn_ViewCodeSigningCert" Grid.Column="1"
-                                                        Style="{StaticResource SecondaryButton}"
-                                                        Height="34" Width="34" Padding="0"
-                                                        VerticalAlignment="Center" ToolTip="View certificate and chain">
-                                                    <TextBlock Text="&#xEB95;" FontFamily="Segoe MDL2 Assets" FontSize="16"
-                                                               HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                                                </Button>
-                                            </Grid>
-                                        </Border>
-                                        <TextBlock x:Name="txt_CodeSigningCertInfo" Text=""
-                                                   FontSize="11" Foreground="{DynamicResource InputPlaceholder}" Margin="0,6,0,0" FontStyle="Italic"/>
-                                    </StackPanel>
-                                </StackPanel>
-                            </Border>
-
                             <!-- Debug Package Build -->
-                            <Border Tag="Signing" Style="{StaticResource CardPanel}" Margin="0,0,0,12">
+                            <Border Tag="Debug" Style="{StaticResource CardPanel}" Margin="0,0,0,12">
                                 <StackPanel>
                                     <TextBlock FontSize="14" FontWeight="SemiBold"
                                                Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,4">
@@ -6546,6 +6466,42 @@
                                         </StackPanel>
                                     </Border>
 
+                                    <!-- Desktop Shortcut -->
+                                    <Border Tag="General" Style="{StaticResource CardPanel}" Margin="0,0,0,12">
+                                        <StackPanel>
+                                            <StackPanel x:Name="zone_ShortcutLocation" Orientation="Horizontal" Background="Transparent" Margin="0,0,0,6">
+                                                <TextBlock FontSize="14" FontWeight="SemiBold" VerticalAlignment="Center"
+                                                           Foreground="{DynamicResource WindowForeground}">
+                                                    <Run Text="&#xE71B;" FontFamily="Segoe MDL2 Assets" FontSize="14"/><Run Text="  Desktop Shortcut"/>
+                                                </TextBlock>
+                                                <Border x:Name="pill_ShortcutLocation" Visibility="Collapsed" Background="{DynamicResource AccentColor}" CornerRadius="8" Padding="7,1,7,2" Margin="8,0,0,0" VerticalAlignment="Center">
+                                                    <TextBlock Text="New" FontSize="10" FontWeight="SemiBold" Foreground="White"/>
+                                                </Border>
+                                            </StackPanel>
+                                            <TextBlock TextWrapping="Wrap" FontSize="12" LineHeight="18"
+                                                       Foreground="{DynamicResource InputPlaceholder}" Margin="0,0,0,12">
+                                                Choose where the tool's desktop shortcut goes. By default it is on the Public desktop, so everyone who signs in to this computer sees it. The shortcut moves the next time the tool starts, and the one in the old location is removed.
+                                            </TextBlock>
+
+                                            <Grid>
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="Auto"/>
+                                                    <ColumnDefinition Width="*"/>
+                                                </Grid.ColumnDefinitions>
+                                                <CheckBox x:Name="chk_ShortcutCurrentUserOnly" Grid.Column="0"
+                                                          Style="{StaticResource ToggleSwitch}"
+                                                          VerticalAlignment="Center"
+                                                          Margin="0,0,12,0"/>
+                                                <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                                    <TextBlock Text="Only on my desktop" FontSize="13"
+                                                               Foreground="{DynamicResource WindowForeground}"/>
+                                                    <TextBlock Text="Put the shortcut on the desktop of the account running the tool instead of the Public desktop shared by all users."
+                                                               FontSize="11" Foreground="{DynamicResource InputPlaceholder}" TextWrapping="Wrap" Margin="0,2,0,0"/>
+                                                </StackPanel>
+                                            </Grid>
+                                        </StackPanel>
+                                    </Border>
+
                                     <!-- Storage Paths -->
                                     <Border Tag="Storage" Style="{StaticResource CardPanel}" Margin="0,0,0,12">
                                         <StackPanel>
@@ -7212,6 +7168,92 @@
                                         </StackPanel>
                                     </Border>
 
+                                    <!-- Code Signing (Intune and ConfigMgr) -->
+                                    <Border Tag="Build" Style="{StaticResource CardPanel}" Margin="0,0,0,12">
+                                        <StackPanel>
+                                            <StackPanel x:Name="zone_CodeSigning" Orientation="Horizontal" Background="Transparent" Margin="0,0,0,4">
+                                                <TextBlock FontSize="14" FontWeight="SemiBold" VerticalAlignment="Center"
+                                                           Foreground="{DynamicResource WindowForeground}">
+                                                    <Run Text="&#xEB95;" FontFamily="Segoe MDL2 Assets" FontSize="14"/><Run Text="  Code Signing"/>
+                                                </TextBlock>
+                                                <Border x:Name="pill_CodeSigning" Visibility="Collapsed" Background="{DynamicResource AccentColor}" CornerRadius="8" Padding="7,1,7,2" Margin="8,0,0,0" VerticalAlignment="Center">
+                                                    <TextBlock Text="New" FontSize="10" FontWeight="SemiBold" Foreground="White"/>
+                                                </Border>
+                                            </StackPanel>
+                                            <TextBlock Text="Digitally sign the PowerShell scripts generated for Intune Win32 apps and ConfigMgr Applications (install, detection, requirement and toast scripts) with an Authenticode certificate. ConfigMgr clients run detection and requirement scripts under the client PowerShell execution policy, which is All Signed by default."
+                                                       FontSize="12" Foreground="{DynamicResource InputPlaceholder}" Margin="0,0,0,12" TextWrapping="Wrap" LineHeight="18"/>
+
+                                            <!-- Toggle row -->
+                                            <Grid Margin="0,0,0,12">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="Auto"/>
+                                                    <ColumnDefinition Width="Auto"/>
+                                                </Grid.ColumnDefinitions>
+                                                <CheckBox x:Name="chk_CodeSigning"
+                                                          Style="{StaticResource ToggleSwitch}"
+                                                          VerticalAlignment="Center"
+                                                          Margin="0,0,12,0"/>
+                                                <TextBlock x:Name="txt_CodeSigningState" Grid.Column="1"
+                                                           Text="Off" FontSize="12" FontWeight="SemiBold"
+                                                           Foreground="{DynamicResource InputPlaceholder}"
+                                                           VerticalAlignment="Center"/>
+                                            </Grid>
+
+                                            <!-- Certificate config -->
+                                            <StackPanel x:Name="panel_CodeSigningConfig" Visibility="Collapsed" Margin="0,4,0,0">
+                                                <TextBlock Text="Certificate Thumbprint" FontSize="11" FontWeight="SemiBold"
+                                                           Foreground="{DynamicResource InputPlaceholder}" Margin="0,0,0,6"/>
+                                                <Grid>
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="*"/>
+                                                        <ColumnDefinition Width="Auto"/>
+                                                    </Grid.ColumnDefinitions>
+                                                    <TextBox x:Name="txt_CodeSigningThumbprint" Style="{StaticResource RoundedTextBox}" Height="34"
+                                                             Tag="Enter certificate thumbprint or click Browse" VerticalContentAlignment="Center"
+                                                             CharacterCasing="Upper"/>
+                                                    <Button x:Name="btn_BrowseCodeSigningCert" Grid.Column="1"
+                                                            Style="{StaticResource SecondaryButton}"
+                                                            Height="34" Margin="8,0,0,0">
+                                                        <TextBlock><Run Text="&#xED25;" FontFamily="Segoe MDL2 Assets"/><Run Text="  Browse"/></TextBlock>
+                                                    </Button>
+                                                </Grid>
+                                                <!-- Certificate details panel -->
+                                                <Border x:Name="panel_CodeSigningCertDetails" Visibility="Collapsed"
+                                                        Background="{DynamicResource InputBackground}" CornerRadius="8"
+                                                        BorderBrush="{DynamicResource InputBorder}" BorderThickness="1"
+                                                        Padding="12,10" Margin="0,10,0,0">
+                                                    <Grid>
+                                                        <Grid.ColumnDefinitions>
+                                                            <ColumnDefinition Width="*"/>
+                                                            <ColumnDefinition Width="Auto"/>
+                                                        </Grid.ColumnDefinitions>
+                                                        <StackPanel Grid.Column="0">
+                                                            <TextBlock x:Name="txt_CodeSigningCertSubject" Text="" FontSize="12" FontWeight="SemiBold"
+                                                                       Foreground="{DynamicResource WindowForeground}" TextTrimming="CharacterEllipsis"/>
+                                                            <TextBlock x:Name="txt_CodeSigningCertIssuer" Text="" FontSize="11"
+                                                                       Foreground="{DynamicResource InputPlaceholder}" Margin="0,3,0,0" TextTrimming="CharacterEllipsis"/>
+                                                            <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
+                                                                <TextBlock x:Name="txt_CodeSigningCertExpiry" Text="" FontSize="11"
+                                                                           Foreground="{DynamicResource InputPlaceholder}"/>
+                                                                <TextBlock x:Name="txt_CodeSigningCertStatus" Text="" FontSize="11" FontWeight="SemiBold"
+                                                                           Margin="10,0,0,0"/>
+                                                            </StackPanel>
+                                                        </StackPanel>
+                                                        <Button x:Name="btn_ViewCodeSigningCert" Grid.Column="1"
+                                                                Style="{StaticResource SecondaryButton}"
+                                                                Height="34" Width="34" Padding="0"
+                                                                VerticalAlignment="Center" ToolTip="View certificate and chain">
+                                                            <TextBlock Text="&#xEB95;" FontFamily="Segoe MDL2 Assets" FontSize="16"
+                                                                       HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                                        </Button>
+                                                    </Grid>
+                                                </Border>
+                                                <TextBlock x:Name="txt_CodeSigningCertInfo" Text=""
+                                                           FontSize="11" Foreground="{DynamicResource InputPlaceholder}" Margin="0,6,0,0" FontStyle="Italic"/>
+                                            </StackPanel>
+                                        </StackPanel>
+                                    </Border>
+
                                     <!-- External Utilities & Modules -->
                                     <Border Tag="Build" Style="{StaticResource CardPanel}" Margin="0,0,0,12">
                                         <StackPanel>
@@ -7815,7 +7857,7 @@
                                                        Foreground="{DynamicResource InputPlaceholder}" LineHeight="20">
                                                 Create a driver package from the currently installed drivers on this device using PNPUtil,
                                                 or from a local folder containing driver INF files.
-                                                The device Make, Model, and BaseBoard Product are automatically detected via WMI but can be
+                                                The device Make, Model, and Baseboard / SKU are automatically detected via WMI but can be
                                                 overridden. Exported drivers are packaged for the selected platform (ConfigMgr or Intune).
                                             </TextBlock>
                                         </StackPanel>
@@ -7859,8 +7901,14 @@
                                                          Style="{StaticResource RoundedTextBox}" Height="34"/>
 
                                                 <!-- Baseboard / SKU (Dell and Surface: system SKU; others: baseboard product) -->
-                                                <TextBlock Grid.Column="4" Grid.Row="0" Text="Baseboard / SKU" FontSize="12"
-                                                           Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,6"/>
+                                                <StackPanel x:Name="zone_CustomBaseboardSku" Grid.Column="4" Grid.Row="0" Orientation="Horizontal"
+                                                            Background="Transparent" Margin="0,0,0,6">
+                                                    <TextBlock Text="Baseboard / SKU" FontSize="12" VerticalAlignment="Center"
+                                                               Foreground="{DynamicResource WindowForeground}"/>
+                                                    <Border x:Name="pill_CustomBaseboardSku" Visibility="Collapsed" Background="{DynamicResource AccentColor}" CornerRadius="8" Padding="7,1,7,2" Margin="8,0,0,0" VerticalAlignment="Center">
+                                                        <TextBlock Text="New" FontSize="10" FontWeight="SemiBold" Foreground="White"/>
+                                                    </Border>
+                                                </StackPanel>
                                                 <TextBox x:Name="txt_CustomBaseBoard" Grid.Column="4" Grid.Row="1"
                                                          Style="{StaticResource RoundedTextBox}" Height="34"/>
                                             </Grid>
@@ -8312,7 +8360,7 @@
                                     <StackPanel>
                                         <TextBlock Text="Driver Automation Tool" FontSize="22" FontWeight="Bold"
                                                    Foreground="{DynamicResource AccentColor}" Margin="0,0,0,4"/>
-                                        <TextBlock x:Name="txt_AboutVersion" Text="Version 10.3.3" FontSize="14"
+                                        <TextBlock x:Name="txt_AboutVersion" Text="Version 10.3.4" FontSize="14"
                                                    Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,16"/>
 
                                         <TextBlock TextWrapping="Wrap" FontSize="13"

@@ -139,38 +139,71 @@ if (-not (Test-Path $RegPath)) {
 }
 New-ItemProperty -Path $RegPath -Name "InstallDirectory" -Value $AppRoot -PropertyType String -Force | Out-Null
 
-# Create the desktop shortcut on the PUBLIC (all-users) desktop, so a single shortcut is
-# shared across every admin profile on a machine instead of one copy per user (#916).
-# Honors the CreateDesktopShortcut registry toggle (default on) and the -NoShortcut switch
-# for admins who manage shortcuts manually.
-$shortcutName = 'Driver Automation Tool.lnk'
-$launcherPath = Join-Path $AppRoot 'Start-DriverAutomationTool.ps1'
-$iconPath = Join-Path $AppRoot 'Branding\DATLogo.ico'
-$shortcutToggle = (Get-ItemProperty -Path $RegPath -Name 'CreateDesktopShortcut' -ErrorAction SilentlyContinue).CreateDesktopShortcut
-$shortcutDisabled = $NoShortcut -or ($shortcutToggle -eq 0)
+function Update-DATDesktopShortcut {
+    <#
+    .SYNOPSIS
+        Puts the tool's desktop shortcut on the chosen desktop and removes this launcher's
+        shortcut from the other one.
+    .DESCRIPTION
+        AllUsers puts the shortcut on the Public desktop, so one shortcut is shared by every
+        admin profile on the machine instead of one copy per user (#916). CurrentUser puts it on
+        the desktop of the account running the tool only, for admins who do not want it shown
+        to everyone who signs in.
 
-if ($shortcutDisabled) {
-    Write-Host "Desktop shortcut management skipped (disabled)." -ForegroundColor DarkGray
-} else {
-    $desktopPath = [Environment]::GetFolderPath('CommonDesktopDirectory')
-    $shortcutPath = Join-Path $desktopPath $shortcutName
+        Switching the setting moves the shortcut the next time the tool starts: the shortcut on
+        the other desktop is removed and one is made on the chosen desktop. Only the running
+        account's desktop is reachable, so another admin's per-user copy is removed the next
+        time that admin starts the tool. A shortcut is removed only when it starts this
+        launcher, never an unrelated shortcut with the same name.
+
+        The desktops are parameters rather than looked up here so the move can be tested
+        against temporary folders. Returns the path of the shortcut it maintains, or an empty
+        string when the chosen desktop could not be found.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param (
+        [Parameter(Mandatory)][AllowEmptyString()][string]$AppRoot,
+        [ValidateSet('AllUsers', 'CurrentUser')][string]$Scope = 'AllUsers',
+        [Parameter(Mandatory)][AllowEmptyString()][string]$AllUsersDesktop,
+        [Parameter(Mandatory)][AllowEmptyString()][string]$UserDesktop,
+        [string]$ShortcutName = 'Driver Automation Tool.lnk'
+    )
+
+    $launcherPath = Join-Path $AppRoot 'Start-DriverAutomationTool.ps1'
+    $iconPath = Join-Path $AppRoot 'Branding\DATLogo.ico'
+    $wshShell = New-Object -ComObject WScript.Shell
+
+    # A plain substring test rather than -like: brackets in an install path are wildcard sets
+    # to -like, which made a shortcut to the same launcher look like someone else's.
+    $startsThisLauncher = {
+        param ([string]$Path)
+        $lnk = $wshShell.CreateShortcut($Path)
+        return ("$($lnk.Arguments)".IndexOf($launcherPath, [System.StringComparison]::OrdinalIgnoreCase) -ge 0)
+    }
+
+    if ($Scope -eq 'CurrentUser') {
+        $keepDesktop = $UserDesktop
+        $dropDesktop = $AllUsersDesktop
+    } else {
+        $keepDesktop = $AllUsersDesktop
+        $dropDesktop = $UserDesktop
+    }
+
+    if ([string]::IsNullOrWhiteSpace($keepDesktop) -or -not (Test-Path -LiteralPath $keepDesktop)) {
+        Write-Host "Desktop shortcut not created: the $(if ($Scope -eq 'CurrentUser') { 'current user' } else { 'Public' }) desktop folder was not found." -ForegroundColor DarkYellow
+        return ''
+    }
+    $shortcutPath = Join-Path $keepDesktop $ShortcutName
 
     # Idempotent -- only create if missing or pointing to a different launcher
-    $needsShortcut = $true
-    if (Test-Path $shortcutPath) {
-        $existing = (New-Object -ComObject WScript.Shell).CreateShortcut($shortcutPath)
-        if ($existing.Arguments -like "*$launcherPath*") {
-            $needsShortcut = $false
-        }
-    }
-    if ($needsShortcut) {
-        $wshShell = New-Object -ComObject WScript.Shell
+    if (-not ((Test-Path -LiteralPath $shortcutPath) -and (& $startsThisLauncher $shortcutPath))) {
         $shortcut = $wshShell.CreateShortcut($shortcutPath)
         $shortcut.TargetPath = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
         $shortcut.Arguments = "-ExecutionPolicy Bypass -File `"$launcherPath`""
         $shortcut.WorkingDirectory = $AppRoot
         $shortcut.Description = 'Driver Automation Tool'
-        if (Test-Path $iconPath) {
+        if (Test-Path -LiteralPath $iconPath) {
             $shortcut.IconLocation = "$iconPath,0"
         }
         $shortcut.Save()
@@ -181,22 +214,40 @@ if ($shortcutDisabled) {
         Write-Host "Desktop shortcut created: $shortcutPath" -ForegroundColor Green
     }
 
-    # Clean up the current user's legacy per-user desktop shortcut left by pre-common-desktop
-    # versions. Only the current profile's copy is reachable; other admins' stale copies are
-    # removed the next time each of them launches. Guarded so we only delete a shortcut that
-    # points to this launcher, never an unrelated same-named shortcut.
-    try {
-        $userDesktop = [Environment]::GetFolderPath('Desktop')
-        $userShortcut = Join-Path $userDesktop $shortcutName
-        if ((Test-Path $userShortcut) -and ($userShortcut -ne $shortcutPath)) {
-            $userLnk = (New-Object -ComObject WScript.Shell).CreateShortcut($userShortcut)
-            if ($userLnk.Arguments -like "*$launcherPath*") {
-                Remove-Item -Path $userShortcut -Force -ErrorAction Stop
-                Write-Host "Removed legacy per-user desktop shortcut: $userShortcut" -ForegroundColor DarkYellow
+    # Remove this launcher's shortcut from the desktop that was not chosen. Under AllUsers this
+    # is also what clears the per-user copies left by versions before the Public desktop.
+    if (-not [string]::IsNullOrWhiteSpace($dropDesktop)) {
+        try {
+            $otherShortcut = Join-Path $dropDesktop $ShortcutName
+            if (($otherShortcut -ne $shortcutPath) -and (Test-Path -LiteralPath $otherShortcut) -and (& $startsThisLauncher $otherShortcut)) {
+                Remove-Item -LiteralPath $otherShortcut -Force -ErrorAction Stop
+                Write-Host "Removed desktop shortcut from the $(if ($Scope -eq 'CurrentUser') { 'Public' } else { 'current user' }) desktop: $otherShortcut" -ForegroundColor DarkYellow
             }
+        } catch {
+            Write-Host "Could not remove the desktop shortcut from the other desktop: $($_.Exception.Message)" -ForegroundColor DarkYellow
         }
+    }
+
+    return $shortcutPath
+}
+
+# Maintain the desktop shortcut. DesktopShortcutCurrentUserOnly (Common Settings > General)
+# chooses the running user's desktop over the Public one. Honors the CreateDesktopShortcut
+# registry toggle (default on) and the -NoShortcut switch for admins who manage shortcuts
+# manually. A shortcut failure is reported and never stops the tool from starting.
+$shortcutSettings = Get-ItemProperty -Path $RegPath -ErrorAction SilentlyContinue
+$shortcutDisabled = $NoShortcut -or ($shortcutSettings.CreateDesktopShortcut -eq 0)
+
+if ($shortcutDisabled) {
+    Write-Host "Desktop shortcut management skipped (disabled)." -ForegroundColor DarkGray
+} else {
+    try {
+        $shortcutScope = if ($shortcutSettings.DesktopShortcutCurrentUserOnly -eq 1) { 'CurrentUser' } else { 'AllUsers' }
+        Update-DATDesktopShortcut -AppRoot $AppRoot -Scope $shortcutScope `
+            -AllUsersDesktop ([Environment]::GetFolderPath('CommonDesktopDirectory')) `
+            -UserDesktop ([Environment]::GetFolderPath('Desktop')) | Out-Null
     } catch {
-        Write-Host "Could not remove legacy per-user shortcut: $($_.Exception.Message)" -ForegroundColor DarkYellow
+        Write-Host "Desktop shortcut could not be updated: $($_.Exception.Message)" -ForegroundColor DarkYellow
     }
 }
 

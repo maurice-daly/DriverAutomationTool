@@ -1072,148 +1072,6 @@ if (-not $script:DATThemedScrollBarsHandlerRegistered) {
     }
 }
 
-function Show-DATConfirmDialog {
-    param (
-        [string]$Title = "Confirm",
-        [string]$Message,
-        [string]$Icon = [char]0xE7BA,
-        [string]$ConfirmLabel = "Yes, Delete"
-    )
-
-    $script:dialogResult = $false
-    $theme = Get-DATTheme -ThemeName $script:CurrentTheme
-    $bgColor = [System.Windows.Media.ColorConverter]::ConvertFromString($theme['CardBackground'])
-
-    $dlg = [System.Windows.Window]::new()
-    $dlg.WindowStyle = 'None'
-    $dlg.AllowsTransparency = $true
-    $dlg.Background = [System.Windows.Media.Brushes]::Transparent
-    $dlg.WindowStartupLocation = 'CenterOwner'
-    $dlg.Owner = $Window
-    $dlg.Width = 440
-    $dlg.SizeToContent = 'Height'
-    $dlg.Topmost = $false
-    $dlg.ResizeMode = 'NoResize'
-    $dlg.ShowInTaskbar = $false
-
-    $border = [System.Windows.Controls.Border]::new()
-    $border.Background = [System.Windows.Media.SolidColorBrush]::new(
-        [System.Windows.Media.Color]::FromArgb(245, $bgColor.R, $bgColor.G, $bgColor.B))
-    $border.CornerRadius = [System.Windows.CornerRadius]::new(16)
-    $border.Padding = [System.Windows.Thickness]::new(28, 24, 28, 24)
-    $border.BorderBrush = [System.Windows.Media.SolidColorBrush]::new(
-        [System.Windows.Media.ColorConverter]::ConvertFromString($theme['CardBorder']))
-    $border.BorderThickness = [System.Windows.Thickness]::new(1)
-    $shadow = [System.Windows.Media.Effects.DropShadowEffect]::new()
-    $shadow.BlurRadius = 30; $shadow.ShadowDepth = 0; $shadow.Opacity = 0.5
-    $shadow.Color = [System.Windows.Media.Colors]::Black
-    $border.Effect = $shadow
-
-    $panel = [System.Windows.Controls.StackPanel]::new()
-
-    # Warning icon
-    $iconText = [System.Windows.Controls.TextBlock]::new()
-    $iconText.Text = $Icon
-    $iconText.FontFamily = [System.Windows.Media.FontFamily]::new('Segoe MDL2 Assets')
-    $iconText.FontSize = 28
-    $iconText.Foreground = [System.Windows.Media.SolidColorBrush]::new(
-        [System.Windows.Media.ColorConverter]::ConvertFromString($theme['StatusWarning']))
-    $iconText.HorizontalAlignment = 'Center'
-    $iconText.Margin = [System.Windows.Thickness]::new(0, 0, 0, 12)
-    $panel.Children.Add($iconText) | Out-Null
-
-    # Title
-    $titleText = [System.Windows.Controls.TextBlock]::new()
-    $titleText.Text = $Title
-    $titleText.FontSize = 16
-    $titleText.FontWeight = [System.Windows.FontWeights]::Bold
-    $titleText.Foreground = [System.Windows.Media.SolidColorBrush]::new(
-        [System.Windows.Media.ColorConverter]::ConvertFromString($theme['WindowForeground']))
-    $titleText.HorizontalAlignment = 'Center'
-    $titleText.Margin = [System.Windows.Thickness]::new(0, 0, 0, 12)
-    $panel.Children.Add($titleText) | Out-Null
-
-    # Message
-    $msgText = [System.Windows.Controls.TextBlock]::new()
-    $msgText.Text = $Message
-    $msgText.FontSize = 13
-    $msgText.TextWrapping = [System.Windows.TextWrapping]::Wrap
-    $msgText.Foreground = [System.Windows.Media.SolidColorBrush]::new(
-        [System.Windows.Media.ColorConverter]::ConvertFromString($theme['InputPlaceholder']))
-    $msgText.HorizontalAlignment = 'Center'
-    $msgText.TextAlignment = [System.Windows.TextAlignment]::Center
-    $msgText.Margin = [System.Windows.Thickness]::new(0, 0, 0, 24)
-    $panel.Children.Add($msgText) | Out-Null
-
-    # Button row
-    $btnGrid = [System.Windows.Controls.Grid]::new()
-    $col1 = [System.Windows.Controls.ColumnDefinition]::new(); $col1.Width = [System.Windows.GridLength]::new(1, [System.Windows.GridUnitType]::Star)
-    $col2 = [System.Windows.Controls.ColumnDefinition]::new(); $col2.Width = [System.Windows.GridLength]::new(1, [System.Windows.GridUnitType]::Star)
-    $btnGrid.ColumnDefinitions.Add($col1)
-    $btnGrid.ColumnDefinitions.Add($col2)
-
-    # Yes button (danger style)
-    $btnYes = [System.Windows.Controls.Button]::new()
-    $btnYes.Height = 36
-    $btnYes.Margin = [System.Windows.Thickness]::new(0, 0, 6, 0)
-    $btnYes.Cursor = [System.Windows.Input.Cursors]::Hand
-    $yesTemplate = [System.Windows.Markup.XamlReader]::Parse(@"
-<ControlTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" TargetType="Button">
-    <Border x:Name="bd" Background="$($theme['ButtonDanger'])" CornerRadius="8" Padding="16,8">
-        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
-    </Border>
-    <ControlTemplate.Triggers>
-        <Trigger Property="IsMouseOver" Value="True">
-            <Setter TargetName="bd" Property="Background" Value="$($theme['ButtonDangerHover'])"/>
-        </Trigger>
-    </ControlTemplate.Triggers>
-</ControlTemplate>
-"@)
-    $btnYes.Template = $yesTemplate
-    $btnYes.Foreground = [System.Windows.Media.SolidColorBrush]::new(
-        [System.Windows.Media.ColorConverter]::ConvertFromString($theme['ButtonPrimaryForeground']))
-    $btnYes.FontSize = 13
-    $btnYes.FontWeight = [System.Windows.FontWeights]::SemiBold
-    $btnYes.Content = $ConfirmLabel
-    [System.Windows.Controls.Grid]::SetColumn($btnYes, 0)
-    $btnYes.Add_Click({ $script:dialogResult = $true; $dlg.Close() })
-    $btnGrid.Children.Add($btnYes) | Out-Null
-
-    # No button (secondary style)
-    $btnNo = [System.Windows.Controls.Button]::new()
-    $btnNo.Height = 36
-    $btnNo.Margin = [System.Windows.Thickness]::new(6, 0, 0, 0)
-    $btnNo.Cursor = [System.Windows.Input.Cursors]::Hand
-    $noTemplate = [System.Windows.Markup.XamlReader]::Parse(@"
-<ControlTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" TargetType="Button">
-    <Border x:Name="bd" Background="$($theme['ButtonSecondary'])" CornerRadius="8" Padding="16,8">
-        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
-    </Border>
-    <ControlTemplate.Triggers>
-        <Trigger Property="IsMouseOver" Value="True">
-            <Setter TargetName="bd" Property="Background" Value="$($theme['ButtonSecondaryHover'])"/>
-        </Trigger>
-    </ControlTemplate.Triggers>
-</ControlTemplate>
-"@)
-    $btnNo.Template = $noTemplate
-    $btnNo.Foreground = [System.Windows.Media.SolidColorBrush]::new(
-        [System.Windows.Media.ColorConverter]::ConvertFromString($theme['ButtonSecondaryForeground']))
-    $btnNo.FontSize = 13
-    $btnNo.FontWeight = [System.Windows.FontWeights]::SemiBold
-    $btnNo.Content = "Cancel"
-    [System.Windows.Controls.Grid]::SetColumn($btnNo, 1)
-    $btnNo.Add_Click({ $script:dialogResult = $false; $dlg.Close() })
-    $btnGrid.Children.Add($btnNo) | Out-Null
-
-    $panel.Children.Add($btnGrid) | Out-Null
-    $border.Child = $panel
-    Set-DATDialogCard -Dialog $dlg -Card $border
-
-    $dlg.ShowDialog() | Out-Null
-    return $script:dialogResult
-}
-
 function Show-DATInfoDialog {
     param (
         [string]$Title = "Information",
@@ -2025,8 +1883,16 @@ function Show-DATConfirmDialog {
     $dlg.WindowStyle = 'None'
     $dlg.AllowsTransparency = $true
     $dlg.Background = [System.Windows.Media.Brushes]::Transparent
-    $dlg.WindowStartupLocation = 'CenterOwner'
-    $dlg.Owner = $Window
+    # Some prompts are raised while the main window is still loading -- the duplicate BIOS package
+    # scan runs during the startup site connection. WPF refuses an Owner that has never been shown
+    # ("Cannot set Owner property to a Window that has not been shown previously"), which threw
+    # before the prompt appeared, so centre on screen until the main window is visible.
+    if ($Window -and $Window.IsVisible) {
+        $dlg.WindowStartupLocation = 'CenterOwner'
+        $dlg.Owner = $Window
+    } else {
+        $dlg.WindowStartupLocation = 'CenterScreen'
+    }
     $dlg.Width = 440
     $dlg.SizeToContent = 'Height'
     $dlg.Topmost = $false
@@ -3122,6 +2988,8 @@ function Show-DATBuildSummaryDialog {
         [string]$PackageType = 'Drivers',
         [string]$Elapsed = '',
         [bool]$HadErrors = $false,
+        # Every model finished, but a Latest Drivers package was incomplete (CompletedWithWarnings)
+        [bool]$HadWarnings = $false,
         [bool]$UploadSkipped = $false
     )
 
@@ -3133,6 +3001,10 @@ function Show-DATBuildSummaryDialog {
         $iconChar = [string][char]0xE7BA
         $iconColor = $theme['StatusWarning']
         $title = "Build Completed with Errors"
+    } elseif ($HadWarnings) {
+        $iconChar = [string][char]0xE7BA
+        $iconColor = $theme['StatusWarning']
+        $title = "Build Completed with Warnings"
     } elseif ($UploadSkipped) {
         # Packages were built locally but intentionally not uploaded to Intune
         $iconChar = [string][char]0xE896   # Download / saved-to-disk glyph
@@ -3387,12 +3259,14 @@ function Show-DATBuildSummaryDialog {
         $cellText = {
             param ($Version, $Status)
             $label = switch ("$Status") {
-                'Updated'   { 'Updated' }
-                'Current'   { 'Current' }
-                'Failed'    { 'Failed' }
-                'No update' { 'No update' }
-                'N/A'       { 'N/A' }
-                default     { '' }
+                'Updated'    { 'Updated' }
+                'Current'    { 'Current' }
+                'Incomplete' { 'Kept (incomplete build)' }
+                'Partial'    { 'Updated (incomplete)' }
+                'Failed'     { 'Failed' }
+                'No update'  { 'No update' }
+                'N/A'        { 'N/A' }
+                default      { '' }
             }
             $ver = if ([string]::IsNullOrWhiteSpace("$Version")) { '' } else { "$Version" }
             if ($ver -and $label) { "$ver  --  $label" }
@@ -3403,10 +3277,12 @@ function Show-DATBuildSummaryDialog {
         $statusBrush = {
             param ($Status)
             switch ("$Status") {
-                'Updated' { $successBrush }
-                'Failed'  { $errorBrush }
-                'Current' { $dimBrush }
-                default   { $dimBrush }
+                'Updated'    { $successBrush }
+                'Incomplete' { $warnBrush }
+                'Partial'    { $warnBrush }
+                'Failed'     { $errorBrush }
+                'Current'    { $dimBrush }
+                default      { $dimBrush }
             }
         }
 
@@ -3504,6 +3380,25 @@ function Show-DATBuildSummaryDialog {
         $elapsedText.HorizontalAlignment = 'Center'
         $elapsedText.Margin = [System.Windows.Thickness]::new(0, 0, 0, 16)
         $panel.Children.Add($elapsedText) | Out-Null
+    }
+
+    # Incomplete Latest Drivers build: say what was done with it, since the counts above cannot.
+    if ($HadWarnings) {
+        $warnNoteBorder = [System.Windows.Controls.Border]::new()
+        $warnNoteBorder.CornerRadius = [System.Windows.CornerRadius]::new(8)
+        $warnNoteBorder.Padding = [System.Windows.Thickness]::new(12, 10, 12, 10)
+        $warnNoteBorder.Margin = [System.Windows.Thickness]::new(0, 0, 0, 16)
+        $warnNoteBorder.Background = [System.Windows.Media.SolidColorBrush]::new(
+            [System.Windows.Media.ColorConverter]::ConvertFromString($theme['StatusWarningBackground']))
+        $warnNoteBorder.BorderThickness = [System.Windows.Thickness]::new(1)
+        $warnNoteBorder.BorderBrush = $warnBrush
+        $warnNoteText = [System.Windows.Controls.TextBlock]::new()
+        $warnNoteText.Text = "Some driver components staged no drivers, so a driver package was incomplete. Where a package was already deployed it was kept rather than replaced; otherwise the partial package was published. The next run retries the failed components -- View Failures lists them and why."
+        $warnNoteText.TextWrapping = 'Wrap'
+        $warnNoteText.FontSize = 12
+        $warnNoteText.Foreground = $warnBrush
+        $warnNoteBorder.Child = $warnNoteText
+        $panel.Children.Add($warnNoteBorder) | Out-Null
     }
 
     # Upload-skipped note: packages were built as .intunewin only and NOT published to Intune.
@@ -7207,7 +7102,7 @@ function Invoke-DATBuildDiskSpaceGuard {
     #>
     $reg = Get-ItemProperty -Path $global:RegPath -ErrorAction SilentlyContinue
     # Nothing left to pause once the build has finished or been aborted
-    if ([string]$reg.RunningState -in @('Completed', 'CompletedWithErrors', 'Aborted')) { return }
+    if ([string]$reg.RunningState -in @('Completed', 'CompletedWithWarnings', 'CompletedWithErrors', 'Aborted')) { return }
     $reason = [string]$reg.BuildPauseReason
     $low = @(Get-DATLowDiskSpace -Target (Get-DATBuildDiskTargets) -ThresholdGB $script:BuildLowDiskThresholdGB)
 
@@ -12909,7 +12804,7 @@ $btn_Build.Add_Click({
         $isRegistryComplete = $false
         if ($regValues) {
             $runState = [string]$regValues.RunningState
-            $isRegistryComplete = ($runState -eq 'Completed' -or $runState -eq 'CompletedWithErrors')
+            $isRegistryComplete = ($runState -in @('Completed', 'CompletedWithWarnings', 'CompletedWithErrors'))
             # If state is Aborted, the abort handler owns cleanup -- skip completion processing
             if ($runState -eq 'Aborted') {
                 try { $script:BuildProgressTimer.Stop() } catch {}
@@ -12971,6 +12866,9 @@ $btn_Build.Add_Click({
                          ($runningState -eq 'CompletedWithErrors') -or
                          ($fCompJobs -lt $fTotalJobs)
             $isNoMatch = ($runningState -eq 'CompletedNoMatch')
+            # Every model finished, but a Latest Drivers package was incomplete -- either the deployed
+            # package was kept, or a partial first package was published. Not a success to report.
+            $hadWarnings = (-not $hadErrors) -and ($runningState -eq 'CompletedWithWarnings')
             # "Create .intunewin only" mode -- packages are built but intentionally not uploaded.
             $createWinOnlyActive = $false
             try {
@@ -13000,6 +12898,17 @@ $btn_Build.Add_Click({
                     [System.Windows.Media.ColorConverter]::ConvertFromString(
                         (Get-DATTheme -ThemeName $script:CurrentTheme)['StatusError']))
                 $txt_Status.Tag = 'StatusError'
+            } elseif ($hadWarnings) {
+                # Amber, like No Match: the build ran to the end, but something needs attention.
+                $pill_BuildStatus.SetResourceReference([System.Windows.Controls.Border]::BackgroundProperty, 'ButtonWarning')
+                $txt_BuildStatusIcon.Text = [string][char]0xE7BA  # Warning icon
+                $txt_BuildStatusIcon.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty, 'ButtonWarningForeground')
+                $txt_BuildStatusText.Text = "Warnings"
+                $txt_BuildStatusText.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty, 'ButtonWarningForeground')
+                $txt_Status.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+                    [System.Windows.Media.ColorConverter]::ConvertFromString(
+                        (Get-DATTheme -ThemeName $script:CurrentTheme)['StatusWarning']))
+                $txt_Status.Tag = 'StatusWarning'
             } else {
                 # Built-not-uploaded uses the warning button colours, whose text colour suits the amber
                 $successKey = if ($createWinOnlyActive) { 'ButtonWarning' } else { 'ButtonSuccess' }
@@ -13026,7 +12935,7 @@ $btn_Build.Add_Click({
             $btn_Abort.IsEnabled = $false
             $statusSuffix = if ($createWinOnlyActive -and -not $hadErrors -and -not $isNoMatch) { ' -- .intunewin built locally, upload to Intune skipped' } else { '' }
             $txt_Status.Text = "$finalMessage ($totalElapsed)$statusSuffix"
-            Write-DATActivityLog "$finalMessage (elapsed: $totalElapsed)$statusSuffix" -Level $(if ($hadErrors) { 'Error' } elseif ($isNoMatch -or ($createWinOnlyActive -and $statusSuffix)) { 'Warn' } else { 'Success' })
+            Write-DATActivityLog "$finalMessage (elapsed: $totalElapsed)$statusSuffix" -Level $(if ($hadErrors) { 'Error' } elseif ($isNoMatch -or $hadWarnings -or ($createWinOnlyActive -and $statusSuffix)) { 'Warn' } else { 'Success' })
 
             # Close build progress modal -- mark remaining as success if build succeeded (skip no-match)
             Close-DATBuildProgressModal -MarkAllSuccess:$(-not $hadErrors -and -not $isNoMatch)
@@ -13047,6 +12956,7 @@ $btn_Build.Add_Click({
                 Show-DATBuildSummaryDialog -TotalModels $fTotalJobs `
                     -DriverSuccess $sumDriverPkgs -BiosSuccess $sumBiosPkgs `
                     -PackageType $sumPkgType -Elapsed $totalElapsed -HadErrors $hadErrors `
+                    -HadWarnings $hadWarnings `
                     -Results $sumResults `
                     -UploadSkipped ($createWinOnlyActive -and -not $hadErrors -and -not $isNoMatch)
             } catch {
@@ -17389,10 +17299,10 @@ $ctx_PkgAddCustomDrivers.Add_Click({
 # sits above its own section's matches. Icon is a Segoe MDL2 Assets code point.
 $script:SettingsRailSections = [ordered]@{
     CommonSettings = [ordered]@{
-        General       = @{ Label = 'General';           Icon = 0xE9E9; Title = 'General & Appearance';      Description = 'How the tool looks and scales on your display.' }
+        General       = @{ Label = 'General';           Icon = 0xE9E9; Title = 'General & Appearance';      Description = 'How the tool looks and scales on your display, and where its desktop shortcut goes.' }
         Storage       = @{ Label = 'Storage';           Icon = 0xED25; Title = 'Storage & Housekeeping';    Description = 'Where downloads, packages and backups are kept, and how superseded content is cleaned up.' }
         Catalog       = @{ Label = 'Catalog & OEMs';    Icon = 0xE8FD; Title = 'Catalog & OEM Sources';     Description = 'Where the driver catalog comes from, and which manufacturers are offered.' }
-        Build         = @{ Label = 'Build & Packaging'; Icon = 0xE7B8; Title = 'Build & Packaging';         Description = 'How driver packages are built, downloaded and compressed, and the external tools used to do it.' }
+        Build         = @{ Label = 'Build & Packaging'; Icon = 0xE7B8; Title = 'Build & Packaging';         Description = 'How driver packages are built, downloaded and compressed, how the scripts generated for Intune and ConfigMgr are signed, and the external tools used to do it.' }
         Network       = @{ Label = 'Network';           Icon = 0xE774; Title = 'Network';                   Description = 'Proxy settings for catalog requests and downloads.' }
         Notifications = @{ Label = 'Notifications';     Icon = 0xEA8F; Title = 'Notifications & Telemetry'; Description = 'Teams notifications and anonymous usage telemetry.' }
         Logging       = @{ Label = 'Logging';           Icon = 0xE8A5; Title = 'Logging & Diagnostics';     Description = 'Log file size and how many log files are kept.' }
@@ -17406,7 +17316,7 @@ $script:SettingsRailSections = [ordered]@{
         App        = @{ Label = 'App Settings';    Icon = 0xE7B8; Title = 'App Settings';           Description = 'Whether packages are uploaded, and the icon and scope tags given to each Win32 app.' }
         Deployment = @{ Label = 'Deployment';      Icon = 0xE724; Title = 'Deployment & Targeting'; Description = 'Automatic assignment, target groups, IME notifications and assignment filters.' }
         Uploads    = @{ Label = 'Uploads';         Icon = 0xE898; Title = 'Uploads';                Description = 'How package content is uploaded to Intune: the AzCopy engine, chunk size and parallel uploads.' }
-        Signing    = @{ Label = 'Signing & Debug'; Icon = 0xEB95; Title = 'Signing & Debugging';    Description = 'Authenticode signing of the generated scripts, and debug output of the staged package content.' }
+        Debug      = @{ Label = 'Debug';           Icon = 0xEBE8; Title = 'Debugging';              Description = 'Debug output of the staged package content, for checking a package before it is uploaded. Code signing is in Common Settings, under Build & Packaging.' }
     }
     ToastNotifications = [ordered]@{
         Appearance  = @{ Label = 'Appearance';   Icon = 0xE790; Title = 'Appearance & Text'; Description = 'What users see: the theme, the text and the branding of each notification. The preview updates as you change them.' }
@@ -17820,15 +17730,34 @@ $txt_TemplatePermissionsWarning = $Window.FindName('txt_TemplatePermissionsWarni
 $btn_FixTemplatePermissions     = $Window.FindName('btn_FixTemplatePermissions')
 
 # One line per account, so an account holding two entries (the folder's own and the inherit-only
-# one for its contents) reads once with both rights.
+# one for its contents) reads once with both rights. Local administrators are never in the list
+# (#985); an account whose membership could not be confirmed is, and says so.
 function Format-DATTemplateExposureList {
     param([object[]]$Exposure)
     $lines = @()
     foreach ($group in @($Exposure | Group-Object -Property Identity)) {
         $rights = @($group.Group | ForEach-Object { $_.Rights } | Select-Object -Unique) -join '; '
-        $lines += "$($group.Name) ($rights)"
+        $line = "$($group.Name) ($rights)"
+        $unresolved = @($group.Group | Where-Object { "$($_.AdminCheck)" -eq 'Unresolved' } | Select-Object -First 1)
+        if ($unresolved.Count -gt 0) {
+            $line += " -- could not confirm $($group.Name) is a local administrator"
+            if (-not [string]::IsNullOrEmpty("$($unresolved[0].AdminCheckReason)")) { $line += ": $($unresolved[0].AdminCheckReason)" }
+        }
+        $lines += $line
     }
     return $lines
+}
+
+# Moving the tool under Program Files only helps when every reported entry is inherited from a
+# parent folder. An entry set on the tool folder itself goes wherever the folder goes, so then
+# the remedy is Fix Permissions or removing the entry (#985).
+function Get-DATTemplateExposureAlternative {
+    param([object[]]$Exposure)
+    $entries = @($Exposure | Where-Object { $null -ne $_ })
+    if ($entries.Count -gt 0 -and @($entries | Where-Object { -not $_.IsInherited }).Count -eq 0) {
+        return 'move the tool to a folder under Program Files'
+    }
+    return 'remove these entries from the tool folder (they are set on the folder itself, so moving the tool would not help)'
 }
 
 # Refreshes the banner and returns the current exposure. A folder whose permissions cannot be
@@ -17858,7 +17787,7 @@ function Update-DATTemplatePermissionsBanner {
         $txt_TemplatePermissionsWarning.Text = "These accounts can write to the install-script templates in '$AppRoot': $who. Builds continue because AllowUnprotectedTemplates is set, but any of them could change the install script that runs as SYSTEM on every targeted device. Fix Permissions removes their write access; they keep read access."
     } else {
         $txt_TemplatePermissionsTitle.Text = 'Tool folder can be changed by other accounts'
-        $txt_TemplatePermissionsWarning.Text = "These accounts can write to the install-script templates in '$AppRoot': $who. Intune packages and ConfigMgr applications will be refused until this is fixed, because their install scripts run as SYSTEM on every targeted device. Fix Permissions removes their write access (they keep read access), or move the tool under Program Files."
+        $txt_TemplatePermissionsWarning.Text = "These accounts can write to the install-script templates in '$AppRoot': $who. Intune packages and ConfigMgr applications will be refused until this is fixed, because their install scripts run as SYSTEM on every targeted device. Fix Permissions removes their write access (they keep read access), or $(Get-DATTemplateExposureAlternative -Exposure $exposure)."
     }
     $banner_TemplatePermissions.Visibility = 'Visible'
     return $exposure
@@ -17889,7 +17818,7 @@ function Invoke-DATFixTemplatePermissions {
             -ConfirmLabel 'Fix Permissions' -CancelLabel 'Cancel' `
             -Message ("This will change the permissions on:`n`n$AppRoot`n`n" +
                       "The folder will stop inheriting permissions from its parent (the current entries are kept), and these accounts will lose write access but keep read access:`n`n$who`n`n" +
-                      "SYSTEM, Administrators and your account keep full control. Apply now?")
+                      "SYSTEM, local administrators and your account keep full control. Apply now?")
         if (-not $confirm) { return $false }
     }
 
@@ -17917,9 +17846,11 @@ function Invoke-DATFixTemplatePermissions {
     }
     $problems = @(@($result.Errors) + @(Format-DATTemplateExposureList -Exposure @($result.Remaining) | ForEach-Object { "Still able to write: $_" }))
     Write-DATActivityLog "Fix tool folder permissions did not complete: $($problems -join ' | ')" -Level Warn
+    $stillExposed = if (@($result.Remaining).Count -gt 0) { @($result.Remaining) } else { $exposure }
+    $moveHint = if ((Get-DATTemplateExposureAlternative -Exposure $stillExposed) -like 'move *') { "`n`nor move the tool to a folder under Program Files." } else { '' }
     Show-DATInfoDialog -Title 'Permissions Not Fully Fixed' -Type Warning `
         -Message ("The tool folder permissions could not be fully corrected:`n`n" + (($problems | ForEach-Object { "  - $_" }) -join "`n") +
-                  "`n`nYou can correct them from an elevated command prompt:`n`n$manual`n`nor move the tool to a folder under Program Files.")
+                  "`n`nYou can correct them from an elevated command prompt:`n`n$manual$moveHint")
     return $false
 }
 
@@ -17938,7 +17869,7 @@ function Confirm-DATTemplatePermissionsPreflight {
     $fix = Show-DATConfirmDialog -Title 'Tool Folder Permissions' -Type Warning `
         -ConfirmLabel 'Fix Permissions' -CancelLabel "Cancel $label" `
         -Message ("This $Activity would be refused at the packaging step: other accounts can change the install-script templates in the tool folder, and those scripts run as SYSTEM on every targeted device.`n`n$who`n`n" +
-                  "Fix Permissions stops the tool folder ('$AppRoot') inheriting permissions from its parent, removes their write access (they keep read access) and then starts the $Activity. SYSTEM, Administrators and your account keep full control. Alternatively, move the tool to a folder under Program Files.")
+                  "Fix Permissions stops the tool folder ('$AppRoot') inheriting permissions from its parent, removes their write access (they keep read access) and then starts the $Activity. SYSTEM, local administrators and your account keep full control. Alternatively, $(Get-DATTemplateExposureAlternative -Exposure $exposure).")
     if (-not $fix) {
         Write-DATActivityLog "$label cancelled -- tool folder is writable by other accounts and permissions were not fixed" -Level Warn
         return $false
@@ -18503,6 +18434,18 @@ $chk_CleanTempOnExit.Add_Checked({
 $chk_CleanTempOnExit.Add_Unchecked({
     Set-DATRegistryValue -Name "CleanTempOnExit" -Value 0 -Type DWord
     Write-DATActivityLog "Clean temp on exit disabled" -Level Info
+})
+
+# Desktop shortcut location. The launcher reads DesktopShortcutCurrentUserOnly before the window
+# opens, so the shortcut moves -- and the one on the other desktop is removed -- at the next start.
+$chk_ShortcutCurrentUserOnly = $Window.FindName('chk_ShortcutCurrentUserOnly')
+$chk_ShortcutCurrentUserOnly.Add_Checked({
+    Set-DATRegistryValue -Name "DesktopShortcutCurrentUserOnly" -Value 1 -Type DWord
+    Write-DATActivityLog "Desktop shortcut set to your desktop only -- it moves from the Public desktop the next time the tool starts" -Level Info
+})
+$chk_ShortcutCurrentUserOnly.Add_Unchecked({
+    Set-DATRegistryValue -Name "DesktopShortcutCurrentUserOnly" -Value 0 -Type DWord
+    Write-DATActivityLog "Desktop shortcut set to the Public desktop -- it moves there the next time the tool starts" -Level Info
 })
 
 # Download Only extraction behaviour toggle
@@ -30369,6 +30312,16 @@ try {
             Write-Host "Enabled (Default)" -ForegroundColor Green
         }
 
+        # Restore Desktop Shortcut location
+        Write-Host "  Shortcut      : " -NoNewline -ForegroundColor DarkGray
+        if ($savedConfig.DesktopShortcutCurrentUserOnly -eq 1) {
+            $chk_ShortcutCurrentUserOnly.IsChecked = $true
+            Write-Host "Current user's desktop" -ForegroundColor White
+        } else {
+            $chk_ShortcutCurrentUserOnly.IsChecked = $false
+            Write-Host "Public desktop (Default)" -ForegroundColor Green
+        }
+
         # Restore Download Only extract content behaviour
         Write-Host "  DL Extract    : " -NoNewline -ForegroundColor DarkGray
         if ($null -ne $savedConfig.DownloadOnlyExtractContent -and $savedConfig.DownloadOnlyExtractContent -eq 0) {
@@ -30881,7 +30834,7 @@ if (Test-Path $logoPath) {
 
 # Read version from module manifest
 $manifestPath = Join-Path $AppRoot "Modules\DriverAutomationToolCore\DriverAutomationToolCore.psd1"
-$script:versionString = "v10.3.3"
+$script:versionString = "v10.3.4"
 if (Test-Path $manifestPath) {
     $manifestData = Import-PowerShellDataFile $manifestPath
     $ver = [version]$manifestData.ModuleVersion
@@ -32228,6 +32181,13 @@ $script:WhatsNewFeatures = @(
     # 10.3.3: the HPCMSL card reports a copy the elevated tool will not load, and Install Module
     # puts one where it will (S32)
     [pscustomobject]@{ Id = 'hpcmsl-trust-10.3.3';              Dot = 'dot_CommonSettings';     Parent = '';                   Pill = 'pill_HpcmslTrust';                Zone = 'zone_HpcmslTrust';                Controls = @('btn_InstallHpcmsl') }
+    # 10.3.4: Code Signing moved from Intune Package Options to Common Settings, and covers the
+    # ConfigMgr Application scripts too
+    [pscustomobject]@{ Id = 'code-signing-common-10.3.4';       Dot = 'dot_CommonSettings';     Parent = '';                   Pill = 'pill_CodeSigning';                Zone = 'zone_CodeSigning';                Controls = @('chk_CodeSigning', 'btn_BrowseCodeSigningCert') }
+    # 10.3.4: the Custom Driver Pack identity field fills Dell and Surface from the system SKU (#979)
+    [pscustomobject]@{ Id = 'custom-pack-sku-10.3.4';           Dot = 'dot_CustomDriverPack';   Parent = '';                   Pill = 'pill_CustomBaseboardSku';         Zone = 'zone_CustomBaseboardSku';         Controls = @('txt_CustomBaseBoard', 'btn_CustomRefreshWMI') }
+    # 10.3.4: the desktop shortcut can go on the running user's desktop instead of the Public one
+    [pscustomobject]@{ Id = 'shortcut-location-10.3.4';         Dot = 'dot_CommonSettings';     Parent = '';                   Pill = 'pill_ShortcutLocation';           Zone = 'zone_ShortcutLocation';           Controls = @('chk_ShortcutCurrentUserOnly') }
 )
 
 # Maps a wired element's x:Name to the feature id it clears, so plain (non-closure) handlers can
@@ -32327,11 +32287,19 @@ try { Initialize-DATWhatsNew } catch { Write-DATActivityLog "What's New init fai
 # (the IncrementVersion skill covers it, and Tests\UIApplication.Tests.ps1 asserts it matches the
 # module manifest). The modal is suppressed when it does not match the running build, so a missed
 # changelog update shows nothing rather than the previous release's features.
-$script:WhatsNewReleaseVersion = '10.3.3.0'
+$script:WhatsNewReleaseVersion = '10.3.4.0'
 $script:WhatsNewReleaseItems = @(
-    [pscustomobject]@{ Category = 'HP CMSL Signature Checks';  Text = 'Before every HP build, the tool now checks that HP CMSL and each HP module it loads are signed by HP, and refuses to load a copy that has been changed. Because the tool runs as administrator, it also no longer loads HP CMSL from a folder in your user profile, which programs running without administrator rights can change. If that is the only copy, the HPCMSL card in Common Settings says so, and Install Module installs it for all users.' }
-    [pscustomobject]@{ Category = 'HP SoftPaq Signatures';     Text = 'Every HP SoftPaq is checked for an HP signature before it is run to extract its drivers, including SoftPaqs downloaded by an earlier build. A SoftPaq that fails is deleted, and that model is not packaged, so no unverified driver goes into a package.' }
-    [pscustomobject]@{ Category = 'HP CMSL Installs';          Text = 'Installing or updating HP CMSL no longer marks the PowerShell Gallery as trusted for the whole machine, and keeps the PowerShell Gallery check that a new version comes from the same publisher. When the tool downloads the HP modules from the Gallery directly, it checks every file is signed by HP before copying anything into Program Files.' }
+    [pscustomobject]@{ Category = 'Code Signing for ConfigMgr';    Text = 'Code Signing has moved from Intune Package Options to Common Settings, under Build & Packaging, because it signs the scripts of ConfigMgr Applications as well as Intune apps. With it on, ConfigMgr clients that use the All Signed PowerShell execution policy (the client default) can run the detection and requirement scripts. It also fixes ConfigMgr Applications failing to be created while signing was on ("Cannot use a signed PowerShell script as an argument for the parameter ScriptText"). Toast test packages now have their detection and requirement scripts signed too.' }
+    [pscustomobject]@{ Category = 'Desktop Shortcut';               Text = 'Common Settings, under General, can now put the tool''s desktop shortcut on your own desktop only, instead of the Public desktop that everyone who signs in sees. The shortcut moves the next time the tool starts, and the one in the old location is removed.' }
+    [pscustomobject]@{ Category = 'Dell Latest Drivers';            Text = 'When endpoint protection or AppLocker stops a Dell driver package from unpacking itself, the tool now unpacks it with 7-Zip (if installed) without running it. When a package still fails, the failure report names the step that failed instead of a generic exit code.' }
+    [pscustomobject]@{ Category = 'Incomplete Builds';              Text = 'A Latest Drivers build that is missing drivers no longer replaces a package you already have. The existing package stays in use, the missing drivers are listed in View Failures, the next run tries again, and the build is reported as completed with warnings rather than successful.' }
+    [pscustomobject]@{ Category = 'Tool Folder Permissions';        Text = 'Local administrators, including members of domain groups added to the local Administrators group, are no longer reported as accounts that can change the tool folder (#985). Fix Permissions keeps your own access, and the message only suggests moving the tool under Program Files when that would help.' }
+    [pscustomobject]@{ Category = 'Duplicate BIOS Packages';        Text = 'The prompt to clean up duplicate BIOS packages now appears when the tool connects to the site server at startup. It previously failed before the window opened, so the duplicates were never offered for removal.' }
+    [pscustomobject]@{ Category = 'No Downgrades From the Catalog'; Text = 'When the catalog lists an older driver pack than the package or app you already have, the build now keeps your newer package instead of replacing it with the older version, and the log names both versions. Force Update still rebuilds at the catalog version if you want to roll back on purpose.' }
+    [pscustomobject]@{ Category = 'Models Without Baseboard IDs';   Text = 'Models the catalog lists without baseboard or SKU IDs no longer fail packaging. For Dell, the SystemID is looked up in Dell''s driver pack catalog. Otherwise the package is built and matched on the exact model name, with a warning in the log, and the BIOS package for that model is skipped.' }
+    [pscustomobject]@{ Category = 'Custom Driver Packs';            Text = 'On Dell and Surface devices, the Custom Driver Pack now fills in the system SKU, which is what the catalogs and the deployment rules match on, instead of the board part number. The field is now called Baseboard / SKU.' }
+    [pscustomobject]@{ Category = 'ConfigMgr Restart Safety';       Text = 'A device at its deferral limit now waits for its Remind Me Later snooze to end before the install is forced. Install-BIOS.ps1 refuses to run in WinPE. Surface devices keep BitLocker suspended for two restarts during a BIOS update, as Microsoft recommends. The reminder task no longer asks ConfigMgr to install while it is waiting for a maintenance window or a restart, or when nobody is signed in. A build config without a BIOS restart delay now uses 10 minutes, not 3.' }
+    [pscustomobject]@{ Category = 'Non-English Windows';            Text = 'The permission repair before WIM capture now answers takeown in the Windows display language, so it works on German, French and other non-English installations, where it previously did nothing.' }
 )
 
 function Get-DATWhatsNewModalShownVersion {

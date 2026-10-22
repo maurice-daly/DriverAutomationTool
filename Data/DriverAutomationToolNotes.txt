@@ -3,6 +3,18 @@ Driver Automation Tool - Release Notes
 IMPORTANT
 ** DAT Downloads have been moved to GitHub - https://github.com/maurice-daly/DriverAutomationTool **
 
+Version 10.3.4
+What's New & Fixed
+
+- Code Signing — the setting has moved from Intune Package Options to Common Settings, under Build & Packaging, because it signs the scripts of ConfigMgr Applications as well as Intune apps; with it on, ConfigMgr clients that use the All Signed PowerShell execution policy (the client default) can run the detection and requirement scripts, and toast test packages now have their detection and requirement scripts signed too.
+- ConfigMgr Applications — Applications are now created when code signing is on, instead of failing with "Cannot use a signed PowerShell script as an argument for the parameter ScriptText"; an Application this left without a deployment type is completed and its content distributed on the next build, instead of being skipped as already existing.
+- Desktop Shortcut — a new Common Settings option, under General, puts the tool's desktop shortcut on the desktop of the account running the tool instead of the Public desktop that everyone who signs in sees; the shortcut moves the next time the tool starts, the one in the old location is removed, and a shortcut problem no longer stops the tool from starting.
+- Dell Latest Drivers — Dell's newer driver packages have changed how they unpack: they hand the work to a bundled 7-Zip helper that runs without administrator rights and first checks it can write to the destination, so they fail where that account cannot write to the build folder or where endpoint protection or AppLocker blocks the helper; the tool now retries in a short working folder under C:\ProgramData\DriverAutomationTool that the helper can write to (previously C:\Windows\Temp, where it could not), then unpacks the package with 7-Zip itself (if installed) without running it, and when a package still fails, the failure report names the step that failed instead of a generic exit code.
+- Incomplete builds — a Latest Drivers build that is missing drivers no longer replaces a package or app you already have; the existing one stays in use, the missing drivers are listed in View Failures, the next run tries again, and the run is reported as completed with warnings instead of successful; a model's first build is still published, with a warning.
+- Tool folder permissions — local administrators, including members of domain groups added to the local Administrators group, are no longer reported as accounts that can change the tool folder; Fix Permissions keeps your own access, so two administrators no longer undo each other's, and the message only suggests moving the tool under Program Files when that would help. (#985)
+- Duplicate BIOS packages — the prompt to clean up duplicate BIOS packages now appears when the tool connects to the site server at startup, instead of failing before the window opened.
+- Custom Driver Pack — the page introduction now refers to the renamed Baseboard / SKU field.
+
 Version 10.3.3
 What's New & Fixed
 
