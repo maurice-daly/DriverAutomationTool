@@ -9578,7 +9578,9 @@ $btn_RefreshModels.Add_Click({
                         $entryOS = "$($entry.SupportedOS)".Trim()
                         # Empty SupportedOS without a download is an incomplete placeholder entry
                         if ([string]::IsNullOrEmpty($entryOS) -and [string]::IsNullOrEmpty($entry.DownloadURL)) { continue }
-                        $entryMajor = if ($entryOS -match '(?i)win(?:dows)?\s*(1[01])') { $Matches[1] } else { '' }
+                        # Every Windows version the entry names: Fujitsu lists some packs for both
+                        # ('Windows 11; Windows 10'), and taking only the first hid them for Windows 10
+                        $entryMajors = @([regex]::Matches($entryOS, '(?i)win(?:dows)?\s*(1[01])') | ForEach-Object { $_.Groups[1].Value } | Select-Object -Unique)
                         $entryBuild = ''
                         if ($entryOS -match '(?i)\b(\d{2}H\d)\b') {
                             $entryBuild = $Matches[1].ToUpper()
@@ -9600,21 +9602,23 @@ $btn_RefreshModels.Add_Click({
                             }
                             # An empty SupportedOS gives no Windows version: take it from the file name too
                             # (w11 / win11 / Win11), or leave the entry unmatched rather than guess.
-                            if ($entryBuild -and -not $entryMajor -and $entryFile -match '(?i)(?<![a-z0-9])w(?:in(?:dows)?)?_?(1[01])(?!\d)') { $entryMajor = $Matches[1] }
+                            if ($entryBuild -and $entryMajors.Count -eq 0 -and $entryFile -match '(?i)(?<![a-z0-9])w(?:in(?:dows)?)?_?(1[01])(?!\d)') { $entryMajors = @($Matches[1]) }
                         }
 
                         # Dell packs are build-agnostic by design: one row with Build 'All' (packaged as
                         # plain "Windows 11", so the generated scripts apply to every build).
+                        # Fujitsu publishes one pack per model for a Windows version, never per build,
+                        # so its generic entries get the same 'All' row for any selected build;
+                        # without this no Fujitsu model was listed for any Windows 11 build.
                         # Every other OEM is listed only for a build the catalog names. A generic entry
                         # ('Windows 11', 'win11 *', or empty) is not evidence of support for a specific
                         # build -- listing it for one showed e.g. 44 models for 26H2 from a catalog with
                         # no 26H2 entries -- so it appears only when the selected OS carries no build.
                         if ([string]::IsNullOrEmpty($entryBuild) -or $entry.Manufacturer -eq 'Dell') {
-                            $eligibleOS = if ($entry.Manufacturer -eq 'Dell') { @($OSList) } else { @($OSList | Where-Object { ($_ -split '\s+').Count -lt 3 }) }
+                            $eligibleOS = if ($entry.Manufacturer -in @('Dell', 'Fujitsu')) { @($OSList) } else { @($OSList | Where-Object { ($_ -split '\s+').Count -lt 3 }) }
                             $selectedMajors = @($eligibleOS | ForEach-Object { ($_ -split '\s+')[1] } | Select-Object -Unique)
                             $rowMajors = if ([string]::IsNullOrEmpty($entryOS)) { $selectedMajors }
-                                         elseif ($entryMajor -and ($selectedMajors -contains $entryMajor)) { @($entryMajor) }
-                                         else { @() }
+                                         else { @($entryMajors | Where-Object { $selectedMajors -contains $_ }) }
                             foreach ($rowMajor in $rowMajors) {
                                 $OEMSupportedModels += New-DATCatalogModelRow -Entry $entry -RowOS "Windows $rowMajor" -RowBuild 'All' -RowArchitecture $entryArchNorm
                             }
@@ -9629,7 +9633,7 @@ $btn_RefreshModels.Add_Click({
 
                             # Build-specific entry (generic ones were handled above): it must be for this
                             # Windows version and, when a build is selected, exactly that build.
-                            if (($entryMajor -eq $winNum) -and ((-not $WindowsBuild) -or ($entryBuild -eq $WindowsBuild))) {
+                            if (($entryMajors -contains $winNum) -and ((-not $WindowsBuild) -or ($entryBuild -eq $WindowsBuild))) {
                                 $OEMSupportedModels += New-DATCatalogModelRow -Entry $entry -RowOS $WindowsVersion -RowBuild $WindowsBuild -RowArchitecture $entryArchNorm
                             }
                         }
@@ -30834,7 +30838,7 @@ if (Test-Path $logoPath) {
 
 # Read version from module manifest
 $manifestPath = Join-Path $AppRoot "Modules\DriverAutomationToolCore\DriverAutomationToolCore.psd1"
-$script:versionString = "v10.3.4"
+$script:versionString = "v10.3.5"
 if (Test-Path $manifestPath) {
     $manifestData = Import-PowerShellDataFile $manifestPath
     $ver = [version]$manifestData.ModuleVersion
@@ -32188,6 +32192,8 @@ $script:WhatsNewFeatures = @(
     [pscustomobject]@{ Id = 'custom-pack-sku-10.3.4';           Dot = 'dot_CustomDriverPack';   Parent = '';                   Pill = 'pill_CustomBaseboardSku';         Zone = 'zone_CustomBaseboardSku';         Controls = @('txt_CustomBaseBoard', 'btn_CustomRefreshWMI') }
     # 10.3.4: the desktop shortcut can go on the running user's desktop instead of the Public one
     [pscustomobject]@{ Id = 'shortcut-location-10.3.4';         Dot = 'dot_CommonSettings';     Parent = '';                   Pill = 'pill_ShortcutLocation';           Zone = 'zone_ShortcutLocation';           Controls = @('chk_ShortcutCurrentUserOnly') }
+    # 10.3.5: the MMS Midway Edition, named on the About page as well as in the console banner
+    [pscustomobject]@{ Id = 'mms-edition-10.3.5';               Dot = 'dot_About';              Parent = '';                   Pill = 'pill_AboutEdition';               Zone = 'zone_AboutEdition';               Controls = @() }
 )
 
 # Maps a wired element's x:Name to the feature id it clears, so plain (non-closure) handlers can
@@ -32287,19 +32293,10 @@ try { Initialize-DATWhatsNew } catch { Write-DATActivityLog "What's New init fai
 # (the IncrementVersion skill covers it, and Tests\UIApplication.Tests.ps1 asserts it matches the
 # module manifest). The modal is suppressed when it does not match the running build, so a missed
 # changelog update shows nothing rather than the previous release's features.
-$script:WhatsNewReleaseVersion = '10.3.4.0'
+$script:WhatsNewReleaseVersion = '10.3.5.0'
 $script:WhatsNewReleaseItems = @(
-    [pscustomobject]@{ Category = 'Code Signing for ConfigMgr';    Text = 'Code Signing has moved from Intune Package Options to Common Settings, under Build & Packaging, because it signs the scripts of ConfigMgr Applications as well as Intune apps. With it on, ConfigMgr clients that use the All Signed PowerShell execution policy (the client default) can run the detection and requirement scripts. It also fixes ConfigMgr Applications failing to be created while signing was on ("Cannot use a signed PowerShell script as an argument for the parameter ScriptText"). Toast test packages now have their detection and requirement scripts signed too.' }
-    [pscustomobject]@{ Category = 'Desktop Shortcut';               Text = 'Common Settings, under General, can now put the tool''s desktop shortcut on your own desktop only, instead of the Public desktop that everyone who signs in sees. The shortcut moves the next time the tool starts, and the one in the old location is removed.' }
-    [pscustomobject]@{ Category = 'Dell Latest Drivers';            Text = 'When endpoint protection or AppLocker stops a Dell driver package from unpacking itself, the tool now unpacks it with 7-Zip (if installed) without running it. When a package still fails, the failure report names the step that failed instead of a generic exit code.' }
-    [pscustomobject]@{ Category = 'Incomplete Builds';              Text = 'A Latest Drivers build that is missing drivers no longer replaces a package you already have. The existing package stays in use, the missing drivers are listed in View Failures, the next run tries again, and the build is reported as completed with warnings rather than successful.' }
-    [pscustomobject]@{ Category = 'Tool Folder Permissions';        Text = 'Local administrators, including members of domain groups added to the local Administrators group, are no longer reported as accounts that can change the tool folder (#985). Fix Permissions keeps your own access, and the message only suggests moving the tool under Program Files when that would help.' }
-    [pscustomobject]@{ Category = 'Duplicate BIOS Packages';        Text = 'The prompt to clean up duplicate BIOS packages now appears when the tool connects to the site server at startup. It previously failed before the window opened, so the duplicates were never offered for removal.' }
-    [pscustomobject]@{ Category = 'No Downgrades From the Catalog'; Text = 'When the catalog lists an older driver pack than the package or app you already have, the build now keeps your newer package instead of replacing it with the older version, and the log names both versions. Force Update still rebuilds at the catalog version if you want to roll back on purpose.' }
-    [pscustomobject]@{ Category = 'Models Without Baseboard IDs';   Text = 'Models the catalog lists without baseboard or SKU IDs no longer fail packaging. For Dell, the SystemID is looked up in Dell''s driver pack catalog. Otherwise the package is built and matched on the exact model name, with a warning in the log, and the BIOS package for that model is skipped.' }
-    [pscustomobject]@{ Category = 'Custom Driver Packs';            Text = 'On Dell and Surface devices, the Custom Driver Pack now fills in the system SKU, which is what the catalogs and the deployment rules match on, instead of the board part number. The field is now called Baseboard / SKU.' }
-    [pscustomobject]@{ Category = 'ConfigMgr Restart Safety';       Text = 'A device at its deferral limit now waits for its Remind Me Later snooze to end before the install is forced. Install-BIOS.ps1 refuses to run in WinPE. Surface devices keep BitLocker suspended for two restarts during a BIOS update, as Microsoft recommends. The reminder task no longer asks ConfigMgr to install while it is waiting for a maintenance window or a restart, or when nobody is signed in. A build config without a BIOS restart delay now uses 10 minutes, not 3.' }
-    [pscustomobject]@{ Category = 'Non-English Windows';            Text = 'The permission repair before WIM capture now answers takeown in the Windows display language, so it works on German, French and other non-English installations, where it previously did nothing.' }
+    [pscustomobject]@{ Category = 'MMS Midway Edition'; Text = 'The console window that opens with the tool now shows the MMS logo and "MMS Midway Edition" under the Driver Automation Tool banner, and the About page names the edition under the version. Consoles that cannot show colour, or output that is redirected to a file, get the edition name as plain text instead.' }
+    [pscustomobject]@{ Category = 'Fujitsu Models';     Text = 'Fujitsu models are listed again when a Windows 11 build is selected. Fujitsu publishes one driver pack per model for Windows 11 rather than one per build, so the list showed no Fujitsu models for any build. They now appear with Build All, like Dell, and the package applies to every Windows 11 build. Packs that Fujitsu lists for both Windows 10 and Windows 11 now appear for Windows 10 too.' }
 )
 
 function Get-DATWhatsNewModalShownVersion {

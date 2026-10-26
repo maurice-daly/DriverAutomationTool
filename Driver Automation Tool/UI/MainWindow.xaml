@@ -1064,7 +1064,7 @@
                                    Foreground="{DynamicResource AccentColor}" VerticalAlignment="Center" Margin="0,0,8,0"/>
                         <TextBlock Text="Driver Automation Tool" FontSize="13" FontWeight="SemiBold"
                                    Foreground="{DynamicResource WindowForeground}" VerticalAlignment="Center"/>
-                        <TextBlock x:Name="txt_Version" Text=" Version 10.3.4" FontSize="11"
+                        <TextBlock x:Name="txt_Version" Text=" Version 10.3.5" FontSize="11"
                                    Foreground="{DynamicResource InputPlaceholder}" VerticalAlignment="Center" Margin="4,0"/>
                     </StackPanel>
 
@@ -1294,6 +1294,7 @@
                                 <StackPanel Orientation="Horizontal">
                                     <TextBlock Text="&#xE946;" Style="{StaticResource NavIcon}"/>
                                     <TextBlock Text="About" Style="{StaticResource NavLabel}"/>
+                                    <Ellipse x:Name="dot_About" Width="7" Height="7" Fill="{DynamicResource AccentColor}" Margin="8,0,0,0" VerticalAlignment="Center" Visibility="Collapsed"/>
                                 </StackPanel>
                             </Button>
                         </StackPanel>
@@ -8360,8 +8361,15 @@
                                     <StackPanel>
                                         <TextBlock Text="Driver Automation Tool" FontSize="22" FontWeight="Bold"
                                                    Foreground="{DynamicResource AccentColor}" Margin="0,0,0,4"/>
-                                        <TextBlock x:Name="txt_AboutVersion" Text="Version 10.3.4" FontSize="14"
-                                                   Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,16"/>
+                                        <TextBlock x:Name="txt_AboutVersion" Text="Version 10.3.5" FontSize="14"
+                                                   Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,4"/>
+                                        <StackPanel x:Name="zone_AboutEdition" Orientation="Horizontal" Background="Transparent" Margin="0,0,0,16">
+                                            <TextBlock x:Name="txt_AboutEdition" Text="MMS Midway Edition" FontSize="14" FontWeight="SemiBold"
+                                                       Foreground="{DynamicResource WindowForeground}" VerticalAlignment="Center"/>
+                                            <Border x:Name="pill_AboutEdition" Visibility="Collapsed" Background="{DynamicResource AccentColor}" CornerRadius="8" Padding="7,1,7,2" Margin="8,0,0,0" VerticalAlignment="Center">
+                                                <TextBlock Text="New" FontSize="10" FontWeight="SemiBold" Foreground="White"/>
+                                            </Border>
+                                        </StackPanel>
 
                                         <TextBlock TextWrapping="Wrap" FontSize="13"
                                                    Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,16">

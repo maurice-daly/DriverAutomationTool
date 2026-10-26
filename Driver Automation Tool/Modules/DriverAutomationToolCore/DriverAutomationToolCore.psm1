@@ -4,7 +4,7 @@
      Organization:  MSEndpointMgr / Patch My PC
      Filename:      DriverAutomationToolCore.psm1
      Purpose:       Core functions for Driver Automation Tool v2.0
-     Version:       10.3.4.0
+     Version:       10.3.5.0
     ===========================================================================
 #>
 
@@ -37,8 +37,8 @@ if ($PSVersionTable.PSVersion.Major -le 5) {
 
 #region Variables
 
-[version]$global:ScriptRelease = "10.3.4.0"
-$global:ScriptBuildDate = "21-10-2026"
+[version]$global:ScriptRelease = "10.3.5.0"
+$global:ScriptBuildDate = "26-10-2026"
 $global:ReleaseNotesURL = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/DriverAutomationToolNotes.txt"
 $global:DATConfigUrl = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/refs/heads/master/Data/DATAPIConfig.json"
 $OEMLinksURL = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/OEMLinks.xml"
@@ -643,6 +643,9 @@ function Test-DATCatalogOSMatch {
     )
     $targetMajor = ($WindowsVersion -replace '[^\d]', '')   # '10' or '11'
     if ([string]::IsNullOrEmpty($targetMajor)) { return $true }   # no version constraint supplied
+    # An entry can name more than one version (Fujitsu: 'Windows 11; Windows 10'); any of them matches
+    $entryMajors = @([regex]::Matches("$SupportedOS", '(?i)win(?:dows)?\s*(1[01])') | ForEach-Object { $_.Groups[1].Value })
+    if ($entryMajors.Count -gt 1) { return ($entryMajors -contains $targetMajor) }
     $entryMajor = Get-DATCatalogOSMajor -SupportedOS $SupportedOS
     if ([string]::IsNullOrEmpty($entryMajor)) { return $false }   # undeterminable -> exclude (as before)
     return ($entryMajor -eq $targetMajor)

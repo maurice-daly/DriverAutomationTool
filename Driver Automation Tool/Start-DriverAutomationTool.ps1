@@ -104,25 +104,139 @@ if (-not $isAdmin) {
     exit 1
 }
 
-# Display launch banner
-$banner = @"
+function ConvertTo-DATConsolePixelMap {
+    <#
+    .SYNOPSIS
+        Draws a hand-made pixel map as console text, for the launch banner.
+    .DESCRIPTION
+        Each string in -Map is one row of pixels; each character is looked up in -Palette
+        (character -> 0xRRGGBB), and characters not in the palette are transparent, showing
+        the console background. Each character cell shows two pixels stacked, drawn with
+        half-block characters in 24-bit VT colour, so pixels stay square. Returns one string
+        per text row; every row ends with a colour reset.
+    #>
+    [CmdletBinding()]
+    [OutputType([string[]])]
+    param (
+        [Parameter(Mandatory)][string[]]$Map,
+        [Parameter(Mandatory)][hashtable]$Palette
+    )
 
-    ____       _                                   
-   / __ \_____(_)   _____  _____                   
-  / / / / ___/ / | / / _ \/ ___/                   
- / /_/ / /  / /| |/ /  __/ /                       
-/_____/_/  /_/ |___/\___/_/              __  _      
+    $width = ($Map | Measure-Object -Property Length -Maximum).Maximum
+    # Pixel colour, or -1 for transparent (including past the end of a short or odd last row)
+    $pixelAt = {
+        param ([int]$X, [int]$Y)
+        if ($Y -ge $Map.Count -or $X -ge $Map[$Y].Length) { return -1 }
+        $key = [string]$Map[$Y][$X]
+        if ($Palette.ContainsKey($key)) { return [int]$Palette[$key] }
+        return -1
+    }
+
+    # Escape and block characters by code point: PS 5.1 reads a BOM-less script as Windows-1252
+    $esc = [char]27
+    $upperHalf = [char]0x2580
+    $lowerHalf = [char]0x2584
+    $rows = for ($y = 0; $y -lt $Map.Count; $y += 2) {
+        $line = [System.Text.StringBuilder]::new()
+        for ($x = 0; $x -lt $width; $x++) {
+            $top = & $pixelAt $x $y
+            $bottom = & $pixelAt $x ($y + 1)
+            $topRgb = "$(($top -shr 16) -band 255);$(($top -shr 8) -band 255);$($top -band 255)"
+            $bottomRgb = "$(($bottom -shr 16) -band 255);$(($bottom -shr 8) -band 255);$($bottom -band 255)"
+            if ($top -ge 0 -and $bottom -ge 0) {
+                [void]$line.Append("$esc[38;2;${topRgb};48;2;${bottomRgb}m$upperHalf")
+            } elseif ($top -ge 0) {
+                [void]$line.Append("$esc[49;38;2;${topRgb}m$upperHalf")
+            } elseif ($bottom -ge 0) {
+                [void]$line.Append("$esc[49;38;2;${bottomRgb}m$lowerHalf")
+            } else {
+                [void]$line.Append("$esc[0m ")
+            }
+        }
+        [void]$line.Append("$esc[0m")
+        $line.ToString()
+    }
+    return $rows
+}
+
+function Write-DATLaunchBanner {
+    <#
+    .SYNOPSIS
+        Writes the launch banner: "Driver Automation Tool" in ASCII art, then the MMS logo with
+        "MMS Midway Edition" beside it.
+    .DESCRIPTION
+        The MMS logo is drawn only when the console understands VT colour codes and output is
+        not redirected; otherwise "MMS Midway Edition" is written on its own. The logo is a
+        pixel map in this function, so it needs no image file. The banner never stops the tool
+        starting.
+    #>
+    [CmdletBinding()]
+    param ()
+
+    $banner = @"
+
+    ____       _
+   / __ \_____(_)   _____  _____
+  / / / / ___/ / | / / _ \/ ___/
+ / /_/ / /  / /| |/ /  __/ /
+/_____/_/  /_/ |___/\___/_/              __  _
    /   | __  __/ /_____  ____ ___  ____/ /_(_)___  ____
   / /| |/ / / / __/ __ \/ __ ``__ \/ __  / __/ / __ \/ __ \
  / ___ / /_/ / /_/ /_/ / / / / / / /_/ / /_/ / /_/ / / / /
-/_/  |_\__,_/\__/\____/_/ /_/ /_/\__,_/\__/_/\____/_/ /_/ 
-  /_  __/___  ____  / /                            
-   / / / __ \/ __ \/ /                             
-  / / / /_/ / /_/ / /                              
- /_/  \____/\____/_/                               
+/_/  |_\__,_/\__/\____/_/ /_/ /_/\__,_/\__/_/\____/_/ /_/
+  /_  __/___  ____  / /
+   / / / __ \/ __ \/ /
+  / / / /_/ / /_/ / /
+ /_/  \____/\____/_/
 
 "@
-Write-Host $banner -ForegroundColor Cyan
+    Write-Host $banner -ForegroundColor Cyan
+
+    $edition = 'MMS Midway Edition'
+    # MMS logo: '#' white lettering, '.' red speech bubble, ' ' console background
+    $mmsMap = @(
+        '.............................',
+        '.............................',
+        '..##....##.##....##..#######.',
+        '..###..###.###..###.##.......',
+        '..########.########.##.......',
+        '..##.##.##.##.##.##..######..',
+        '..##....##.##....##.......##.',
+        '..##....##.##....##.......##.',
+        '..##....##.##....##.#######..',
+        '.............................',
+        '.............................',
+        '  ....                       ',
+        '  ...                        ',
+        '  ..                         ',
+        '  .                          '
+    )
+
+    $useImages = $false
+    try { $useImages = (-not [Console]::IsOutputRedirected) -and ($Host.UI.SupportsVirtualTerminal -eq $true) } catch { }
+    if (-not $useImages) {
+        Write-Host "  $edition" -ForegroundColor Red
+        Write-Host ''
+        return
+    }
+
+    $mmsLines = @(ConvertTo-DATConsolePixelMap -Map $mmsMap -Palette @{ '#' = 0xFFFFFF; '.' = 0xFF0000 })
+    $esc = [char]27
+    # The text sits on the row through the middle of the lettering
+    $editionRow = 2
+    for ($i = 0; $i -lt $mmsLines.Count; $i++) {
+        $text = if ($i -eq $editionRow) { "   $esc[1;97m$edition$esc[0m" } else { '' }
+        Write-Host "  $($mmsLines[$i])$text"
+    }
+    Write-Host ''
+}
+
+# Display launch banner
+try {
+    Write-DATLaunchBanner
+} catch {
+    Write-Host 'Driver Automation Tool -- MMS Midway Edition' -ForegroundColor Cyan
+}
 
 # Set install directory in registry
 $OldRegPath = "HKLM:\SOFTWARE\MSEndpointMgr\DriverAutomationTool"

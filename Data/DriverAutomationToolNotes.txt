@@ -3,6 +3,12 @@ Driver Automation Tool - Release Notes
 IMPORTANT
 ** DAT Downloads have been moved to GitHub - https://github.com/maurice-daly/DriverAutomationTool **
 
+Version 10.3.5
+What's New & Fixed
+
+- MMS Midway Edition — the console window that opens with the tool now shows the MMS logo and "MMS Midway Edition" under the Driver Automation Tool banner, and the About page names the edition under the version.
+- Fujitsu models — Fujitsu models are listed again when a Windows 11 build is selected; Fujitsu publishes one driver pack per model for Windows 11 rather than one per build, so they now appear with Build All, like Dell, and the package applies to every Windows 11 build. Packs Fujitsu lists for both Windows 10 and Windows 11 now appear for Windows 10 too.
+
 Version 10.3.4
 What's New & Fixed
 
