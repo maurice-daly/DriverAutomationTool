@@ -30838,7 +30838,7 @@ if (Test-Path $logoPath) {
 
 # Read version from module manifest
 $manifestPath = Join-Path $AppRoot "Modules\DriverAutomationToolCore\DriverAutomationToolCore.psd1"
-$script:versionString = "v10.3.5"
+$script:versionString = "v10.3.6"
 if (Test-Path $manifestPath) {
     $manifestData = Import-PowerShellDataFile $manifestPath
     $ver = [version]$manifestData.ModuleVersion
@@ -32293,10 +32293,16 @@ try { Initialize-DATWhatsNew } catch { Write-DATActivityLog "What's New init fai
 # (the IncrementVersion skill covers it, and Tests\UIApplication.Tests.ps1 asserts it matches the
 # module manifest). The modal is suppressed when it does not match the running build, so a missed
 # changelog update shows nothing rather than the previous release's features.
-$script:WhatsNewReleaseVersion = '10.3.5.0'
+$script:WhatsNewReleaseVersion = '10.3.6.0'
+# Set to $true only for a release whose items have no place in the UI to highlight (fixes to
+# downloads and the like). Tests\UIApplication.Tests.ps1 then accepts a release with no
+# $script:WhatsNewFeatures entry; reset it to $false at the next bump.
+$script:WhatsNewReleaseHasNoUIFeatures = $true
 $script:WhatsNewReleaseItems = @(
-    [pscustomobject]@{ Category = 'MMS Midway Edition'; Text = 'The console window that opens with the tool now shows the MMS logo and "MMS Midway Edition" under the Driver Automation Tool banner, and the About page names the edition under the version. Consoles that cannot show colour, or output that is redirected to a file, get the edition name as plain text instead.' }
-    [pscustomobject]@{ Category = 'Fujitsu Models';     Text = 'Fujitsu models are listed again when a Windows 11 build is selected. Fujitsu publishes one driver pack per model for Windows 11 rather than one per build, so the list showed no Fujitsu models for any build. They now appear with Build All, like Dell, and the package applies to every Windows 11 build. Packs that Fujitsu lists for both Windows 10 and Windows 11 now appear for Windows 10 too.' }
+    [pscustomobject]@{ Category = 'Acer Downloads';     Text = 'Acer driver packs are no longer downloaded again on every run. Acer''s download server reports the wrong size for every file, so a pack already on disk never matched and was deleted, progress showed "of 0 MB", and each download logged a false size mismatch. The tool now asks the server for the real size, so a pack you already have is reused and progress shows the true total.' }
+    [pscustomobject]@{ Category = 'Fujitsu Downloads';  Text = 'Fujitsu driver packs and BIOS updates download again. Fujitsu replaced its download site and the old download pages the tool used stopped working; the tool now downloads each file from the new site''s direct link, still checked against Fujitsu''s published hash. If Fujitsu returns a web page instead of the file, the build stops with a clear message rather than an unexplained error.' }
+    [pscustomobject]@{ Category = 'Fujitsu BIOS Packages'; Text = 'Fujitsu BIOS updates are now found for each model. Fujitsu''s full model names (for example CELSIUS H7613) were split at the space, so no Fujitsu BIOS ever matched. A model with no BIOS of its own now gets none, instead of another model''s firmware from the same driver pack.' }
+    [pscustomobject]@{ Category = 'Fujitsu BIOS Installs'; Text = 'LIFEBOOK and CELSIUS H BIOS updates are now packaged and installed silently with Fujitsu''s DskFlash tool. Only a newer BIOS is applied, BitLocker is suspended for two restarts, the restart goes through the tool''s own restart handling, and the install retries later when the device is on battery or needs a restart first. Fujitsu BIOS updates that cannot install silently from Windows, such as desktop USB/UEFI packs, are skipped with a warning.' }
 )
 
 function Get-DATWhatsNewModalShownVersion {

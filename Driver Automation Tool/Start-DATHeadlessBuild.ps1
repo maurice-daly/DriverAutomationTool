@@ -182,7 +182,7 @@ if ($config.Platform -in @('Configuration Manager', 'Intune') -and @($headlessMo
                 if ($m.OEM -eq 'Microsoft') { continue }
                 $bb = if ($m.Baseboards -is [array]) { $m.Baseboards -join ',' } else { [string]$m.Baseboards }
                 if ([string]::IsNullOrEmpty($bb)) { continue }
-                $biosMatch = Find-DATBiosPackage -OEM $m.OEM -Baseboards $bb -Catalog $headlessBiosCatalog
+                $biosMatch = Find-DATBiosPackage -OEM $m.OEM -Baseboards $bb -Model ([string]$m.Model) -Catalog $headlessBiosCatalog
                 if ($biosMatch -and -not [string]::IsNullOrEmpty($biosMatch.Version)) { $m.BIOSVersion = $biosMatch.Version }
             }
         } catch {

@@ -279,6 +279,9 @@
 						 - With a site code set, the AdminService driver package and driver fallback package queries also filter on SourceSite, and the XMLPackage logic file entries are filtered on the PackageID prefix, so only packages created at that site are considered.
 						 - The site code must be three letters or digits. An invalid value read from the task sequence variable stops the run with guidance rather than silently matching nothing.
 						 - Without a site code nothing changes: packages from every site are considered, as before.
+	4.3.7 - (2026-10-17) - Made matching explicit for driver packages built for a model with no baseboard IDs (issue #979):
+						 - The Driver Automation Tool now builds a package for a model whose OEM catalog published no baseboard/SKU IDs, instead of failing, and writes 'no baseboard IDs published, matched on model name' into the description where the list would be. In SystemSKU detection mode such a package now goes straight to the computer model match, with a log line saying why, rather than reaching it only because its description happened not to match the device SKU.
+						 - The detection result is reset for each package. A package skipped for missing SystemSKU values in its description previously kept the result of the package processed before it, so it could be selected on that package's match.
 #>
 [CmdletBinding(SupportsShouldProcess = $true, DefaultParameterSetName = "BareMetal")]
 param(
@@ -2221,10 +2224,17 @@ public class DATPinnedCertificateValidation
 			}
 			Write-CMLogEntry -Value "[DriverPackage:$($DriverPackageDetails.PackageID)]: Processing driver package with $($DetectionMethodsCount) detection methods: $($DriverPackageDetails.PackageName)" -Severity 1
 			
+			# Reset per package: a package skipped below for missing SystemSKU values must not inherit the previous package's match result
+			$ComputerDetectionMethodResult = $null
 			switch ($ComputerDetectionMethod) {
 				"SystemSKU" {
 					if ([string]::IsNullOrEmpty($DriverPackageDetails.SystemSKU)) {
 						Write-CMLogEntry -Value "[DriverPackage:$($DriverPackageDetails.PackageID)]: Driver package was skipped due to missing SystemSKU values in description field" -Severity 2
+					}
+					elseif ($DriverPackageDetails.SystemSKU -match "no baseboard IDs published") {
+						# Built by the Driver Automation Tool for a model whose OEM catalog published no baseboard IDs: the description says so instead of listing any (issue #979), so match on computer model
+						Write-CMLogEntry -Value "[DriverPackage:$($DriverPackageDetails.PackageID)]: Driver package description lists no SystemSKU values (none were published for this model), matching on computer model instead" -Severity 1
+						$ComputerDetectionMethodResult = Confirm-ComputerModel -DriverPackageInput $DriverPackageDetails.Model -ComputerData $ComputerData
 					}
 					else {
 						# Attempt to match against SystemSKU
@@ -3034,7 +3044,7 @@ public class DATPinnedCertificateValidation
 	}
 	
 	Write-CMLogEntry -Value "[ApplyDriverPackage]: Apply Driver Package process initiated" -Severity 1
-	Write-CMLogEntry -Value " - Script version: 4.3.6" -Severity 1
+	Write-CMLogEntry -Value " - Script version: 4.3.7" -Severity 1
 	if ($PSCmdLet.ParameterSetName -like "Debug") {
 		Write-CMLogEntry -Value " - Apply driver package process initiated in debug mode" -Severity 1
 	}

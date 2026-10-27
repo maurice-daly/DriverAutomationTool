@@ -3,6 +3,14 @@ Driver Automation Tool - Release Notes
 IMPORTANT
 ** DAT Downloads have been moved to GitHub - https://github.com/maurice-daly/DriverAutomationTool **
 
+Version 10.3.6
+What's New & Fixed
+
+- Acer downloads — Acer driver packs are no longer downloaded again on every run, and download progress shows the real file size; the size is now read from the start of the download itself, because Acer's servers report a wrong size when asked for it separately.
+- Fujitsu downloads — Fujitsu driver packs and BIOS updates download again; Fujitsu replaced its download site and the old download pages stopped working, so the tool now downloads each file from the new site's direct link, still checked against Fujitsu's published hash, and models from a catalog saved before the change use the new link for the same file; if Fujitsu returns a web page instead of the file, the build stops with a clear message instead of an unexplained error.
+- Fujitsu BIOS packages — Fujitsu BIOS updates are now found for each model; before, Fujitsu's full model names (for example CELSIUS H7613) were split at the space, so no Fujitsu BIOS ever matched, and a model with no BIOS of its own now gets none instead of another model's firmware from the same driver pack.
+- Fujitsu BIOS installs — BIOS Admin Pack updates (LIFEBOOK notebooks and CELSIUS H mobile workstations) are now packaged and installed silently with Fujitsu's DskFlash tool; the installer compares the release number (or the release date) so only a newer BIOS is applied, suspends BitLocker for two restarts, restarts through the tool's own restart handling instead of DskFlash rebooting the device, and retries on a later cycle when the device is on battery or needs a restart first; Fujitsu BIOS updates that cannot be installed silently from Windows (desktop USB/UEFI packs and interactive updaters) are skipped with a warning to use Fujitsu's own tools.
+
 Version 10.3.5
 What's New & Fixed
 

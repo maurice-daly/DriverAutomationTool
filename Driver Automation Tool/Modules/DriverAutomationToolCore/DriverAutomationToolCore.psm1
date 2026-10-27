@@ -4,7 +4,7 @@
      Organization:  MSEndpointMgr / Patch My PC
      Filename:      DriverAutomationToolCore.psm1
      Purpose:       Core functions for Driver Automation Tool v2.0
-     Version:       10.3.5.0
+     Version:       10.3.6.0
     ===========================================================================
 #>
 
@@ -37,8 +37,8 @@ if ($PSVersionTable.PSVersion.Major -le 5) {
 
 #region Variables
 
-[version]$global:ScriptRelease = "10.3.5.0"
-$global:ScriptBuildDate = "26-10-2026"
+[version]$global:ScriptRelease = "10.3.6.0"
+$global:ScriptBuildDate = "27-10-2026"
 $global:ReleaseNotesURL = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/DriverAutomationToolNotes.txt"
 $global:DATConfigUrl = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/refs/heads/master/Data/DATAPIConfig.json"
 $OEMLinksURL = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/OEMLinks.xml"
@@ -166,6 +166,53 @@ function Get-DATHttpClientHandler {
     }
 
     return $handler
+}
+
+function Get-DATRemoteFileSize {
+    <#
+    .SYNOPSIS
+        Returns a remote file's size in bytes, or 0 when it cannot be confirmed.
+    .DESCRIPTION
+        Sends a one-byte ranged GET and trusts only the total in a 206 Content-Range.
+        HEAD is not reliable: Acer's Akamai NetStorage answers every HEAD with
+        200 / Content-Length: 20, even for files that do not exist, and serves a
+        200 soft-404 page (no Content-Range) to a ranged GET for a missing file.
+
+        HttpClient with ResponseHeadersRead, not Invoke-WebRequest: a server that ignores the
+        range answers 200 with the whole file, and Invoke-WebRequest would download all of it.
+        Callers treat 0 as "size unknown".
+    #>
+    [CmdletBinding()]
+    [OutputType([long])]
+    param (
+        [Parameter(Mandatory)][string]$Url
+    )
+
+    $handler = Get-DATHttpClientHandler
+    # No compression: a gzip-encoded range would report the encoded length.
+    $handler.AutomaticDecompression = [System.Net.DecompressionMethods]::None
+    $client = [System.Net.Http.HttpClient]::new($handler)
+    $client.Timeout = [TimeSpan]::FromSeconds(30)
+    $request = [System.Net.Http.HttpRequestMessage]::new([System.Net.Http.HttpMethod]::Get, $Url)
+    $request.Headers.Range = [System.Net.Http.Headers.RangeHeaderValue]::new(0, 0)
+    try {
+        $response = $client.SendAsync($request, [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead).GetAwaiter().GetResult()
+        try {
+            $range = $response.Content.Headers.ContentRange
+            if ([int]$response.StatusCode -eq 206 -and $null -ne $range -and $range.HasLength -and $range.Length -gt 0) {
+                return [long]$range.Length
+            }
+            return [long]0
+        } finally {
+            $response.Dispose()
+        }
+    } catch {
+        Write-DATLogEntry -Value "[Warning] - Size probe failed for $Url : $($_.Exception.Message)" -Severity 2
+        return [long]0
+    } finally {
+        $request.Dispose()
+        $client.Dispose()
+    }
 }
 
 function Get-DATCurlProxyArgs {
@@ -1168,21 +1215,14 @@ function Invoke-DATContentDownload {
     if ($leafName -match '\?') { $leafName = ($leafName -split '\?')[0] }
     $DownloadDestination = Join-Path -Path "$DownloadDestination" -ChildPath $leafName
 
+    # Size from a ranged GET, not HEAD: Acer answers every HEAD with Content-Length: 20, which
+    # deleted good cached packs, showed "of 0 MB" progress and logged a false size mismatch.
     $DownloadSize = [long]0
     if (-not $PostData) {
-    try {
-        $proxyParams = Get-DATWebRequestProxy
-        $DownloadState = Invoke-WebRequest -Uri $DownloadURL -Method Head -UseBasicParsing -TimeoutSec 30 @proxyParams
-        if ($DownloadState.StatusCode -eq "200") {
-            $DownloadHeaders = $DownloadState | Select-Object -ExpandProperty Headers
-            $contentLength = $DownloadHeaders.'Content-Length'
-            # Content-Length may be a string array in PS7; take the first value
-            if ($contentLength -is [array]) { $contentLength = $contentLength[0] }
-            if ($contentLength) { $DownloadSize = [long]$contentLength }
+        $DownloadSize = Get-DATRemoteFileSize -Url $DownloadURL
+        if ($DownloadSize -le 0) {
+            Write-DATLogEntry -Value "- Remote size unavailable; continuing with size unknown" -Severity 2
         }
-    } catch {
-        Write-DATLogEntry -Value "[Warning] - HEAD request failed, size unknown: $($_.Exception.Message)" -Severity 2
-    }
     }
 
     # Skip if already downloaded: size matches, or size unknown but file exists (trust it)
@@ -8255,7 +8295,7 @@ function Start-DATModelProcessing {
                 # cached JSON file and this is the exact match the download path uses, so doing
                 # it here makes skip-if-current reliable regardless of the pre-fetch outcome.
                 $biosCatalog = Get-DATBiosCatalog
-                $biosEntry = Find-DATBiosPackage -OEM $oem -Baseboards $baseboards -Catalog $biosCatalog
+                $biosEntry = Find-DATBiosPackage -OEM $oem -Baseboards $baseboards -Model $modelName -Catalog $biosCatalog
                 if ($biosEntry -and -not [string]::IsNullOrEmpty($biosEntry.Version) -and [string]::IsNullOrEmpty($catalogBIOSVersion)) {
                     $catalogBIOSVersion = $biosEntry.Version
                     Write-DATLogEntry -Value "[$currentIndex/$totalModels] Resolved catalog BIOS version v$catalogBIOSVersion for $oem $modelName from BIOS catalog" -Severity 1
@@ -8373,8 +8413,20 @@ function Start-DATModelProcessing {
                     Set-DATRegistryValue -Name "RunningMode" -Value "Download" -Type String
                     $biosFilePath = @(Start-DATBiosDownload -BiosEntry $biosEntry -DownloadDestination $biosDownloadDir -OEM $oem)[-1]
 
+                    # Only Fujitsu's BIOS Admin Pack (DskFlash + .bup) can be flashed from Windows; a
+                    # desktop USB/UEFI pack or an interactive updater would package fine and then fail
+                    # on every device, so it is skipped here instead.
+                    $fujitsuNotFlashable = $null
+                    if ($oem -eq 'Fujitsu' -and -not [string]::IsNullOrEmpty($biosFilePath)) {
+                        $fujitsuCheck = Test-DATFujitsuBiosFlashable -BiosFilePath $biosFilePath
+                        if (-not $fujitsuCheck.Flashable) { $fujitsuNotFlashable = $fujitsuCheck.Reason }
+                    }
+
                     if ([string]::IsNullOrEmpty($biosFilePath)) {
                         Write-DATLogEntry -Value "[Warning] - BIOS download failed for $oem $modelName -- skipping BIOS" -Severity 2
+                    } elseif ($fujitsuNotFlashable) {
+                        Write-DATLogEntry -Value "[Warning] - $oem $modelName BIOS v$($biosEntry.Version) cannot be deployed silently from Windows -- $fujitsuNotFlashable. Skipping BIOS; update this model's BIOS with Fujitsu's own tools." -Severity 2
+                        Set-DATRegistryValue -Name "RunningMessage" -Value "BIOS skipped (no silent Windows update from Fujitsu): $oem $modelName" -Type String
                     } else {
                         # Package the BIOS exe (extract HP/Lenovo, direct for Dell)
                         # ConfigMgr: stage files directly | Intune: compress into WIM
@@ -12675,21 +12727,64 @@ function Invoke-DATLenovoLatestDriverPackage {
     return $buildVersion
 }
 
+function ConvertTo-DATFujitsuDirectUrl {
+    <#
+    .SYNOPSIS
+        Returns the direct file link for a Fujitsu catalog DownloadURL.
+    .DESCRIPTION
+        Converts a legacy servlet URL (support.ts.fujitsu.com/Download/Download.asp?SoftwareGUID=<GUID>),
+        dead since Fsas replaced its support portal in October 2026, into the new portal's direct
+        file link for the same GUID -- the GUIDs carried over. ZIP is assumed: every Fujitsu driver
+        pack is a ZIP. Any other URL, including a direct link, is returned unchanged.
+    #>
+    param (
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Url
+    )
+    if ($Url -notmatch '(?i)/Download/Download\.asp\?.*SoftwareGUID=([0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12})') {
+        return $Url
+    }
+    return "https://webdownloads.ts.fujitsu.com/download/FileDownload/fileDownload.aspx?SoftwareGUID=$($Matches[1].ToUpper())&FileFolder=Downloadfiles&FileTypeExtension=ZIP&Token="
+}
+
+function Get-DATDownloadFileName {
+    <#
+    .SYNOPSIS
+        Returns the file name a download URL is saved under.
+    .DESCRIPTION
+        The URL's last path segment with any query string removed (e.g. Acer '?acerid=...'), as
+        Invoke-DATContentDownload saves it. A Fujitsu direct file link ends in fileDownload.aspx
+        for every file, so it becomes Fujitsu_<GUID>.<ext> from its SoftwareGUID and
+        FileTypeExtension instead.
+    #>
+    param (
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Url
+    )
+    if ($Url -match '(?i)/fileDownload\.aspx\?' -and $Url -match '(?i)SoftwareGUID=([0-9A-F-]{36})') {
+        $guid = $Matches[1].ToUpper()
+        $ext = if ($Url -match '(?i)FileTypeExtension=([A-Z0-9]{2,5})') { $Matches[1].ToLower() } else { 'zip' }
+        return "Fujitsu_$guid.$ext"
+    }
+    return (($Url -split '\?')[0] -split '/')[-1]
+}
+
 function Invoke-DATFujitsuDownload {
     <#
     .SYNOPSIS
-        Downloads a Fujitsu SCCM driver pack from its session-gated download servlet.
+        Downloads a Fujitsu driver pack from its direct file link.
     .DESCRIPTION
-        Fujitsu DownloadURLs are not static file links -- they are servlet endpoints
-        (Download.asp?SoftwareGUID=<GUID>). Priming an ASPSESSIONID cookie alone is NOT
-        enough: the download is authorised per-file only after the session has opened the
-        file overlay (File_DownOverlay.asp), which grants a server-side download token. The
-        file is then fetched by POSTing the overlay's form (SoftwareGUID + Filename) to
-        Download.asp -- a GET returns an HTML error page. The POST 302-redirects through
-        StreamFileToBrowser.asp to the tokenised CDN URL (webdownloads*.ts.fujitsu.com/...
-        &Token=...), which streams the payload.
+        Fsas replaced its legacy ASP support portal, and the session-gated Download.asp servlet
+        the catalog used to publish, in October 2026. The DAT API catalog now publishes the new
+        portal's direct file link, which streams the file with a plain GET -- no session, cookie
+        or token (Token= is sent empty):
+          https://webdownloads.ts.fujitsu.com/download/FileDownload/fileDownload.aspx?SoftwareGUID=<GUID>&FileFolder=Downloadfiles&FileTypeExtension=ZIP&Token=
+        A catalog cached before that change still carries the legacy servlet URL, which is
+        converted to the direct link for the same GUID (ConvertTo-DATFujitsuDirectUrl).
+
+        The file server answers a withdrawn file or a wrong extension with 200 and a small HTML
+        page, not a 404, so the link is checked with HEAD (accurate on this server) first and
+        anything but application/octet-stream stops with a clear message.
     .PARAMETER DownloadUrl
-        The catalog DownloadURL (https://support.ts.fujitsu.com/Download/Download.asp?SoftwareGUID=...).
+        The catalog DownloadURL (a direct file link, or a legacy Download.asp servlet URL).
     .PARAMETER OutFile
         The full destination path (including file name) to stream the download to.
     #>
@@ -12699,9 +12794,14 @@ function Invoke-DATFujitsuDownload {
         [Parameter(Mandatory)][string]$OutFile
     )
 
-    # Enforce HTTPS and restrict to the Fujitsu support host (security: trusted download host).
+    $directUrl = ConvertTo-DATFujitsuDirectUrl -Url $DownloadUrl
+    if ($directUrl -ne $DownloadUrl) {
+        Write-DATLogEntry -Value "[Fujitsu] Catalog link uses the retired download servlet -- using the direct file link for the same file" -Severity 1
+    }
+
+    # Enforce HTTPS and restrict to Fujitsu hosts (security: trusted download host).
     $uriResult = $null
-    if (-not ([System.Uri]::TryCreate($DownloadUrl, [System.UriKind]::Absolute, [ref]$uriResult)) -or
+    if (-not ([System.Uri]::TryCreate($directUrl, [System.UriKind]::Absolute, [ref]$uriResult)) -or
         $uriResult.Scheme -ne 'https') {
         throw "Fujitsu download URL must use HTTPS: '$DownloadUrl'"
     }
@@ -12709,49 +12809,34 @@ function Invoke-DATFujitsuDownload {
         throw "Fujitsu download URL host not on the trusted allow-list: '$($uriResult.Host)'"
     }
 
-    # Extract the SoftwareGUID from the servlet URL query string.
-    $guid = ([regex]::Match($DownloadUrl, '(?i)SoftwareGUID=([0-9A-F\-]+)')).Groups[1].Value
-    if ([string]::IsNullOrEmpty($guid)) {
-        throw "Fujitsu download URL does not contain a SoftwareGUID: '$DownloadUrl'"
-    }
-
     $destDir = Split-Path -Path $OutFile -Parent
     if (-not (Test-Path -Path $destDir)) { New-Item -Path $destDir -ItemType Directory -Force | Out-Null }
 
-    $headers = @{ 'User-Agent' = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' }
+    $unavailableMessage = "Fujitsu did not return the file for this pack. It may have been withdrawn, or the Fujitsu download site has changed again; check for a Driver Automation Tool update."
     $proxyParams = Get-DATWebRequestProxy
-    $portalBase = "https://$($uriResult.Host)"
-
-    # 1. Prime the portal session to obtain the ASPSESSIONID cookie.
-    $session = [Microsoft.PowerShell.Commands.WebRequestSession]::new()
-    Write-DATLogEntry -Value "[Fujitsu] Priming portal session..." -Severity 1
-    Invoke-WebRequest -Uri "$portalBase/Deskupdate/index.asp?lng=EU" `
-        -WebSession $session -Headers $headers -UseBasicParsing -TimeoutSec 60 @proxyParams | Out-Null
-
-    # 2. Visit the file landing page to establish the GUID context in the session.
-    Invoke-WebRequest -Uri "$portalBase/IndexDownload.asp?SoftwareGUID=$guid" `
-        -WebSession $session -Headers $headers -UseBasicParsing -TimeoutSec 120 @proxyParams | Out-Null
-
-    # 3. Open the file overlay -- this is the token-granting step that authorises the session to
-    #    download this GUID and exposes the real Filename / AdlerSDBCheck the POST must send.
-    Write-DATLogEntry -Value "[Fujitsu] Requesting download authorisation token for $guid..." -Severity 1
-    $overlay = Invoke-WebRequest -Uri "$portalBase/download/File_DownOverlay.asp?lng=EU&id=$guid&SupportOS=&IsSolution=&Produkt=&Version=37" `
-        -WebSession $session -Headers $headers -UseBasicParsing -TimeoutSec 120 @proxyParams
-    $fileName = ([regex]::Match($overlay.Content, '(?i)name="Filename"\s+value="([^"]+)"')).Groups[1].Value
-    $adlerCheck = ([regex]::Match($overlay.Content, '(?i)name="AdlerSDBCheck"\s+value="([^"]*)"')).Groups[1].Value
-    if ([string]::IsNullOrEmpty($fileName)) {
-        throw "Fujitsu overlay did not return a download token/Filename for $guid -- the pack may have been withdrawn."
+    try {
+        $head = Invoke-WebRequest -Uri $directUrl -Method Head -UseBasicParsing -TimeoutSec 60 @proxyParams
+    } catch {
+        $statusCode = 0
+        try { $statusCode = [int]$_.Exception.Response.StatusCode } catch { }
+        if ($statusCode -eq 404) {
+            Write-DATLogEntry -Value "[Fujitsu] $unavailableMessage (HTTP 404 from $directUrl)" -Severity 3
+            throw $unavailableMessage
+        }
+        throw
     }
-    Write-DATLogEntry -Value "[Fujitsu] Authorised download of '$fileName'; streaming payload..." -Severity 1
+    # Content-Type can come back as a string array on PS 7; the interpolation joins it.
+    $contentType = "$($head.Headers.'Content-Type')"
+    if ($contentType -notmatch 'application/octet-stream') {
+        Write-DATLogEntry -Value "[Fujitsu] $unavailableMessage (got '$contentType' instead of the file from $directUrl)" -Severity 3
+        throw $unavailableMessage
+    }
 
-    # 4. Hand the tokenised POST to the shared curl download engine so the transfer shows the
-    #    curl window, live progress and honours the Abort button -- exactly like other OEMs.
-    #    The primed-session cookies are forwarded so StreamFileToBrowser.asp resolves the CDN URL.
-    $cookieHeader = (($session.Cookies.GetCookies([Uri]$portalBase) | ForEach-Object { "$($_.Name)=$($_.Value)" }) -join '; ')
-    $postData = [ordered]@{ SoftwareGUID = $guid; Filename = $fileName; AdlerSDBCheck = $adlerCheck }
-    Invoke-DATContentDownload -DownloadURL "$portalBase/Download/Download.asp" `
-        -DownloadDestination $destDir -OverrideFileName (Split-Path -Path $OutFile -Leaf) `
-        -CookieHeader $cookieHeader -PostData $postData
+    # The shared download engine gives the curl window, live progress and the Abort button,
+    # exactly like other OEMs.
+    Write-DATLogEntry -Value "[Fujitsu] Downloading from the direct file link: $directUrl" -Severity 1
+    Invoke-DATContentDownload -DownloadURL $directUrl -DownloadDestination $destDir `
+        -OverrideFileName (Split-Path -Path $OutFile -Leaf)
 }
 
 function Invoke-DATOEMDownloadModule {
@@ -13946,8 +14031,9 @@ New-HPDriverPack -Platform "$PlatformID" -Os "$HPOS" -OSVer "$WindowsBuild" -For
             }
         }
         "Fujitsu" {
-            # Fujitsu packs are sourced from the DAT API catalog. The DownloadURL is a session-gated
-            # servlet (Download.asp?SoftwareGUID=...) which does not match the direct-file regex, so
+            # Fujitsu packs are sourced from the DAT API catalog. The DownloadURL is the Fsas direct
+            # file link (fileDownload.aspx?SoftwareGUID=...), or the retired Download.asp servlet in a
+            # catalog cached before Fsas replaced its portal; neither matches the direct-file regex, so
             # it is never accepted by the pre-resolved block above. Resolve it here from either the
             # caller-provided CatalogDownloadURL or a fresh DAT catalog lookup.
             if (-not [string]::IsNullOrEmpty($CatalogDownloadURL)) {
@@ -13971,11 +14057,12 @@ New-HPDriverPack -Platform "$PlatformID" -Os "$HPOS" -OSVer "$WindowsBuild" -For
                     $catalogHashMethod = if (-not [string]::IsNullOrEmpty($matchingEntry.HashMethod)) { $matchingEntry.HashMethod } else { 'SHA256' }
                 }
             }
-            # The servlet returns the real name via Content-Disposition, but the common download path
-            # needs a deterministic .zip file name for hashing/extraction. Build a safe one.
+            # The link's leaf is fileDownload.aspx for every file and Content-Disposition carries no
+            # name, but the common download path needs a deterministic .zip file name for
+            # hashing/extraction. Build a safe one.
             $safeFjModel = ConvertTo-DATSafePathSegment -Segment $Model
             $downloadFileName = "Fujitsu_${safeFjModel}_$($WindowsVersion.Replace(' ',''))_$WindowsBuild.zip"
-            Write-DATLogEntry -Value "[$OEM] Resolved session-gated download URL: $downloadURL" -Severity 1
+            Write-DATLogEntry -Value "[$OEM] Resolved download URL: $downloadURL" -Severity 1
             Write-DATLogEntry -Value "[$OEM] Target file name: $downloadFileName" -Severity 1
         }
         default {
@@ -14014,10 +14101,11 @@ New-HPDriverPack -Platform "$PlatformID" -Os "$HPOS" -OSVer "$WindowsBuild" -For
     $mainSizeBytes = [long]0
     try {
         $proxyParams = Get-DATWebRequestProxy
+        # HEAD stays as the reachability check only. Its status does not prove the file exists
+        # (Acer answers 200 for missing files) and its Content-Length is not trusted for size.
         $headCheck = Invoke-WebRequest -Uri $downloadURL -Method Head -UseBasicParsing -TimeoutSec 30 -ErrorAction Stop @proxyParams
-        if ($headCheck.Headers.'Content-Length') { $mainSizeBytes = [long]$headCheck.Headers.'Content-Length'[0] }
-        # Many OEM/CDN endpoints omit Content-Length on HEAD responses, so only report the
-        # size when the server actually provided one -- a misleading "size: 0 MB" otherwise. (#808)
+        $mainSizeBytes = Get-DATRemoteFileSize -Url $downloadURL
+        # Only report the size when it was confirmed -- a misleading "size: 0 MB" otherwise. (#808)
         $sizeSuffix = if ($mainSizeBytes -gt 0) { ", size: $([math]::Round($mainSizeBytes / 1MB, 2)) MB" } else { '' }
         Write-DATLogEntry -Value "[$OEM] URL reachable - HTTP $($headCheck.StatusCode)$sizeSuffix" -Severity 1
     } catch {
@@ -14032,7 +14120,7 @@ New-HPDriverPack -Platform "$PlatformID" -Os "$HPOS" -OSVer "$WindowsBuild" -For
         try {
             $proxyParams = Get-DATWebRequestProxy
             $gfxHeadCheck = Invoke-WebRequest -Uri $gfxDownloadURL -Method Head -UseBasicParsing -TimeoutSec 30 -ErrorAction Stop @proxyParams
-            if ($gfxHeadCheck.Headers.'Content-Length') { $gfxSizeBytes = [long]$gfxHeadCheck.Headers.'Content-Length'[0] }
+            $gfxSizeBytes = Get-DATRemoteFileSize -Url $gfxDownloadURL
             $gfxSizeSuffix = if ($gfxSizeBytes -gt 0) { ", size: $([math]::Round($gfxSizeBytes / 1MB, 2)) MB" } else { '' }
             Write-DATLogEntry -Value "[$OEM] GFX URL reachable - HTTP $($gfxHeadCheck.StatusCode)$gfxSizeSuffix" -Severity 1
         } catch {
@@ -14066,8 +14154,8 @@ New-HPDriverPack -Platform "$PlatformID" -Os "$HPOS" -OSVer "$WindowsBuild" -For
 
         try {
             if ($OEM -eq 'Fujitsu') {
-                # Fujitsu requires a primed portal session; the standard downloader would fetch the
-                # HTML error page. Stream to the pre-computed deterministic file name instead.
+                # Fujitsu needs its link checked first (a missing file is a 200 HTML page, not a 404)
+                # and the pre-computed deterministic file name, since every link ends fileDownload.aspx.
                 Invoke-DATFujitsuDownload -DownloadUrl $downloadURL -OutFile $downloadedFile
             } else {
                 Invoke-DATContentDownload -DownloadURL $downloadURL -DownloadDestination $DownloadDestination
@@ -23749,6 +23837,10 @@ function Find-DATBiosPackage {
         Manufacturer name (Dell, HP, Lenovo, Acer).
     .PARAMETER Baseboards
         Comma-separated baseboard/SystemID (or Acer product code) values from the model definition.
+        For Fujitsu these are full model names (e.g. "LIFEBOOK E5410, LIFEBOOK E5510").
+    .PARAMETER Model
+        The model being processed. Fujitsu publishes one BIOS per model while a driver pack's
+        Baseboards name every model the pack covers, so the BIOS for this model is preferred.
     .PARAMETER Catalog
         The BIOS catalog array (from Get-DATBiosCatalog). If omitted, calls Get-DATBiosCatalog.
     #>
@@ -23757,6 +23849,7 @@ function Find-DATBiosPackage {
         [Parameter(Mandatory)][string]$OEM,
         # Empty when the catalog published no IDs (#979): nothing can be matched, so $null is returned
         [Parameter(Mandatory)][AllowEmptyString()][string]$Baseboards,
+        [string]$Model,
         [array]$Catalog
     )
 
@@ -23848,7 +23941,13 @@ function Find-DATBiosPackage {
     }
 
     # Split model baseboards (comma, space, or semicolon separated) into a lookup set, trimmed.
-    $modelBoards = @($Baseboards -split '[,;\s]+' | ForEach-Object { $_.Trim().ToUpper() } | Where-Object { $_ })
+    # Fujitsu identifies models by full name ("CELSIUS H7613"), which a space split broke into
+    # "CELSIUS" and "H7613" so no Fujitsu BIOS ever matched; split those on comma/semicolon only.
+    $boardSplit = if ($OEM -eq 'Fujitsu') { '[,;]+' } else { '[,;\s]+' }
+    $modelBoards = @($Baseboards -split $boardSplit | ForEach-Object { $_.Trim().ToUpper() } | Where-Object { $_ })
+    if ($OEM -eq 'Fujitsu' -and -not [string]::IsNullOrWhiteSpace($Model) -and $Model.Trim().ToUpper() -notin $modelBoards) {
+        $modelBoards += $Model.Trim().ToUpper()
+    }
     if ($modelBoards.Count -eq 0) {
         Write-DATLogEntry -Value "[BIOS] No baseboard values provided -- cannot match BIOS" -Severity 2
         return $null
@@ -23884,6 +23983,16 @@ function Find-DATBiosPackage {
                 if ($board -in $entryDevices) { $matches += $entry; break }
             }
         }
+        # A Fujitsu driver pack covers several models, each with its own BIOS. Only this model's
+        # BIOS may be used: a sibling's (newer or not) is firmware for different hardware, so a
+        # model with no BIOS of its own in the catalog gets none.
+        if ($OEM -eq 'Fujitsu' -and $matches.Count -gt 0 -and -not [string]::IsNullOrWhiteSpace($Model)) {
+            $ownModel = @($matches | Where-Object { @($_.SupportedDevices -split ';' | ForEach-Object { $_.Trim() }) -contains $Model.Trim() })
+            if ($ownModel.Count -eq 0) {
+                Write-DATLogEntry -Value "[BIOS] Fujitsu: no BIOS published for $Model itself -- not using another model's BIOS ($((@($matches | ForEach-Object { $_.DisplayName }) | Select-Object -Unique) -join ', '))" -Severity 2
+            }
+            $matches = $ownModel
+        }
         if ($matches.Count -gt 0) {
             # Pick the entry with the latest ReleaseDate
             $best = $matches | Sort-Object { try { [datetime]$_.ReleaseDate } catch { [datetime]::MinValue } } -Descending | Select-Object -First 1
@@ -23901,9 +24010,13 @@ function Find-DATBiosPackage {
         return $null
     }
 
-    # Strip any query string (e.g. Acer '?acerid=...') before taking the leaf, otherwise the saved
-    # filename would not match what Invoke-DATContentDownload writes to disk.
-    $fileName = (($best.DownloadURL -split '\?')[0] -split '/')[-1]
+    # A Fujitsu entry from a catalog cached before Fsas retired its download servlet still carries
+    # the old link; use the direct file link for the same file.
+    $biosDownloadURL = if ($OEM -eq 'Fujitsu') { ConvertTo-DATFujitsuDirectUrl -Url $best.DownloadURL } else { $best.DownloadURL }
+
+    # The name Start-DATBiosDownload saves the file under: the URL leaf without its query string
+    # (e.g. Acer '?acerid=...'), or Fujitsu_<GUID>.<ext> for a Fujitsu direct file link.
+    $fileName = Get-DATDownloadFileName -Url $biosDownloadURL
 
     # Collapse a duplicated leading family token in the catalog display name (e.g. Dell
     # "Latitude Latitude 5540" -> "Latitude 5540"). Some upstream catalog entries repeat the
@@ -23914,7 +24027,7 @@ function Find-DATBiosPackage {
     return [PSCustomObject]@{
         DisplayName      = $bestDisplayName
         Version          = $best.Version
-        DownloadURL      = $best.DownloadURL
+        DownloadURL      = $biosDownloadURL
         FileName         = $fileName
         FileHash         = $best.FileHash
         HashMethod       = $best.HashMethod
@@ -24089,9 +24202,11 @@ function Start-DATBiosDownload {
     Set-DATRegistryValue -Name "RunningMessage" -Value "Downloading BIOS update: $($BiosEntry.FileName)..." -Type String
     Set-DATRegistryValue -Name "RunningMode" -Value "Download" -Type String
 
-    # Use Invoke-DATContentDownload (existing Curl/HttpClient download with progress tracking)
+    # Use Invoke-DATContentDownload (existing Curl/HttpClient download with progress tracking).
+    # Save under the entry's FileName, which Find-DATBiosPackage derived from the URL; a Fujitsu
+    # direct file link's own leaf (fileDownload.aspx) is the same for every file.
     try {
-        Invoke-DATContentDownload -DownloadURL $BiosEntry.DownloadURL -DownloadDestination $DownloadDestination
+        Invoke-DATContentDownload -DownloadURL $BiosEntry.DownloadURL -DownloadDestination $DownloadDestination -OverrideFileName $BiosEntry.FileName
     } catch {
         Write-DATLogEntry -Value "[BIOS] Download failed: $($_.Exception.Message)" -Severity 3
         return $null
@@ -24296,6 +24411,45 @@ function Get-DATFlash64W {
     return $false
 }
 
+function Test-DATFujitsuBiosFlashable {
+    <#
+    .SYNOPSIS
+        Tells whether a downloaded Fujitsu BIOS package can be flashed silently from Windows.
+    .DESCRIPTION
+        Only the Fujitsu "BIOS Admin Pack" for LIFEBOOK notebooks and CELSIUS H mobile
+        workstations can: it is a ZIP holding DskFlash.exe and a <model>.bup image (Fujitsu's own
+        SilentUpdate.bat flashes it with DskFlash). The other Fujitsu packages cannot -- ESPRIMO
+        and CELSIUS W/J desktop packs carry an EfiFlash.efi image for a USB stick and the F12
+        boot menu with no Windows flasher, and a few models only have an interactive updater
+        .exe (LIFEBOOK U9311A Desk Flash Instant). The ZIP's file list is read; nothing is
+        extracted or run. Returns an object with Flashable (bool) and Reason.
+    #>
+    param (
+        [Parameter(Mandatory)][string]$BiosFilePath
+    )
+    if ([System.IO.Path]::GetExtension($BiosFilePath) -ne '.zip') {
+        return [pscustomobject]@{ Flashable = $false; Reason = 'it is an interactive updater, not a BIOS Admin Pack' }
+    }
+    Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction SilentlyContinue
+    try {
+        $zip = [System.IO.Compression.ZipFile]::OpenRead((Resolve-Path -LiteralPath $BiosFilePath -ErrorAction Stop).Path)
+    } catch {
+        return [pscustomobject]@{ Flashable = $false; Reason = "the download is not a readable ZIP ($($_.Exception.Message))" }
+    }
+    try {
+        $names = @($zip.Entries | ForEach-Object { $_.Name })
+    } finally {
+        $zip.Dispose()
+    }
+    if ($names -contains 'DskFlash.exe' -and @($names | Where-Object { $_ -like '*.bup' }).Count -gt 0) {
+        return [pscustomobject]@{ Flashable = $true; Reason = '' }
+    }
+    if ($names -contains 'EfiFlash.efi') {
+        return [pscustomobject]@{ Flashable = $false; Reason = 'Fujitsu only publishes a USB/UEFI boot-menu update for this model, with no Windows flash tool' }
+    }
+    return [pscustomobject]@{ Flashable = $false; Reason = 'the package has no DskFlash.exe and .bup BIOS image' }
+}
+
 function Invoke-DATBiosPackaging {
     <#
     .SYNOPSIS
@@ -24359,6 +24513,21 @@ function Invoke-DATBiosPackaging {
                 Expand-DATArchiveSafely -Path $BiosFilePath -DestinationPath $extractDir
             } catch {
                 throw "Acer BIOS extraction failed: $($_.Exception.Message)"
+            }
+        }
+        'Fujitsu' {
+            # Fujitsu BIOS Admin Pack: a ZIP holding DskFlash.exe, its data files and a <model>.bup
+            # image (notebook packs keep them in a Windows\ subfolder). Install-BIOS.ps1 finds
+            # DskFlash.exe anywhere under the package, so the archive is extracted as it is.
+            Write-DATLogEntry -Value "[BIOS] Fujitsu: Extracting BIOS Admin Pack" -Severity 1
+            try {
+                Expand-DATArchiveSafely -Path $BiosFilePath -DestinationPath $extractDir
+            } catch {
+                throw "Fujitsu BIOS extraction failed: $($_.Exception.Message)"
+            }
+            $dskFlash = Get-ChildItem -Path $extractDir -Recurse -Filter 'DskFlash.exe' -File -ErrorAction SilentlyContinue | Select-Object -First 1
+            if (-not $dskFlash -or -not (Get-ChildItem -Path $dskFlash.DirectoryName -Filter '*.bup' -File -ErrorAction SilentlyContinue)) {
+                throw "Fujitsu BIOS package for $Model has no DskFlash.exe and .bup BIOS image -- it cannot be flashed silently from Windows"
             }
         }
         'Dell' {
