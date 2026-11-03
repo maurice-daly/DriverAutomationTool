@@ -429,6 +429,24 @@ function Resume-BitLockerProtection {
     }
 }
 
+function Set-DATDellBiosLogoArguments {
+    param (
+        [AllowEmptyCollection()]
+        [string[]]$Arguments = @(),
+        [AllowNull()]
+        [AllowEmptyString()]
+        [string]$LogoSwitch = ''
+    )
+
+    if ($LogoSwitch -notin @('', '/keeplogo', '/DellLogo')) {
+        throw "Unsupported Dell BIOS logo switch '$LogoSwitch'."
+    }
+
+    $result = @($Arguments | Where-Object { $_ -notmatch '(?i)^/(?:keeplogo|delllogo)$' })
+    if (-not [string]::IsNullOrWhiteSpace($LogoSwitch)) { $result += $LogoSwitch }
+    return $result
+}
+
 function Test-LenovoFlashNotRequired {
     <#
     .SYNOPSIS
@@ -1140,11 +1158,13 @@ try {
 
             # Build arguments: /s = silent, /l = log output
             $dellLogFile = Join-Path $env:ProgramData 'Microsoft\IntuneManagementExtension\Logs\DellBIOSFlash.log'
-            $flashArgs = "/s /l=$dellLogFile"
+            $flashArgList = @('/s', "/l=$dellLogFile")
             if (-not [string]::IsNullOrEmpty($biosPassword)) {
-                $flashArgs += " /p=$biosPassword"
+                $flashArgList += "/p=$biosPassword"
                 Write-CMTraceLog "BIOS password will be applied to flash command"
             }
+            $flashArgList = @(Set-DATDellBiosLogoArguments -Arguments $flashArgList -LogoSwitch '{{DELL_BIOS_LOGO_SWITCH}}')
+            $flashArgs = $flashArgList -join ' '
 
             if ($WhatIf) {
                 Write-CMTraceLog "WHATIF: Would execute Dell BIOS update: $($biosExe.FullName) $flashArgs" -Severity 2

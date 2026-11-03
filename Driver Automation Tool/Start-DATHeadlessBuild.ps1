@@ -200,6 +200,7 @@ $processingParams = @{
     PackageType     = $config.PackageType
     PackagePath     = $packagePath
     StoragePath     = $storagePath
+    DellBiosLogoAction = $config.DellBiosLogoAction
 }
 if ($config.DisableToast) { $processingParams['DisableToast'] = $true }
 if ($config.DisableRestart) { $processingParams['DisableRestart'] = $true }

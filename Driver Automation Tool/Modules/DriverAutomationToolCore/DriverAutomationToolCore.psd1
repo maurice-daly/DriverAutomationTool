@@ -94,6 +94,7 @@
         'Get-DATTransferProgress',
         'Get-DATDriveSpace',
         'Get-DATLowDiskSpace',
+        'Resolve-DATDellBiosLogoAction',
         'Set-DATBuildToastOptions',
         'Get-DATProgressToastIconPath',
         'ConvertTo-DATToastIconBase64',

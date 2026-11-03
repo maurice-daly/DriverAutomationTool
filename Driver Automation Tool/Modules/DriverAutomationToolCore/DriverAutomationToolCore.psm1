@@ -7125,6 +7125,7 @@ function Start-DATModelProcessing {
         [ValidateSet('RemindMeLater','InstallNow')][string]$ToastTimeoutAction = 'RemindMeLater',
         [int]$MaxDeferrals = 0,
         [int]$RestartDelaySeconds = 600,
+        [AllowNull()][AllowEmptyString()][string]$DellBiosLogoAction,
         [string]$DebugBuildPath,
         [string]$CustomBrandingPath,
         [string]$HPPasswordBinPath,
@@ -7153,6 +7154,10 @@ function Start-DATModelProcessing {
         # task asks the client to run the Application again.
         [ValidateRange(1, 24)][int]$ConfigMgrReminderIntervalHours = 4
     )
+    if (-not $PSBoundParameters.ContainsKey('DellBiosLogoAction')) {
+        $DellBiosLogoAction = (Get-ItemProperty -Path $RegPath -Name 'DellBiosLogoAction' -ErrorAction SilentlyContinue).DellBiosLogoAction
+    }
+    $DellBiosLogoAction = Resolve-DATDellBiosLogoAction -Action $DellBiosLogoAction
     $global:ScriptDirectory = $ScriptDirectory
     $global:LogDirectory = Join-Path $ScriptDirectory "Logs"
     $global:TempDirectory = if ([string]::IsNullOrEmpty($StoragePath)) { Join-Path $ScriptDirectory "Temp" } else { $StoragePath }
@@ -7264,6 +7269,7 @@ function Start-DATModelProcessing {
             CustomBIOSFinalNoticeTitle        = $CustomBIOSFinalNoticeTitle
             CustomBIOSFinalNoticeBody         = $CustomBIOSFinalNoticeBody
             CustomBIOSFinalNoticeActionButton = $CustomBIOSFinalNoticeActionButton
+            DellBiosLogoAction                = $DellBiosLogoAction
         }
         foreach ($type in @('Drivers', 'BIOS')) {
             $cmAppScriptParams[$type] = @{} + $sharedToastParams
@@ -8452,6 +8458,7 @@ function Start-DATModelProcessing {
                                     WimFilePath        = $biosPackagePath
                                     PackageDestination = $PackagePath
                                     UpdateType         = 'BIOS'
+                                    DellBiosLogoAction = $DellBiosLogoAction
                                 }
                                 if ($isPilotBuild) { $intuneParams['NamePrefix'] = $biosNamePrefix }
                                 if (-not [string]::IsNullOrEmpty($biosEntry.Version)) { $intuneParams['Version'] = "$($biosEntry.Version)" }
@@ -9613,6 +9620,40 @@ function Get-DATLowDiskSpace {
     }
 }
 
+function Resolve-DATDellBiosLogoAction {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param (
+        [AllowNull()]
+        [AllowEmptyString()]
+        [string]$Action
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Action)) { return 'DoNotManage' }
+    switch ($Action.Trim().ToLowerInvariant()) {
+        'donotmanage' { return 'DoNotManage' }
+        'preserve'    { return 'Preserve' }
+        'restore'     { return 'Restore' }
+        default { throw "Invalid Dell BIOS logo action '$Action'. Valid values are DoNotManage, Preserve, and Restore." }
+    }
+}
+
+function Get-DATDellBiosLogoSwitch {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param (
+        [AllowNull()]
+        [AllowEmptyString()]
+        [string]$Action
+    )
+
+    switch (Resolve-DATDellBiosLogoAction -Action $Action) {
+        'Preserve' { return '/keeplogo' }
+        'Restore'  { return '/DellLogo' }
+        default    { return '' }
+    }
+}
+
 function Export-DATBuildConfig {
     [CmdletBinding()]
     param (
@@ -9626,6 +9667,7 @@ function Export-DATBuildConfig {
         [string]$PackagePath,
         [bool]$DisableToast = $false,
         [bool]$DisableRestart = $false,
+        [AllowNull()][AllowEmptyString()][string]$DellBiosLogoAction = 'DoNotManage',
         [string]$ToastTimeoutAction = 'RemindMeLater',
         [int]$MaxDeferrals = 0,
         [int]$BIOSRestartDelayMinutes = 10,
@@ -9652,6 +9694,7 @@ function Export-DATBuildConfig {
         [bool]$DeleteSourceFolderOnRemoval = $false
     )
 
+    $DellBiosLogoAction = Resolve-DATDellBiosLogoAction -Action $DellBiosLogoAction
     $modelArray = foreach ($m in $Models) {
         $entry = [ordered]@{
             OEM   = $m.OEM
@@ -9678,7 +9721,8 @@ function Export-DATBuildConfig {
         PackageType                = $PackageType
         DisableToast               = $DisableToast
         DisableRestart             = $DisableRestart
-        ToastTimeoutAction         = $ToastTimeoutAction
+        DellBiosLogoAction        = $DellBiosLogoAction
+        ToastTimeoutAction        = $ToastTimeoutAction
         MaxDeferrals               = $MaxDeferrals
         BIOSRestartDelayMinutes    = $BIOSRestartDelayMinutes
         CreateIntuneWinOnly        = $CreateIntuneWinOnly
@@ -9722,6 +9766,15 @@ function Import-DATBuildConfig {
     }
     $raw = Get-Content $ConfigPath -Raw -ErrorAction Stop
     $config = $raw | ConvertFrom-Json -ErrorAction Stop
+    $logoActionProperty = $config.PSObject.Properties['DellBiosLogoAction']
+    $dellBiosLogoAction = if ($null -ne $logoActionProperty) {
+        if ($null -eq $logoActionProperty.Value) {
+            throw "Invalid Dell BIOS logo action 'null'. Valid values are DoNotManage, Preserve, and Restore."
+        }
+        Resolve-DATDellBiosLogoAction -Action ([string]$logoActionProperty.Value)
+    } else {
+        'DoNotManage'
+    }
 
     # Validate required fields
     if (-not $config.Models -or $config.Models.Count -eq 0) {
@@ -9780,6 +9833,7 @@ function Import-DATBuildConfig {
         PackagePath               = if (-not [string]::IsNullOrEmpty($config.PackagePath)) { $config.PackagePath } else { $null }
         CleanTempOnExit           = if ($null -ne $config.CleanTempOnExit) { [bool]$config.CleanTempOnExit } else { $true }
         DisableToast              = [bool]$config.DisableToast
+        DellBiosLogoAction        = $dellBiosLogoAction
         ToastTimeoutAction        = if ($config.ToastTimeoutAction) { $config.ToastTimeoutAction } else { 'RemindMeLater' }
         MaxDeferrals              = if ($config.MaxDeferrals) { [int]$config.MaxDeferrals } else { 0 }
         # A missing or 0 value falls back to 10, the same countdown the module and the UI default to
@@ -19577,6 +19631,7 @@ function New-DATIntuneInstallScript {
         [Parameter(Mandatory)][string]$Version,
         [string]$ReleaseDate,
         [ValidateSet('Drivers','BIOS')][string]$UpdateType = 'Drivers',
+        [AllowNull()][AllowEmptyString()][string]$DellBiosLogoAction = 'DoNotManage',
         [switch]$DisableToast,
         [switch]$DisableRestart,
         # Critical Notification (bypass Focus Assist). Mirrors the toast-side switch: when set,
@@ -19623,6 +19678,12 @@ function New-DATIntuneInstallScript {
 
     # Read the template
     $scriptContent = Get-Content -Path $templatePath -Raw
+    $DellBiosLogoAction = Resolve-DATDellBiosLogoAction -Action $DellBiosLogoAction
+    $dellBiosLogoSwitch = if ($UpdateType -eq 'BIOS' -and $OEM -ieq 'Dell') {
+        Get-DATDellBiosLogoSwitch -Action $DellBiosLogoAction
+    } else {
+        ''
+    }
 
     # Build toast notification block -- omitted when $DisableToast is set
     if ($DisableToast) {
@@ -20323,6 +20384,7 @@ function Show-DATStatusToast {
     $scriptContent = $scriptContent.Replace('{{Model}}', $Model)
     $scriptContent = $scriptContent.Replace('{{OS}}', $OS)
     $scriptContent = $scriptContent.Replace('{{Version}}', $Version)
+    $scriptContent = $scriptContent.Replace('{{DELL_BIOS_LOGO_SWITCH}}', $dellBiosLogoSwitch)
     # Normalise the release date to a strict 8-digit yyyyMMdd stamp (or empty). The BIOS install
     # template's Compare-BIOSVersion does a lexical date compare, so a raw/culture-ambiguous value
     # must never be baked in.
@@ -22313,8 +22375,10 @@ function New-DATPackageScriptSet {
         # Install progress notification. When not passed, the setting for the current build is used.
         [switch]$ShowInstallProgress,
         # Install silently during Autopilot provisioning. When not passed, the build's setting is used.
-        [bool]$SilentDuringAutopilot = $true
+        [bool]$SilentDuringAutopilot = $true,
+        [AllowNull()][AllowEmptyString()][string]$DellBiosLogoAction = 'DoNotManage'
     )
+    $DellBiosLogoAction = Resolve-DATDellBiosLogoAction -Action $DellBiosLogoAction
     if (-not $PSBoundParameters.ContainsKey('ShowInstallProgress')) { $ShowInstallProgress = [bool]$script:DATShowInstallProgress }
     if (-not $PSBoundParameters.ContainsKey('SilentDuringAutopilot')) { $SilentDuringAutopilot = Get-DATBuildSilentDuringAutopilot }
 
@@ -22350,6 +22414,7 @@ function New-DATPackageScriptSet {
         if ($ReminderIntervalHours -ne 4) { $installScriptParams['ReminderIntervalHours'] = $ReminderIntervalHours }
         if (-not [string]::IsNullOrWhiteSpace($ConfigMgrApplicationName)) { $installScriptParams['ConfigMgrApplicationName'] = $ConfigMgrApplicationName }
     }
+    if ($UpdateType -eq 'BIOS' -and $OEM -ieq 'Dell') { $installScriptParams['DellBiosLogoAction'] = $DellBiosLogoAction }
     $installScriptParams['ShowInstallProgress'] = [bool]$ShowInstallProgress
     $installScriptParams['SilentDuringAutopilot'] = [bool]$SilentDuringAutopilot
     New-DATIntuneInstallScript @installScriptParams
@@ -23031,6 +23096,7 @@ function Invoke-DATIntunePackageCreation {
         [Parameter(Mandatory)][string]$PackageDestination,
         [string]$IntuneAuthToken,
         [ValidateSet('Drivers','BIOS')][string]$UpdateType = 'Drivers',
+        [AllowNull()][AllowEmptyString()][string]$DellBiosLogoAction = 'DoNotManage',
         [string]$NamePrefix,
         [switch]$DisableToast,
         [switch]$DisableRestart,
