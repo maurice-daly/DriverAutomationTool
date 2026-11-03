@@ -18402,6 +18402,45 @@ $btn_ExportConfig.Add_Click({
     }
 })
 
+function Set-DATDellBiosLogoActionSelection {
+    [CmdletBinding()]
+    param (
+        [AllowNull()]
+        [AllowEmptyString()]
+        [string]$Action
+    )
+
+    $wasInvalid = $false
+    try {
+        $resolvedAction = Resolve-DATDellBiosLogoAction -Action $Action
+    } catch {
+        if ($_.Exception.Message -notlike 'Invalid Dell BIOS logo action*') { throw }
+        $resolvedAction = 'DoNotManage'
+        $wasInvalid = $true
+        Write-DATActivityLog "Invalid Dell BIOS logo action '$Action' was reset to DoNotManage" -Level Warn
+    }
+
+    $selection = @($cmb_DellBiosLogoAction.Items | Where-Object { [string]$_.Tag -ieq $resolvedAction } | Select-Object -First 1)
+    if ($selection.Count -eq 0) { throw "Dell BIOS logo action selector is missing '$resolvedAction'." }
+
+    $cmb_DellBiosLogoAction.SelectedItem = $selection[0]
+    Set-DATRegistryValue -Name 'DellBiosLogoAction' -Value $resolvedAction -Type String
+    return [pscustomobject]@{ Action = $resolvedAction; WasInvalid = $wasInvalid }
+}
+
+function Sync-DATDellBiosLogoActionSelection {
+    [CmdletBinding()]
+    param (
+        [AllowNull()]
+        [string]$ConfigContent,
+        [AllowNull()]
+        [string]$ImportedAction
+    )
+
+    $action = if ($ConfigContent -match '(?im)^\s*"DellBiosLogoAction"\s*=') { $ImportedAction } else { $null }
+    return Set-DATDellBiosLogoActionSelection -Action $action
+}
+
 $btn_ImportConfig.Add_Click({
     $dialog = New-Object System.Windows.Forms.OpenFileDialog
     $dialog.Filter = "Registry Files (*.reg)|*.reg"
@@ -18419,10 +18458,20 @@ $btn_ImportConfig.Add_Click({
             if (-not (Test-Path -LiteralPath $importSrc -PathType Leaf)) {
                 throw "Import file not found: $importSrc"
             }
+            $configContent = Get-Content -LiteralPath $importSrc -Raw -ErrorAction Stop
             $regExe = Join-Path $env:SystemRoot 'System32\reg.exe'
             & $regExe import $importSrc
             if ($LASTEXITCODE -ne 0) { throw "reg.exe exited with code $LASTEXITCODE" }
-            $txt_Status.Text = "Configuration imported from $importSrc"
+            $importedLogoAction = $null
+            if ($configContent -match '(?im)^\s*"DellBiosLogoAction"\s*=') {
+                $importedLogoAction = (Get-ItemProperty -Path $global:RegPath -Name 'DellBiosLogoAction' -ErrorAction Stop).DellBiosLogoAction
+            }
+            $logoActionResult = Sync-DATDellBiosLogoActionSelection -ConfigContent $configContent -ImportedAction $importedLogoAction
+            if ($logoActionResult.WasInvalid) {
+                $txt_Status.Text = "Configuration imported from $importSrc; invalid Dell BIOS logo action was reset to DoNotManage"
+            } else {
+                $txt_Status.Text = "Configuration imported from $importSrc"
+            }
         } catch {
             $txt_Status.Text = "Import failed: $($_.Exception.Message)"
         }
@@ -18709,6 +18758,11 @@ $btn_ScheduleSave.Add_Click({
     $schedTimeoutAction = if ($cmb_BIOSTimeoutAction.SelectedIndex -eq 1) { 'InstallNow' } else { 'RemindMeLater' }
     $schedMaxDeferrals = if (($chk_EnableMaxDeferrals.IsChecked -eq $true) -and ($txt_MaxDeferrals.Text -match '^\d+$')) { [int]$txt_MaxDeferrals.Text } else { 0 }
     $schedBIOSRestartDelay = if (($txt_BIOSRestartDelay.Text -match '^\d+$')) { [int]$txt_BIOSRestartDelay.Text } else { 10 }
+    $schedDellBiosLogoAction = if ($null -ne $cmb_DellBiosLogoAction -and $null -ne $cmb_DellBiosLogoAction.SelectedItem) {
+        [string]$cmb_DellBiosLogoAction.SelectedItem.Tag
+    } else {
+        'DoNotManage'
+    }
     $schedTeamsEnabled = $chk_TeamsNotifications.IsChecked -eq $true
     $schedTeamsUrl = $txt_TeamsWebhookUrl.Text
     $schedTeamsCustomText = if ($null -ne $txt_TeamsCustomText) { $txt_TeamsCustomText.Text } else { '' }
@@ -18760,6 +18814,7 @@ $btn_ScheduleSave.Add_Click({
             -DisableToast $schedDisableToast -DisableRestart $schedDisableRestart `
             -ToastTimeoutAction $schedTimeoutAction -MaxDeferrals $schedMaxDeferrals `
             -BIOSRestartDelayMinutes $schedBIOSRestartDelay `
+            -DellBiosLogoAction $schedDellBiosLogoAction `
             -TeamsWebhookUrl $schedTeamsUrl -TeamsNotificationsEnabled $schedTeamsEnabled `
             -TeamsCustomText $schedTeamsCustomText -ConfigMgr $schedCM `
             -Intune $schedIntune `
@@ -27811,6 +27866,16 @@ $grid_IntuneApps.Add_CurrentCellChanged({
 $btn_ExportBIOSRemediation = $Window.FindName('btn_ExportBIOSRemediation')
 $txt_BIOSPassword = $Window.FindName('txt_BIOSPassword')
 $txt_BIOSPasswordStatus = $Window.FindName('txt_BIOSPasswordStatus')
+$cmb_DellBiosLogoAction = $Window.FindName('cmb_DellBiosLogoAction')
+$savedDellBiosLogoAction = [string](Get-ItemProperty -Path $global:RegPath -Name 'DellBiosLogoAction' -ErrorAction SilentlyContinue).DellBiosLogoAction
+Set-DATDellBiosLogoActionSelection -Action $savedDellBiosLogoAction | Out-Null
+$cmb_DellBiosLogoAction.Add_SelectionChanged({
+    if ($null -eq $cmb_DellBiosLogoAction.SelectedItem) { return }
+    $action = [string]$cmb_DellBiosLogoAction.SelectedItem.Tag
+    if ($action -notin @('DoNotManage', 'Preserve', 'Restore')) { return }
+    Set-DATRegistryValue -Name 'DellBiosLogoAction' -Value $action -Type String
+    Write-DATActivityLog "Dell BIOS logo action: $action" -Level Info
+})
 
 $btn_ExportBIOSRemediation.Add_Click({
     $password = $txt_BIOSPassword.Password

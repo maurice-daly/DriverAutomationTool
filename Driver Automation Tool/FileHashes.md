@@ -5,8 +5,8 @@ Regenerate with the **update-file-hashes** skill whenever a core `.ps1`, `.psm1`
 
 | | |
 |---|---|
-| Version | `10.3.1.0` |
-| Generated (UTC) | 2026-10-07 17:24:06 |
+| Version | `10.3.6.0` |
+| Generated (UTC) | 2026-11-03 18:08:28 |
 | Files | 20 |
 | Algorithm | SHA256 |
 
@@ -15,18 +15,18 @@ Regenerate with the **update-file-hashes** skill whenever a core `.ps1`, `.psm1`
 | File | Path | Size (KB) | SHA256 |
 |------|------|-----------|--------|
 | Start-DriverAutomationTool.ps1 | `Start-DriverAutomationTool.ps1` | 8.9 | `3173A26B88DA68EC02E1E88C9D7322AA1C3CE1BC167548501E0DFA332A8CE5FE` |
-| Start-DATHeadlessBuild.ps1 | `Start-DATHeadlessBuild.ps1` | 46.1 | `9835CAE2163F7BC1F59858375ACC5F6A28099D909AC9E50BBAA5E15AE1EC23A6` |
+| Start-DATHeadlessBuild.ps1 | `Start-DATHeadlessBuild.ps1` | 46.2 | `02B468BBE6A8CDDCBE4E6E8DAE54FC563EC2091D52E9160B1C66953A9A114A9D` |
 
 ## Core Module
 
 | File | Path | Size (KB) | SHA256 |
 |------|------|-----------|--------|
-| DriverAutomationToolCore.psd1 | `Modules/DriverAutomationToolCore/DriverAutomationToolCore.psd1` | 7.2 | `0950E27BA4282648F00F250DE4DBC98A482F141FF06A3C7459716CB50DCCDFEC` |
-| DriverAutomationToolCore.psm1 | `Modules/DriverAutomationToolCore/DriverAutomationToolCore.psm1` | 1417.5 | `497C516D0FDF66A0B3DD07BC8DC67EEA31D75ED64F6D755FDBB7EB995CED6E9F` |
+| DriverAutomationToolCore.psd1 | `Modules/DriverAutomationToolCore/DriverAutomationToolCore.psd1` | 7.4 | `8BA5326B01ABF9D614D7118323CE18BF98D1D3991A8841E955CBF9D185CF12D8` |
+| DriverAutomationToolCore.psm1 | `Modules/DriverAutomationToolCore/DriverAutomationToolCore.psm1` | 1548.5 | `CEC1BD775E81C89F1FFB0AF66469B9A80A4DE7E5A58F36DE8136F977771BF68C` |
 | Deploy-BIOSPassword-Detection.ps1 | `Modules/DriverAutomationToolCore/Templates/Deploy-BIOSPassword-Detection.ps1` | 1.7 | `0BE9C8C804D06690AF90F4D6B691A170C89ABFEA949931C05F21D5111320C3BD` |
 | Deploy-BIOSPassword-Remediation.ps1 | `Modules/DriverAutomationToolCore/Templates/Deploy-BIOSPassword-Remediation.ps1` | 2.9 | `36ADD50BA2CD9DC342899985167B3F972424CCEE3B32540BF4D93AA8364FC8C2` |
 | Import-CMOfflinePackages.ps1 | `Modules/DriverAutomationToolCore/Templates/Import-CMOfflinePackages.ps1` | 9.9 | `E6DB9F4D3873152AFCA5DC897541E2E5BCB58039AE0AC04B3B9BB5894A5FE15A` |
-| Install-BIOS.ps1 | `Modules/DriverAutomationToolCore/Templates/Install-BIOS.ps1` | 101.9 | `EC347D273C5960630AD99DF078E383926353221C041C3877372A6A49517A6CBF` |
+| Install-BIOS.ps1 | `Modules/DriverAutomationToolCore/Templates/Install-BIOS.ps1` | 112.0 | `371129EAFF4AC66C88E4B321D0CF4C8D9CB47042F9464CD9C90B39D6E0756226` |
 | Install-Drivers.ps1 | `Modules/DriverAutomationToolCore/Templates/Install-Drivers.ps1` | 67.5 | `109F75DA03B2E74CAD82411C17CED5ED32BCE1A418E29F2EA096753279AA69C3` |
 | Invoke-DATToastTest.ps1 | `Modules/DriverAutomationToolCore/Templates/Invoke-DATToastTest.ps1` | 29.7 | `B57BEF1E6128B9CE9CC65E36428EBB7F82268C311F84B0D9D8FEE0CDCBFC4B96` |
 | Test-DATMaintenanceWindow.ps1 | `Modules/DriverAutomationToolCore/Templates/Test-DATMaintenanceWindow.ps1` | 6.9 | `1E45CC1E002C8399C95C1E6244D6610094156F35BC200CB187401B1F2CDE00E0` |
@@ -35,7 +35,7 @@ Regenerate with the **update-file-hashes** skill whenever a core `.ps1`, `.psm1`
 
 | File | Path | Size (KB) | SHA256 |
 |------|------|-----------|--------|
-| MainApplication.ps1 | `UI/MainApplication.ps1` | 1682.5 | `DB5A1EAF3A0F8A07857220EAF686F4BF76EC468044239434F579B1B920238C18` |
+| MainApplication.ps1 | `UI/MainApplication.ps1` | 1728.0 | `3E9246F37D3F0B723A35765D764F215E569618ED9D17C471C2E0726C2A7759DB` |
 | ThemeDefinitions.ps1 | `UI/Themes/ThemeDefinitions.ps1` | 8.9 | `B7C6D8D529D3581C7EDCD79092F24F2550BE2B3DD7CB647DF690CC161520933A` |
 
 ## Deployment Scripts

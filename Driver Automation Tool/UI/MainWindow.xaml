@@ -6202,6 +6202,36 @@
                                         </StackPanel>
                                     </Border>
 
+                                    <!-- Dell BIOS boot-logo behavior -->
+                                    <Border Style="{StaticResource CardPanel}" Margin="0,0,0,12">
+                                        <StackPanel>
+                                            <TextBlock FontSize="14" FontWeight="SemiBold"
+                                                       Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,4">
+                                                <Run Text="&#xE7C1;" FontFamily="Segoe MDL2 Assets" FontSize="14"/><Run Text="  Dell BIOS Boot Logo"/>
+                                            </TextBlock>
+                                            <TextBlock Text="Choose how Dell BIOS packages handle the existing boot logo. Switch support varies by model; Dell documents /keeplogo for Latitude systems."
+                                                       FontSize="12" Foreground="{DynamicResource InputPlaceholder}" Margin="0,0,0,10"
+                                                       TextWrapping="Wrap"/>
+                                            <Grid>
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="140"/>
+                                                    <ColumnDefinition Width="*" MaxWidth="400"/>
+                                                </Grid.ColumnDefinitions>
+                                                <TextBlock Grid.Column="0" Text="Logo action" FontSize="12"
+                                                           Foreground="{DynamicResource WindowForeground}"
+                                                           VerticalAlignment="Center"/>
+                                                <ComboBox x:Name="cmb_DellBiosLogoAction" Grid.Column="1" Height="32">
+                                                    <ComboBoxItem Content="Do not manage" Tag="DoNotManage" IsSelected="True"/>
+                                                    <ComboBoxItem Content="Preserve current logo" Tag="Preserve"/>
+                                                    <ComboBoxItem Content="Restore Dell logo" Tag="Restore"/>
+                                                </ComboBox>
+                                            </Grid>
+                                            <TextBlock Text="Preserve uses Dell's /keeplogo switch; Restore uses /DellLogo. Custom logo application is not supported."
+                                                       FontSize="11" Foreground="{DynamicResource InputPlaceholder}" Margin="0,8,0,0"
+                                                       TextWrapping="Wrap"/>
+                                        </StackPanel>
+                                    </Border>
+
                                     <!-- Export Remediation Scripts Card -->
                                     <Border Style="{StaticResource CardPanel}" Margin="0,0,0,12">
                                         <StackPanel>
