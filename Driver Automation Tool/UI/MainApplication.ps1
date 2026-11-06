@@ -29012,7 +29012,16 @@ $btn_CheckUpdate.Add_Click({
 $script:btn_ApplyUpdate = $Window.FindName('btn_ApplyUpdate')
 $script:txt_UpdateProgress = $Window.FindName('txt_UpdateProgress')
 
-$script:btn_ApplyUpdate.Add_Click({
+function Start-DATSelfUpdate {
+    <#
+    .SYNOPSIS
+        Downloads and installs the latest release in the background.
+    .DESCRIPTION
+        Used by the startup prompt and the About page button. The startup prompt never opens the
+        About page, so a progress dialog covers the run and a failure is reported in a dialog. The
+        main window stays disabled meanwhile, so a build cannot start while the module files are
+        being replaced. Startup holds its model refresh for the same reason, and this runs it.
+    #>
     $script:btn_ApplyUpdate.IsEnabled = $false
     $btn_CheckUpdate.IsEnabled = $false
     $script:txt_UpdateProgress.Visibility = 'Visible'
@@ -29209,7 +29218,8 @@ $script:btn_ApplyUpdate.Add_Click({
                     Write-UpdateLog "Backup restore failed: $($_.Exception.Message)" -Level Error
                 }
             }
-            Remove-Item -Path $tempDir -Recurse -Force -ErrorAction SilentlyContinue
+            # An early failure has no temp folder yet, and Remove-Item would replace the real error
+            if ($tempDir) { Remove-Item -Path $tempDir -Recurse -Force -ErrorAction SilentlyContinue }
 
             return @{
                 Success   = $false
@@ -29255,6 +29265,11 @@ $script:btn_ApplyUpdate.Add_Click({
                 $script:txt_UpdateProgress.Text = $latestUpdateMsg
             }
 
+            # Give the window back before any result dialog opens over it
+            $Window.IsEnabled = $true
+            try { if ($script:updateProgressDialog) { $script:updateProgressDialog.Close() } } catch { }
+            $script:updateProgressDialog = $null
+
             try {
                 $updateResult = $script:updateJob.EndInvoke($script:updateAsyncResult)
                 if ($script:updateJob.Streams.Error.Count -gt 0) {
@@ -29278,15 +29293,15 @@ $script:btn_ApplyUpdate.Add_Click({
                         $Window.Close()
                     }
                 } else {
-                    Write-DATActivityLog "Update failed: $($updateResult.Error)" -Level Error
-                    $script:txt_UpdateProgress.Text = "Update failed: $($updateResult.Error)"
-                    $script:txt_UpdateProgress.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'StatusError')
+                    throw $updateResult.Error
                 }
             } catch {
                 $errMsg = $_.Exception.Message
                 Write-DATActivityLog "Update failed: $errMsg" -Level Error
                 $script:txt_UpdateProgress.Text = "Update failed: $errMsg"
                 $script:txt_UpdateProgress.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'StatusError')
+                Show-DATInfoDialog -Title 'Update Failed' -Type Error `
+                    -Message "The update could not be installed.`n`n$errMsg`n`nYou can try again from the About page." | Out-Null
             } finally {
                 $script:updateJob.Dispose()
                 $script:updateRunspace.Dispose()
@@ -29295,11 +29310,26 @@ $script:btn_ApplyUpdate.Add_Click({
                 $script:updateAsyncResult = $null
                 $script:btn_ApplyUpdate.IsEnabled = $true
                 $btn_CheckUpdate.IsEnabled = $true
+                if ($script:AutoRefreshPending -and -not $script:WindowClosing) {
+                    $script:AutoRefreshPending = $false
+                    Invoke-DATRefreshModelsClick
+                }
             }
         }
     })
+
+    $Window.IsEnabled = $false
+    try {
+        $script:updateProgressDialog = Show-DATProgressDialog -Title 'Installing Update' `
+            -Message 'Downloading and installing the update. This can take a few minutes.'
+    } catch {
+        # Only the dialog failed, so let the update carry on
+        Write-DATActivityLog "Could not show the update progress dialog: $($_.Exception.Message)" -Level Warn
+    }
     $script:updateTimer.Start()
-})
+}
+
+$script:btn_ApplyUpdate.Add_Click({ Start-DATSelfUpdate })
 
 #endregion Update Check
 
@@ -31052,7 +31082,7 @@ if (Test-Path $logoPath) {
 
 # Read version from module manifest
 $manifestPath = Join-Path $AppRoot "Modules\DriverAutomationToolCore\DriverAutomationToolCore.psd1"
-$script:versionString = "v10.3.7"
+$script:versionString = "v10.3.8"
 if (Test-Path $manifestPath) {
     $manifestData = Import-PowerShellDataFile $manifestPath
     $ver = [version]$manifestData.ModuleVersion
@@ -32329,22 +32359,21 @@ $Window.Add_ContentRendered({
         $startupUpdateInfo = Get-DATAvailableUpdate
         if ($startupUpdateInfo -and -not $startupUpdateInfo.Error -and $startupUpdateInfo.UpdateAvailable) {
             Write-DATActivityLog "Update available: v$($startupUpdateInfo.LatestVersion) (current: $($global:ScriptRelease.ToString(3)))" -Level Info
+            # Ready the About page first: a failed update is retried from there, and Later can still install from it
+            $txt_AboutVersion.Text = "Version $($global:ScriptRelease.ToString(3)) - Update available: $($startupUpdateInfo.LatestVersion)"
+            $script:btn_ApplyUpdate.Visibility = 'Visible'
             $updateConfirm = Show-DATConfirmDialog -Title 'Update Available' `
-                -Message "A new version of the Driver Automation Tool is available.`n`nCurrent version: $($global:ScriptRelease.ToString(3))`nLatest version: $($startupUpdateInfo.LatestVersion)`n`nWould you like to go to the About page to download and install the update?" `
-                -Type Info -ConfirmLabel 'View Update' -CancelLabel 'Later'
-            if ($updateConfirm) {
-                Set-DATActiveView -ViewName 'view_About' -NavButtonName 'nav_About'
-                $txt_AboutVersion.Text = "Version $($global:ScriptRelease.ToString(3)) - Update available: $($startupUpdateInfo.LatestVersion)"
-                $btn_ApplyUpdate = $Window.FindName('btn_ApplyUpdate')
-                $btn_ApplyUpdate.Visibility = 'Visible'
-            }
+                -Message "A new version of the Driver Automation Tool is available.`n`nCurrent version: $($global:ScriptRelease.ToString(3))`nLatest version: $($startupUpdateInfo.LatestVersion)`n`nWould you like to update now? You will be asked to restart when it finishes." `
+                -Type Info -ConfirmLabel 'Update Now' -CancelLabel 'Later'
+            if ($updateConfirm) { Start-DATSelfUpdate }
         }
     } catch {
         Write-DATActivityLog "Startup update check failed: $($_.Exception.Message)" -Level Warn
     }
 
-    # Trigger auto-refresh now that the main window is visible
-    if ($script:AutoRefreshPending) {
+    # Trigger auto-refresh now that the main window is visible. An update replaces the module
+    # files a refresh loads, so Start-DATSelfUpdate runs the refresh itself when it finishes.
+    if ($script:AutoRefreshPending -and -not $script:updateJob) {
         $script:AutoRefreshPending = $false
         Invoke-DATRefreshModelsClick
     }
@@ -32414,6 +32443,8 @@ $script:WhatsNewFeatures = @(
     # 10.3.7: the feedback and testimonial dialogs ask whether a bug or feature request belongs on
     # GitHub. Those dialogs are not in the main window, so the marker sits on the thumbs-down button.
     [pscustomobject]@{ Id = 'github-issue-prompt-10.3.7';       Dot = '';                       Parent = '';                   Pill = 'pill_FeedbackGitHub';             Zone = 'zone_FeedbackGitHub';             Controls = @('btn_FeedbackDown') }
+    # 10.3.8: on a required ConfigMgr Application, ConfigMgr can still restart the device (#973)
+    [pscustomobject]@{ Id = 'disable-bios-restart-10.3.8';      Dot = 'dot_ToastNotifications'; Parent = '';                   Pill = 'pill_DisableBIOSRestart';         Zone = 'zone_DisableBIOSRestart';         Controls = @('chk_DisableBIOSRestart') }
 )
 
 # Maps a wired element's x:Name to the feature id it clears, so plain (non-closure) handlers can
@@ -32513,21 +32544,15 @@ try { Initialize-DATWhatsNew } catch { Write-DATActivityLog "What's New init fai
 # (the IncrementVersion skill covers it, and Tests\UIApplication.Tests.ps1 asserts it matches the
 # module manifest). The modal is suppressed when it does not match the running build, so a missed
 # changelog update shows nothing rather than the previous release's features.
-$script:WhatsNewReleaseVersion = '10.3.7.0'
+$script:WhatsNewReleaseVersion = '10.3.8.0'
 # Set to $true only for a release whose items have no place in the UI to highlight (fixes to
 # downloads and the like). Tests\UIApplication.Tests.ps1 then accepts a release with no
 # $script:WhatsNewFeatures entry; reset it to $false at the next bump.
 $script:WhatsNewReleaseHasNoUIFeatures = $false
 $script:WhatsNewReleaseItems = @(
-    [pscustomobject]@{ Category = 'Lenovo Packages: Rebuild Needed'; Text = 'The DAT API catalog listed some Lenovo machine types as numbers, for example 12E4 as 120000, affecting 22 models including the ThinkCentre M70q Gen 4 and ThinkPad E14 Gen 4. The catalog is now fixed, but packages already built for these models keep the wrong values, so devices can be missed. In Intune, short values such as 11 or 13 can also match other Lenovo models. Once the model list shows the correct types, right-click each affected model and choose Force Existing Package Update. In Intune this deletes and recreates the app, so check its assignments afterwards. Also correct any assignment filter for the model, because a rebuild reuses the existing filter.' }
-    [pscustomobject]@{ Category = 'Dell Boot Logo';    Text = 'Dell BIOS updates can now keep a custom boot logo or put the Dell logo back. The new setting is under Intune Settings > BIOS Security and applies to Intune apps and ConfigMgr Applications. A model whose Dell updater does not support your choice is skipped and reported as a build failure. Standard ConfigMgr packages and WIMs do not use this setting, and the build log says so.' }
-    [pscustomobject]@{ Category = 'PowerShell 7';       Text = 'When started in Windows PowerShell, the tool now offers to relaunch in PowerShell 7 if it is installed, and you can answer Yes, No, Always or Never. To change your choice later, use the PowerShell 7 card under Common Settings > General.' }
-    [pscustomobject]@{ Category = 'Task Sequences Without a Driver Package'; Text = 'Invoke-CMApplyDriverPackage.ps1 can now finish without drivers instead of failing the task sequence. Use the -AllowNoDriverPackage switch or the MDMAllowNoDriverPackage task sequence variable. The run then ends with a warning when no package matches, none are returned or the download fails, and sets MDMDriverPackageSkipped so a later step can react. A failed run also now always ends with its failure line in ApplyDriverPackage.log.' }
-    [pscustomobject]@{ Category = 'Bugs and Feature Requests'; Text = 'The feedback and testimonial dialogs now ask whether you are reporting a bug or requesting a feature, and link to the GitHub issues page, where these can be tracked and you can follow the progress.' }
-    [pscustomobject]@{ Category = 'Scheduled ConfigMgr Builds'; Text = 'With two or more distribution point groups selected, scheduled builds did not distribute to any of them. This is fixed, including for schedules you already have. Scheduled builds also ignored the custom console folder, Binary Differential Replication and the XML Logic Package refresh. These now work too, but save your schedule again to pick them up.' }
-    [pscustomobject]@{ Category = 'Add Custom Drivers'; Text = 'Add Custom Drivers on Model Selection and Add Custom Drivers to Driver Pack on Package Management open again. Both menu items did nothing except write an error to the log.' }
-    [pscustomobject]@{ Category = 'Lenovo BIOS in Task Sequences'; Text = 'Lenovo task sequences no longer flag a BIOS update for a device that already has that version. The check compared two different dates, so a current device could look out of date on every run. It now compares versions wherever it can. Three crashes in the same script are fixed too.' }
-    [pscustomobject]@{ Category = 'Testimonial Form'; Text = 'The testimonial form now fits smaller and scaled screens. It could run past the bottom of the screen and leave Submit out of reach. The fields now scroll and the buttons stay in view.' }
+    [pscustomobject]@{ Category = 'ConfigMgr BIOS Applications'; Text = 'BIOS Applications no longer fail with 0x87D00324 (not detected after installation). They now use Determine behavior based on return codes, so the device shows Restart Required and the Application shows Installed after the restart. Applications you already have keep the old setting until the next BIOS version or Force Existing Package Update, or you can change it on the deployment type''s User Experience tab.' }
+    [pscustomobject]@{ Category = 'Disable Automatic BIOS Restart'; Text = 'On a required ConfigMgr Application, this setting now stops only the tool''s own restart. ConfigMgr can still restart the device, because its client setting Configuration Manager can force a device to restart is on by default. To leave the restart to users, deploy the Application as Available. Intune apps are not affected.' }
+    [pscustomobject]@{ Category = 'Updating the Tool'; Text = 'The startup prompt now offers Update Now or Later. Update Now installs straight away, shows its progress and asks you to restart when it finishes, with no need to visit the About page. With Later, the About page is ready with its install button. If an update fails, a dialog now gives the reason.' }
 )
 
 function Get-DATWhatsNewModalShownVersion {

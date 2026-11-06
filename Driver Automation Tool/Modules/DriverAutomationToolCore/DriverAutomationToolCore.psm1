@@ -4,7 +4,7 @@
      Organization:  MSEndpointMgr / Patch My PC
      Filename:      DriverAutomationToolCore.psm1
      Purpose:       Core functions for Driver Automation Tool v2.0
-     Version:       10.3.7.0
+     Version:       10.3.8.0
     ===========================================================================
 #>
 
@@ -37,8 +37,8 @@ if ($PSVersionTable.PSVersion.Major -le 5) {
 
 #region Variables
 
-[version]$global:ScriptRelease = "10.3.7.0"
-$global:ScriptBuildDate = "05-11-2026"
+[version]$global:ScriptRelease = "10.3.8.0"
+$global:ScriptBuildDate = "06-11-2026"
 $global:ReleaseNotesURL = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/DriverAutomationToolNotes.txt"
 $global:DATConfigUrl = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/refs/heads/master/Data/DATAPIConfig.json"
 $OEMLinksURL = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/OEMLinks.xml"
@@ -5877,12 +5877,16 @@ function Get-DATConfigMgrDeploymentTypeSettings {
         sends no restart prompt for the install. Only -Uninstall (a rollback) exits 3010, and that
         starting ConfigMgr's restart countdown is unverified on a real client.
 
-        BIOS uses "The software install program might force a device restart": the install
-        script runs its own restart countdown (or deliberately none, when automatic restart is
-        disabled), so ConfigMgr must not add a second prompt. The script still exits 3010, so
-        ConfigMgr is expected to wait for the restart before running detection (unverified on a
-        real client) -- detection only trusts the version marker once the device has restarted,
-        and a 0 would be reported as "not detected after installation".
+        BIOS uses the same setting because its install does exit 3010: the script schedules its
+        own restart countdown (or deliberately none, when automatic restart is disabled) and exits
+        before the device has restarted. Detection only trusts the version marker once the device
+        has restarted, so ConfigMgr has to hold detection until after the restart. "The software
+        install program might force a device restart" does not do that: ConfigMgr ran detection as
+        soon as the script exited, and the install was reported as 0x87D00324, "not detected after
+        installation" (issue #973). The cost is that ConfigMgr now owns a restart too: its
+        notification can appear alongside DAT's countdown, whichever restart comes first applies
+        the update, and on a required deployment the client's Computer Restart settings can restart
+        the device even when DAT's automatic restart is disabled.
     #>
     [CmdletBinding()]
     param (
@@ -5902,7 +5906,7 @@ function Get-DATConfigMgrDeploymentTypeSettings {
         InstallationBehaviorType = 'InstallForSystem'
         LogonRequirementType     = 'WhetherOrNotUserLoggedOn'
         UserInteractionMode      = 'Hidden'
-        RebootBehavior           = if ($PackageType -eq 'BIOS') { 'ProgramReboot' } else { 'BasedOnExitCode' }
+        RebootBehavior           = 'BasedOnExitCode'
         # Toast wait (up to 6 minutes) + WIM expansion + PNPUtil / firmware staging.
         MaximumRuntimeMins       = 120
         EstimatedRuntimeMins     = if ($PackageType -eq 'BIOS') { 20 } else { 30 }
