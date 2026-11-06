@@ -4,7 +4,7 @@
      Organization:  MSEndpointMgr / Patch My PC
      Filename:      DriverAutomationToolCore.psm1
      Purpose:       Core functions for Driver Automation Tool v2.0
-     Version:       10.3.6.0
+     Version:       10.3.7.0
     ===========================================================================
 #>
 
@@ -37,8 +37,8 @@ if ($PSVersionTable.PSVersion.Major -le 5) {
 
 #region Variables
 
-[version]$global:ScriptRelease = "10.3.6.0"
-$global:ScriptBuildDate = "27-10-2026"
+[version]$global:ScriptRelease = "10.3.7.0"
+$global:ScriptBuildDate = "05-11-2026"
 $global:ReleaseNotesURL = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/DriverAutomationToolNotes.txt"
 $global:DATConfigUrl = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/refs/heads/master/Data/DATAPIConfig.json"
 $OEMLinksURL = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/OEMLinks.xml"
@@ -7151,7 +7151,10 @@ function Start-DATModelProcessing {
         [switch]$CreateConfigMgrApplication,
         # ConfigMgr Applications: hours "Remind Me Later" snoozes the prompt before the reminder
         # task asks the client to run the Application again.
-        [ValidateRange(1, 24)][int]$ConfigMgrReminderIntervalHours = 4
+        [ValidateRange(1, 24)][int]$ConfigMgrReminderIntervalHours = 4,
+        # Dell BIOS packages: keep a custom boot logo (Preserve, /keeplogo) or put the Dell logo
+        # back (Restore, /DellLogo) when the update is flashed. None adds no switch (issue #990).
+        [ValidateSet('None', 'Preserve', 'Restore')][string]$DellBIOSLogoAction = 'None'
     )
     $global:ScriptDirectory = $ScriptDirectory
     $global:LogDirectory = Join-Path $ScriptDirectory "Logs"
@@ -7272,7 +7275,23 @@ function Start-DATModelProcessing {
                 if (-not [string]::IsNullOrEmpty($texts[$key])) { $cmAppScriptParams[$type][$key] = $texts[$key] }
             }
         }
+        # Every manufacturer's BIOS Application shares these settings; New-DATIntuneInstallScript
+        # only adds the logo switch to a Dell script.
+        if ($DellBIOSLogoAction -ne 'None') { $cmAppScriptParams['BIOS']['DellBIOSLogoAction'] = $DellBIOSLogoAction }
         Write-DATLogEntry -Value "[ConfigMgr App] ConfigMgr Applications will be created alongside packages (toast notifications: $(if ($DisableToast) { 'disabled' } else { 'enabled' }))" -Severity 1
+    }
+
+    # Dell BIOS boot logo (issue #990). Only the generated install script runs the Dell updater, so
+    # the switch reaches Intune Win32 apps and ConfigMgr Applications. A ConfigMgr package or a WIM
+    # is flashed by the admin's own task sequence, which the tool cannot add a switch to.
+    $dellLogoSwitch = ''
+    if ($DellBIOSLogoAction -ne 'None' -and $PackageType -ne 'Drivers') {
+        if ($RunningMode -eq 'Intune' -or ($RunningMode -eq 'Configuration Manager' -and $CreateConfigMgrApplication)) {
+            $dellLogoSwitch = Get-DATDellBiosLogoSwitch -Action $DellBIOSLogoAction
+            Write-DATLogEntry -Value "[BIOS] Dell BIOS logo action: $DellBIOSLogoAction -- Dell BIOS packages run the updater with $dellLogoSwitch" -Severity 1
+        } else {
+            Write-DATLogEntry -Value "[BIOS] Dell BIOS logo action '$DellBIOSLogoAction' is not applied to this $RunningMode build: only Intune apps and ConfigMgr Applications run the Dell updater. Add the switch to the task sequence step that flashes the BIOS instead." -Severity 2
+        }
     }
 
     # Use user-configured paths if provided, otherwise default to ScriptDirectory sub-folders
@@ -7460,6 +7479,7 @@ function Start-DATModelProcessing {
         $skipCountBefore = $buildSkipped.Count
         $modelFailReason = ''
         $thisBiosNoMatch = $false
+        $thisBiosLogoUnsupported = ''
         # Version actually packaged for this model, as resolved by the download module. Reset per
         # model so a model that never reaches the download path cannot inherit the previous
         # model's version in the Teams results table.
@@ -8422,11 +8442,26 @@ function Start-DATModelProcessing {
                         if (-not $fujitsuCheck.Flashable) { $fujitsuNotFlashable = $fujitsuCheck.Reason }
                     }
 
+                    # Dell's updater rejects a switch it does not recognise, so a package built with a
+                    # logo switch this updater lacks would fail to flash on every device (issue #990).
+                    if ($oem -eq 'Dell' -and $dellLogoSwitch -and -not [string]::IsNullOrEmpty($biosFilePath)) {
+                        try {
+                            if (-not (Test-DATDellBiosLogoSwitchSupport -BiosFilePath $biosFilePath -Switch $dellLogoSwitch)) {
+                                $thisBiosLogoUnsupported = "The Dell BIOS updater does not support $dellLogoSwitch (Dell BIOS logo action: $DellBIOSLogoAction)"
+                            }
+                        } catch {
+                            $thisBiosLogoUnsupported = "The Dell BIOS updater could not be checked for $dellLogoSwitch ($($_.Exception.Message))"
+                        }
+                    }
+
                     if ([string]::IsNullOrEmpty($biosFilePath)) {
                         Write-DATLogEntry -Value "[Warning] - BIOS download failed for $oem $modelName -- skipping BIOS" -Severity 2
                     } elseif ($fujitsuNotFlashable) {
                         Write-DATLogEntry -Value "[Warning] - $oem $modelName BIOS v$($biosEntry.Version) cannot be deployed silently from Windows -- $fujitsuNotFlashable. Skipping BIOS; update this model's BIOS with Fujitsu's own tools." -Severity 2
                         Set-DATRegistryValue -Name "RunningMessage" -Value "BIOS skipped (no silent Windows update from Fujitsu): $oem $modelName" -Type String
+                    } elseif ($thisBiosLogoUnsupported) {
+                        Write-DATLogEntry -Value "[Warning] - $oem $modelName BIOS v$($biosEntry.Version) skipped -- $thisBiosLogoUnsupported. Set the Dell BIOS logo action to Do not manage to package this update." -Severity 2
+                        Set-DATRegistryValue -Name "RunningMessage" -Value "BIOS skipped (logo switch not supported): $oem $modelName" -Type String
                     } else {
                         # Package the BIOS exe (extract HP/Lenovo, direct for Dell)
                         # ConfigMgr: stage files directly | Intune: compress into WIM
@@ -8464,6 +8499,7 @@ function Start-DATModelProcessing {
                                 if ($MaxDeferrals -gt 0) { $intuneParams['MaxDeferrals'] = $MaxDeferrals }
                                 if (-not [string]::IsNullOrEmpty($MaintenanceWindowsJson)) { $intuneParams['MaintenanceWindowsJson'] = $MaintenanceWindowsJson }
                                 if ($RestartDelaySeconds -ne 600) { $intuneParams['RestartDelaySeconds'] = $RestartDelaySeconds }
+                                if ($dellLogoSwitch) { $intuneParams['DellBIOSLogoAction'] = $DellBIOSLogoAction }
                                 if (-not [string]::IsNullOrEmpty($DebugBuildPath)) { $intuneParams['DebugBuildPath'] = $DebugBuildPath }
                                 if (-not [string]::IsNullOrEmpty($CustomBrandingPath)) { $intuneParams['CustomBrandingPath'] = $CustomBrandingPath }
                                 if (-not [string]::IsNullOrEmpty($HPPasswordBinPath)) { $intuneParams['HPPasswordBinPath'] = $HPPasswordBinPath }
@@ -8758,6 +8794,7 @@ function Start-DATModelProcessing {
             # Microsoft Surface BIOS ships via driver injection -- not a failure
             if ($oem -ne 'Microsoft') {
                 $biosReason = if ($thisBiosNoMatch) { 'No BIOS update found in catalog' }
+                              elseif ($thisBiosLogoUnsupported) { $thisBiosLogoUnsupported }
                               elseif (-not [string]::IsNullOrEmpty($modelFailReason)) { $modelFailReason }
                               else { 'BIOS package was not created -- see log for details' }
                 $buildFailures.Add([pscustomobject]@{ OEM = $oem; Model = $modelName; PackageType = 'BIOS'; OS = "$os"; Reason = $biosReason })
@@ -9629,6 +9666,7 @@ function Export-DATBuildConfig {
         [string]$ToastTimeoutAction = 'RemindMeLater',
         [int]$MaxDeferrals = 0,
         [int]$BIOSRestartDelayMinutes = 10,
+        [ValidateSet('None', 'Preserve', 'Restore')][string]$DellBIOSLogoAction = 'None',
         [string]$TeamsWebhookUrl,
         [bool]$TeamsNotificationsEnabled = $false,
         [AllowEmptyString()]
@@ -9681,6 +9719,7 @@ function Export-DATBuildConfig {
         ToastTimeoutAction         = $ToastTimeoutAction
         MaxDeferrals               = $MaxDeferrals
         BIOSRestartDelayMinutes    = $BIOSRestartDelayMinutes
+        DellBIOSLogoAction         = $DellBIOSLogoAction
         CreateIntuneWinOnly        = $CreateIntuneWinOnly
         ShowBrandingBannerAllToasts = $ShowBrandingBannerAllToasts
         CreateConfigMgrApplication = $CreateConfigMgrApplication
@@ -9734,6 +9773,13 @@ function Import-DATBuildConfig {
     }
     if ([string]::IsNullOrEmpty($config.OS)) { throw "BuildConfig must specify 'OS'" }
     if ([string]::IsNullOrEmpty($config.Architecture)) { throw "BuildConfig must specify 'Architecture'" }
+    # Missing or empty is None (configs written before the option existed); anything else that is
+    # not None, Preserve or Restore stops the build rather than flashing without the switch.
+    try {
+        $dellBiosLogoAction = ConvertTo-DATDellBiosLogoAction -Value ([string]$config.DellBIOSLogoAction)
+    } catch {
+        throw "BuildConfig 'DellBIOSLogoAction' is not valid: $($_.Exception.Message)"
+    }
 
     # Support multiple OS values: semicolon-separated string or JSON array
     $osList = if ($config.OS -is [array]) {
@@ -9771,6 +9817,13 @@ function Import-DATBuildConfig {
         }
     }
 
+    # The schedule export used to split DP groups on '|' when they are saved joined with ';;', so
+    # two or more groups were written as one name no site has. A schedule keeps that file until it
+    # is next saved, so the names are repaired here rather than only at export.
+    if ($config.ConfigMgr -and $config.ConfigMgr.DistributionPointGroups) {
+        $config.ConfigMgr.DistributionPointGroups = @($config.ConfigMgr.DistributionPointGroups | ForEach-Object { $_ -split ';;' } | Where-Object { $_ })
+    }
+
     [PSCustomObject]@{
         Platform                  = if ($config.Platform -in @('ConfigMgr (Offline)', 'Configuration Manager (Offline)')) { 'Configuration Manager (Offline)' } elseif ($config.Platform -in @('ConfigMgr', 'Configuration Manager')) { 'Configuration Manager' } elseif ($config.Platform) { $config.Platform } else { 'Download Only' }
         OS                        = $config.OS
@@ -9784,6 +9837,7 @@ function Import-DATBuildConfig {
         MaxDeferrals              = if ($config.MaxDeferrals) { [int]$config.MaxDeferrals } else { 0 }
         # A missing or 0 value falls back to 10, the same countdown the module and the UI default to
         BIOSRestartDelayMinutes   = if ($config.BIOSRestartDelayMinutes) { [int]$config.BIOSRestartDelayMinutes } else { 10 }
+        DellBIOSLogoAction        = $dellBiosLogoAction
         CreateIntuneWinOnly       = [bool]$config.CreateIntuneWinOnly
         ShowBrandingBannerAllToasts = [bool]$config.ShowBrandingBannerAllToasts
         CreateConfigMgrApplication = [bool]$config.CreateConfigMgrApplication
@@ -19600,7 +19654,10 @@ function New-DATIntuneInstallScript {
         # Install silently during Autopilot provisioning (on by default). When not passed, the
         # setting for the current build is used. Independent of toasts: it also stops a BIOS
         # package scheduling its own restart during the Enrollment Status Page.
-        [bool]$SilentDuringAutopilot = $true
+        [bool]$SilentDuringAutopilot = $true,
+        # Dell BIOS packages only: Preserve adds /keeplogo and Restore adds /DellLogo to the flash
+        # command (issue #990). Ignored for drivers and for every other manufacturer.
+        [ValidateSet('None', 'Preserve', 'Restore')][string]$DellBIOSLogoAction = 'None'
     )
     if (-not $PSBoundParameters.ContainsKey('ShowInstallProgress')) { $ShowInstallProgress = [bool]$script:DATShowInstallProgress }
     $progressEnabled = $ShowInstallProgress -and -not $DisableToast
@@ -20342,6 +20399,13 @@ function Show-DATStatusToast {
     $scriptContent = $scriptContent.Replace('{{RESTART_DELAY_SECONDS}}', [string]$RestartDelaySeconds)
     $scriptContent = $scriptContent.Replace('{{DISABLE_RESTART}}', $(if ($DisableRestart) { '$true' } else { '$false' }))
     $scriptContent = $scriptContent.Replace('{{ALARM_MODE}}', $(if ($AlarmMode) { '$true' } else { '$false' }))
+    # Dell boot logo switch (issue #990): a fixed value from Get-DATDellBiosLogoSwitch, and only for
+    # a Dell BIOS script, so driver scripts and other manufacturers' BIOS scripts are unchanged.
+    $dellLogoSwitch = if ($UpdateType -eq 'BIOS' -and $OEM -eq 'Dell') { Get-DATDellBiosLogoSwitch -Action $DellBIOSLogoAction } else { '' }
+    $scriptContent = $scriptContent.Replace('{{DELL_LOGO_SWITCH}}', $dellLogoSwitch)
+    if ($dellLogoSwitch) {
+        Write-DATLogEntry -Value "[$TargetPlatform] Dell BIOS logo action $DellBIOSLogoAction -- the flash command adds $dellLogoSwitch" -Severity 1
+    }
     if ($TargetPlatform -eq 'ConfigMgr') {
         $scriptContent = ConvertTo-DATConfigMgrLogPath -ScriptContent $scriptContent
     }
@@ -22313,7 +22377,9 @@ function New-DATPackageScriptSet {
         # Install progress notification. When not passed, the setting for the current build is used.
         [switch]$ShowInstallProgress,
         # Install silently during Autopilot provisioning. When not passed, the build's setting is used.
-        [bool]$SilentDuringAutopilot = $true
+        [bool]$SilentDuringAutopilot = $true,
+        # Dell BIOS packages only: the boot logo switch for the flash command (issue #990)
+        [ValidateSet('None', 'Preserve', 'Restore')][string]$DellBIOSLogoAction = 'None'
     )
     if (-not $PSBoundParameters.ContainsKey('ShowInstallProgress')) { $ShowInstallProgress = [bool]$script:DATShowInstallProgress }
     if (-not $PSBoundParameters.ContainsKey('SilentDuringAutopilot')) { $SilentDuringAutopilot = Get-DATBuildSilentDuringAutopilot }
@@ -22352,6 +22418,7 @@ function New-DATPackageScriptSet {
     }
     $installScriptParams['ShowInstallProgress'] = [bool]$ShowInstallProgress
     $installScriptParams['SilentDuringAutopilot'] = [bool]$SilentDuringAutopilot
+    if ($DellBIOSLogoAction -ne 'None') { $installScriptParams['DellBIOSLogoAction'] = $DellBIOSLogoAction }
     New-DATIntuneInstallScript @installScriptParams
     Write-DATLogEntry -Value "[$TargetPlatform Pipeline] Install script created: $installScriptPath" -Severity 1 -UpdateUI
 
@@ -23072,7 +23139,10 @@ function Invoke-DATIntunePackageCreation {
         [switch]$AlarmMode,
         [switch]$AlarmSound,
         [switch]$CreateIntuneWinOnly,
-        [switch]$ShowBrandingBannerAllToasts
+        [switch]$ShowBrandingBannerAllToasts,
+        # Dell BIOS packages only: the boot logo switch for the flash command (issue #990).
+        # Passed on to New-DATPackageScriptSet with the other matching parameters.
+        [ValidateSet('None', 'Preserve', 'Restore')][string]$DellBIOSLogoAction = 'None'
     )
     if (-not [string]::IsNullOrEmpty($IntuneAuthToken)) {
         $script:IntuneAuthToken = $IntuneAuthToken
@@ -24408,6 +24478,97 @@ function Get-DATFlash64W {
     # Clean up temp download
     Remove-Item -Path $tempDir -Recurse -Force -ErrorAction SilentlyContinue
     Write-DATLogEntry -Value "[Flash64W] Extraction failed -- Flash64W.exe could not be obtained" -Severity 3
+    return $false
+}
+
+function ConvertTo-DATDellBiosLogoAction {
+    <#
+    .SYNOPSIS
+        Normalises a Dell BIOS boot logo action to None, Preserve or Restore (issue #990).
+    .DESCRIPTION
+        A missing or empty value is None, which adds no logo switch and keeps the behaviour of
+        builds made before the option existed. Matching ignores case and surrounding spaces. Any
+        other value throws rather than falling back to None: a mistyped Preserve that quietly became
+        None would flash without /keeplogo and lose the custom logo the setting was there to keep.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param (
+        [AllowNull()][AllowEmptyString()][string]$Value
+    )
+    if ([string]::IsNullOrWhiteSpace($Value)) { return 'None' }
+    foreach ($action in @('None', 'Preserve', 'Restore')) {
+        if ($Value.Trim() -eq $action) { return $action }
+    }
+    throw "Dell BIOS logo action '$Value' is not valid -- use None, Preserve or Restore"
+}
+
+function Get-DATDellBiosLogoSwitch {
+    <#
+    .SYNOPSIS
+        Returns the Dell BIOS updater switch for a boot logo action (issue #990).
+    .DESCRIPTION
+        Preserve is /keeplogo (Dell KB 000145511: keep a custom logo through the flash) and Restore
+        is /DellLogo (Dell KB 000129832: put the Dell logo back). None is an empty string. The
+        switch is always one of these fixed values, so nothing from a config file or the registry
+        is ever written into a generated install script.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param (
+        [ValidateSet('None', 'Preserve', 'Restore')][string]$Action = 'None'
+    )
+    switch ($Action) {
+        'Preserve' { return '/keeplogo' }
+        'Restore'  { return '/DellLogo' }
+        default    { return '' }
+    }
+}
+
+function Test-DATDellBiosLogoSwitchSupport {
+    <#
+    .SYNOPSIS
+        Tells whether a downloaded Dell BIOS updater recognises a boot logo switch (issue #990).
+    .DESCRIPTION
+        Dell's updater rejects an option it does not know ("Unrecognized option"), so a package
+        built with /keeplogo or /DellLogo for an updater without that option would fail to flash on
+        every device. The updater keeps its options as a table of null-terminated names (forceit,
+        keeplogo, DellLogo, bls and so on), so the file is searched for the switch name with a null
+        byte either side, as ASCII or UTF-16. The file is only read, never run.
+    #>
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param (
+        [Parameter(Mandatory)][string]$BiosFilePath,
+        [Parameter(Mandatory)][ValidateSet('/keeplogo', '/DellLogo')][string]$Switch
+    )
+    # ISO-8859-1 maps every byte to the character with the same value, so a byte pattern can be
+    # found with a plain ordinal string search.
+    $latin1 = [System.Text.Encoding]::GetEncoding(28591)
+    $name = $Switch.TrimStart('/')
+    $needles = @(
+        $latin1.GetString([System.Text.Encoding]::ASCII.GetBytes("`0$name`0")),
+        $latin1.GetString([System.Text.Encoding]::Unicode.GetBytes("`0$name`0"))
+    )
+    # Read in blocks, carrying the tail of each block into the next so a name split across two
+    # reads is still found.
+    $overlap = [int]($needles | ForEach-Object { $_.Length } | Measure-Object -Maximum).Maximum - 1
+    $buffer = New-Object byte[] (8MB + $overlap)
+    $carry = 0
+    $stream = [System.IO.File]::OpenRead($BiosFilePath)
+    try {
+        while (($read = $stream.Read($buffer, $carry, $buffer.Length - $carry)) -gt 0) {
+            $length = $carry + $read
+            $text = $latin1.GetString($buffer, 0, $length)
+            foreach ($needle in $needles) {
+                if ($text.IndexOf($needle, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) { return $true }
+            }
+            $carry = [math]::Min($overlap, $length)
+            [System.Array]::Copy($buffer, $length - $carry, $buffer, 0, $carry)
+        }
+    } finally {
+        $stream.Dispose()
+    }
     return $false
 }
 

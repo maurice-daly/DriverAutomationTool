@@ -123,6 +123,10 @@
 					 - With a site code set, the AdminService BIOS package query also filters on SourceSite, and the XMLPackage logic file entries are filtered on the PackageID prefix, so only packages created at that site are considered.
 					 - The site code must be three letters or digits. An invalid value read from the task sequence variable stops the run with guidance rather than silently matching nothing.
 					 - Without a site code nothing changes: packages from every site are considered, as before.
+	3.0.11 - (2026-11-04) - Fixed Lenovo devices being flagged for a BIOS they already have (DriverAutomationTool issue #987):
+					 - Compare-BIOSVersion decided Lenovo on the release date alone, comparing Lenovo's publication date with the firmware build date in Win32_BIOS. The build date is usually weeks earlier, so a device already on the package's BIOS was flagged for flashing on every run, and a newer package with an earlier date was not flagged at all.
+					 - The version now decides. A package matching the device's UEFI BIOS or System Firmware version is installed, and one ahead of every version the device reports is an update. A device ahead of the package is only trusted when both versions were read, because a package on the System Firmware counter looks older than the UEFI BIOS version even when it is newer. Anything else falls back to the release date as before.
+					 - These no longer stop the run with exit code 1: a Lenovo package with no release date in its description, a Lenovo device reporting no BIOS date, and a Lenovo device matching more than one package, where the script read a property that does not exist.
 
 #>
 [CmdletBinding(SupportsShouldProcess = $true, DefaultParameterSetName = "BareMetal")]
@@ -1494,6 +1498,79 @@ public class DATPinnedCertificateValidation
 		}
 	}
 	
+	function ConvertTo-BIOSVersionObject {
+		# Returns $null for anything that is not a plain dotted number, such as a dual BIOS version
+		# ("1.68_1.57") or a BIOS ID, so callers treat it as no usable version rather than guess at one.
+		# Kept in step with the copy in the Intune Install-BIOS.ps1 template by Pester.
+		param ([string]$Value)
+
+		if ([string]::IsNullOrWhiteSpace($Value)) { return $null }
+		$trimmed = $Value.Trim()
+		if ($trimmed -notmatch '^\d+(\.\d+){1,3}$') { return $null }
+		$parsed = $null
+		if ([System.Version]::TryParse($trimmed, [ref]$parsed)) { return $parsed }
+		return $null
+	}
+
+	function Get-LenovoUefiBiosVersion {
+		# Lenovo formats SMBIOSBIOSVersion as "<BIOS ID> (<version> )", e.g. "N4FET52W (1.33 )". When it is
+		# not in that form, the SMBIOS major and minor values carry the same number.
+		param ($BIOS)
+
+		if ($null -eq $BIOS) { return '' }
+		$raw = [string]$BIOS.SMBIOSBIOSVersion
+		if ($raw -match '\(\s*(\d+(?:\.\d+){1,3})\s*\)') { return $Matches[1] }
+		if ($null -ne $BIOS.SystemBiosMajorVersion -and $null -ne $BIOS.SystemBiosMinorVersion) {
+			return "$($BIOS.SystemBiosMajorVersion).$($BIOS.SystemBiosMinorVersion)"
+		}
+		return ''
+	}
+
+	function Get-LenovoSystemFirmwareVersion {
+		# Lenovo's FWU_* packages gate on the system firmware entry in the EFI System Resource Table, which
+		# Windows exposes as a Firmware class PnP device. 0x1001D decodes as major 1 and minor 0x1D, so
+		# System Firmware 1.29. Returns an empty string when it cannot be read, which WinPE may do: the
+		# Intune template that this comes from never runs there, so that has not been seen on a device.
+		# The resource is found by its compatible ID, never by position or display name (#966). System
+		# firmware is UEFI\CC_00010001 and device firmware, such as a TrackPoint, is UEFI\CC_00010002.
+		try {
+			$systemFirmware = @(Get-WmiObject -Class Win32_PnPEntity -Filter "PNPClass='Firmware'" -ErrorAction Stop |
+				Where-Object { @($_.CompatibleID) -contains 'UEFI\CC_00010001' })
+			if ($systemFirmware.Count -ne 1) { return '' }
+
+			$raw = $null
+			foreach ($hardwareId in @($systemFirmware[0].HardwareID)) {
+				if ($hardwareId -match '&REV_([0-9A-Fa-f]{1,8})$') {
+					$raw = [Convert]::ToUInt32($Matches[1], 16)
+					break
+				}
+			}
+			if ($null -eq $raw -and $systemFirmware[0].DeviceID -match '(\{[0-9A-Fa-f\-]{36}\})') {
+				$resourceKey = Join-Path 'HKLM:\SYSTEM\CurrentControlSet\Control\FirmwareResources' $Matches[1]
+				$raw = (Get-ItemProperty -Path $resourceKey -Name 'Version' -ErrorAction SilentlyContinue).Version
+			}
+			if ($null -eq $raw) { return '' }
+
+			$value = [uint32]$raw
+			$major = [int]($value -shr 16)
+			$minor = [int]($value -band 0xFFFF)
+			# A minor above 0xFF is not a Lenovo system firmware version, so refuse it rather than compare against it
+			if ($major -lt 1 -or $minor -gt 0xFF) { return '' }
+			return "$major.$minor"
+		} catch {
+			return ''
+		}
+	}
+
+	function Get-LenovoPackageReleaseDate {
+		# Only a package built with a known release date has one in its description, as
+		# "(Models included:<types>) (Release Date:yyyyMMdd)". Returns an empty string for any other.
+		param ([string]$Description)
+
+		if ($Description -match 'Release Date:\s*(\d{8})') { return $Matches[1] }
+		return [string]::Empty
+	}
+
 	function Compare-BIOSVersion {
 		param (
 			[parameter(Mandatory = $false, HelpMessage = "Current available BIOS version.")]
@@ -1542,18 +1619,69 @@ public class DATPinnedCertificateValidation
 		}
 		
 		if ($ComputerManufacturer -match "Lenovo") {
-			# Obtain current BIOS release
-			$CurrentBIOSReleaseDate = ((Get-WmiObject -Class Win32_BIOS | Select-Object -Property *).ReleaseDate).SubString(0, 8)
-			Write-CMLogEntry -Value "Current BIOS release date detected as $($CurrentBIOSReleaseDate)." -Severity 1
-			Write-CMLogEntry -Value "Available BIOS release date detected as $($AvailableBIOSReleaseDate)." -Severity 1
-			
-			# Compare current BIOS release to available
-			if ($AvailableBIOSReleaseDate -gt $CurrentBIOSReleaseDate) {
+			# The version decides where it can, because the date cannot: Win32_BIOS.ReleaseDate is when the
+			# firmware was built and the package date is when Lenovo published it, usually weeks later, so a
+			# device already on the package's BIOS looks out of date and flashing it cannot close the gap.
+			# Lenovo versions a package in one of two ways, on separate counters, and nothing on the package
+			# says which: BIOS_* packages carry the UEFI BIOS version and FWU_* packages the System Firmware
+			# version. n4buj30w, for example, is System Firmware 1.29 and contains UEFI BIOS 1.47.
+			$CurrentBIOS = Get-WmiObject -Class Win32_BIOS | Select-Object -Property *
+			$CurrentUefiVersion = ConvertTo-BIOSVersionObject -Value (Get-LenovoUefiBiosVersion -BIOS $CurrentBIOS)
+			$CurrentFirmwareVersion = ConvertTo-BIOSVersionObject -Value (Get-LenovoSystemFirmwareVersion)
+			$AvailableVersion = ConvertTo-BIOSVersionObject -Value $AvailableBIOSVersion
+			$DeviceVersions = @(@($CurrentUefiVersion, $CurrentFirmwareVersion) | Where-Object { $null -ne $_ })
+
+			if ($null -eq $CurrentFirmwareVersion) {
+				Write-CMLogEntry -Value "System Firmware version could not be read, so the available BIOS release can only be compared with the UEFI BIOS version." -Severity 1
+			}
+
+			# Stays $null when the version cannot decide, which leaves it to the release date below
+			$NewBIOSDetected = $null
+			$NewBIOSDetail = [string]::Empty
+			if (($null -ne $AvailableVersion) -and ($DeviceVersions.Count -gt 0)) {
+				$VersionDetail = @()
+				if ($null -ne $CurrentUefiVersion) { $VersionDetail += "UEFI BIOS $($CurrentUefiVersion)" }
+				if ($null -ne $CurrentFirmwareVersion) { $VersionDetail += "System Firmware $($CurrentFirmwareVersion)" }
+				$VersionSummary = $VersionDetail -join " / "
+				Write-CMLogEntry -Value "Current BIOS release detected as $($VersionSummary). Available BIOS release detected as $($AvailableBIOSVersion)." -Severity 1
+
+				if ($DeviceVersions -contains $AvailableVersion) {
+					Write-CMLogEntry -Value "Available BIOS release $($AvailableBIOSVersion) is already installed." -Severity 1
+					$NewBIOSDetected = $false
+				} elseif (-not ($DeviceVersions | Where-Object { $_ -ge $AvailableVersion })) {
+					$NewBIOSDetected = $true
+					$NewBIOSDetail = "Current release $($VersionSummary) will be replaced by $($AvailableBIOSVersion)."
+				} elseif (($DeviceVersions.Count -eq 2) -and (-not ($DeviceVersions | Where-Object { $_ -le $AvailableVersion }))) {
+					# Only trusted with both versions. Against the UEFI BIOS version alone, a package on the
+					# System Firmware counter looks older even when it is newer, which would stop real updates.
+					Write-CMLogEntry -Value "Current release $($VersionSummary) is ahead of available BIOS release $($AvailableBIOSVersion)." -Severity 1
+					$NewBIOSDetected = $false
+				}
+			}
+
+			if ($null -eq $NewBIOSDetected) {
+				$NewBIOSDetected = $false
+				$CurrentBIOSReleaseDate = [string]$CurrentBIOS.ReleaseDate
+				if ($CurrentBIOSReleaseDate.Length -ge 8) {
+					$CurrentBIOSReleaseDate = $CurrentBIOSReleaseDate.SubString(0, 8)
+				}
+				Write-CMLogEntry -Value "Current BIOS release date detected as $($CurrentBIOSReleaseDate)." -Severity 1
+				Write-CMLogEntry -Value "Available BIOS release date detected as $($AvailableBIOSReleaseDate)." -Severity 1
+
+				if (($AvailableBIOSReleaseDate -match '^\d{8}$') -and ($CurrentBIOSReleaseDate -match '^\d{8}$')) {
+					$NewBIOSDetected = [string]::CompareOrdinal($AvailableBIOSReleaseDate, $CurrentBIOSReleaseDate) -gt 0
+					$NewBIOSDetail = "Current date release dated $($CurrentBIOSReleaseDate) will be replaced by release $($AvailableBIOSReleaseDate)."
+				} else {
+					Write-CMLogEntry -Value "Available BIOS release $($AvailableBIOSVersion) could not be compared by version and has no usable release date to compare instead, so it will not be flagged for flashing." -Severity 2
+				}
+			}
+
+			if ($NewBIOSDetected) {
 				# Write output to task sequence variable
 				if ($Script:PSCmdlet.ParameterSetName -notlike "Debug") {
 					$TSEnvironment.Value("NewBIOSAvailable") = $true
 				}
-				Write-CMLogEntry -Value "A new version of the BIOS has been detected. Current date release dated $($CurrentBIOSReleaseDate) will be replaced by release $($AvailableBIOSReleaseDate)." -Severity 1
+				Write-CMLogEntry -Value "A new version of the BIOS has been detected. $($NewBIOSDetail)" -Severity 1
 			}
 		}
 		
@@ -1714,7 +1842,7 @@ public class DATPinnedCertificateValidation
 							if ($ComputerManufacturer -match "Dell") {
 								Compare-BIOSVersion -AvailableBIOSVersion $PackageList[0].Version -ComputerManufacturer $ComputerManufacturer
 							} elseif ($ComputerManufacturer -match "Lenovo") {
-								Compare-BIOSVersion -AvailableBIOSVersion $PackageList[0].Version -AvailableBIOSReleaseDate $(($PackageList[0].Description).Split(":")[2].Trimend(")")) -ComputerManufacturer $ComputerManufacturer
+								Compare-BIOSVersion -AvailableBIOSVersion $PackageList[0].Version -AvailableBIOSReleaseDate (Get-LenovoPackageReleaseDate -Description $PackageList[0].Description) -ComputerManufacturer $ComputerManufacturer
 							} elseif ($ComputerManufacturer -match "Hewlett-Packard|HP") {
 								Compare-BIOSVersion -AvailableBIOSVersion $PackageList[0].Version -ComputerManufacturer $ComputerManufacturer
 							} elseif ($ComputerManufacturer -match "Microsoft") {
@@ -1791,7 +1919,7 @@ public class DATPinnedCertificateValidation
 								if ($ComputerManufacturer -match "Dell") {
 									Compare-BIOSVersion -AvailableBIOSVersion $PackageList[0].Version -ComputerManufacturer $ComputerManufacturer
 								} elseif ($ComputerManufacturer -match "Lenovo") {
-									Compare-BIOSVersion -AvailableBIOSVersion $PackageList[0].Version -AvailableBIOSReleaseDate $(($PackageList[0].PackageDescription).Split(":")[2]).Trimend(")") -ComputerManufacturer $ComputerManufacturer
+									Compare-BIOSVersion -AvailableBIOSVersion $PackageList[0].Version -AvailableBIOSReleaseDate (Get-LenovoPackageReleaseDate -Description $PackageList[0].Description) -ComputerManufacturer $ComputerManufacturer
 								} elseif ($ComputerManufacturer -match "Hewlett-Packard|HP") {
 									Compare-BIOSVersion -AvailableBIOSVersion $PackageList[0].Version -ComputerManufacturer $ComputerManufacturer
 								} elseif ($ComputerManufacturer -match "Microsoft") {
@@ -1844,7 +1972,7 @@ public class DATPinnedCertificateValidation
 	}
 	
 	Write-CMLogEntry -Value "[ApplyBIOSPackage]: Apply BIOS Package process initiated" -Severity 1
-	Write-CMLogEntry -Value " - Script version: 3.0.10" -Severity 1
+	Write-CMLogEntry -Value " - Script version: 3.0.11" -Severity 1
 	if ($PSCmdLet.ParameterSetName -like "Debug") {
 		Write-CMLogEntry -Value " - Apply BIOS package process initiated in debug mode" -Severity 1
 	}

@@ -13,7 +13,8 @@
     - The packaging pipeline must pre-extract HP SoftPaqs and Lenovo self-extracting
       archives before WIM capture so the internal flash utilities (HPFirmwareUpdRec64.exe,
       winuptp.exe, etc.) are discoverable after WIM extraction.
-    - Dell BIOS executables are self-contained updaters run directly with /s /l /p switches.
+    - Dell BIOS executables are self-contained updaters run directly with /s /l /p switches,
+      plus /keeplogo or /DellLogo when a boot logo action was set for the build.
       Flash64W.exe is NOT used (it is a WinPE-only wrapper).
 #>
 param (
@@ -1141,6 +1142,13 @@ try {
             # Build arguments: /s = silent, /l = log output
             $dellLogFile = Join-Path $env:ProgramData 'Microsoft\IntuneManagementExtension\Logs\DellBIOSFlash.log'
             $flashArgs = "/s /l=$dellLogFile"
+            # Boot logo switch chosen when the package was built: /keeplogo keeps a custom logo
+            # through the flash, /DellLogo puts the Dell logo back. Empty adds no switch.
+            $dellLogoSwitch = '{{DELL_LOGO_SWITCH}}'
+            if (-not [string]::IsNullOrEmpty($dellLogoSwitch)) {
+                $flashArgs += " $dellLogoSwitch"
+                Write-CMTraceLog "Dell boot logo switch $dellLogoSwitch will be applied to flash command"
+            }
             if (-not [string]::IsNullOrEmpty($biosPassword)) {
                 $flashArgs += " /p=$biosPassword"
                 Write-CMTraceLog "BIOS password will be applied to flash command"

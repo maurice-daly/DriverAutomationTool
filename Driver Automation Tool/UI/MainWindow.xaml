@@ -1064,7 +1064,7 @@
                                    Foreground="{DynamicResource AccentColor}" VerticalAlignment="Center" Margin="0,0,8,0"/>
                         <TextBlock Text="Driver Automation Tool" FontSize="13" FontWeight="SemiBold"
                                    Foreground="{DynamicResource WindowForeground}" VerticalAlignment="Center"/>
-                        <TextBlock x:Name="txt_Version" Text=" Version 10.3.6" FontSize="11"
+                        <TextBlock x:Name="txt_Version" Text=" Version 10.3.7" FontSize="11"
                                    Foreground="{DynamicResource InputPlaceholder}" VerticalAlignment="Center" Margin="4,0"/>
                     </StackPanel>
 
@@ -1082,9 +1082,14 @@
                         <Button x:Name="btn_FeedbackUp" Content="&#xE8E1;"
                                 Style="{StaticResource WindowControlButton}" Width="36" Height="28"
                                 FontSize="12" ToolTip="Send Positive Feedback"/>
-                        <Button x:Name="btn_FeedbackDown" Content="&#xE19E;"
-                                Style="{StaticResource WindowControlButton}" Width="36" Height="28"
-                                FontSize="12" ToolTip="Send Negative Feedback"/>
+                        <Grid x:Name="zone_FeedbackGitHub" Background="Transparent">
+                            <Button x:Name="btn_FeedbackDown" Content="&#xE19E;"
+                                    Style="{StaticResource WindowControlButton}" Width="36" Height="28"
+                                    FontSize="12" ToolTip="Send Negative Feedback"/>
+                            <!-- What's New marker for the GitHub prompt on the feedback and testimonial dialogs -->
+                            <Ellipse x:Name="pill_FeedbackGitHub" Width="7" Height="7" Fill="{DynamicResource AccentColor}" IsHitTestVisible="False"
+                                     HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,3,6,0" Visibility="Collapsed"/>
+                        </Grid>
                         <Button x:Name="btn_ThemeToggle" Content="&#xE793;"
                                 Style="{StaticResource WindowControlButton}" Width="36" Height="28"
                                 FontSize="12" ToolTip="Toggle Theme"/>
@@ -1243,6 +1248,7 @@
                                     <StackPanel Orientation="Horizontal">
                                         <TextBlock Text="&#xE72E;" Style="{StaticResource NavIcon}"/>
                                         <TextBlock Text="BIOS Security" Style="{StaticResource NavLabel}"/>
+                                        <Ellipse x:Name="dot_BIOSSecurity" Width="7" Height="7" Fill="{DynamicResource AccentColor}" Margin="8,0,0,0" VerticalAlignment="Center" Visibility="Collapsed"/>
                                     </StackPanel>
                                 </Button>
                                 <Button x:Name="nav_MaintenanceWindow"
@@ -6221,6 +6227,48 @@
                                             </Button>
                                         </StackPanel>
                                     </Border>
+
+                                    <!-- Dell Boot Logo Card (issue #990) -->
+                                    <Border Style="{StaticResource CardPanel}" Margin="0,0,0,12">
+                                        <StackPanel>
+                                            <StackPanel x:Name="zone_DellBIOSLogo" Orientation="Horizontal" Background="Transparent" Margin="0,0,0,4">
+                                                <TextBlock FontSize="14" FontWeight="SemiBold" VerticalAlignment="Center"
+                                                           Foreground="{DynamicResource WindowForeground}">
+                                                    <Run Text="&#xE91B;" FontFamily="Segoe MDL2 Assets" FontSize="14"/><Run Text="  Dell Boot Logo"/>
+                                                </TextBlock>
+                                                <Border x:Name="pill_DellBIOSLogo" Visibility="Collapsed" Background="{DynamicResource AccentColor}" CornerRadius="8" Padding="7,1,7,2" Margin="8,0,0,0" VerticalAlignment="Center">
+                                                    <TextBlock Text="New" FontSize="10" FontWeight="SemiBold" Foreground="White"/>
+                                                </Border>
+                                            </StackPanel>
+                                            <TextBlock TextWrapping="Wrap" FontSize="12" LineHeight="18"
+                                                       Foreground="{DynamicResource InputPlaceholder}" Margin="0,0,0,12">
+                                                Choose what a Dell BIOS update does to the boot logo. The setting is added to Dell BIOS packages for Intune and ConfigMgr Applications when they are built, and takes effect when a device installs the update. ConfigMgr packages and WIM packages are flashed by your task sequence, so add the switch to that step instead.
+                                            </TextBlock>
+
+                                            <Grid Margin="0,0,0,8">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="140"/>
+                                                    <ColumnDefinition Width="*" MaxWidth="400"/>
+                                                </Grid.ColumnDefinitions>
+                                                <TextBlock Grid.Column="0" Text="Boot logo" FontSize="12"
+                                                           Foreground="{DynamicResource WindowForeground}"
+                                                           VerticalAlignment="Center"/>
+                                                <ComboBox x:Name="cmb_DellBIOSLogoAction" Grid.Column="1"
+                                                          Height="32" FontSize="12"
+                                                          Background="{DynamicResource InputBackground}"
+                                                          Foreground="{DynamicResource WindowForeground}"
+                                                          BorderBrush="{DynamicResource WindowBorder}"
+                                                          VerticalContentAlignment="Center">
+                                                    <ComboBoxItem Content="Do not manage" Tag="None" IsSelected="True"/>
+                                                    <ComboBoxItem Content="Preserve current logo" Tag="Preserve"/>
+                                                    <ComboBoxItem Content="Restore Dell logo" Tag="Restore"/>
+                                                </ComboBox>
+                                            </Grid>
+
+                                            <TextBlock x:Name="txt_DellBIOSLogoHint" TextWrapping="Wrap" FontSize="11" LineHeight="16"
+                                                       Foreground="{DynamicResource InputPlaceholder}"/>
+                                        </StackPanel>
+                                    </Border>
                                 </StackPanel>
                             </ScrollViewer>
                         </Grid>
@@ -6500,6 +6548,48 @@
                                                                FontSize="11" Foreground="{DynamicResource InputPlaceholder}" TextWrapping="Wrap" Margin="0,2,0,0"/>
                                                 </StackPanel>
                                             </Grid>
+                                        </StackPanel>
+                                    </Border>
+
+                                    <!-- PowerShell 7 -->
+                                    <Border Tag="General" Style="{StaticResource CardPanel}" Margin="0,0,0,12">
+                                        <StackPanel>
+                                            <StackPanel x:Name="zone_PowerShell7Launch" Orientation="Horizontal" Background="Transparent" Margin="0,0,0,6">
+                                                <TextBlock FontSize="14" FontWeight="SemiBold" VerticalAlignment="Center"
+                                                           Foreground="{DynamicResource WindowForeground}">
+                                                    <Run Text="&#xE756;" FontFamily="Segoe MDL2 Assets" FontSize="14"/><Run Text="  PowerShell 7"/>
+                                                </TextBlock>
+                                                <Border x:Name="pill_PowerShell7Launch" Visibility="Collapsed" Background="{DynamicResource AccentColor}" CornerRadius="8" Padding="7,1,7,2" Margin="8,0,0,0" VerticalAlignment="Center">
+                                                    <TextBlock Text="New" FontSize="10" FontWeight="SemiBold" Foreground="White"/>
+                                                </Border>
+                                            </StackPanel>
+                                            <TextBlock TextWrapping="Wrap" FontSize="12" LineHeight="18"
+                                                       Foreground="{DynamicResource InputPlaceholder}" Margin="0,0,0,12">
+                                                When Windows PowerShell 5.1 starts the tool and PowerShell 7 is installed, the tool can relaunch itself in PowerShell 7. A change here applies the next time the tool starts.
+                                            </TextBlock>
+
+                                            <Grid Margin="0,0,0,8">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="140"/>
+                                                    <ColumnDefinition Width="*" MaxWidth="400"/>
+                                                </Grid.ColumnDefinitions>
+                                                <TextBlock Grid.Column="0" Text="At launch" FontSize="12"
+                                                           Foreground="{DynamicResource WindowForeground}"
+                                                           VerticalAlignment="Center"/>
+                                                <ComboBox x:Name="cmb_PowerShell7Launch" Grid.Column="1"
+                                                          Height="32" FontSize="12"
+                                                          Background="{DynamicResource InputBackground}"
+                                                          Foreground="{DynamicResource WindowForeground}"
+                                                          BorderBrush="{DynamicResource WindowBorder}"
+                                                          VerticalContentAlignment="Center">
+                                                    <ComboBoxItem Content="Ask each time" Tag="Ask" IsSelected="True"/>
+                                                    <ComboBoxItem Content="Always use PowerShell 7" Tag="Always"/>
+                                                    <ComboBoxItem Content="Stay in Windows PowerShell" Tag="Never"/>
+                                                </ComboBox>
+                                            </Grid>
+
+                                            <TextBlock x:Name="txt_PowerShell7Session" TextWrapping="Wrap" FontSize="11" LineHeight="16"
+                                                       Foreground="{DynamicResource InputPlaceholder}"/>
                                         </StackPanel>
                                     </Border>
 
@@ -8361,15 +8451,8 @@
                                     <StackPanel>
                                         <TextBlock Text="Driver Automation Tool" FontSize="22" FontWeight="Bold"
                                                    Foreground="{DynamicResource AccentColor}" Margin="0,0,0,4"/>
-                                        <TextBlock x:Name="txt_AboutVersion" Text="Version 10.3.6" FontSize="14"
-                                                   Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,4"/>
-                                        <StackPanel x:Name="zone_AboutEdition" Orientation="Horizontal" Background="Transparent" Margin="0,0,0,16">
-                                            <TextBlock x:Name="txt_AboutEdition" Text="MMS Midway Edition" FontSize="14" FontWeight="SemiBold"
-                                                       Foreground="{DynamicResource WindowForeground}" VerticalAlignment="Center"/>
-                                            <Border x:Name="pill_AboutEdition" Visibility="Collapsed" Background="{DynamicResource AccentColor}" CornerRadius="8" Padding="7,1,7,2" Margin="8,0,0,0" VerticalAlignment="Center">
-                                                <TextBlock Text="New" FontSize="10" FontWeight="SemiBold" Foreground="White"/>
-                                            </Border>
-                                        </StackPanel>
+                                        <TextBlock x:Name="txt_AboutVersion" Text="Version 10.3.7" FontSize="14"
+                                                   Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,16"/>
 
                                         <TextBlock TextWrapping="Wrap" FontSize="13"
                                                    Foreground="{DynamicResource WindowForeground}" Margin="0,0,0,16">

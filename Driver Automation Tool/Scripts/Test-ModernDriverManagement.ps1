@@ -93,10 +93,12 @@
     running on. The make/model/SKU values are still passed as -DebugMode overrides.
 
 .PARAMETER CurrentBIOSVersion
-    Simulated value for Win32_BIOS SMBIOSBIOSVersion, used by the BIOS version comparison.
+    Simulated value for Win32_BIOS SMBIOSBIOSVersion, used by the BIOS version comparison. For
+    Lenovo use the form the device reports, e.g. 'N4FET52W (1.33 )'.
 
 .PARAMETER CurrentBIOSReleaseDate
-    Simulated BIOS release date as yyyyMMdd, used by the Lenovo BIOS date comparison.
+    Simulated BIOS release date as yyyyMMdd, used when the version cannot settle the Lenovo BIOS
+    comparison.
 
 .PARAMETER NoPatchBIOSXml
     Do not generate a patched copy of Invoke-CMDownloadBIOSPackage.ps1 for the XMLPackage
@@ -951,6 +953,8 @@ if ($Context.SimulateHardware -eq $true) {
         # root\ccm classes need a ConfigMgr client. The scripts use them for AdminService
         # endpoint type detection, which the harness never exercises.
         if ($Class -eq "SMS_ActiveMPCandidate") { return @() }
+        # No simulated firmware device, so the Lenovo comparison uses the UEFI BIOS version alone
+        if ($Class -eq "Win32_PnPEntity") { return @() }
         if ($Class -eq "ClientInfo") {
             $Info = Microsoft.PowerShell.Utility\New-Object -TypeName PSObject
             $Info | Add-Member -MemberType NoteProperty -Name "InInternet" -Value $false
@@ -986,8 +990,10 @@ Write-Host ("DATSHIM: parameters " + ($Rendered -join " "))
 Write-Host ""
 
 try {
+    # The scripts end most failures with exit 1, which raises no error here
+    $global:LASTEXITCODE = 0
     & $Context.TargetScript @Parameters
-    $ExitCode = 0
+    $ExitCode = $LASTEXITCODE
 }
 catch {
     Write-Host "DATSHIM: terminating error: $($_.Exception.Message)"

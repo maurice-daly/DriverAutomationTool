@@ -10,7 +10,11 @@ param (
 
     # Skip desktop shortcut creation/management for this launch (for admins who manage
     # shortcuts manually). A persistent equivalent is the CreateDesktopShortcut registry value.
-    [switch]$NoShortcut
+    [switch]$NoShortcut,
+
+    # Stay in the PowerShell that started the launcher, without asking about PowerShell 7, for
+    # this launch. Also passed to the relaunched copy so it can never relaunch again.
+    [switch]$NoRelaunch
 )
 
 $ErrorActionPreference = 'Stop'
@@ -104,71 +108,11 @@ if (-not $isAdmin) {
     exit 1
 }
 
-function ConvertTo-DATConsolePixelMap {
-    <#
-    .SYNOPSIS
-        Draws a hand-made pixel map as console text, for the launch banner.
-    .DESCRIPTION
-        Each string in -Map is one row of pixels; each character is looked up in -Palette
-        (character -> 0xRRGGBB), and characters not in the palette are transparent, showing
-        the console background. Each character cell shows two pixels stacked, drawn with
-        half-block characters in 24-bit VT colour, so pixels stay square. Returns one string
-        per text row; every row ends with a colour reset.
-    #>
-    [CmdletBinding()]
-    [OutputType([string[]])]
-    param (
-        [Parameter(Mandatory)][string[]]$Map,
-        [Parameter(Mandatory)][hashtable]$Palette
-    )
-
-    $width = ($Map | Measure-Object -Property Length -Maximum).Maximum
-    # Pixel colour, or -1 for transparent (including past the end of a short or odd last row)
-    $pixelAt = {
-        param ([int]$X, [int]$Y)
-        if ($Y -ge $Map.Count -or $X -ge $Map[$Y].Length) { return -1 }
-        $key = [string]$Map[$Y][$X]
-        if ($Palette.ContainsKey($key)) { return [int]$Palette[$key] }
-        return -1
-    }
-
-    # Escape and block characters by code point: PS 5.1 reads a BOM-less script as Windows-1252
-    $esc = [char]27
-    $upperHalf = [char]0x2580
-    $lowerHalf = [char]0x2584
-    $rows = for ($y = 0; $y -lt $Map.Count; $y += 2) {
-        $line = [System.Text.StringBuilder]::new()
-        for ($x = 0; $x -lt $width; $x++) {
-            $top = & $pixelAt $x $y
-            $bottom = & $pixelAt $x ($y + 1)
-            $topRgb = "$(($top -shr 16) -band 255);$(($top -shr 8) -band 255);$($top -band 255)"
-            $bottomRgb = "$(($bottom -shr 16) -band 255);$(($bottom -shr 8) -band 255);$($bottom -band 255)"
-            if ($top -ge 0 -and $bottom -ge 0) {
-                [void]$line.Append("$esc[38;2;${topRgb};48;2;${bottomRgb}m$upperHalf")
-            } elseif ($top -ge 0) {
-                [void]$line.Append("$esc[49;38;2;${topRgb}m$upperHalf")
-            } elseif ($bottom -ge 0) {
-                [void]$line.Append("$esc[49;38;2;${bottomRgb}m$lowerHalf")
-            } else {
-                [void]$line.Append("$esc[0m ")
-            }
-        }
-        [void]$line.Append("$esc[0m")
-        $line.ToString()
-    }
-    return $rows
-}
-
 function Write-DATLaunchBanner {
     <#
     .SYNOPSIS
-        Writes the launch banner: "Driver Automation Tool" in ASCII art, then the MMS logo with
-        "MMS Midway Edition" beside it.
-    .DESCRIPTION
-        The MMS logo is drawn only when the console understands VT colour codes and output is
-        not redirected; otherwise "MMS Midway Edition" is written on its own. The logo is a
-        pixel map in this function, so it needs no image file. The banner never stops the tool
-        starting.
+        Writes the launch banner: "Driver Automation Tool" in ASCII art. The banner never stops
+        the tool starting.
     #>
     [CmdletBinding()]
     param ()
@@ -191,51 +135,13 @@ function Write-DATLaunchBanner {
 
 "@
     Write-Host $banner -ForegroundColor Cyan
-
-    $edition = 'MMS Midway Edition'
-    # MMS logo: '#' white lettering, '.' red speech bubble, ' ' console background
-    $mmsMap = @(
-        '.............................',
-        '.............................',
-        '..##....##.##....##..#######.',
-        '..###..###.###..###.##.......',
-        '..########.########.##.......',
-        '..##.##.##.##.##.##..######..',
-        '..##....##.##....##.......##.',
-        '..##....##.##....##.......##.',
-        '..##....##.##....##.#######..',
-        '.............................',
-        '.............................',
-        '  ....                       ',
-        '  ...                        ',
-        '  ..                         ',
-        '  .                          '
-    )
-
-    $useImages = $false
-    try { $useImages = (-not [Console]::IsOutputRedirected) -and ($Host.UI.SupportsVirtualTerminal -eq $true) } catch { }
-    if (-not $useImages) {
-        Write-Host "  $edition" -ForegroundColor Red
-        Write-Host ''
-        return
-    }
-
-    $mmsLines = @(ConvertTo-DATConsolePixelMap -Map $mmsMap -Palette @{ '#' = 0xFFFFFF; '.' = 0xFF0000 })
-    $esc = [char]27
-    # The text sits on the row through the middle of the lettering
-    $editionRow = 2
-    for ($i = 0; $i -lt $mmsLines.Count; $i++) {
-        $text = if ($i -eq $editionRow) { "   $esc[1;97m$edition$esc[0m" } else { '' }
-        Write-Host "  $($mmsLines[$i])$text"
-    }
-    Write-Host ''
 }
 
 # Display launch banner
 try {
     Write-DATLaunchBanner
 } catch {
-    Write-Host 'Driver Automation Tool -- MMS Midway Edition' -ForegroundColor Cyan
+    Write-Host 'Driver Automation Tool' -ForegroundColor Cyan
 }
 
 # Set install directory in registry
@@ -252,6 +158,189 @@ if (-not (Test-Path $RegPath)) {
     New-Item -Path $RegPath -Force | Out-Null
 }
 New-ItemProperty -Path $RegPath -Name "InstallDirectory" -Value $AppRoot -PropertyType String -Force | Out-Null
+
+function Find-DATPowerShell7 {
+    <#
+    .SYNOPSIS
+        Finds the newest stable PowerShell 7 or later on this computer, for the relaunch offer.
+    .DESCRIPTION
+        Checks the default install folder, then every pwsh.exe on the PATH. A file counts only
+        when its product name is PowerShell and its version is 7 or later; preview and release
+        candidate builds are left out. A Microsoft Store install is reached through an app
+        execution alias that has no version of its own, so its version is read from the Store
+        package instead. Returns an object with Path and Version, or $null when none is found.
+
+        -Path replaces the places searched, so the search can be tested against copies.
+    #>
+    [CmdletBinding()]
+    param (
+        [string[]]$Path
+    )
+
+    if (-not $PSBoundParameters.ContainsKey('Path')) {
+        # ProgramW6432 is the 64-bit Program Files folder, even from a 32-bit Windows PowerShell
+        $programFiles = if ($env:ProgramW6432) { $env:ProgramW6432 } else { $env:ProgramFiles }
+        $Path = @(Join-Path $programFiles 'PowerShell\7\pwsh.exe') +
+            @(Get-Command -Name 'pwsh.exe' -CommandType Application -All -ErrorAction SilentlyContinue | ForEach-Object { $_.Source })
+    }
+
+    $best = $null
+    foreach ($candidate in $Path) {
+        if ([string]::IsNullOrWhiteSpace($candidate) -or (Split-Path -Path $candidate -Leaf) -ne 'pwsh.exe' -or
+            -not (Test-Path -LiteralPath $candidate -PathType Leaf)) { continue }
+
+        $version = $null
+        $info = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($candidate)
+        if ($info.FileMajorPart -gt 0) {
+            if ($info.ProductName -ne 'PowerShell' -or "$($info.ProductVersion)" -match '^\d+\.\d+\.\d+-') { continue }
+            $version = [version]::new($info.FileMajorPart, $info.FileMinorPart, $info.FileBuildPart)
+        } elseif ($candidate -match '\\Microsoft\\WindowsApps\\pwsh\.exe$') {
+            $package = Get-AppxPackage -Name 'Microsoft.PowerShell' -ErrorAction SilentlyContinue |
+                Sort-Object -Property { [version]$_.Version } -Descending | Select-Object -First 1
+            if ($package) {
+                $packageVersion = [version]$package.Version
+                $version = [version]::new($packageVersion.Major, $packageVersion.Minor, $packageVersion.Build)
+            }
+        }
+
+        if ($null -ne $version -and $version.Major -ge 7 -and ($null -eq $best -or $version -gt $best.Version)) {
+            $best = [pscustomobject]@{ Path = $candidate; Version = $version }
+        }
+    }
+    return $best
+}
+
+function Get-DATPowerShell7LaunchAction {
+    <#
+    .SYNOPSIS
+        Decides what the launcher does about PowerShell 7 when Windows PowerShell started it.
+    .DESCRIPTION
+        Returns Relaunch, Ask or Continue. With no PowerShell 7 found the launcher carries on.
+        Otherwise LaunchInPowerShell7 (Common Settings > General) decides: Always relaunches,
+        Never carries on, and Ask, a missing value or one the tool cannot read asks.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param (
+        [AllowNull()][AllowEmptyString()][string]$Setting,
+        [bool]$PowerShell7Found
+    )
+
+    if (-not $PowerShell7Found) { return 'Continue' }
+    switch ("$Setting".Trim()) {
+        'Always' { return 'Relaunch' }
+        'Never'  { return 'Continue' }
+        default  { return 'Ask' }
+    }
+}
+
+function Read-DATPowerShell7Choice {
+    <#
+    .SYNOPSIS
+        Asks in the console whether to relaunch in PowerShell 7.
+    .DESCRIPTION
+        Returns Yes, No, Always or Never. No is the default, and the answer when the host cannot
+        ask (a non-interactive session).
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param (
+        [Parameter(Mandatory)][version]$Version,
+        [Parameter(Mandatory)][string]$Path
+    )
+
+    $labels = @('Yes', 'No', 'Always', 'Never')
+    $choices = [System.Management.Automation.Host.ChoiceDescription[]]@(
+        [System.Management.Automation.Host.ChoiceDescription]::new('&Yes', "Relaunch in PowerShell $Version this time"),
+        [System.Management.Automation.Host.ChoiceDescription]::new('&No', 'Carry on in Windows PowerShell this time'),
+        [System.Management.Automation.Host.ChoiceDescription]::new('&Always', 'Relaunch in PowerShell 7 now and every time the tool starts'),
+        [System.Management.Automation.Host.ChoiceDescription]::new('Ne&ver', 'Carry on in Windows PowerShell and stop asking')
+    )
+    try {
+        return $labels[$Host.UI.PromptForChoice('PowerShell 7', "PowerShell $Version is installed at $Path. Relaunch the tool in PowerShell 7?", $choices, 1)]
+    } catch {
+        return 'No'
+    }
+}
+
+function Invoke-DATPowerShell7Relaunch {
+    <#
+    .SYNOPSIS
+        Offers PowerShell 7 when Windows PowerShell started the launcher, and relaunches in it.
+    .DESCRIPTION
+        Reads LaunchInPowerShell7 from -RegPath (see Get-DATPowerShell7LaunchAction), asks when
+        it is Ask, and saves Always or Never when either is chosen. The relaunch runs
+        -LauncherPath with -LauncherArguments in this console, already elevated; the caller
+        includes -NoRelaunch so the new copy cannot offer again.
+
+        Returns the relaunched tool's exit code, or $null to carry on in this PowerShell. A failed
+        check or relaunch is reported and never stops the tool starting.
+    #>
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory)][string]$RegPath,
+        [Parameter(Mandatory)][string]$LauncherPath,
+        [string[]]$LauncherArguments = @()
+    )
+
+    $pwsh7 = $null
+    try {
+        $setting = [string](Get-ItemProperty -Path $RegPath -Name 'LaunchInPowerShell7' -ErrorAction SilentlyContinue).LaunchInPowerShell7
+        # Never skips the search too, so a declined offer costs nothing at each start
+        if ($setting.Trim() -ne 'Never') { $pwsh7 = Find-DATPowerShell7 }
+        $action = Get-DATPowerShell7LaunchAction -Setting $setting -PowerShell7Found ($null -ne $pwsh7)
+    } catch {
+        Write-Host "PowerShell 7 check skipped: $($_.Exception.Message)" -ForegroundColor DarkYellow
+        return $null
+    }
+
+    if ($action -eq 'Ask') {
+        Write-Host ''
+        $choice = Read-DATPowerShell7Choice -Version $pwsh7.Version -Path $pwsh7.Path
+        if ($choice -eq 'Always' -or $choice -eq 'Never') {
+            try {
+                New-ItemProperty -Path $RegPath -Name 'LaunchInPowerShell7' -Value $choice -PropertyType String -Force | Out-Null
+                Write-Host 'Choice saved -- change it in Common Settings > General.' -ForegroundColor DarkGray
+            } catch {
+                Write-Host "Choice not saved: $($_.Exception.Message)" -ForegroundColor DarkYellow
+            }
+        }
+        $action = if ($choice -eq 'Yes' -or $choice -eq 'Always') { 'Relaunch' } else { 'Continue' }
+    }
+    if ($action -ne 'Relaunch') { return $null }
+
+    # Start-Process -NoNewWindow shares this console without capturing its output, which a direct
+    # call inside a function would. It joins arguments with spaces, so quote any that have one.
+    $argumentLine = (@('-ExecutionPolicy', 'Bypass', '-File', $LauncherPath) + $LauncherArguments | ForEach-Object {
+        if ($_ -match '\s') { "`"$_`"" } else { $_ }
+    }) -join ' '
+    # The relaunched copy writes its own banner
+    try { Clear-Host } catch { }
+    try {
+        $process = Start-Process -FilePath $pwsh7.Path -ArgumentList $argumentLine -NoNewWindow -PassThru -ErrorAction Stop
+        # Reading Handle now keeps ExitCode available once the process has ended
+        $null = $process.Handle
+        # WaitForExit rather than -Wait: -Wait also waits for any process the tool leaves running
+        $process.WaitForExit()
+        return $process.ExitCode
+    } catch {
+        Write-Host "Could not start PowerShell 7 ($($_.Exception.Message)) -- carrying on in Windows PowerShell." -ForegroundColor DarkYellow
+        return $null
+    }
+}
+
+# Report the PowerShell running the tool and, under Windows PowerShell, offer PowerShell 7 when it
+# is installed.
+$engineName = if ($PSVersionTable.PSEdition -eq 'Core') { 'PowerShell' } else { 'Windows PowerShell' }
+Write-Host "  PowerShell    : " -NoNewline -ForegroundColor DarkGray
+Write-Host "$engineName $($PSVersionTable.PSVersion)" -ForegroundColor White
+
+if (-not $NoRelaunch -and $PSVersionTable.PSVersion.Major -lt 7) {
+    $relaunchArgs = @('-Theme', $Theme, '-NoRelaunch')
+    if ($NoShortcut) { $relaunchArgs += '-NoShortcut' }
+    $relaunchExitCode = Invoke-DATPowerShell7Relaunch -RegPath $RegPath -LauncherPath $PSCommandPath -LauncherArguments $relaunchArgs
+    if ($null -ne $relaunchExitCode) { exit $relaunchExitCode }
+}
 
 function Update-DATDesktopShortcut {
     <#

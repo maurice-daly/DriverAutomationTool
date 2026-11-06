@@ -3,6 +3,19 @@ Driver Automation Tool - Release Notes
 IMPORTANT
 ** DAT Downloads have been moved to GitHub - https://github.com/maurice-daly/DriverAutomationTool **
 
+Version 10.3.7
+What's New & Fixed
+
+- Lenovo Packages: Rebuild Needed — the DAT API catalog listed some Lenovo machine types as numbers, for example 12E4 as 120000, affecting 22 models including the ThinkCentre M70q Gen 4 and ThinkPad E14 Gen 4; the catalog is now fixed, but packages already built for these models keep the wrong values, so devices can be missed, and in Intune short values such as 11 or 13 can also match other Lenovo models; once the model list shows the correct types, right-click each affected model and choose Force Existing Package Update; in Intune this deletes and recreates the app, so check its assignments afterwards, and also correct any assignment filter for the model, because a rebuild reuses the existing filter.
+- Dell Boot Logo — Dell BIOS updates can now keep a custom boot logo or put the Dell logo back; the new setting is under Intune Settings > BIOS Security and applies to Intune apps and ConfigMgr Applications; a model whose Dell updater does not support your choice is skipped and reported as a build failure; standard ConfigMgr packages and WIMs do not use this setting, and the build log says so. (#990)
+- PowerShell 7 — when started in Windows PowerShell, the tool now offers to relaunch in PowerShell 7 if it is installed, and you can answer Yes, No, Always or Never; to change your choice later, use the PowerShell 7 card under Common Settings > General.
+- Task Sequences Without a Driver Package — Invoke-CMApplyDriverPackage.ps1 can now finish without drivers instead of failing the task sequence, using the -AllowNoDriverPackage switch or the MDMAllowNoDriverPackage task sequence variable; the run then ends with a warning when no package matches, none are returned or the download fails, and sets MDMDriverPackageSkipped so a later step can react; a failed run also now always ends with its failure line in ApplyDriverPackage.log. (#988)
+- Bugs and Feature Requests — the feedback and testimonial dialogs now ask whether you are reporting a bug or requesting a feature, and link to the GitHub issues page, where these can be tracked and you can follow the progress.
+- Scheduled ConfigMgr Builds — with two or more distribution point groups selected, scheduled builds did not distribute to any of them; this is fixed, including for schedules you already have; scheduled builds also ignored the custom console folder, Binary Differential Replication and the XML Logic Package refresh, and these now work too, but save your schedule again to pick them up.
+- Add Custom Drivers — Add Custom Drivers on Model Selection and Add Custom Drivers to Driver Pack on Package Management open again; both menu items did nothing except write an error to the log. (#992)
+- Lenovo BIOS in Task Sequences — Lenovo task sequences no longer flag a BIOS update for a device that already has that version; the check compared two different dates, so a current device could look out of date on every run, and it now compares versions wherever it can; three crashes in the same script are fixed too. (#987)
+- Testimonial Form — the testimonial form now fits smaller and scaled screens; it could run past the bottom of the screen and leave Submit out of reach, and the fields now scroll and the buttons stay in view.
+
 Version 10.3.6
 What's New & Fixed
 

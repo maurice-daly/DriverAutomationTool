@@ -87,6 +87,15 @@
 	A hypervisor specific package is preferred over a generic one. Both need a non-empty description, as every driver package does. QEMU and Proxmox virtual machines are identified as 'KVM'.
 	Driver fallback packages are not used for virtual machines; the generic virtual machine package takes that role. On a physical device the switch has no effect.
 
+.PARAMETER AllowNoDriverPackage
+	Allow the run to finish successfully without drivers when no driver package is available. Without this switch a missing package stops the task sequence, as before.
+	It applies when no package matches the device after -OSVersionFallback and -UseDriverFallback have been tried, when no driver packages are returned at all, and when the selected package cannot be downloaded, e.g. because it is not on a distribution point. A warning is logged and the install phase is skipped.
+	Failing to reach the AdminService, an unreadable XML logic file and any failure after a successful download still stop the run. Note that a wrong -Filter or site code also returns no packages, so with this switch it is logged as a warning rather than stopping the run.
+	A failed download is only reported once its retries have finished. The script sets SMSTSDownloadRetryCount to 1000 for the attempt, which at the default 15 second SMSTSDownloadRetryDelay can be several hours.
+	A virtual machine that is refused without -AllowVirtualMachine is still refused; pass both switches for a task sequence that also runs on virtual machines.
+	When the switch is not passed, the value is read from the 'MDMAllowNoDriverPackage' task sequence variable: 'True' or '1' turns it on, 'False', '0' or blank leaves it off, and any other value stops the run.
+	A run that finishes without drivers sets the 'MDMDriverPackageSkipped' task sequence variable to 'True', so a later step can react to it. It is 'False' on any other run with this option on, and is not set without it.
+
 .EXAMPLE
 	# Detect, download and apply drivers during OS deployment with ConfigMgr:
 	.\Invoke-CMApplyDriverPackage.ps1 -BareMetal -Endpoint 'CM01.domain.com' -TargetOSName 'Windows 10' -TargetOSVersion '1909'
@@ -120,6 +129,9 @@
 
 	# Detect, download and apply drivers during OS deployment in a hierarchy (CAS and multiple primary sites), only considering driver packages created at primary site P01:
 	.\Invoke-CMApplyDriverPackage.ps1 -BareMetal -Endpoint 'CM01.domain.com' -TargetOSName 'Windows 11' -TargetOSVersion '25H2' -SiteCode 'P01'
+
+	# Detect, download and apply drivers during OS deployment, and finish without drivers instead of failing when no driver package is available for the device:
+	.\Invoke-CMApplyDriverPackage.ps1 -BareMetal -Endpoint 'CM01.domain.com' -TargetOSName 'Windows 11' -TargetOSVersion '25H2' -AllowNoDriverPackage
 
 	# Detect, download and apply drivers during OS deployment with ConfigMgr and use an XML package as the source of driver package details instead of the AdminService:
 	.\Invoke-CMApplyDriverPackage.ps1 -XMLPackage -XMLDeploymentType BareMetal -TargetOSName 'Windows 10' -TargetOSVersion '1909' -TargetOSArchitecture 'x64'
@@ -282,6 +294,13 @@
 	4.3.7 - (2026-10-17) - Made matching explicit for driver packages built for a model with no baseboard IDs (issue #979):
 						 - The Driver Automation Tool now builds a package for a model whose OEM catalog published no baseboard/SKU IDs, instead of failing, and writes 'no baseboard IDs published, matched on model name' into the description where the list would be. In SystemSKU detection mode such a package now goes straight to the computer model match, with a log line saying why, rather than reaching it only because its description happened not to match the device SKU.
 						 - The detection result is reset for each package. A package skipped for missing SystemSKU values in its description previously kept the result of the package processed before it, so it could be selected on that package's match.
+	4.3.8 - (2026-11-04) - Added an opt-in way to finish without drivers when no driver package is available (issue #988):
+						 - New -AllowNoDriverPackage switch, with the 'MDMAllowNoDriverPackage' task sequence variable used when the switch is not passed. 'True' or '1' turns it on, 'False', '0' or blank leaves it off, and any other value stops the run with guidance.
+						 - Without either, nothing changes: a missing driver package stops the task sequence.
+						 - With it, the run finishes successfully with a warning when no package matches after -OSVersionFallback and -UseDriverFallback have been tried, when no driver packages are returned at all, or when the selected package cannot be downloaded.
+						 - Failing to reach the AdminService, an unreadable XML logic file and failures after a successful download still stop the run, and a virtual machine still needs -AllowVirtualMachine.
+						 - A run that finishes without drivers sets the 'MDMDriverPackageSkipped' task sequence variable to 'True', so a later step can react to it. It is 'False' on any other run with the option on, and is not set without it.
+						 - Every failure now ends the log with 'Apply Driver Package process failed'. Errors raised in functions with no parameters left the script without reaching its catch block: the run still failed with exit code 1, but the log did not record that it had.
 #>
 [CmdletBinding(SupportsShouldProcess = $true, DefaultParameterSetName = "BareMetal")]
 param(
@@ -426,7 +445,10 @@ param(
 	[parameter(Mandatory = $false, ParameterSetName = "PreCache")]
 	[parameter(Mandatory = $false, ParameterSetName = "Debug")]
 	[parameter(Mandatory = $false, ParameterSetName = "XMLPackage")]
-	[switch]$AllowVirtualMachine
+	[switch]$AllowVirtualMachine,
+
+	[parameter(Mandatory = $false, HelpMessage = "Finish successfully without drivers when no driver package is available or it cannot be downloaded, instead of failing the task sequence.")]
+	[switch]$AllowNoDriverPackage
 )
 Begin {
 	# Load Microsoft.SMS.TSEnvironment COM object
@@ -605,6 +627,10 @@ Process {
 			if ($ReturnCode -eq 0) {
 				Write-CMLogEntry -Value " - Successfully downloaded package content with PackageID: $($PackageID)" -Severity 1
 			}
+			elseif ($Script:AllowNoDriverPackageEnabled) {
+				# The caller sees the return code and treats the package as missing
+				Write-CMLogEntry -Value " - Failed to download package content with PackageID '$($PackageID)'. Return code was: $($ReturnCode)" -Severity 2
+			}
 			else {
 				Write-CMLogEntry -Value " - Failed to download package content with PackageID '$($PackageID)'. Return code was: $($ReturnCode)" -Severity 3
 				
@@ -709,7 +735,10 @@ Process {
 	}
 
 	function Get-DeploymentType {
-		switch ($PSCmdlet.ParameterSetName) {
+		[CmdletBinding()]
+		param ()
+
+		switch ($Script:PSCmdlet.ParameterSetName) {
 			"XMLPackage" {
 				# Set required variables for XMLPackage parameter set
 				$Script:DeploymentMode = $Script:XMLDeploymentType
@@ -731,6 +760,9 @@ Process {
 	}
 
 	function Get-PackageSiteCode {
+		[CmdletBinding()]
+		param ()
+
 		# Packages are global data in a hierarchy (CAS with multiple primary sites), so the AdminService on
 		# any site returns the packages created at every site. When a site code is set, only packages created
 		# at that site are considered, so a device cannot select a package from another primary site whose
@@ -765,6 +797,40 @@ Process {
 		}
 	}
 
+	function Get-AllowNoDriverPackage {
+		[CmdletBinding()]
+		param ()
+
+		# Opt-in: a device with no driver package, or whose package cannot be downloaded, finishes without
+		# drivers instead of failing the task sequence. A task sequence variable is always a string, so the
+		# value is compared rather than tested directly: 'False' and '0' are both true in PowerShell.
+		$Script:AllowNoDriverPackageEnabled = $AllowNoDriverPackage.IsPresent
+		$AllowNoDriverPackageSource = "parameter input"
+		if ((-not $Script:AllowNoDriverPackageEnabled) -and ($Script:PSCmdLet.ParameterSetName -notlike "Debug")) {
+			$AllowNoDriverPackageSource = "TS environment variable 'MDMAllowNoDriverPackage'"
+			$AllowNoDriverPackageValue = ([string]$TSEnvironment.Value("MDMAllowNoDriverPackage")).Trim()
+			if ($AllowNoDriverPackageValue -in "True", "1") {
+				$Script:AllowNoDriverPackageEnabled = $true
+			}
+			elseif ($AllowNoDriverPackageValue -notin "False", "0", "") {
+				Write-CMLogEntry -Value " - Value '$($AllowNoDriverPackageValue)' from $($AllowNoDriverPackageSource) is not valid. Use 'True' or '1' to allow a run without a driver package, or 'False' or '0' to leave it off" -Severity 3
+
+				# Throw terminating error
+				$PSCmdlet.ThrowTerminatingError((New-TerminatingErrorRecord))
+			}
+		}
+
+		if ($Script:AllowNoDriverPackageEnabled) {
+			Write-CMLogEntry -Value " - AllowNoDriverPackage enabled from $($AllowNoDriverPackageSource), the run finishes without drivers if no driver package is available or it cannot be downloaded" -Severity 1
+
+			# A later step can test this variable. It starts at False so a rerun does not inherit an earlier result
+			if ($Script:PSCmdLet.ParameterSetName -notlike "Debug") {
+				Write-CMLogEntry -Value " - Setting task sequence variable MDMDriverPackageSkipped to: False" -Severity 1
+				$TSEnvironment.Value("MDMDriverPackageSkipped") = "False"
+			}
+		}
+	}
+
 	function ConvertTo-ObfuscatedUserName {
 		param(
 			[parameter(Mandatory = $true, HelpMessage = "Specify the user name string to be obfuscated for log output.")]
@@ -788,9 +854,12 @@ Process {
 	}
 	
 	function Test-AdminServiceData {
+		[CmdletBinding()]
+		param ()
+
 		# Validate correct value have been either set as a TS environment variable or passed as parameter input for service account user name used to authenticate against the AdminService
 		if ([string]::IsNullOrEmpty($Script:UserName)) {
-			switch ($PSCmdLet.ParameterSetName) {
+			switch ($Script:PSCmdLet.ParameterSetName) {
 				"Debug" {
 					Write-CMLogEntry -Value " - Required service account user name could not be determined from parameter input" -Severity 3
 					
@@ -913,6 +982,9 @@ Process {
 	}
 	
 	function Get-AdminServiceEndpointType {
+		[CmdletBinding()]
+		param ()
+
 		switch ($Script:DeploymentMode) {
 			"BareMetal" {
 				$SMSInWinPE = $TSEnvironment.Value("_SMSTSInWinPE")
@@ -1046,6 +1118,9 @@ Process {
 			That is precisely what the module was doing underneath, so no app registration or task
 			sequence variable has to change.
 		#>
+		[CmdletBinding()]
+		param ()
+
 		# Reuse a cached token while more than five minutes of its lifetime remain. A driver package
 		# phase on a slow link can outlive a token, and nothing here refreshed one previously.
 		if (($null -ne $Script:AuthTokenExpiry) -and ((Get-Date) -lt $Script:AuthTokenExpiry.AddMinutes(-5))) {
@@ -1708,6 +1783,9 @@ public class DATPinnedCertificateValidation
 	}
 	
 	function Get-DriverPackages {
+		[CmdletBinding()]
+		param ()
+
 		try {
 			# Retrieve driver packages but filter out matches depending on script operational mode
 			switch ($OperationalMode) {
@@ -1749,11 +1827,18 @@ public class DATPinnedCertificateValidation
 				return $Packages
 			}
 			else {
-				Write-CMLogEntry -Value " - Retrieved a total of '0' driver packages from $($Script:PackageSource) matching operational mode: $($OperationalMode)" -Severity 3
+				$NoPackagesSeverity = if ($Script:AllowNoDriverPackageEnabled) { 2 } else { 3 }
+				Write-CMLogEntry -Value " - Retrieved a total of '0' driver packages from $($Script:PackageSource) matching operational mode: $($OperationalMode)" -Severity $NoPackagesSeverity
 				if (-not ([string]::IsNullOrEmpty($Script:PackageSiteCode))) {
-					Write-CMLogEntry -Value " - Only packages created at site '$($Script:PackageSiteCode)' were considered. Check that the site code is the site where the driver packages were created" -Severity 3
+					Write-CMLogEntry -Value " - Only packages created at site '$($Script:PackageSiteCode)' were considered. Check that the site code is the site where the driver packages were created" -Severity $NoPackagesSeverity
 				}
-				
+
+				# Reaching here means the query worked and found nothing. A failed query goes to the catch block below
+				if ($Script:AllowNoDriverPackageEnabled) {
+					Write-CMLogEntry -Value " - AllowNoDriverPackage is enabled, so the run continues. If every device reports this, check the Filter parameter and the site code" -Severity 2
+					return
+				}
+
 				# Throw terminating error				
 				$PSCmdlet.ThrowTerminatingError((New-TerminatingErrorRecord))
 			}
@@ -2007,6 +2092,9 @@ public class DATPinnedCertificateValidation
 	}
 
 	function Get-ComputerSystemType {
+		[CmdletBinding()]
+		param ()
+
 		$ComputerSystem = Get-WmiObject -Class "Win32_ComputerSystem"
 		$ComputerSystemType = $ComputerSystem | Select-Object -ExpandProperty "Model"
 		$Hypervisor = Get-VirtualMachineHypervisor -Manufacturer "$($ComputerSystem.Manufacturer)" -Model "$($ComputerSystemType)"
@@ -2068,6 +2156,9 @@ public class DATPinnedCertificateValidation
 	}
 	
 	function Get-OperatingSystemVersion {
+		[CmdletBinding()]
+		param ()
+
 		if (($Script:PSCmdlet.ParameterSetName -like "DriverUpdate") -or ($Script:PSCmdlet.ParameterSetName -like "OSUpgrade")) {
 			$OperatingSystemVersion = Get-WmiObject -Class "Win32_OperatingSystem" | Select-Object -ExpandProperty "Version"
 			if ($OperatingSystemVersion -like "10.0.*") {
@@ -2395,10 +2486,15 @@ public class DATPinnedCertificateValidation
 					}
 				}
 				else {
-					Write-CMLogEntry -Value " - Retrieved a total of '0' fallback driver packages from AdminService matching operational mode: $($OperationalMode)" -Severity 3
-					
-					# Throw terminating error					
-					$PSCmdlet.ThrowTerminatingError((New-TerminatingErrorRecord))
+					if ($Script:AllowNoDriverPackageEnabled) {
+						Write-CMLogEntry -Value " - Retrieved a total of '0' fallback driver packages from AdminService matching operational mode: $($OperationalMode)" -Severity 2
+					}
+					else {
+						Write-CMLogEntry -Value " - Retrieved a total of '0' fallback driver packages from AdminService matching operational mode: $($OperationalMode)" -Severity 3
+
+						# Throw terminating error
+						$PSCmdlet.ThrowTerminatingError((New-TerminatingErrorRecord))
+					}
 				}
 			}
 			catch [System.Exception] {
@@ -2643,6 +2739,13 @@ public class DATPinnedCertificateValidation
 			[parameter(Mandatory = $false, HelpMessage = "Set to True to check for drivers packages that matches earlier versions of Windows than what's detected from admin service call.")]
 			[bool]$OSVersionFallback = $false
 		)
+		# Only happens with AllowNoDriverPackage, as Get-DriverPackages otherwise stops the run. The second
+		# call for OSVersionFallback lands here too, and Confirm-DriverPackage does not accept an empty list
+		if ($null -eq $DriverPackages) {
+			Write-CMLogEntry -Value " - No driver packages were retrieved, skipping driver package matching" -Severity 2
+			return
+		}
+
 		# A physical device is matched once, exactly as before
 		if ($null -eq $Script:VirtualMachine) {
 			Confirm-DriverPackage -ComputerData $ComputerData -OSImageData $OSImageDetails -DriverPackage $DriverPackages -OSVersionFallback $OSVersionFallback
@@ -2669,9 +2772,16 @@ public class DATPinnedCertificateValidation
 	}
 
 	function Confirm-VirtualMachineDriverPackage {
+		[CmdletBinding()]
+		param ()
+
 		# Last check before download: whatever path selected the package, a virtual machine only ever
 		# installs a package for its hypervisor or a generic virtual machine package
 		$SelectedPackage = @($DriverPackageList)[0]
+		if (($null -eq $SelectedPackage) -and $Script:AllowNoDriverPackageEnabled) {
+			Write-CMLogEntry -Value " - No virtual machine driver package was selected and AllowNoDriverPackage is enabled, so there is nothing to confirm" -Severity 2
+			return
+		}
 		if (($null -eq $SelectedPackage) -or ($SelectedPackage.Manufacturer -notin $Script:VirtualMachine.PackageManufacturers)) {
 			Write-CMLogEntry -Value " - Selected driver package '$($SelectedPackage.PackageName)' has manufacturer '$($SelectedPackage.Manufacturer)', which is not a virtual machine package manufacturer ($($Script:VirtualMachine.PackageManufacturers -join ', ')); script execution will be terminated" -Severity 3
 
@@ -2682,6 +2792,9 @@ public class DATPinnedCertificateValidation
 	}
 
 	function Confirm-DriverPackageList {
+		[CmdletBinding()]
+		param ()
+
 		switch ($DriverPackageList.Count) {
 			0 {
 				Write-CMLogEntry -Value " - Amount of driver packages detected by validation process: $($DriverPackageList.Count)" -Severity 2
@@ -2706,6 +2819,9 @@ public class DATPinnedCertificateValidation
 						if ($Script:UseDriverFallbackEnabled) {
 							Write-CMLogEntry -Value " - Validation process detected an empty list of matched driver packages, however the UseDriverFallback parameter was specified" -Severity 1
 						}
+						elseif ($Script:AllowNoDriverPackageEnabled) {
+							Write-CMLogEntry -Value " - Validation after fallback process detected an empty list of matched driver packages, however AllowNoDriverPackage is enabled, the run continues without drivers" -Severity 2
+						}
 						else {
 							Write-CMLogEntry -Value " - Validation after fallback process failed with empty list of matched driver packages, script execution will be terminated" -Severity 3
 							
@@ -2717,6 +2833,9 @@ public class DATPinnedCertificateValidation
 				else {
 					if ($Script:UseDriverFallbackEnabled) {
 						Write-CMLogEntry -Value " - Validation process detected an empty list of matched driver packages, however the UseDriverFallback parameter was specified" -Severity 1
+					}
+					elseif ($Script:AllowNoDriverPackageEnabled) {
+						Write-CMLogEntry -Value " - Validation process detected an empty list of matched driver packages, however AllowNoDriverPackage is enabled, the run continues without drivers" -Severity 2
 					}
 					else {
 						Write-CMLogEntry -Value " - Validation failed with empty list of matched driver packages, script execution will be terminated" -Severity 3
@@ -2770,14 +2889,23 @@ public class DATPinnedCertificateValidation
 	}
 	
 	function Confirm-FallbackDriverPackageList {
+		[CmdletBinding()]
+		param ()
+
 		if ($Script:SkipFallbackDriverPackageValidation -eq $false) {
 			switch ($DriverPackageList.Count) {
 				0 {
-					Write-CMLogEntry -Value " - Amount of fallback driver packages detected by validation process: $($DriverPackageList.Count)" -Severity 3
-					Write-CMLogEntry -Value " - Validation failed with empty list of matched fallback driver packages, script execution will be terminated" -Severity 3
-					
-					# Throw terminating error					
-					$PSCmdlet.ThrowTerminatingError((New-TerminatingErrorRecord))
+					if ($Script:AllowNoDriverPackageEnabled) {
+						Write-CMLogEntry -Value " - Amount of fallback driver packages detected by validation process: $($DriverPackageList.Count)" -Severity 2
+						Write-CMLogEntry -Value " - Validation detected an empty list of matched fallback driver packages, however AllowNoDriverPackage is enabled, the run continues without drivers" -Severity 2
+					}
+					else {
+						Write-CMLogEntry -Value " - Amount of fallback driver packages detected by validation process: $($DriverPackageList.Count)" -Severity 3
+						Write-CMLogEntry -Value " - Validation failed with empty list of matched fallback driver packages, script execution will be terminated" -Severity 3
+
+						# Throw terminating error
+						$PSCmdlet.ThrowTerminatingError((New-TerminatingErrorRecord))
+					}
 				}
 				1 {
 					Write-CMLogEntry -Value " - Amount of fallback driver packages detected by validation process: $($DriverPackageList.Count)" -Severity 1
@@ -2799,6 +2927,9 @@ public class DATPinnedCertificateValidation
 	}
 	
 	function Invoke-DownloadDriverPackageContent {
+		[CmdletBinding()]
+		param ()
+
 		Write-CMLogEntry -Value " - Attempting to download content files for matched driver package: $($DriverPackageList[0].PackageName)" -Severity 1
 		
 		# Depending on current deployment type, attempt to download driver package content
@@ -2839,6 +2970,11 @@ public class DATPinnedCertificateValidation
 			
 			# Handle return value for successful download of driver package content files
 			return $DriverPackageContentLocation
+		}
+		elseif ($Script:AllowNoDriverPackageEnabled) {
+			# Returns no content location, which is how the main flow knows to skip the install phase
+			Write-CMLogEntry -Value " - Driver package content could not be downloaded, however AllowNoDriverPackage is enabled, the run continues without drivers" -Severity 2
+			return
 		}
 		else {
 			Write-CMLogEntry -Value " - Driver package content download process returned an unhandled exit code: $($DownloadInvocation)" -Severity 3
@@ -3044,7 +3180,7 @@ public class DATPinnedCertificateValidation
 	}
 	
 	Write-CMLogEntry -Value "[ApplyDriverPackage]: Apply Driver Package process initiated" -Severity 1
-	Write-CMLogEntry -Value " - Script version: 4.3.7" -Severity 1
+	Write-CMLogEntry -Value " - Script version: 4.3.8" -Severity 1
 	if ($PSCmdLet.ParameterSetName -like "Debug") {
 		Write-CMLogEntry -Value " - Apply driver package process initiated in debug mode" -Severity 1
 	}
@@ -3052,7 +3188,7 @@ public class DATPinnedCertificateValidation
 	Write-CMLogEntry -Value " - Apply driver package operational mode: $($OperationalMode)" -Severity 1
 	Write-CMLogEntry -Value " - Endpoint: '$($Endpoint)' | Filter: '$($Filter)' | DriverInstallMode: '$($DriverInstallMode)'" -Severity 1
 	Write-CMLogEntry -Value " - Target OS: '$($TargetOSName)' | Version: '$($TargetOSVersion)' | Architecture: '$($TargetOSArchitecture)'" -Severity 1
-	Write-CMLogEntry -Value " - UseDriverFallback: $($UseDriverFallback.IsPresent) | OSVersionFallback: $($OSVersionFallback.IsPresent) | AllowVirtualMachine: $($AllowVirtualMachine.IsPresent)" -Severity 1
+	Write-CMLogEntry -Value " - UseDriverFallback: $($UseDriverFallback.IsPresent) | OSVersionFallback: $($OSVersionFallback.IsPresent) | AllowVirtualMachine: $($AllowVirtualMachine.IsPresent) | AllowNoDriverPackage: $($AllowNoDriverPackage.IsPresent)" -Severity 1
 
 	# Set script error preference variable
 	$ErrorActionPreference = "Stop"
@@ -3075,6 +3211,9 @@ public class DATPinnedCertificateValidation
 
 		# Determine the site code that driver packages must have been created at, if any
 		Get-PackageSiteCode
+
+		# Determine if the run may finish without drivers when no driver package is available
+		Get-AllowNoDriverPackage
 
 		# Determine if running on supported computer system type
 		Get-ComputerSystemType
@@ -3170,18 +3309,35 @@ public class DATPinnedCertificateValidation
 
 		# At this point, the code below here is not allowed to be executed in debug mode, as it requires access to the Microsoft.SMS.TSEnvironment COM object
 		if ($PSCmdLet.ParameterSetName -notlike "Debug") {
-			Write-CMLogEntry -Value "[DriverPackageDownload]: Starting driver package download phase" -Severity 1
-			
-			# Attempt to download the matched driver package content files from distribution point
-			$DriverPackageContentLocation = Invoke-DownloadDriverPackageContent
-			
-			Write-CMLogEntry -Value "[DriverPackageDownload]: Completed driver package download phase" -Severity 1
-			Write-CMLogEntry -Value "[DriverPackageInstall]: Starting driver package install phase" -Severity 1
-			
-			# Depending on deployment type, take action accordingly when applying the driver package files
-			Install-DriverPackageContent -ContentLocation $DriverPackageContentLocation
-			
-			Write-CMLogEntry -Value "[DriverPackageInstall]: Completed driver package install phase" -Severity 1
+			# Without AllowNoDriverPackage every empty list path has already stopped the run. Testing it here too
+			# means an empty list that gets here some other way still fails at the download, as it always has
+			if ((@($DriverPackageList).Count -eq 0) -and $Script:AllowNoDriverPackageEnabled) {
+				Write-CMLogEntry -Value " - No driver package is available for this device and AllowNoDriverPackage is enabled, skipping the download and install phases. No drivers were installed" -Severity 2
+				Write-CMLogEntry -Value " - Setting task sequence variable MDMDriverPackageSkipped to: True" -Severity 1
+				$TSEnvironment.Value("MDMDriverPackageSkipped") = "True"
+			}
+			else {
+				Write-CMLogEntry -Value "[DriverPackageDownload]: Starting driver package download phase" -Severity 1
+
+				# Attempt to download the matched driver package content files from distribution point
+				$DriverPackageContentLocation = Invoke-DownloadDriverPackageContent
+
+				Write-CMLogEntry -Value "[DriverPackageDownload]: Completed driver package download phase" -Severity 1
+
+				if ([string]::IsNullOrEmpty($DriverPackageContentLocation) -and $Script:AllowNoDriverPackageEnabled) {
+					Write-CMLogEntry -Value " - Driver package content is not available and AllowNoDriverPackage is enabled, skipping the install phase. No drivers were installed" -Severity 2
+					Write-CMLogEntry -Value " - Setting task sequence variable MDMDriverPackageSkipped to: True" -Severity 1
+					$TSEnvironment.Value("MDMDriverPackageSkipped") = "True"
+				}
+				else {
+					Write-CMLogEntry -Value "[DriverPackageInstall]: Starting driver package install phase" -Severity 1
+
+					# Depending on deployment type, take action accordingly when applying the driver package files
+					Install-DriverPackageContent -ContentLocation $DriverPackageContentLocation
+
+					Write-CMLogEntry -Value "[DriverPackageInstall]: Completed driver package install phase" -Severity 1
+				}
+			}
 		}
 		else {
 			Write-CMLogEntry -Value " - Script has successfully completed debug mode" -Severity 1

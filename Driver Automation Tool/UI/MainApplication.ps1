@@ -374,6 +374,86 @@ function Set-DATDialogCard {
     if (-not [double]::IsNaN($Dialog.Height)) { $Dialog.Height += 2 * $reach }
 }
 
+# Asks whether what is about to be typed belongs on GitHub instead. Feedback and testimonials reach
+# only the developer, so a bug or feature request sent that way cannot be tracked or followed.
+function New-DATGitHubIssuePrompt {
+    param ([Parameter(Mandatory)]$Theme)
+
+    $brush = { param ($Key) [System.Windows.Media.SolidColorBrush]::new([System.Windows.Media.ColorConverter]::ConvertFromString($Theme[$Key])) }
+    $issuesAddress = 'github.com/maurice-daly/DriverAutomationTool/issues'
+
+    $heading = [System.Windows.Controls.TextBlock]::new()
+    $heading.Text = 'Is this a bug report or a feature request?'
+    $heading.FontSize = 12
+    $heading.FontWeight = [System.Windows.FontWeights]::SemiBold
+    $heading.TextWrapping = 'Wrap'
+    $heading.Foreground = & $brush 'WindowForeground'
+
+    $detail = [System.Windows.Controls.TextBlock]::new()
+    $detail.Text = 'These are better raised as a GitHub issue, where they can be tracked and you can follow the progress.'
+    $detail.FontSize = 11.5
+    $detail.TextWrapping = 'Wrap'
+    $detail.Foreground = & $brush 'InputPlaceholder'
+    $detail.Margin = [System.Windows.Thickness]::new(0, 2, 0, 6)
+
+    # The GitHub mark, drawn in the theme's text colour so it reads on dark and light cards
+    $logo = [System.Windows.Shapes.Path]::new()
+    $logo.Data = [System.Windows.Media.Geometry]::Parse('M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z')
+    $logo.Stretch = 'Uniform'
+    $logo.Width = 14
+    $logo.Height = 14
+    $logo.Fill = & $brush 'WindowForeground'
+    $logo.VerticalAlignment = 'Center'
+    $logo.Margin = [System.Windows.Thickness]::new(0, 0, 6, 0)
+
+    $linkText = [System.Windows.Controls.TextBlock]::new()
+    $linkText.Text = $issuesAddress
+    $linkText.FontSize = 12
+    $linkText.TextDecorations = [System.Windows.TextDecorations]::Underline
+    $linkText.Foreground = & $brush 'AccentTextColor'
+    $linkText.VerticalAlignment = 'Center'
+
+    $linkContent = [System.Windows.Controls.StackPanel]::new()
+    $linkContent.Orientation = 'Horizontal'
+    $linkContent.Children.Add($logo) | Out-Null
+    $linkContent.Children.Add($linkText) | Out-Null
+
+    $link = [System.Windows.Controls.Button]::new()
+    $link.Template = [System.Windows.Markup.XamlReader]::Parse(@"
+<ControlTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" TargetType="Button">
+    <Border Background="Transparent"><ContentPresenter/></Border>
+</ControlTemplate>
+"@)
+    $link.Content = $linkContent
+    $link.HorizontalAlignment = 'Left'
+    $link.Cursor = [System.Windows.Input.Cursors]::Hand
+    $link.ToolTip = 'Open in your browser'
+    $link.Tag = "https://$issuesAddress"
+    $link.Add_Click({
+        # The dialog stays open so nothing typed is lost, but a Topmost one would cover the browser
+        $dialog = [System.Windows.Window]::GetWindow($this)
+        if ($null -ne $dialog) { $dialog.Topmost = $false }
+        try {
+            Start-Process $this.Tag -ErrorAction Stop
+        } catch {
+            Write-DATActivityLog "Could not open $($this.Tag): $($_.Exception.Message)" -Level Warn
+        }
+    })
+
+    $content = [System.Windows.Controls.StackPanel]::new()
+    $content.Children.Add($heading) | Out-Null
+    $content.Children.Add($detail) | Out-Null
+    $content.Children.Add($link) | Out-Null
+
+    $card = [System.Windows.Controls.Border]::new()
+    $card.Background = & $brush 'InputBackground'
+    $card.CornerRadius = [System.Windows.CornerRadius]::new(8)
+    $card.Padding = [System.Windows.Thickness]::new(12, 10, 12, 10)
+    $card.Margin = [System.Windows.Thickness]::new(0, 0, 0, 14)
+    $card.Child = $content
+    $card
+}
+
 # Enable dragging on title bar
 $TitleBar.Add_MouseLeftButtonDown({
     $Window.DragMove()
@@ -525,6 +605,7 @@ $btn_FeedbackDown.Add_Click({
     $titleText.HorizontalAlignment = 'Center'
     $titleText.Margin = [System.Windows.Thickness]::new(0, 0, 0, 8)
     $panel.Children.Add($titleText) | Out-Null
+    $panel.Children.Add((New-DATGitHubIssuePrompt -Theme $theme)) | Out-Null
 
     # Subtitle
     $subtitleText = [System.Windows.Controls.TextBlock]::new()
@@ -4418,6 +4499,7 @@ function Show-DATTestimonialModal {
     $title.FontWeight = [System.Windows.FontWeights]::Bold
     $panel.Children.Add($title) | Out-Null
     $panel.Children.Add((& $newText 'If the Driver Automation Tool has helped you, a few words about it helps others decide whether it is right for them. You choose whether your testimonial may be published.' 12.5 'WindowForeground' 16)) | Out-Null
+    $panel.Children.Add((New-DATGitHubIssuePrompt -Theme $theme)) | Out-Null
 
     $textBoxTemplate = [System.Windows.Markup.XamlReader]::Parse(@"
 <ControlTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
@@ -4520,7 +4602,8 @@ function Show-DATTestimonialModal {
 
     $state.Error = & $newText '' 12 'StatusError' 12
     $state.Error.Visibility = 'Collapsed'
-    $panel.Children.Add($state.Error) | Out-Null
+    $footer = [System.Windows.Controls.StackPanel]::new()
+    $footer.Children.Add($state.Error) | Out-Null
 
     $primaryTemplate = [System.Windows.Markup.XamlReader]::Parse(@"
 <ControlTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" TargetType="Button">
@@ -4620,7 +4703,7 @@ function Show-DATTestimonialModal {
         $state.Buttons = @($state.SubmitButton, $cancel)
     }
     $buttonRow.Children[$buttonRow.Children.Count - 1].Margin = [System.Windows.Thickness]::new(0)
-    $panel.Children.Add($buttonRow) | Out-Null
+    $footer.Children.Add($buttonRow) | Out-Null
 
     # Submit is enabled once the required fields have text; full validation runs on submit
     $state.Limit = $limits.Testimonial
@@ -4635,7 +4718,23 @@ function Show-DATTestimonialModal {
         if ($s.Error.Visibility -eq 'Visible' -and -not $s.Sending) { $s.Error.Visibility = 'Collapsed' }
     }
 
-    $border.Child = $panel
+    # The form is taller than a small or scaled screen, which would leave Submit out of reach, so the
+    # fields scroll there and the error text and buttons stay in view.
+    $dlg.MaxHeight = [System.Windows.SystemParameters]::WorkArea.Height
+    $scroller = [System.Windows.Controls.ScrollViewer]::new()
+    $scroller.VerticalScrollBarVisibility = 'Auto'
+    $scroller.Focusable = $false
+    $scroller.Content = $panel
+    $formLayout = [System.Windows.Controls.Grid]::new()
+    $formLayout.RowDefinitions.Add([System.Windows.Controls.RowDefinition]::new())
+    $footerRow = [System.Windows.Controls.RowDefinition]::new()
+    $footerRow.Height = [System.Windows.GridLength]::Auto
+    $formLayout.RowDefinitions.Add($footerRow)
+    [System.Windows.Controls.Grid]::SetRow($footer, 1)
+    $formLayout.Children.Add($scroller) | Out-Null
+    $formLayout.Children.Add($footer) | Out-Null
+
+    $border.Child = $formLayout
     Set-DATDialogCard -Dialog $dlg -Card $border
     $dlg.Add_ContentRendered({ $this.Tag.NameBox.Focus() | Out-Null })
     $dlg.ShowDialog() | Out-Null
@@ -5084,23 +5183,25 @@ function Show-DATCustomDriverDialog {
     $icon.Margin = [System.Windows.Thickness]::new(0, 0, 0, 8)
     $panel.Children.Add($icon) | Out-Null
 
-    $title = [System.Windows.Controls.TextBlock]::new()
-    $title.Text = if (-not [string]::IsNullOrEmpty($Title)) { $Title } else { "Add Custom Drivers -- $ModelName" }
-    $title.FontSize = 16
-    $title.FontWeight = [System.Windows.FontWeights]::Bold
-    $title.Foreground = [System.Windows.Media.SolidColorBrush]::new($fgColor)
-    $title.Margin = [System.Windows.Thickness]::new(0, 0, 0, 12)
-    $title.TextWrapping = 'Wrap'
-    $panel.Children.Add($title) | Out-Null
+    # Not $title / $note: variable names ignore case, so those are the [string] parameters and
+    # the TextBlock would be stored as plain text, stopping the dialog opening (#992).
+    $titleText = [System.Windows.Controls.TextBlock]::new()
+    $titleText.Text = if (-not [string]::IsNullOrEmpty($Title)) { $Title } else { "Add Custom Drivers -- $ModelName" }
+    $titleText.FontSize = 16
+    $titleText.FontWeight = [System.Windows.FontWeights]::Bold
+    $titleText.Foreground = [System.Windows.Media.SolidColorBrush]::new($fgColor)
+    $titleText.Margin = [System.Windows.Thickness]::new(0, 0, 0, 12)
+    $titleText.TextWrapping = 'Wrap'
+    $panel.Children.Add($titleText) | Out-Null
 
     # Note
-    $note = [System.Windows.Controls.TextBlock]::new()
-    $note.Text = $Note
-    $note.FontSize = 12
-    $note.TextWrapping = 'Wrap'
-    $note.Foreground = [System.Windows.Media.SolidColorBrush]::new($dimColor)
-    $note.Margin = [System.Windows.Thickness]::new(0, 0, 0, 16)
-    $panel.Children.Add($note) | Out-Null
+    $noteText = [System.Windows.Controls.TextBlock]::new()
+    $noteText.Text = $Note
+    $noteText.FontSize = 12
+    $noteText.TextWrapping = 'Wrap'
+    $noteText.Foreground = [System.Windows.Media.SolidColorBrush]::new($dimColor)
+    $noteText.Margin = [System.Windows.Thickness]::new(0, 0, 0, 16)
+    $panel.Children.Add($noteText) | Out-Null
 
     # Path label
     $pathLabel = [System.Windows.Controls.TextBlock]::new()
@@ -12441,7 +12542,7 @@ $btn_Build.Add_Click({
     $script:BuildPS.Runspace = $script:BuildRunspace
     Add-DATCoreRunspaceBootstrap -PowerShell $script:BuildPS -IntuneAuthContext $intuneAuthContext -ModulePath $resolvedModulePath
     [void]$script:BuildPS.AddScript({
-        param($ScriptDir, $RegPath, $RunningMode, $SelectedModels, $StoragePath, $PackagePath, $DisableToast, $DisableRestart, $SiteServer, $SiteCode, $PackageType, $DPGroups, $DPs, $DistPriority, $EnableBDR, $DebugBuildPath, $CustomBrandingPath, $HPPasswordBinPath, $ToastTimeoutAction, $MaxDeferrals, $BIOSRestartDelayMinutes, $TeamsWebhookUrl, $TeamsNotificationsEnabled, $TeamsCustomText, $CustomToastTextsJson, $ConsoleFolderID, $MaintenanceWindowsJson, $AlarmMode, $AlarmSound, $CreateIntuneWinOnly, $GenerateXmlLogicPackage, $ExtractDownloadOnlyContent, $ShowBrandingBannerAllToasts, $CreateConfigMgrApplication, $ConfigMgrReminderIntervalHours, $ToastThemeJson, $ShowInstallProgress, $SilentDuringAutopilot)
+        param($ScriptDir, $RegPath, $RunningMode, $SelectedModels, $StoragePath, $PackagePath, $DisableToast, $DisableRestart, $SiteServer, $SiteCode, $PackageType, $DPGroups, $DPs, $DistPriority, $EnableBDR, $DebugBuildPath, $CustomBrandingPath, $HPPasswordBinPath, $ToastTimeoutAction, $MaxDeferrals, $BIOSRestartDelayMinutes, $TeamsWebhookUrl, $TeamsNotificationsEnabled, $TeamsCustomText, $CustomToastTextsJson, $ConsoleFolderID, $MaintenanceWindowsJson, $AlarmMode, $AlarmSound, $CreateIntuneWinOnly, $GenerateXmlLogicPackage, $ExtractDownloadOnlyContent, $ShowBrandingBannerAllToasts, $CreateConfigMgrApplication, $ConfigMgrReminderIntervalHours, $ToastThemeJson, $ShowInstallProgress, $SilentDuringAutopilot, $DellBIOSLogoAction)
         try {
             $procParams = @{
                 ScriptDirectory = $ScriptDir
@@ -12466,6 +12567,7 @@ $btn_Build.Add_Click({
             if ($ToastTimeoutAction -ne 'RemindMeLater') { $procParams['ToastTimeoutAction'] = $ToastTimeoutAction }
             if ($MaxDeferrals -gt 0) { $procParams['MaxDeferrals'] = $MaxDeferrals }
             if ($BIOSRestartDelayMinutes -gt 0 -and $BIOSRestartDelayMinutes -ne 10) { $procParams['RestartDelaySeconds'] = $BIOSRestartDelayMinutes * 60 }
+            if ($DellBIOSLogoAction -and $DellBIOSLogoAction -ne 'None') { $procParams['DellBIOSLogoAction'] = $DellBIOSLogoAction }
             if (-not [string]::IsNullOrEmpty($DebugBuildPath)) { $procParams['DebugBuildPath'] = $DebugBuildPath }
             if (-not [string]::IsNullOrEmpty($CustomBrandingPath)) { $procParams['CustomBrandingPath'] = $CustomBrandingPath }
             if (-not [string]::IsNullOrEmpty($HPPasswordBinPath)) { $procParams['HPPasswordBinPath'] = $HPPasswordBinPath }
@@ -12630,6 +12732,9 @@ $btn_Build.Add_Click({
 
     # Install silently during Autopilot provisioning -- Intune / ConfigMgr Applications
     [void]$script:BuildPS.AddArgument([bool](Get-DATSilentDuringAutopilot))
+
+    # Dell BIOS boot logo switch (BIOS Security page) -- Intune / ConfigMgr Applications
+    [void]$script:BuildPS.AddArgument((Get-DATDellBIOSLogoAction))
 
     # Every build starts unpaused (Start-DATModelProcessing clears these too)
     Set-DATRegistryValue -Name 'BuildPauseRequested' -Value 0 -Type DWord
@@ -18452,6 +18557,34 @@ $chk_ShortcutCurrentUserOnly.Add_Unchecked({
     Write-DATActivityLog "Desktop shortcut set to the Public desktop -- it moves there the next time the tool starts" -Level Info
 })
 
+# PowerShell 7 at launch. The launcher reads LaunchInPowerShell7 before the window opens: Ask
+# (default) asks in the console, Always relaunches without asking, Never stays in Windows
+# PowerShell. A saved value the launcher cannot read counts as Ask, so it is shown as Ask here.
+$cmb_PowerShell7Launch = $Window.FindName('cmb_PowerShell7Launch')
+$txt_PowerShell7Session = $Window.FindName('txt_PowerShell7Session')
+
+function Get-DATPowerShell7LaunchSetting {
+    $item = $cmb_PowerShell7Launch.SelectedItem
+    if ($null -eq $item -or [string]::IsNullOrEmpty([string]$item.Tag)) { return 'Ask' }
+    return [string]$item.Tag
+}
+
+$savedPowerShell7Launch = [string](Get-ItemProperty -Path $global:RegPath -Name 'LaunchInPowerShell7' -ErrorAction SilentlyContinue).LaunchInPowerShell7
+foreach ($ps7LaunchItem in $cmb_PowerShell7Launch.Items) {
+    if ([string]$ps7LaunchItem.Tag -eq $savedPowerShell7Launch.Trim()) { $cmb_PowerShell7Launch.SelectedItem = $ps7LaunchItem; break }
+}
+$txt_PowerShell7Session.Text = if ($PSVersionTable.PSVersion.Major -ge 7) {
+    "This session is running in PowerShell $($PSVersionTable.PSVersion)."
+} else {
+    "This session is running in Windows PowerShell $($PSVersionTable.PSVersion)."
+}
+
+$cmb_PowerShell7Launch.Add_SelectionChanged({
+    $setting = Get-DATPowerShell7LaunchSetting
+    Set-DATRegistryValue -Name 'LaunchInPowerShell7' -Value $setting -Type String
+    Write-DATActivityLog "PowerShell 7 at launch set to $setting -- applies the next time the tool starts" -Level Info
+})
+
 # Download Only extraction behaviour toggle
 $chk_DownloadOnlyExtractContent = $Window.FindName('chk_DownloadOnlyExtractContent')
 $chk_DownloadOnlyExtractContent.Add_Checked({
@@ -18645,6 +18778,49 @@ $btn_ScheduleCancel.Add_Click({
     $overlay_Schedule.Visibility = 'Collapsed'
 })
 
+function Get-DATScheduledConfigMgrSettings {
+    # The ConfigMgr block of BuildConfig.json. A scheduled build sees only what is written here and
+    # each schedule save replaces the file, so a setting left out works in an interactive build and
+    # is lost from every scheduled one. These match what the build runspace reads interactively.
+    param (
+        $RegConfig,
+        [string]$SiteCode,
+        [string]$Platform,
+        [string]$DistributionPriority = 'Normal',
+        [bool]$CustomConsoleFolder,
+        [bool]$EnableBinaryDeltaReplication
+    )
+
+    # DP groups are saved joined with ';;', or with '|' by older versions. Typed so that one entry
+    # stays an array in the JSON and none is [] rather than null.
+    [string[]]$dpGroups = @()
+    if (-not [string]::IsNullOrEmpty($RegConfig.SelectedDPGroups)) {
+        $dpGroups = if ($RegConfig.SelectedDPGroups -match ';;') { $RegConfig.SelectedDPGroups -split ';;' } else { $RegConfig.SelectedDPGroups -split '\|' }
+    }
+    [string[]]$dps = @()
+    if (-not [string]::IsNullOrEmpty($RegConfig.SelectedDPs)) { $dps = $RegConfig.SelectedDPs -split '\|' }
+
+    # -1 uses the default folders. 0 is the console root, so test for a missing value, not a false one.
+    $consoleFolderID = -1
+    if ($CustomConsoleFolder -and $null -ne $RegConfig.ConsoleFolderID) { $consoleFolderID = [int]$RegConfig.ConsoleFolderID }
+
+    # One toggle in Package Options: an interactive build refreshes the logic package and wraps it
+    # as a package when it is on. The headless runner holds those as two keys.
+    $xmlLogicPackage = ($Platform -eq 'Configuration Manager') -and ($RegConfig.XmlLogicCreatePackage -eq 1)
+
+    return @{
+        SiteServer                   = [string]$RegConfig.SiteServer
+        SiteCode                     = $SiteCode
+        DistributionPointGroups      = $dpGroups
+        DistributionPoints           = $dps
+        DistributionPriority         = $DistributionPriority
+        EnableBinaryDeltaReplication = $EnableBinaryDeltaReplication
+        ConsoleFolderID              = $consoleFolderID
+        GenerateXmlLogicPackage      = $xmlLogicPackage
+        CreateXmlLogicPackage        = $xmlLogicPackage
+    }
+}
+
 $btn_ScheduleSave.Add_Click({
     $configPath = $txt_ScheduleConfigPath.Text
     $frequency = $cmb_ScheduleFrequency.SelectedItem.Content
@@ -18719,13 +18895,11 @@ $btn_ScheduleSave.Add_Click({
     $schedDownloadOnlyExtract = ($null -eq $chk_DownloadOnlyExtractContent -or $chk_DownloadOnlyExtractContent.IsChecked -ne $false)
 
     # ConfigMgr settings
-    $schedCM = @{
-        SiteServer = if ($regConfig -and -not [string]::IsNullOrEmpty($regConfig.SiteServer)) { $regConfig.SiteServer } else { '' }
-        SiteCode = if ($global:SiteCode) { $global:SiteCode } else { '' }
-        DistributionPointGroups = if ($regConfig -and -not [string]::IsNullOrEmpty($regConfig.SelectedDPGroups)) { @($regConfig.SelectedDPGroups -split '\|') } else { @() }
-        DistributionPoints = if ($regConfig -and -not [string]::IsNullOrEmpty($regConfig.SelectedDPs)) { @($regConfig.SelectedDPs -split '\|') } else { @() }
-        DistributionPriority = if ($null -ne $cmb_DistPriority -and $null -ne $cmb_DistPriority.SelectedItem) { $cmb_DistPriority.SelectedItem.Content } else { 'Normal' }
-    }
+    $schedDistPriority = if ($null -ne $cmb_DistPriority -and $null -ne $cmb_DistPriority.SelectedItem) { $cmb_DistPriority.SelectedItem.Content } else { 'Normal' }
+    $schedCM = Get-DATScheduledConfigMgrSettings -RegConfig $regConfig -SiteCode $global:SiteCode -Platform $schedPlatform `
+        -DistributionPriority $schedDistPriority `
+        -CustomConsoleFolder ($chk_CustomConsoleFolder.IsChecked -eq $true) `
+        -EnableBinaryDeltaReplication ($chk_BinaryDiffReplication.IsChecked -eq $true)
 
     # Intune credentials for unattended auth
     $schedIntune = @{
@@ -18760,6 +18934,7 @@ $btn_ScheduleSave.Add_Click({
             -DisableToast $schedDisableToast -DisableRestart $schedDisableRestart `
             -ToastTimeoutAction $schedTimeoutAction -MaxDeferrals $schedMaxDeferrals `
             -BIOSRestartDelayMinutes $schedBIOSRestartDelay `
+            -DellBIOSLogoAction (Get-DATDellBIOSLogoAction) `
             -TeamsWebhookUrl $schedTeamsUrl -TeamsNotificationsEnabled $schedTeamsEnabled `
             -TeamsCustomText $schedTeamsCustomText -ConfigMgr $schedCM `
             -Intune $schedIntune `
@@ -27936,6 +28111,45 @@ $btn_ClearHPPasswordBin.Add_Click({
     $txt_HPPasswordBinStatus.Foreground = [System.Windows.Media.Brushes]::LimeGreen
 })
 
+# Dell boot logo (issue #990): added to Dell BIOS packages for Intune and ConfigMgr Applications
+# when they are built. ConfigMgr packages and WIMs are flashed by the admin's task sequence.
+$script:DellBIOSLogoHints = @{
+    None     = 'Dell BIOS updates run without a logo switch, as in earlier versions.'
+    Preserve = 'Adds /keeplogo so a custom boot logo applied by Dell is kept through the update. A model whose Dell updater has no /keeplogo option is skipped when the package is built.'
+    Restore  = 'Adds /DellLogo so the update replaces any custom boot logo with the Dell logo. A device already on the packaged BIOS version keeps its logo until it installs an update.'
+}
+
+function Get-DATDellBIOSLogoAction {
+    # The Dell BIOS logo action selected on the BIOS Security page: None, Preserve or Restore
+    $item = if ($null -ne $cmb_DellBIOSLogoAction) { $cmb_DellBIOSLogoAction.SelectedItem } else { $null }
+    if ($null -eq $item -or [string]::IsNullOrEmpty([string]$item.Tag)) { return 'None' }
+    return [string]$item.Tag
+}
+
+function Set-DATDellBIOSLogoAction ([string]$Action) {
+    foreach ($item in $cmb_DellBIOSLogoAction.Items) {
+        if ([string]$item.Tag -eq $Action) { $cmb_DellBIOSLogoAction.SelectedItem = $item; break }
+    }
+}
+
+# A saved value the tool cannot read (a hand-edited key or an imported .reg file) is shown as Do not
+# manage and reported, rather than carried into a build.
+$savedDellBIOSLogoAction = (Get-ItemProperty -Path $global:RegPath -Name 'DellBIOSLogoAction' -ErrorAction SilentlyContinue).DellBIOSLogoAction
+try {
+    Set-DATDellBIOSLogoAction -Action (ConvertTo-DATDellBiosLogoAction -Value ([string]$savedDellBIOSLogoAction))
+} catch {
+    Write-DATActivityLog "Saved Dell BIOS logo action '$savedDellBIOSLogoAction' is not valid -- reset to Do not manage" -Level Warn
+    Set-DATRegistryValue -Name 'DellBIOSLogoAction' -Value 'None' -Type String
+}
+$txt_DellBIOSLogoHint.Text = $script:DellBIOSLogoHints[(Get-DATDellBIOSLogoAction)]
+
+$cmb_DellBIOSLogoAction.Add_SelectionChanged({
+    $action = Get-DATDellBIOSLogoAction
+    $txt_DellBIOSLogoHint.Text = $script:DellBIOSLogoHints[$action]
+    Set-DATRegistryValue -Name 'DellBIOSLogoAction' -Value $action -Type String
+    Write-DATActivityLog "Dell BIOS logo action: $action" -Level Info
+})
+
 #endregion BIOS Security
 
 #region Maintenance Window
@@ -30838,7 +31052,7 @@ if (Test-Path $logoPath) {
 
 # Read version from module manifest
 $manifestPath = Join-Path $AppRoot "Modules\DriverAutomationToolCore\DriverAutomationToolCore.psd1"
-$script:versionString = "v10.3.6"
+$script:versionString = "v10.3.7"
 if (Test-Path $manifestPath) {
     $manifestData = Import-PowerShellDataFile $manifestPath
     $ver = [version]$manifestData.ModuleVersion
@@ -31262,6 +31476,7 @@ $Window.Add_Closing({
             $nfTitle.HorizontalAlignment = 'Center'
             $nfTitle.Margin = [System.Windows.Thickness]::new(0, 0, 0, 8)
             $nfPanel.Children.Add($nfTitle) | Out-Null
+            $nfPanel.Children.Add((New-DATGitHubIssuePrompt -Theme $theme)) | Out-Null
 
             # Subtitle
             $nfSubtitle = [System.Windows.Controls.TextBlock]::new()
@@ -32192,8 +32407,13 @@ $script:WhatsNewFeatures = @(
     [pscustomobject]@{ Id = 'custom-pack-sku-10.3.4';           Dot = 'dot_CustomDriverPack';   Parent = '';                   Pill = 'pill_CustomBaseboardSku';         Zone = 'zone_CustomBaseboardSku';         Controls = @('txt_CustomBaseBoard', 'btn_CustomRefreshWMI') }
     # 10.3.4: the desktop shortcut can go on the running user's desktop instead of the Public one
     [pscustomobject]@{ Id = 'shortcut-location-10.3.4';         Dot = 'dot_CommonSettings';     Parent = '';                   Pill = 'pill_ShortcutLocation';           Zone = 'zone_ShortcutLocation';           Controls = @('chk_ShortcutCurrentUserOnly') }
-    # 10.3.5: the MMS Midway Edition, named on the About page as well as in the console banner
-    [pscustomobject]@{ Id = 'mms-edition-10.3.5';               Dot = 'dot_About';              Parent = '';                   Pill = 'pill_AboutEdition';               Zone = 'zone_AboutEdition';               Controls = @() }
+    # 10.3.7: Dell BIOS packages can keep a custom boot logo or restore the Dell logo (#990)
+    [pscustomobject]@{ Id = 'dell-bios-logo-10.3.7';            Dot = 'dot_BIOSSecurity';       Parent = 'dot_IntuneSettings'; Pill = 'pill_DellBIOSLogo';               Zone = 'zone_DellBIOSLogo';               Controls = @('cmb_DellBIOSLogoAction') }
+    # 10.3.7: the launcher offers to relaunch in PowerShell 7, and remembers Always or Never
+    [pscustomobject]@{ Id = 'powershell7-launch-10.3.7';        Dot = 'dot_CommonSettings';     Parent = '';                   Pill = 'pill_PowerShell7Launch';          Zone = 'zone_PowerShell7Launch';          Controls = @('cmb_PowerShell7Launch') }
+    # 10.3.7: the feedback and testimonial dialogs ask whether a bug or feature request belongs on
+    # GitHub. Those dialogs are not in the main window, so the marker sits on the thumbs-down button.
+    [pscustomobject]@{ Id = 'github-issue-prompt-10.3.7';       Dot = '';                       Parent = '';                   Pill = 'pill_FeedbackGitHub';             Zone = 'zone_FeedbackGitHub';             Controls = @('btn_FeedbackDown') }
 )
 
 # Maps a wired element's x:Name to the feature id it clears, so plain (non-closure) handlers can
@@ -32293,16 +32513,21 @@ try { Initialize-DATWhatsNew } catch { Write-DATActivityLog "What's New init fai
 # (the IncrementVersion skill covers it, and Tests\UIApplication.Tests.ps1 asserts it matches the
 # module manifest). The modal is suppressed when it does not match the running build, so a missed
 # changelog update shows nothing rather than the previous release's features.
-$script:WhatsNewReleaseVersion = '10.3.6.0'
+$script:WhatsNewReleaseVersion = '10.3.7.0'
 # Set to $true only for a release whose items have no place in the UI to highlight (fixes to
 # downloads and the like). Tests\UIApplication.Tests.ps1 then accepts a release with no
 # $script:WhatsNewFeatures entry; reset it to $false at the next bump.
-$script:WhatsNewReleaseHasNoUIFeatures = $true
+$script:WhatsNewReleaseHasNoUIFeatures = $false
 $script:WhatsNewReleaseItems = @(
-    [pscustomobject]@{ Category = 'Acer Downloads';     Text = 'Acer driver packs are no longer downloaded again on every run. Acer''s download server reports the wrong size for every file, so a pack already on disk never matched and was deleted, progress showed "of 0 MB", and each download logged a false size mismatch. The tool now asks the server for the real size, so a pack you already have is reused and progress shows the true total.' }
-    [pscustomobject]@{ Category = 'Fujitsu Downloads';  Text = 'Fujitsu driver packs and BIOS updates download again. Fujitsu replaced its download site and the old download pages the tool used stopped working; the tool now downloads each file from the new site''s direct link, still checked against Fujitsu''s published hash. If Fujitsu returns a web page instead of the file, the build stops with a clear message rather than an unexplained error.' }
-    [pscustomobject]@{ Category = 'Fujitsu BIOS Packages'; Text = 'Fujitsu BIOS updates are now found for each model. Fujitsu''s full model names (for example CELSIUS H7613) were split at the space, so no Fujitsu BIOS ever matched. A model with no BIOS of its own now gets none, instead of another model''s firmware from the same driver pack.' }
-    [pscustomobject]@{ Category = 'Fujitsu BIOS Installs'; Text = 'LIFEBOOK and CELSIUS H BIOS updates are now packaged and installed silently with Fujitsu''s DskFlash tool. Only a newer BIOS is applied, BitLocker is suspended for two restarts, the restart goes through the tool''s own restart handling, and the install retries later when the device is on battery or needs a restart first. Fujitsu BIOS updates that cannot install silently from Windows, such as desktop USB/UEFI packs, are skipped with a warning.' }
+    [pscustomobject]@{ Category = 'Lenovo Packages: Rebuild Needed'; Text = 'The DAT API catalog listed some Lenovo machine types as numbers, for example 12E4 as 120000, affecting 22 models including the ThinkCentre M70q Gen 4 and ThinkPad E14 Gen 4. The catalog is now fixed, but packages already built for these models keep the wrong values, so devices can be missed. In Intune, short values such as 11 or 13 can also match other Lenovo models. Once the model list shows the correct types, right-click each affected model and choose Force Existing Package Update. In Intune this deletes and recreates the app, so check its assignments afterwards. Also correct any assignment filter for the model, because a rebuild reuses the existing filter.' }
+    [pscustomobject]@{ Category = 'Dell Boot Logo';    Text = 'Dell BIOS updates can now keep a custom boot logo or put the Dell logo back. The new setting is under Intune Settings > BIOS Security and applies to Intune apps and ConfigMgr Applications. A model whose Dell updater does not support your choice is skipped and reported as a build failure. Standard ConfigMgr packages and WIMs do not use this setting, and the build log says so.' }
+    [pscustomobject]@{ Category = 'PowerShell 7';       Text = 'When started in Windows PowerShell, the tool now offers to relaunch in PowerShell 7 if it is installed, and you can answer Yes, No, Always or Never. To change your choice later, use the PowerShell 7 card under Common Settings > General.' }
+    [pscustomobject]@{ Category = 'Task Sequences Without a Driver Package'; Text = 'Invoke-CMApplyDriverPackage.ps1 can now finish without drivers instead of failing the task sequence. Use the -AllowNoDriverPackage switch or the MDMAllowNoDriverPackage task sequence variable. The run then ends with a warning when no package matches, none are returned or the download fails, and sets MDMDriverPackageSkipped so a later step can react. A failed run also now always ends with its failure line in ApplyDriverPackage.log.' }
+    [pscustomobject]@{ Category = 'Bugs and Feature Requests'; Text = 'The feedback and testimonial dialogs now ask whether you are reporting a bug or requesting a feature, and link to the GitHub issues page, where these can be tracked and you can follow the progress.' }
+    [pscustomobject]@{ Category = 'Scheduled ConfigMgr Builds'; Text = 'With two or more distribution point groups selected, scheduled builds did not distribute to any of them. This is fixed, including for schedules you already have. Scheduled builds also ignored the custom console folder, Binary Differential Replication and the XML Logic Package refresh. These now work too, but save your schedule again to pick them up.' }
+    [pscustomobject]@{ Category = 'Add Custom Drivers'; Text = 'Add Custom Drivers on Model Selection and Add Custom Drivers to Driver Pack on Package Management open again. Both menu items did nothing except write an error to the log.' }
+    [pscustomobject]@{ Category = 'Lenovo BIOS in Task Sequences'; Text = 'Lenovo task sequences no longer flag a BIOS update for a device that already has that version. The check compared two different dates, so a current device could look out of date on every run. It now compares versions wherever it can. Three crashes in the same script are fixed too.' }
+    [pscustomobject]@{ Category = 'Testimonial Form'; Text = 'The testimonial form now fits smaller and scaled screens. It could run past the bottom of the screen and leave Submit out of reach. The fields now scroll and the buttons stay in view.' }
 )
 
 function Get-DATWhatsNewModalShownVersion {

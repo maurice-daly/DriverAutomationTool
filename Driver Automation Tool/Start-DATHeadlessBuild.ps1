@@ -224,6 +224,8 @@ if ($null -ne $config.DownloadOnlyExtractContent -and -not $config.DownloadOnlyE
 if ($config.ToastTimeoutAction -ne 'RemindMeLater') { $processingParams['ToastTimeoutAction'] = $config.ToastTimeoutAction }
 if ($config.MaxDeferrals -gt 0) { $processingParams['MaxDeferrals'] = $config.MaxDeferrals }
 if ($config.BIOSRestartDelayMinutes -gt 0) { $processingParams['RestartDelaySeconds'] = $config.BIOSRestartDelayMinutes * 60 }
+# Dell BIOS boot logo switch (issue #990) -- Import-DATBuildConfig has already rejected an invalid value
+if ($config.DellBIOSLogoAction -and $config.DellBIOSLogoAction -ne 'None') { $processingParams['DellBIOSLogoAction'] = $config.DellBIOSLogoAction }
 
 # Maintenance window -- serialize the configured schedule to JSON for the requirement scripts
 if ($config.MaintenanceWindowEnabled -and $config.MaintenanceWindows -and @($config.MaintenanceWindows).Count -gt 0) {
